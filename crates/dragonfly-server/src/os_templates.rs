@@ -33,7 +33,19 @@ pub async fn init_os_templates() -> Result<()> {
         error!("Failed to install ubuntu-2204 template: {}", e);
         return Err(anyhow!("Failed to install ubuntu-2204 template: {}", e));
     }
-    
+
+    // Check and install debian-12 template
+    if let Err(e) = install_template(client, "debian-12", &base_url_bare).await {
+        error!("Failed to install debian-12 template: {}", e);
+        return Err(anyhow!("Failed to install debian-12 template: {}", e));
+    }
+
+    // Check and install debian-13 template
+    if let Err(e) = install_template(client, "debian-13", &base_url_bare).await {
+        error!("Failed to install debian-13 template: {}", e);
+        return Err(anyhow!("Failed to install debian-13 template: {}", e));
+    }
+
     info!("OS templates initialization complete");
     Ok(())
 }
