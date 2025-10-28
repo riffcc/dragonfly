@@ -90,11 +90,12 @@
     - !shell
       name: Install Tinkerbell stack using Helm
       cmd: |
+        POD_CIDR="{{ pod_cidr.stdout }}"
         helm install tinkerbell oci://ghcr.io/tinkerbell/charts/stack \
           --version 0.6.2 \
           --namespace tink-system \
           --create-namespace \
-          --set-string "trustedProxies[0]={{ pod_cidr.stdout }}" \
+          --set "smee.trustedProxies={${POD_CIDR}}" \
           --set "publicIP={{ bootstrap_ip }}" \
           --set "hookos.enabled=true" \
           --set "hookos.downloadURL=https://github.com/tinkerbell/hook/releases/download/v0.11.1" \
