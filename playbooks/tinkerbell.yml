@@ -46,6 +46,7 @@
       save: tink_namespace_exists
       with:
         sudo: root
+      and:
         ignore_errors: true
 
     # =================================================================
@@ -81,6 +82,7 @@
       save: tink_deployed
       with:
         sudo: root
+      and:
         ignore_errors: true
 
     # =================================================================
