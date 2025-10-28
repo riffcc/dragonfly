@@ -51,8 +51,8 @@ impl InstallationState {
 
         // Check if Dragonfly is deployed in k8s
         let dragonfly_installed = if k3s_installed {
-            std::process::Command::new("/usr/local/bin/k3s")
-                .args(["kubectl", "get", "namespace", "dragonfly"])
+            std::process::Command::new("sudo")
+                .args(["/usr/local/bin/k3s", "kubectl", "get", "namespace", "dragonfly"])
                 .output()
                 .map(|o| o.status.success())
                 .unwrap_or(false)
@@ -62,8 +62,8 @@ impl InstallationState {
 
         // Check if Tinkerbell is deployed in k8s (check for actual deployment, not just namespace)
         let tinkerbell_installed = if k3s_installed {
-            std::process::Command::new("/usr/local/bin/k3s")
-                .args(["kubectl", "get", "deployment", "-n", "tink-system", "tink-controller"])
+            std::process::Command::new("sudo")
+                .args(["/usr/local/bin/k3s", "kubectl", "get", "deployment", "-n", "tink-system", "tink-controller"])
                 .output()
                 .map(|o| o.status.success())
                 .unwrap_or(false)
