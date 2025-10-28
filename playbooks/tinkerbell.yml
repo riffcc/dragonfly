@@ -94,10 +94,10 @@
           --version 0.6.2 \
           --namespace tink-system \
           --create-namespace \
-          --set-string "stack.trustedProxies[0]={{ pod_cidr.stdout }}" \
-          --set "stack.publicIP={{ bootstrap_ip }}" \
-          --set "stack.hookos.enabled=true" \
-          --set "stack.hookos.downloadURL=https://github.com/tinkerbell/hook/releases/download/v0.11.1" \
+          --set-string "trustedProxies[0]={{ pod_cidr.stdout }}" \
+          --set "publicIP={{ bootstrap_ip }}" \
+          --set "hookos.enabled=true" \
+          --set "hookos.downloadURL=https://github.com/tinkerbell/hook/releases/download/v0.11.1" \
           --kubeconfig /etc/rancher/k3s/k3s.yaml \
           --wait
       with:
