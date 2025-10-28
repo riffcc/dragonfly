@@ -60,10 +60,10 @@ impl InstallationState {
             false
         };
 
-        // Check if Tinkerbell is deployed in k8s
+        // Check if Tinkerbell is deployed in k8s (check for actual deployment, not just namespace)
         let tinkerbell_installed = if k3s_installed {
             std::process::Command::new("/usr/local/bin/k3s")
-                .args(["kubectl", "get", "namespace", "tink-system"])
+                .args(["kubectl", "get", "deployment", "-n", "tink-system", "tink-controller"])
                 .output()
                 .map(|o| o.status.success())
                 .unwrap_or(false)
@@ -400,7 +400,7 @@ pub async fn run_install(args: InstallArgs, _shutdown_rx: tokio::sync::watch::Re
 
     // Tinkerbell task - runs in parallel with Dragonfly
     let tinkerbell_task = if !state.tinkerbell_installed {
-        let tinkerbell_handler = Arc::new(SingleProgressBarHandler::new(tink_pb.clone(), 8));
+        let tinkerbell_handler = Arc::new(SingleProgressBarHandler::new(tink_pb.clone(), 16));
         let bootstrap_ip_tk = bootstrap_ip.clone();
 
         // Write Tinkerbell playbook to temp file
@@ -459,6 +459,7 @@ pub async fn run_install(args: InstallArgs, _shutdown_rx: tokio::sync::watch::Re
     drop(m);
 
     // Clear the "Installing:" line and show ready message
+    // Dragonfly is up, so we're ready - Tinkerbell can finish in background
     let mut stdout = std::io::stdout();
     execute!(
         stdout,
@@ -471,9 +472,11 @@ pub async fn run_install(args: InstallArgs, _shutdown_rx: tokio::sync::watch::Re
     )?;
     stdout.flush()?;
 
-    // Note: Tinkerbell task (if spawned) continues running in the background
-    // It will complete installation asynchronously
-    drop(tinkerbell_task);
+    // Silently wait for Tinkerbell to complete in background
+    // User can start using Dragonfly immediately, Tinkerbell installs async
+    if let Some(task) = tinkerbell_task {
+        let _ = task.await;
+    }
 
     Ok(())
 }

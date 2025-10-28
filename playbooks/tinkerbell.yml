@@ -60,18 +60,17 @@
         condition: (ne tink_namespace_exists.rc 0)
 
     # =================================================================
-    # ADD TINKERBELL HELM REPO
+    # GET K3S POD CIDR FOR TRUSTED PROXIES
     # =================================================================
     - !shell
-      name: Add Tinkerbell Helm repository
-      cmd: helm repo add tinkerbell https://tinkerbell.org/charts
-      save: helm_repo_add
-      and:
-        ignore_errors: true
+      name: Get k3s pod CIDR
+      cmd: /usr/local/bin/k3s kubectl get nodes -o jsonpath='{.items[*].spec.podCIDR}'
+      save: pod_cidr
+      with:
+        sudo: root
 
-    - !shell
-      name: Update Helm repositories
-      cmd: helm repo update
+    # Note: HookOS artifacts are served by Tinkerbell's built-in nginx (hookos.enabled=true by default)
+    # The Helm chart downloads artifacts from GitHub and serves them automatically
 
     # =================================================================
     # CHECK IF TINKERBELL IS ALREADY INSTALLED
@@ -91,12 +90,16 @@
     - !shell
       name: Install Tinkerbell stack using Helm
       cmd: |
-        helm install tinkerbell tinkerbell/stack \
+        helm install tinkerbell oci://ghcr.io/tinkerbell/charts/stack \
+          --version 0.6.2 \
           --namespace tink-system \
           --create-namespace \
-          --set stack.loadBalancerIP={{ bootstrap_ip }} \
-          --set stack.hook.enabled=true \
-          --kubeconfig /etc/rancher/k3s/k3s.yaml
+          --set "trustedProxies={{{ pod_cidr.stdout }}}" \
+          --set "publicIP={{ bootstrap_ip }}" \
+          --set "hookos.enabled=true" \
+          --set "hookos.downloadURL=https://github.com/tinkerbell/hook/releases/download/v0.11.1" \
+          --kubeconfig /etc/rancher/k3s/k3s.yaml \
+          --wait
       with:
         sudo: root
         condition: (ne tink_deployed.rc 0)

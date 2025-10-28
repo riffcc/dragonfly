@@ -1,0 +1,149 @@
+---
+# HookOS Artifacts Server Playbook
+# Deploys nginx serving HookOS kernel and initramfs for Tinkerbell
+
+- name: Deploy HookOS Artifacts Server
+  groups:
+    - all
+  tasks:
+    # =================================================================
+    # SUDO CHECK
+    # =================================================================
+    - !shell
+      name: Check for passwordless sudo
+      cmd: sudo -n true
+      save: sudo_check
+      and:
+        ignore_errors: true
+
+    - !shell
+      name: Prompt for sudo password if needed
+      cmd: sudo echo -n ""
+      with:
+        condition: (ne sudo_check.rc 0)
+
+    # =================================================================
+    # CREATE ARTIFACTS DIRECTORY
+    # =================================================================
+    - !shell
+      name: Create artifacts directory
+      cmd: mkdir -p /tmp/hookos-artifacts
+      save: mkdir_result
+
+    # =================================================================
+    # DOWNLOAD HOOKOS ARTIFACTS FROM OCI REGISTRY
+    # =================================================================
+    - !shell
+      name: Pull HookOS container image
+      cmd: |
+        docker pull quay.io/tinkerbell/hook-kernel:v0.11.1
+      save: pull_result
+
+    - !shell
+      name: Extract kernel from HookOS image
+      cmd: |
+        docker create --name hookos-extract quay.io/tinkerbell/hook-kernel:v0.11.1
+        docker cp hookos-extract:/vmlinuz /tmp/hookos-artifacts/vmlinuz
+        docker rm hookos-extract
+      save: extract_kernel
+      and:
+        ignore_errors: true
+
+    - !shell
+      name: Extract initramfs from HookOS image
+      cmd: |
+        docker create --name hookos-extract quay.io/tinkerbell/hook-kernel:v0.11.1
+        docker cp hookos-extract:/initramfs /tmp/hookos-artifacts/initramfs
+        docker rm hookos-extract
+      save: extract_initramfs
+      and:
+        ignore_errors: true
+
+    # =================================================================
+    # CREATE CONFIGMAP WITH ARTIFACTS
+    # =================================================================
+    - !shell
+      name: Create ConfigMap with HookOS artifacts
+      cmd: |
+        /usr/local/bin/k3s kubectl create configmap hookos-artifacts \
+          --from-file=/tmp/hookos-artifacts/vmlinuz \
+          --from-file=/tmp/hookos-artifacts/initramfs \
+          --namespace tink-system \
+          --dry-run=client -o yaml | /usr/local/bin/k3s kubectl apply -f -
+      with:
+        sudo: root
+
+    # =================================================================
+    # DEPLOY NGINX ARTIFACTS SERVER
+    # =================================================================
+    - !shell
+      name: Create nginx deployment for artifacts
+      cmd: |
+        cat <<'EOF' | /usr/local/bin/k3s kubectl apply -f -
+        apiVersion: apps/v1
+        kind: Deployment
+        metadata:
+          name: hookos-artifacts
+          namespace: tink-system
+        spec:
+          replicas: 3
+          selector:
+            matchLabels:
+              app: hookos-artifacts
+          template:
+            metadata:
+              labels:
+                app: hookos-artifacts
+            spec:
+              containers:
+              - name: nginx
+                image: nginx:alpine
+                ports:
+                - containerPort: 80
+                volumeMounts:
+                - name: artifacts
+                  mountPath: /usr/share/nginx/html
+                  readOnly: true
+              volumes:
+              - name: artifacts
+                configMap:
+                  name: hookos-artifacts
+        ---
+        apiVersion: v1
+        kind: Service
+        metadata:
+          name: hookos-artifacts
+          namespace: tink-system
+        spec:
+          selector:
+            app: hookos-artifacts
+          ports:
+          - port: 8080
+            targetPort: 80
+          type: ClusterIP
+        EOF
+      with:
+        sudo: root
+
+    # =================================================================
+    # WAIT FOR DEPLOYMENT
+    # =================================================================
+    - !shell
+      name: Wait for artifacts server to be ready
+      cmd: |
+        for i in {1..30}; do
+          if /usr/local/bin/k3s kubectl -n tink-system get deployment hookos-artifacts \
+             -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' | grep -q "True"; then
+            echo "HookOS artifacts server is ready"
+            exit 0
+          fi
+          echo "Waiting for artifacts server... ($i/30)"
+          sleep 2
+        done
+        echo "Timeout waiting for artifacts server"
+        exit 1
+      with:
+        sudo: root
+
+    - !echo
+      msg: "✅ HookOS artifacts server deployed (3 replicas) at hookos-artifacts.tink-system:8080"
