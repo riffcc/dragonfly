@@ -1,7 +1,15 @@
 use color_eyre::eyre::{Result, eyre};
 use std::net::Ipv4Addr;
 use std::process::Command;
+use std::io::{self, Write};
 use network_interface::{NetworkInterface, NetworkInterfaceConfig, Addr};
+use crossterm::{
+    event::{self, Event, KeyCode, KeyEvent},
+    terminal::{self, disable_raw_mode, enable_raw_mode},
+    style::{Color, Print, ResetColor, SetForegroundColor},
+    execute,
+    cursor,
+};
 
 /// Get the network interface configuration with IP and netmask
 fn get_network_config() -> Result<(Ipv4Addr, Ipv4Addr)> {
@@ -14,6 +22,14 @@ fn get_network_config() -> Result<(Ipv4Addr, Ipv4Addr)> {
             continue;
         }
 
+        // Skip Kubernetes CNI interfaces (flannel, calico, cni, etc.)
+        if interface.name.starts_with("flannel") ||
+           interface.name.starts_with("cali") ||
+           interface.name.starts_with("cni") ||
+           interface.name.starts_with("vxlan") {
+            continue;
+        }
+
         // Look for IPv4 addresses
         for addr in interface.addr {
             if let Addr::V4(v4_addr) = addr {
@@ -21,6 +37,13 @@ fn get_network_config() -> Result<(Ipv4Addr, Ipv4Addr)> {
 
                 // Skip loopback addresses
                 if ip.is_loopback() {
+                    continue;
+                }
+
+                // Skip Kubernetes CNI ranges (k3s uses 10.42.0.0/16, flannel uses 10.244.0.0/16)
+                let ip_octets = ip.octets();
+                if (ip_octets[0] == 10 && ip_octets[1] == 42) ||
+                   (ip_octets[0] == 10 && ip_octets[1] == 244) {
                     continue;
                 }
 
@@ -135,6 +158,129 @@ pub fn process_ip_input(input: &str, default_ip: Ipv4Addr) -> Result<Ipv4Addr> {
 
     // Otherwise, validate the input as an IPv4 address
     validate_ipv4(trimmed)
+}
+
+/// Interactive IP selection prompt
+/// Returns the selected IP (either default or user-entered)
+pub fn prompt_for_ip(default_ip: Ipv4Addr) -> Result<Ipv4Addr> {
+    println!("Selected [{}] as the first available IP.", default_ip);
+    print!("Press Enter to accept, or Tab to select your own.\n");
+    io::stdout().flush()?;
+
+    // Enable raw mode to capture individual key presses
+    enable_raw_mode()
+        .map_err(|e| eyre!("Failed to enable raw terminal mode: {}", e))?;
+
+    let result = (|| -> Result<Ipv4Addr> {
+        loop {
+            // Wait for an event (key press)
+            if let Event::Key(key_event) = event::read()
+                .map_err(|e| eyre!("Failed to read key event: {}", e))?
+            {
+                match key_event.code {
+                    KeyCode::Enter => {
+                        // Accept default (don't print newline, let caller handle it)
+                        return Ok(default_ip);
+                    }
+                    KeyCode::Tab => {
+                        // Switch to input mode
+                        return read_custom_ip();
+                    }
+                    KeyCode::Char('c') if key_event.modifiers.contains(event::KeyModifiers::CONTROL) => {
+                        // Ctrl+C - exit
+                        return Err(eyre!("Cancelled by user"));
+                    }
+                    _ => {
+                        // Ignore other keys
+                    }
+                }
+            }
+        }
+    })();
+
+    // Always disable raw mode before returning
+    disable_raw_mode()
+        .map_err(|e| eyre!("Failed to disable raw terminal mode: {}", e))?;
+
+    result
+}
+
+/// Read a custom IP from user with placeholder text
+fn read_custom_ip() -> Result<Ipv4Addr> {
+    let mut stdout = io::stdout();
+
+    // Show prompt with placeholder
+    execute!(
+        stdout,
+        Print("> "),
+        SetForegroundColor(Color::DarkGrey),
+        Print("Enter an IP"),
+        ResetColor,
+        // Move cursor back to start of input (right after "> ")
+        cursor::MoveLeft(11)
+    ).map_err(|e| eyre!("Failed to write prompt: {}", e))?;
+
+    stdout.flush()?;
+
+    let mut input = String::new();
+    let mut placeholder_shown = true;
+
+    loop {
+        if let Event::Key(key_event) = event::read()
+            .map_err(|e| eyre!("Failed to read key event: {}", e))?
+        {
+            match key_event.code {
+                KeyCode::Enter => {
+                    // Clear any remaining placeholder text and move to new line
+                    execute!(
+                        stdout,
+                        terminal::Clear(terminal::ClearType::UntilNewLine),
+                        Print("\r\n")
+                    ).map_err(|e| eyre!("Failed to clear line: {}", e))?;
+                    stdout.flush()?;
+
+                    if input.is_empty() {
+                        return Err(eyre!("No IP address entered"));
+                    }
+                    return validate_ipv4(&input);
+                }
+                KeyCode::Backspace => {
+                    if !input.is_empty() {
+                        input.pop();
+                        execute!(
+                            stdout,
+                            cursor::MoveLeft(1),
+                            Print(" "),
+                            cursor::MoveLeft(1)
+                        ).map_err(|e| eyre!("Failed to handle backspace: {}", e))?;
+                        stdout.flush()?;
+                    }
+                }
+                KeyCode::Char('c') if key_event.modifiers.contains(event::KeyModifiers::CONTROL) => {
+                    return Err(eyre!("Cancelled by user"));
+                }
+                KeyCode::Char(c) => {
+                    // Clear placeholder on first character
+                    if placeholder_shown {
+                        execute!(
+                            stdout,
+                            Print("           "), // Clear placeholder (11 spaces to overwrite "Enter an IP")
+                            cursor::MoveLeft(11)  // Move cursor back to start of input area
+                        ).map_err(|e| eyre!("Failed to clear placeholder: {}", e))?;
+                        placeholder_shown = false;
+                    }
+
+                    input.push(c);
+                    execute!(stdout, Print(c))
+                        .map_err(|e| eyre!("Failed to print character: {}", e))?;
+                    stdout.flush()?;
+                }
+                _ => {
+                    // Ignore other keys
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]

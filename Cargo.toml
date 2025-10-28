@@ -10,7 +10,7 @@ resolver = "2"
 [workspace.dependencies]
 openssl = "0.10.72"
 tokio = { version = "1.0", features = ["full"] }
-serde = { version = "1.0", features = ["derive"] }
+serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0"
 uuid = { version = "1.7", features = ["v4", "v5", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
@@ -47,6 +47,7 @@ hyper = { version = "1.1", features = ["server"] }
 # Serialization
 serde = { workspace = true }
 serde_json = { workspace = true }
+serde_yaml = "0.9"
 reqwest = { version = "0.11", features = ["json"] }
 
 # Kubernetes
@@ -76,11 +77,16 @@ color-eyre = "0.6.3"
 ipnetwork = "0.20.0"
 libc = "0.2.155"
 network-interface = "1.1.0"
-systemfd = "0.4.6"
 listenfd = "1.0.1"
 lazy_static = "1.4.0"
 aes-gcm = "0.10.3"
 base64 = "0.22"
+
+# Automation & Progress
+jetpack = { path = "../jetpack" }
+indicatif = "0.17"
+crossterm = "0.27"
+tempfile = "3.8"
 
 [dev-dependencies]
 tokio-test = "0.4"

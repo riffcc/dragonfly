@@ -1,0 +1,41 @@
+# Rust build artifacts
+target/
+**/*.rs.bk
+*.pdb
+
+# Node modules
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Git
+.git/
+.gitignore
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Documentation
+*.md
+docs/
+
+# CI/CD
+.github/
+.gitlab-ci.yml
+
+# Local development
+.env
+.env.local
+
+# Test artifacts
+coverage/
+*.profdata

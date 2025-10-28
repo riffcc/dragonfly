@@ -1,0 +1,54 @@
+---
+# Helm Installation Playbook
+# Installs Helm package manager
+
+- name: Install Helm
+  groups:
+    - all
+  tasks:
+    # =================================================================
+    # SUDO CHECK
+    # =================================================================
+    - !shell
+      name: Check for passwordless sudo
+      cmd: sudo -n true
+      save: sudo_check
+      and:
+        ignore_errors: true
+
+    - !shell
+      name: Prompt for sudo password if needed
+      cmd: sudo echo -n ""
+      with:
+        condition: (ne sudo_check.rc 0)
+
+    # =================================================================
+    # INSTALL HELM
+    # =================================================================
+    - !shell
+      name: Check if Helm is already installed
+      cmd: command -v helm && helm version
+      save: helm_installed
+      and:
+        ignore_errors: true
+
+    - !shell
+      name: Download Helm installer
+      cmd: curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 -o /tmp/get_helm.sh
+      with:
+        condition: (ne helm_installed.rc 0)
+
+    - !shell
+      name: Install Helm
+      cmd: bash /tmp/get_helm.sh
+      with:
+        sudo: root
+        condition: (ne helm_installed.rc 0)
+
+    - !shell
+      name: Verify Helm installation
+      cmd: helm version --short
+      save: helm_version
+
+    - !echo
+      msg: "✅ Helm ready: {{ helm_version.stdout }}"

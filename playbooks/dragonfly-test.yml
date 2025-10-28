@@ -1,0 +1,8 @@
+---
+- name: Deploy Dragonfly Test
+  groups:
+    - all
+  tasks:
+    - !shell
+      name: Test task
+      cmd: echo "Testing"

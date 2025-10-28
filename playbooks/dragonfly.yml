@@ -1,0 +1,106 @@
+---
+# Dragonfly Deployment Playbook
+# Deploys Dragonfly into Kubernetes
+
+- name: Deploy Dragonfly
+  groups:
+    - all
+  tasks:
+    # =================================================================
+    # NAMESPACE
+    # =================================================================
+    - !shell
+      name: Check if Dragonfly namespace exists
+      cmd: /usr/local/bin/k3s kubectl get namespace dragonfly
+      save: namespace_exists
+      with:
+        sudo: root
+      and:
+        ignore_errors: true
+
+    - !shell
+      name: Create Dragonfly namespace
+      cmd: /usr/local/bin/k3s kubectl create namespace dragonfly
+      with:
+        sudo: root
+        condition: (ne namespace_exists.rc 0)
+
+    # =================================================================
+    # DEPLOYMENT
+    # =================================================================
+    - !shell
+      name: Create Dragonfly deployment manifest
+      cmd: |
+        cat > /tmp/dragonfly-deployment.yml <<'EOF'
+        apiVersion: apps/v1
+        kind: Deployment
+        metadata:
+          name: dragonfly
+          namespace: dragonfly
+        spec:
+          replicas: 1
+          selector:
+            matchLabels:
+              app: dragonfly
+          template:
+            metadata:
+              labels:
+                app: dragonfly
+            spec:
+              containers:
+              - name: dragonfly
+                image: zorlin/dragonfly:latest
+                imagePullPolicy: Always
+                ports:
+                - containerPort: 3000
+                env:
+                - name: DRAGONFLY_INSTALLED
+                  value: "true"
+                - name: DATABASE_URL
+                  value: "sqlite:///data/dragonfly.db"
+                volumeMounts:
+                - name: data
+                  mountPath: /data
+              volumes:
+              - name: data
+                emptyDir: {}
+        ---
+        apiVersion: v1
+        kind: Service
+        metadata:
+          name: dragonfly
+          namespace: dragonfly
+        spec:
+          type: LoadBalancer
+          selector:
+            app: dragonfly
+          ports:
+          - port: 3000
+            targetPort: 3000
+        EOF
+
+    - !shell
+      name: Apply Dragonfly deployment
+      cmd: /usr/local/bin/k3s kubectl apply -f /tmp/dragonfly-deployment.yml
+      with:
+        sudo: root
+
+    - !shell
+      name: Wait for Dragonfly deployment to be ready
+      cmd: |
+        for i in {1..60}; do
+          if /usr/local/bin/k3s kubectl -n dragonfly get deployment dragonfly \
+             -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' | grep -q "True"; then
+            echo "Dragonfly is ready"
+            exit 0
+          fi
+          echo "Waiting for Dragonfly... ($i/60)"
+          sleep 5
+        done
+        echo "Timeout waiting for Dragonfly"
+        exit 1
+      with:
+        sudo: root
+
+    - !echo
+      msg: "✅ Dragonfly deployed"

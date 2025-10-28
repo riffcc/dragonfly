@@ -68,13 +68,13 @@ pub static INSTALL_STATE_REF: Lazy<RwLock<Option<Arc<Mutex<InstallationState>>>>
 // Checks environment variable DRAGONFLY_FORCE_INSTALLED=true for testing
 // Also checks for /var/lib/dragonfly and dragonfly StatefulSet status
 pub async fn is_dragonfly_installed() -> bool {
-    // 1. Check environment variable override first
-    if std::env::var("DRAGONFLY_FORCE_INSTALLED").map_or(false, |val| val.to_lowercase() == "true") {
-        info!("Installation status forced to TRUE via DRAGONFLY_FORCE_INSTALLED");
+    // 1. Check environment variable override first (for Kubernetes deployments)
+    if std::env::var("DRAGONFLY_INSTALLED").is_ok() {
+        debug!("Installation status set via DRAGONFLY_INSTALLED");
         return true;
     }
 
-    // 2. Check for the existence of the directory
+    // 2. Check for the existence of the local directory (local installation)
     let dir_path = "/var/lib/dragonfly";
     let dir_exists = match async_fs::metadata(dir_path).await {
         Ok(metadata) => metadata.is_dir(),
@@ -87,13 +87,32 @@ pub async fn is_dragonfly_installed() -> bool {
         },
     };
 
-    if !dir_exists {
-        debug!("Installation check: Directory '{}' not found.", dir_path);
-        return false;
+    if dir_exists {
+        debug!("Installation check: Directory '{}' found.", dir_path);
+        info!("Installation check: Detected installed state (local directory exists).");
+        return true;
     }
-    debug!("Installation check: Directory '{}' found.", dir_path);
-    info!("Installation check: Detected installed state (directory exists).");
-    true
+
+    // 3. Check if we can connect to Kubernetes with KUBECONFIG and find Tinkerbell
+    debug!("Installation check: Local directory not found, checking for remote Kubernetes with Tinkerbell...");
+    if let Ok(client) = kube::Client::try_default().await {
+        // Check if tink-system namespace exists (indicates Tinkerbell is deployed)
+        use kube::api::Api;
+        use k8s_openapi::api::core::v1::Namespace;
+
+        let namespaces: Api<Namespace> = Api::all(client);
+        if let Ok(_) = namespaces.get("tink-system").await {
+            info!("Installation check: Detected remote Kubernetes with Tinkerbell (tink-system namespace found).");
+            return true;
+        } else {
+            debug!("Installation check: Connected to Kubernetes but tink-system namespace not found.");
+        }
+    } else {
+        debug!("Installation check: Could not connect to Kubernetes cluster.");
+    }
+
+    debug!("Installation check: Not installed (no local directory, no remote Kubernetes with Tinkerbell).");
+    false
 }
 
 // Enum to hold either static or reloading environment

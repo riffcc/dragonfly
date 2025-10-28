@@ -1,0 +1,124 @@
+---
+# Tinkerbell Installation Playbook
+# Deploys Tinkerbell stack to Kubernetes
+
+- name: Deploy Tinkerbell
+  groups:
+    - all
+  tasks:
+    # =================================================================
+    # SUDO CHECK
+    # =================================================================
+    - !shell
+      name: Check for passwordless sudo
+      cmd: sudo -n true
+      save: sudo_check
+      and:
+        ignore_errors: true
+
+    - !shell
+      name: Prompt for sudo password if needed
+      cmd: sudo echo -n ""
+      with:
+        condition: (ne sudo_check.rc 0)
+
+    # =================================================================
+    # CHECK PREREQUISITES
+    # =================================================================
+    - !shell
+      name: Check if k3s is running
+      cmd: systemctl is-active k3s
+      save: k3s_active
+      with:
+        sudo: root
+
+    - !shell
+      name: Check if Helm is installed
+      cmd: command -v helm
+      save: helm_exists
+
+    # =================================================================
+    # CHECK IF TINKERBELL IS ALREADY DEPLOYED
+    # =================================================================
+    - !shell
+      name: Check if tink-system namespace exists
+      cmd: /usr/local/bin/k3s kubectl get namespace tink-system
+      save: tink_namespace_exists
+      with:
+        sudo: root
+        ignore_errors: true
+
+    # =================================================================
+    # CREATE NAMESPACE
+    # =================================================================
+    - !shell
+      name: Create tink-system namespace
+      cmd: /usr/local/bin/k3s kubectl create namespace tink-system
+      with:
+        sudo: root
+        condition: (ne tink_namespace_exists.rc 0)
+
+    # =================================================================
+    # ADD TINKERBELL HELM REPO
+    # =================================================================
+    - !shell
+      name: Add Tinkerbell Helm repository
+      cmd: helm repo add tinkerbell https://tinkerbell.org/charts
+      save: helm_repo_add
+      and:
+        ignore_errors: true
+
+    - !shell
+      name: Update Helm repositories
+      cmd: helm repo update
+
+    # =================================================================
+    # CHECK IF TINKERBELL IS ALREADY INSTALLED
+    # =================================================================
+    - !shell
+      name: Check if Tinkerbell stack is already deployed
+      cmd: /usr/local/bin/k3s kubectl get deployment -n tink-system tink-controller
+      save: tink_deployed
+      with:
+        sudo: root
+        ignore_errors: true
+
+    # =================================================================
+    # INSTALL TINKERBELL STACK
+    # =================================================================
+    - !shell
+      name: Install Tinkerbell stack using Helm
+      cmd: |
+        helm install tinkerbell tinkerbell/stack \
+          --namespace tink-system \
+          --create-namespace \
+          --set stack.loadBalancerIP={{ bootstrap_ip }} \
+          --set stack.hook.enabled=true \
+          --kubeconfig /etc/rancher/k3s/k3s.yaml
+      with:
+        sudo: root
+        condition: (ne tink_deployed.rc 0)
+
+    # =================================================================
+    # WAIT FOR TINKERBELL TO BE READY
+    # =================================================================
+    - !shell
+      name: Wait for Tinkerbell controller to be ready
+      cmd: |
+        for i in {1..60}; do
+          if /usr/local/bin/k3s kubectl -n tink-system get deployment tink-controller \
+             -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' | grep -q "True"; then
+            echo "Tinkerbell controller is ready"
+            exit 0
+          fi
+          echo "Waiting for Tinkerbell controller... ($i/60)"
+          sleep 5
+        done
+        echo "Timeout waiting for Tinkerbell controller"
+        exit 1
+      with:
+        sudo: root
+        condition: (ne tink_deployed.rc 0)
+
+    - !echo
+      msg: "✅ Tinkerbell deployed to tink-system namespace"

@@ -6,7 +6,7 @@ static ALLOC: dhat::Alloc = dhat::Alloc;
 // Main binary that starts the server
 use clap::{Parser, Subcommand};
 use color_eyre::eyre::Result;
-use tracing::{error, info, Level};
+use tracing::{debug, error, info, Level};
 // Updated imports: Add EnvFilter
 use tracing_subscriber::{fmt, prelude::*, registry, EnvFilter};
 use tokio::sync::watch; // For shutdown signal
@@ -147,7 +147,10 @@ async fn main() -> Result<()> {
     // TODO: Add file logging here maybe, depending on mode?
     registry().with(filter).with(fmt::layer().with_writer(stderr)).init();
 
-    info!("Global logger initialized."); // Should appear based on filter settings
+    // Only log initialization for non-install commands
+    if !matches!(cli.command, Some(Commands::Install(_))) {
+        info!("Global logger initialized.");
+    }
     // --- End Centralized Logging Initialization ---
 
     // For non-server commands, set up a Ctrl+C handler that sends the shutdown signal
@@ -164,7 +167,6 @@ async fn main() -> Result<()> {
     // Process commands
     match cli.command {
         Some(Commands::Install(args)) => {
-            info!("Running install command...");
             // Pass the shutdown receiver to the install function
             if let Err(e) = cmd::install::run_install(args, shutdown_rx).await {
                 error!("Installation failed: {:#}", e);
@@ -172,17 +174,19 @@ async fn main() -> Result<()> {
                 // Ensure shutdown signal is sent on error too
                 let _ = shutdown_tx.send(());
                 std::process::exit(1);
-            } else {
-                 info!("Installation process finished successfully.");
-                 // Signal successful completion if needed, or just let program exit
-                 // let _ = shutdown_tx.send(()); // Optional: Signal server to stop
             }
         }
         // Separate Server command logic
         Some(Commands::Server(_args)) => {
-            info!("Checking Dragonfly installation status for server mode...");
-            // Use the comprehensive installation check from the server crate
-            let is_installed = dragonfly_server::is_dragonfly_installed().await;
+            debug!("Checking Dragonfly installation status for server mode...");
+            // Check if running in Kubernetes (installed mode) or dev mode
+            let is_installed = if std::env::var("DRAGONFLY_INSTALLED").is_ok() {
+                debug!("DRAGONFLY_INSTALLED set - running in production mode");
+                true
+            } else {
+                // Use the comprehensive installation check from the server crate
+                dragonfly_server::is_dragonfly_installed().await
+            };
             
             // Register a panic handler to ensure clean exit
             let original_hook = std::panic::take_hook();

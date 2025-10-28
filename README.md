@@ -72,21 +72,57 @@ More features:
 
 See [ROADMAP.md](ROADMAP.md) for upcoming features and planned work.
 
-## 🚀 Running Dragonfly
+## 🚀 Installation
 
-You'll need Rust installed to use Dragonfly. Later in development, we'll be providing pre-built binaries and Docker images.
+Dragonfly provides an automated installer that sets up the complete stack:
 
-To get a binary to run:
 ```bash
-cargo build --release -p dragonfly-server
+# Build the project
+cargo build --release
+
+# Run the installer (automatically installs k3s, Helm, Dragonfly, and Tinkerbell)
+./target/release/dragonfly install
 ```
 
-For development:
-```bash
-cargo run -p dragonfly-server
+The installer will:
+1. Detect your network configuration and bootstrap IP
+2. Install k3s (lightweight Kubernetes)
+3. Install Helm (Kubernetes package manager)
+4. Deploy Dragonfly to Kubernetes
+5. Deploy Tinkerbell in the background
+
+Once installation completes, you'll see:
+```
+🚀 Ready at http://<your-ip>:3000
 ```
 
-Once you've got Dragonfly up and running, you can access the web interface at [http://localhost:9800](http://localhost:9800).
+### Remote Management
+
+Dragonfly can manage remote Kubernetes clusters via KUBECONFIG:
+
+```bash
+# Point to a remote cluster with Tinkerbell already deployed
+export KUBECONFIG=/path/to/kubeconfig
+./target/release/dragonfly server
+```
+
+This enables:
+- Managing bare metal from your laptop
+- One Dragonfly instance controlling multiple clusters
+- Geographic distribution of management interfaces
+
+See [ARCHITECTURE.md](ARCHITECTURE.md) for more details on deployment patterns.
+
+### Development Mode
+
+For local development without installation:
+
+```bash
+# Run in demo mode (no hardware touched)
+cargo run -- server
+```
+
+Access the web interface at [http://localhost:3000](http://localhost:3000).
 
 ## 🗄️ Database Integration
 

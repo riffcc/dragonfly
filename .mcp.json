@@ -1,0 +1,19 @@
+{
+  "mcpServers": {
+    "pal": {
+      "command": "pal",
+      "args": ["mcp", "--server"]
+    },
+    "playwright": {
+      "command": "npx",
+      "args": [
+        "@playwright/mcp@latest",
+        "--headless"
+      ]
+    },
+    "deepwiki": {
+      "type": "sse",
+      "url": "https://mcp.deepwiki.com/sse"
+    }
+  }
+}

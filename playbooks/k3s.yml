@@ -1,0 +1,111 @@
+---
+# K3s Installation Playbook
+# Installs k3s (Linux) or k3d (macOS)
+
+- name: Install K3s
+  groups:
+    - all
+  tasks:
+    # =================================================================
+    # SUDO CHECK
+    # =================================================================
+    - !shell
+      name: Check for passwordless sudo
+      cmd: sudo -n true
+      save: sudo_check
+      and:
+        ignore_errors: true
+
+    - !shell
+      name: Prompt for sudo password if needed
+      cmd: sudo echo -n ""
+      with:
+        condition: (ne sudo_check.rc 0)
+
+    # =================================================================
+    # INSTALL K3S
+    # =================================================================
+    - !shell
+      name: Check if k3s is already installed
+      cmd: test -f /etc/rancher/k3s/k3s.yaml && systemctl is-active k3s
+      save: k3s_installed
+      and:
+        ignore_errors: true
+
+    - !shell
+      name: Install k3s
+      cmd: curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC='--disable traefik' sh -
+      with:
+        sudo: root
+        condition: (ne k3s_installed.rc 0)
+
+    - !shell
+      name: Wait for k3s config file
+      cmd: |
+        for i in {1..12}; do
+          if [ -f /etc/rancher/k3s/k3s.yaml ]; then
+            exit 0
+          fi
+          sleep 5
+        done
+        exit 1
+      with:
+        condition: (ne k3s_installed.rc 0)
+
+    # =================================================================
+    # CONFIGURE KUBECTL
+    # =================================================================
+    - !shell
+      name: Check if k3s config exists in current directory
+      cmd: test -f ./k3s.yaml
+      save: kubeconfig_exists
+      and:
+        ignore_errors: true
+
+    - !shell
+      name: Copy k3s config to current directory
+      cmd: |
+        sudo cp /etc/rancher/k3s/k3s.yaml ./k3s.yaml
+        sudo chown $(whoami) ./k3s.yaml
+      with:
+        condition: (ne kubeconfig_exists.rc 0)
+
+    - !shell
+      name: Set KUBECONFIG path
+      cmd: echo "$(pwd)/k3s.yaml"
+      save: kubeconfig_path
+
+    # =================================================================
+    # WAIT FOR K3S READY
+    # =================================================================
+    - !shell
+      name: Wait for Kubernetes node to be ready
+      cmd: |
+        for i in {1..60}; do
+          if kubectl --kubeconfig={{ kubeconfig_path.stdout }} get nodes --no-headers | grep -q " Ready"; then
+            echo "Node is ready"
+            exit 0
+          fi
+          echo "Waiting for node... ($i/60)"
+          sleep 5
+        done
+        echo "Timeout waiting for node"
+        exit 1
+
+    - !shell
+      name: Wait for CoreDNS to be ready
+      cmd: |
+        for i in {1..60}; do
+          if kubectl --kubeconfig={{ kubeconfig_path.stdout }} get pods -n kube-system -l k8s-app=kube-dns \
+             -o jsonpath='{.items[*].status.conditions[?(@.type=="Ready")].status}' | grep -q "True"; then
+            echo "CoreDNS is ready"
+            exit 0
+          fi
+          echo "Waiting for CoreDNS... ($i/60)"
+          sleep 5
+        done
+        echo "Timeout waiting for CoreDNS"
+        exit 1
+
+    - !echo
+      msg: "✅ K3s ready"
