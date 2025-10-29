@@ -32,6 +32,40 @@
       name: Create Dragonfly deployment manifest
       cmd: |
         cat > /tmp/dragonfly-deployment.yml <<'EOF'
+        apiVersion: v1
+        kind: ServiceAccount
+        metadata:
+          name: dragonfly
+          namespace: dragonfly
+        ---
+        apiVersion: rbac.authorization.k8s.io/v1
+        kind: ClusterRole
+        metadata:
+          name: dragonfly
+        rules:
+        - apiGroups: [""]
+          resources: ["services", "pods", "namespaces", "secrets"]
+          verbs: ["get", "list", "watch"]
+        - apiGroups: ["apps"]
+          resources: ["deployments"]
+          verbs: ["get", "list", "watch"]
+        - apiGroups: ["tinkerbell.org"]
+          resources: ["*"]
+          verbs: ["*"]
+        ---
+        apiVersion: rbac.authorization.k8s.io/v1
+        kind: ClusterRoleBinding
+        metadata:
+          name: dragonfly
+        roleRef:
+          apiGroup: rbac.authorization.k8s.io
+          kind: ClusterRole
+          name: dragonfly
+        subjects:
+        - kind: ServiceAccount
+          name: dragonfly
+          namespace: dragonfly
+        ---
         apiVersion: apps/v1
         kind: Deployment
         metadata:
@@ -47,6 +81,7 @@
               labels:
                 app: dragonfly
             spec:
+              serviceAccountName: dragonfly
               containers:
               - name: dragonfly
                 image: zorlin/dragonfly:latest
@@ -58,6 +93,8 @@
                   value: "true"
                 - name: DATABASE_URL
                   value: "sqlite:///data/dragonfly.db"
+                - name: DRAGONFLY_BASE_URL
+                  value: "http://{{ bootstrap_ip }}:3000"
                 volumeMounts:
                 - name: data
                   mountPath: /data

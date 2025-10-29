@@ -1079,10 +1079,17 @@ pub async fn configure_flight_mode() -> Result<()> {
             return Err(e);
         }
     }
-    
+
     // Save the mode *after* successful configuration
     save_mode(DeploymentMode::Flight, false).await?; // Assuming not already elevated
-    
+
+    // Initialize OS templates now that Flight mode is configured
+    info!("Initializing OS templates for Flight mode...");
+    match crate::os_templates::init_os_templates().await {
+        Ok(_) => info!("OS templates initialized successfully"),
+        Err(e) => warn!("Failed to initialize OS templates: {}", e),
+    }
+
     info!("System successfully configured for Flight mode.");
     Ok(())
 }
@@ -1112,10 +1119,10 @@ pub async fn enter_flight_mode() -> Result<()> {
         }
     }
 
-    // --- Check current Helm values for Smee DHCP --- 
-    info!("Checking current Helm values for tink-stack...");
+    // --- Check current Helm values for Smee DHCP ---
+    info!("Checking current Helm values for tinkerbell...");
     let helm_get_values_output = Command::new("helm")
-        .args(["get", "values", "tink-stack", "-n", "tink", "-o", "yaml"])
+        .args(["get", "values", "tinkerbell", "-n", "tinkerbell", "-o", "yaml"])
         .output();
         
     let needs_upgrade = match helm_get_values_output {
@@ -1163,21 +1170,21 @@ pub async fn enter_flight_mode() -> Result<()> {
     if needs_upgrade {
         info!("Proceeding with Helm upgrade to enable Smee DHCP...");
         
-        // --- Activate Smee's DHCP service in Flight mode using Helm --- 
+        // --- Activate Smee's DHCP service in Flight mode using Helm ---
         // Check if the Tinkerbell stack release actually exists (redundant but safe)
     let release_exists = {
         let release_check = Command::new("helm")
-            .args(["list", "-n", "tink", "--filter", "tink-stack", "--short"])
+            .args(["list", "-n", "tinkerbell", "--filter", "tinkerbell", "--short"])
                 .output()
                 .with_context(|| "Failed to check deployment status after upgrade")?;
-            
-        release_check.status.success() && 
+
+        release_check.status.success() &&
         !String::from_utf8_lossy(&release_check.stdout).trim().is_empty()
     };
-    
+
         if !release_exists {
             // This shouldn't happen if get values succeeded, but check anyway
-             return Err(anyhow!("Tinkerbell stack release 'tink-stack' not found. Cannot upgrade."));
+             return Err(anyhow!("Tinkerbell stack release 'tinkerbell' not found. Cannot upgrade."));
     }
 
     // --- Clone the GitHub repository for the Helm chart ---
@@ -1199,11 +1206,11 @@ pub async fn enter_flight_mode() -> Result<()> {
         let dependency_build_cmd = format!("cd {} && helm dependency build stack/", chart_path.display());
         run_shell_command(&dependency_build_cmd, "build Helm chart dependencies")?;
 
-        // --- Run Helm Upgrade --- 
+        // --- Run Helm Upgrade ---
     let helm_args = [
-        "upgrade", "tink-stack",
+        "upgrade", "tinkerbell",
             upgrade_chart_path.to_str().ok_or_else(|| anyhow!("Chart path is not valid UTF-8"))?,
-        "--namespace", "tink",
+        "--namespace", "tinkerbell",
         "--wait",
         "--timeout", "10m",
         "--reuse-values",
@@ -1222,18 +1229,18 @@ pub async fn enter_flight_mode() -> Result<()> {
                 
                 // Try to get more diagnostic information
                 let helm_list = Command::new("helm")
-                    .args(["list", "-n", "tink", "-a"])
+                    .args(["list", "-n", "tinkerbell", "-a"])
                     .output();
-                
+
                 if let Ok(list_output) = helm_list {
                     if list_output.status.success() {
                         let list_stdout = String::from_utf8_lossy(&list_output.stdout);
-                        error!("Current Helm releases in tink namespace:\n{}", list_stdout);
+                        error!("Current Helm releases in tinkerbell namespace:\n{}", list_stdout);
                     }
                 }
-                
+
                 let pod_list = Command::new("kubectl")
-                    .args(["get", "pods", "-n", "tink", "-o", "wide"])
+                    .args(["get", "pods", "-n", "tinkerbell", "-o", "wide"])
                     .output();
                 
                 if let Ok(pod_output) = pod_list {

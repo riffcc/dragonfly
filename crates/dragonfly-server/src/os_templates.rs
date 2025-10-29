@@ -12,6 +12,9 @@ use url::Url;
 use std::collections::HashMap;
 use reqwest;
 
+// Tinkerbell namespace constant
+const TINKERBELL_NAMESPACE: &str = "tinkerbell";
+
 /// Initialize the OS templates in Kubernetes
 pub async fn init_os_templates() -> Result<()> {
     info!("Initializing OS templates...");
@@ -103,7 +106,7 @@ async fn install_template(client: &Client, template_name: &str, base_url_bare: &
         plural: "templates".to_string(),
     };
     
-    let template_api: Api<DynamicObject> = Api::namespaced_with(client.clone(), "tink", &template_api_resource);
+    let template_api: Api<DynamicObject> = Api::namespaced_with(client.clone(), TINKERBELL_NAMESPACE, &template_api_resource);
     
     // Check if template already exists
     match template_api.get(template_name).await {
@@ -184,7 +187,7 @@ async fn install_template_from_file(client: &Client, template_name: &str, base_u
         plural: "templates".to_string(),
     };
     
-    let template_api: Api<DynamicObject> = Api::namespaced_with(client.clone(), "tink", &template_api_resource);
+    let template_api: Api<DynamicObject> = Api::namespaced_with(client.clone(), TINKERBELL_NAMESPACE, &template_api_resource);
     
     // Create the template
     match template_api.create(&PostParams::default(), &dynamic_obj).await {

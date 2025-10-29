@@ -41,8 +41,8 @@
     # CHECK IF TINKERBELL IS ALREADY DEPLOYED
     # =================================================================
     - !shell
-      name: Check if tink-system namespace exists
-      cmd: /usr/local/bin/k3s kubectl get namespace tink-system
+      name: Check if tinkerbell namespace exists
+      cmd: /usr/local/bin/k3s kubectl get namespace tinkerbell
       save: tink_namespace_exists
       with:
         sudo: root
@@ -53,8 +53,8 @@
     # CREATE NAMESPACE
     # =================================================================
     - !shell
-      name: Create tink-system namespace
-      cmd: /usr/local/bin/k3s kubectl create namespace tink-system
+      name: Create tinkerbell namespace
+      cmd: /usr/local/bin/k3s kubectl create namespace tinkerbell
       with:
         sudo: root
         condition: (ne tink_namespace_exists.rc 0)
@@ -69,15 +69,15 @@
       with:
         sudo: root
 
-    # Note: HookOS artifacts are served by Tinkerbell's built-in nginx (hookos.enabled=true by default)
-    # The Helm chart downloads artifacts from GitHub and serves them automatically
+    # Note: HookOS artifacts are served via the hookos pod's nginx server on port 7173
+    # The Tinkerbell chart automatically deploys hookos when artifactsFileServer is set
 
     # =================================================================
     # CHECK IF TINKERBELL IS ALREADY INSTALLED
     # =================================================================
     - !shell
       name: Check if Tinkerbell stack is already deployed
-      cmd: /usr/local/bin/k3s kubectl get deployment -n tink-system tink-controller
+      cmd: /usr/local/bin/k3s kubectl get deployment -n tinkerbell tinkerbell
       save: tink_deployed
       with:
         sudo: root
@@ -91,14 +91,13 @@
       name: Install Tinkerbell stack using Helm
       cmd: |
         POD_CIDR="{{ pod_cidr.stdout }}"
-        helm install tinkerbell oci://ghcr.io/tinkerbell/charts/stack \
-          --version 0.6.2 \
-          --namespace tink-system \
+        helm install tinkerbell oci://ghcr.io/tinkerbell/charts/tinkerbell \
+          --version v0.21.1-93b37ac0 \
+          --namespace tinkerbell \
           --create-namespace \
-          --set "smee.trustedProxies={${POD_CIDR}}" \
+          --set "trustedProxies={${POD_CIDR}}" \
           --set "publicIP={{ bootstrap_ip }}" \
-          --set "hookos.enabled=true" \
-          --set "hookos.downloadURL=https://github.com/tinkerbell/hook/releases/download/v0.11.1" \
+          --set "artifactsFileServer=http://{{ bootstrap_ip }}:7173" \
           --kubeconfig /etc/rancher/k3s/k3s.yaml \
           --wait
       with:
@@ -109,22 +108,22 @@
     # WAIT FOR TINKERBELL TO BE READY
     # =================================================================
     - !shell
-      name: Wait for Tinkerbell controller to be ready
+      name: Wait for Tinkerbell deployment to be ready
       cmd: |
         for i in {1..60}; do
-          if /usr/local/bin/k3s kubectl -n tink-system get deployment tink-controller \
+          if /usr/local/bin/k3s kubectl -n tinkerbell get deployment tinkerbell \
              -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' | grep -q "True"; then
-            echo "Tinkerbell controller is ready"
+            echo "Tinkerbell is ready"
             exit 0
           fi
-          echo "Waiting for Tinkerbell controller... ($i/60)"
+          echo "Waiting for Tinkerbell... ($i/60)"
           sleep 5
         done
-        echo "Timeout waiting for Tinkerbell controller"
+        echo "Timeout waiting for Tinkerbell"
         exit 1
       with:
         sudo: root
         condition: (ne tink_deployed.rc 0)
 
     - !echo
-      msg: "✅ Tinkerbell deployed to tink-system namespace"
+      msg: "✅ Tinkerbell deployed to tinkerbell namespace"

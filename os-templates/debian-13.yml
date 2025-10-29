@@ -2,7 +2,7 @@ apiVersion: tinkerbell.org/v1alpha1
 kind: Template
 metadata:
   name: debian-13
-  namespace: tink
+  namespace: tinkerbell
 spec:
   data: |
     name: debian-13

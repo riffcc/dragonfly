@@ -5,15 +5,15 @@ use k8s_openapi::api::apps::v1::StatefulSet;
 use k8s_openapi::api::core::v1::{Service};
 use tracing::{debug, warn, info};
 
-const DRAGONFLY_NAMESPACE: &str = "tink";
+const DRAGONFLY_NAMESPACE: &str = "dragonfly";
 const DRAGONFLY_STATEFULSET: &str = "dragonfly";
-const WEBUI_NAMESPACE: &str = "tink";
-const WEBUI_SERVICE: &str = "tink-stack";
-const WEBUI_EXTERNAL_PORT: i32 = 3000;
+const WEBUI_NAMESPACE: &str = "tinkerbell";
+const WEBUI_SERVICE: &str = "tinkerbell";
+const WEBUI_EXTERNAL_PORT: i32 = 7171; // Tinkerbell HTTP Smee service
 
-/// Checks if the Kubernetes API server is reachable by attempting to get the 'dragonfly' service in the 'tink' namespace.
+/// Checks if the Kubernetes API server is reachable by attempting to get the 'dragonfly' service in the 'dragonfly' namespace.
 pub async fn check_kubernetes_connectivity() -> Result<()> {
-    debug!("Attempting to connect to Kubernetes API server by checking for 'dragonfly' service in 'tink' namespace...");
+    debug!("Attempting to connect to Kubernetes API server by checking for 'dragonfly' service in 'dragonfly' namespace...");
     let client = Client::try_default().await
         .wrap_err("Failed to create Kubernetes client. Is k3s running and KUBECONFIG configured?")?;
 

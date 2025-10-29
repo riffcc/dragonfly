@@ -63,7 +63,7 @@ impl InstallationState {
         // Check if Tinkerbell is deployed in k8s (check for actual deployment, not just namespace)
         let tinkerbell_installed = if k3s_installed {
             std::process::Command::new("sudo")
-                .args(["/usr/local/bin/k3s", "kubectl", "get", "deployment", "-n", "tink-system", "tink-controller"])
+                .args(["/usr/local/bin/k3s", "kubectl", "get", "deployment", "-n", "tinkerbell", "tinkerbell"])
                 .output()
                 .map(|o| o.status.success())
                 .unwrap_or(false)

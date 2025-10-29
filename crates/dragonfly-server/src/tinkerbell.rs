@@ -12,6 +12,9 @@ use std::str::FromStr;
 // Define a static Kubernetes client
 static KUBE_CLIENT: OnceCell<Client> = OnceCell::const_new();
 
+// Tinkerbell namespace constant
+const TINKERBELL_NAMESPACE: &str = "tinkerbell";
+
 // Initialize the Kubernetes client using KUBECONFIG
 pub async fn init() -> Result<()> {
     // Expand the tilde in KUBECONFIG if present
@@ -244,7 +247,7 @@ async fn register_machine_internal(
         kind: "Hardware".to_string(),
         metadata: Metadata {
             name: resource_name.to_string(),
-            namespace: "tink".to_string(),
+            namespace: TINKERBELL_NAMESPACE.to_string(),
             labels: None,
         },
         spec: HardwareSpec {
@@ -295,13 +298,13 @@ async fn register_machine_internal(
           api_resource.group, api_resource.version, api_resource.kind, api_resource.plural);
     
     // Create a dynamic API to interact with the Hardware custom resource
-    let api: Api<DynamicObject> = Api::namespaced_with(client.clone(), "tink", &api_resource);
+    let api: Api<DynamicObject> = Api::namespaced_with(client.clone(), TINKERBELL_NAMESPACE, &api_resource);
     
     // Create a DynamicObject from our hardware_json
     let mut dynamic_obj = DynamicObject {
         metadata: kube::core::ObjectMeta {
             name: Some(resource_name.to_string()),
-            namespace: Some("tink".to_string()),
+            namespace: Some(TINKERBELL_NAMESPACE.to_string()),
             ..Default::default()
         },
         types: Some(kube::core::TypeMeta {
@@ -343,7 +346,7 @@ async fn register_machine_internal(
             // For creation, ensure we have a clean metadata without resourceVersion
             dynamic_obj.metadata = kube::core::ObjectMeta {
                 name: Some(resource_name.to_string()),
-                namespace: Some("tink".to_string()),
+                namespace: Some(TINKERBELL_NAMESPACE.to_string()),
                 ..Default::default()
             };
             
@@ -394,7 +397,7 @@ pub async fn delete_hardware(mac_address: &str) -> Result<()> {
     };
     
     // Create a dynamic API to interact with the Hardware custom resource
-    let api: Api<DynamicObject> = Api::namespaced_with(client.clone(), "tink", &api_resource);
+    let api: Api<DynamicObject> = Api::namespaced_with(client.clone(), TINKERBELL_NAMESPACE, &api_resource);
     
     // Delete the hardware resource
     let hardware_result = api.delete(&resource_name, &kube::api::DeleteParams::default()).await;
@@ -413,7 +416,7 @@ pub async fn delete_hardware(mac_address: &str) -> Result<()> {
     };
 
     // Create a dynamic API to interact with the Workflow custom resource
-    let workflow_api: Api<DynamicObject> = Api::namespaced_with(client.clone(), "tink", &workflow_api_resource);
+    let workflow_api: Api<DynamicObject> = Api::namespaced_with(client.clone(), TINKERBELL_NAMESPACE, &workflow_api_resource);
 
     // Delete the workflow resource
     let workflow_result = workflow_api.delete(&workflow_name, &kube::api::DeleteParams::default()).await;
@@ -486,7 +489,7 @@ pub async fn create_workflow(machine: &Machine, _os_choice: &str) -> Result<()> 
         plural: "templates".to_string(),
     };
     
-    let template_api: Api<DynamicObject> = Api::namespaced_with(client.clone(), "tink", &template_api_resource);
+    let template_api: Api<DynamicObject> = Api::namespaced_with(client.clone(), TINKERBELL_NAMESPACE, &template_api_resource);
     
     match template_api.get(template_ref).await {
         Ok(_) => {
@@ -507,7 +510,7 @@ pub async fn create_workflow(machine: &Machine, _os_choice: &str) -> Result<()> 
         "kind": "Workflow",
         "metadata": {
             "name": resource_name,
-            "namespace": "tink"
+            "namespace": TINKERBELL_NAMESPACE
         },
         "spec": {
             "templateRef": template_ref,
@@ -531,13 +534,13 @@ pub async fn create_workflow(machine: &Machine, _os_choice: &str) -> Result<()> 
           api_resource.group, api_resource.version, api_resource.kind, api_resource.plural);
     
     // Create a dynamic API to interact with the Workflow custom resource
-    let api: Api<DynamicObject> = Api::namespaced_with(client.clone(), "tink", &api_resource);
+    let api: Api<DynamicObject> = Api::namespaced_with(client.clone(), TINKERBELL_NAMESPACE, &api_resource);
     
     // Create a DynamicObject from our workflow_json
     let dynamic_obj = DynamicObject {
         metadata: kube::core::ObjectMeta {
             name: Some(resource_name.clone()),
-            namespace: Some("tink".to_string()),
+            namespace: Some(TINKERBELL_NAMESPACE.to_string()),
             ..Default::default()
         },
         types: Some(kube::core::TypeMeta {
@@ -773,7 +776,7 @@ pub async fn get_workflow_info(machine: &Machine) -> Result<Option<WorkflowInfo>
     };
     
     // Create a dynamic API to interact with the Workflow custom resource
-    let api: Api<DynamicObject> = Api::namespaced_with(client.clone(), "tink", &api_resource);
+    let api: Api<DynamicObject> = Api::namespaced_with(client.clone(), TINKERBELL_NAMESPACE, &api_resource);
     
     // Try to get the workflow
     match api.get(&workflow_name).await {

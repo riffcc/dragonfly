@@ -2,7 +2,7 @@ apiVersion: tinkerbell.org/v1alpha1
 kind: Template
 metadata:
   name: ubuntu-2404
-  namespace: tink
+  namespace: tinkerbell
 spec:
   data: |
     name: ubuntu-2404
