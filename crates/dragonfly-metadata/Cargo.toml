@@ -1,0 +1,15 @@
+[package]
+name = "dragonfly-metadata"
+version = "0.1.0"
+edition = "2021"
+authors = ["Sparx"]
+description = "EC2-compatible metadata service for Dragonfly bare metal provisioning"
+license = "AGPL-3.0"
+
+[dependencies]
+dragonfly-crd = { path = "../dragonfly-crd" }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]

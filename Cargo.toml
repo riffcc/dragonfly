@@ -8,6 +8,7 @@ members = [
     "crates/dragonfly-tftp",
     "crates/dragonfly-ipxe",
     "crates/dragonfly-bmc",
+    "crates/dragonfly-metadata",
     "crates/dragonfly-server",
     "crates/dragonfly-agent",
     "."  # Include the main package
