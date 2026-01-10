@@ -1,0 +1,15 @@
+[package]
+name = "dragonfly-bmc"
+version = "0.1.0"
+edition = "2021"
+authors = ["Sparx"]
+description = "BMC/IPMI/Redfish control for Dragonfly bare metal provisioning"
+license = "AGPL-3.0"
+
+[dependencies]
+thiserror = { workspace = true }
+tokio = { workspace = true }
+async-trait = "0.1"
+
+[dev-dependencies]
+tokio-test = "0.4"

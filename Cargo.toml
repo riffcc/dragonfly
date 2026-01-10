@@ -7,6 +7,7 @@ members = [
     "crates/dragonfly-dhcp",
     "crates/dragonfly-tftp",
     "crates/dragonfly-ipxe",
+    "crates/dragonfly-bmc",
     "crates/dragonfly-server",
     "crates/dragonfly-agent",
     "."  # Include the main package
