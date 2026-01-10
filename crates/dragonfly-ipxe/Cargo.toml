@@ -1,0 +1,13 @@
+[package]
+name = "dragonfly-ipxe"
+version = "0.1.0"
+edition = "2021"
+authors = ["Sparx"]
+description = "iPXE script generation for Dragonfly bare metal provisioning"
+license = "AGPL-3.0"
+
+[dependencies]
+dragonfly-crd = { path = "../dragonfly-crd" }
+thiserror = { workspace = true }
+
+[dev-dependencies]

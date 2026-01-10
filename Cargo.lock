@@ -1348,6 +1348,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "dragonfly-ipxe"
+version = "0.1.0"
+dependencies = [
+ "dragonfly-crd",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "dragonfly-server"
 version = "0.1.0"
 dependencies = [
