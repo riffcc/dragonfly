@@ -1,0 +1,23 @@
+[package]
+name = "dragonfly-dhcp"
+version = "0.1.0"
+edition = "2021"
+authors = ["Sparx"]
+description = "DHCP server for Dragonfly bare metal provisioning with PXE support"
+license = "Apache-2.0"
+
+[dependencies]
+dragonfly-crd = { path = "../dragonfly-crd" }
+tokio = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+async-trait = "0.1"
+
+# DHCP protocol
+dhcproto = "0.14"
+
+# Networking
+socket2 = { version = "0.5", features = ["all"] }
+
+[dev-dependencies]
+tokio-test = "0.4"
