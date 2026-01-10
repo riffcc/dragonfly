@@ -1,23 +1,23 @@
 //! iPXE script generation
 //!
-//! This module provides utilities for generating iPXE boot scripts
-//! for different boot scenarios.
+//! This module generates iPXE boot scripts. The SERVER decides what script
+//! to return based on hardware state - the client never chooses.
+//!
+//! # Boot Flow
+//!
+//! ```text
+//! PXE → DHCP → iPXE binary → GET /boot/${mac} → Server decides → Script
+//! ```
+//!
+//! # Script Types
+//!
+//! - **Local boot**: Machine has existing OS, boot from disk
+//! - **Discovery**: Unknown machine, boot into Mage environment to register
+//! - **Imaging**: Auto-provision machine with configured template
+//! - **Menu**: Optional interactive menu (only when explicitly enabled)
 
-use crate::error::{IpxeError, Result};
+use crate::error::Result;
 use dragonfly_crd::Hardware;
-
-/// Boot mode for iPXE scripts
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BootMode {
-    /// Discovery boot - machine registers with server
-    Discovery,
-    /// Provisioning boot - run workflow to install OS
-    Provisioning,
-    /// Local boot - boot from local disk
-    LocalBoot,
-    /// Hook boot - boot into Dragonfly hook environment
-    Hook,
-}
 
 /// Configuration for iPXE script generation
 #[derive(Debug, Clone)]
@@ -25,23 +25,20 @@ pub struct IpxeConfig {
     /// Base URL for fetching resources (e.g., http://192.168.1.1:8080)
     pub base_url: String,
 
+    /// Mage kernel URL
+    pub mage_kernel_url: Option<String>,
+
+    /// Mage initramfs URL
+    pub mage_initramfs_url: Option<String>,
+
     /// Default kernel parameters
     pub kernel_params: Vec<String>,
 
     /// Console configuration (e.g., "ttyS0,115200")
     pub console: Option<String>,
 
-    /// Enable verbose boot
+    /// Enable verbose boot logging
     pub verbose: bool,
-
-    /// Hook kernel URL (for provisioning boot)
-    pub hook_kernel_url: Option<String>,
-
-    /// Hook initramfs URL
-    pub hook_initramfs_url: Option<String>,
-
-    /// Custom script header
-    pub script_header: Option<String>,
 }
 
 impl Default for IpxeConfig {
@@ -51,9 +48,8 @@ impl Default for IpxeConfig {
             kernel_params: Vec::new(),
             console: None,
             verbose: false,
-            hook_kernel_url: None,
-            hook_initramfs_url: None,
-            script_header: None,
+            mage_kernel_url: None,
+            mage_initramfs_url: None,
         }
     }
 }
@@ -85,26 +81,35 @@ impl IpxeConfig {
         self
     }
 
-    /// Set hook kernel URL
-    pub fn with_hook_kernel(mut self, url: impl Into<String>) -> Self {
-        self.hook_kernel_url = Some(url.into());
+    /// Set Mage kernel URL
+    pub fn with_mage_kernel(mut self, url: impl Into<String>) -> Self {
+        self.mage_kernel_url = Some(url.into());
         self
     }
 
-    /// Set hook initramfs URL
-    pub fn with_hook_initramfs(mut self, url: impl Into<String>) -> Self {
-        self.hook_initramfs_url = Some(url.into());
+    /// Set Mage initramfs URL
+    pub fn with_mage_initramfs(mut self, url: impl Into<String>) -> Self {
+        self.mage_initramfs_url = Some(url.into());
         self
     }
 
-    /// Set custom script header
-    pub fn with_script_header(mut self, header: impl Into<String>) -> Self {
-        self.script_header = Some(header.into());
-        self
+    fn mage_kernel(&self) -> String {
+        self.mage_kernel_url
+            .clone()
+            .unwrap_or_else(|| format!("{}/mage/vmlinuz", self.base_url))
+    }
+
+    fn mage_initramfs(&self) -> String {
+        self.mage_initramfs_url
+            .clone()
+            .unwrap_or_else(|| format!("{}/mage/initramfs", self.base_url))
     }
 }
 
 /// iPXE script generator
+///
+/// The server uses this to generate the appropriate script based on
+/// hardware state. The client never chooses - it just executes.
 #[derive(Debug, Clone)]
 pub struct IpxeScriptGenerator {
     config: IpxeConfig,
@@ -116,259 +121,201 @@ impl IpxeScriptGenerator {
         Self { config }
     }
 
-    /// Generate an iPXE script for the given boot mode and hardware
-    pub fn generate(&self, mode: BootMode, hardware: Option<&Hardware>) -> Result<String> {
-        match mode {
-            BootMode::Discovery => self.generate_discovery_script(),
-            BootMode::Provisioning => self.generate_provisioning_script(hardware),
-            BootMode::LocalBoot => self.generate_local_boot_script(),
-            BootMode::Hook => self.generate_hook_script(hardware),
-        }
-    }
-
-    /// Generate discovery script (machine registers with server)
-    fn generate_discovery_script(&self) -> Result<String> {
-        let mut script = self.script_header();
-
-        script.push_str(&format!(
-            r#"
-echo Dragonfly Discovery Boot
-echo MAC: ${{mac}}
-echo
-
-# Report to server for registration
-chain {}/boot/register?mac=${{mac}}
+    /// Generate the initial chainload script
+    ///
+    /// This is what iPXE fetches first - it just chains to the server
+    /// to get the real boot script based on MAC address.
+    pub fn chainload_script(&self) -> String {
+        format!(
+            r#"#!ipxe
+# Dragonfly Boot - fetches appropriate script from server
+chain {}/boot/${{mac}}
 "#,
             self.config.base_url
-        ));
-
-        Ok(script)
+        )
     }
 
-    /// Generate provisioning script (boot into hook environment)
-    fn generate_provisioning_script(&self, hardware: Option<&Hardware>) -> Result<String> {
-        let kernel_url = self
-            .config
-            .hook_kernel_url
-            .as_ref()
-            .map(|u| u.clone())
-            .or_else(|| Some(format!("{}/hook/vmlinuz", self.config.base_url)))
-            .ok_or_else(|| IpxeError::MissingConfig("hook_kernel_url".to_string()))?;
+    /// Generate chainload script with optional menu on keypress
+    ///
+    /// If user holds Ctrl during the timeout, show interactive menu.
+    /// Otherwise, proceed with server-decided boot.
+    pub fn chainload_script_with_menu_option(&self, timeout_secs: u8) -> String {
+        format!(
+            r#"#!ipxe
+# Dragonfly Boot - hold Ctrl for menu
+echo Dragonfly - press Ctrl for boot menu...
+iseq ${{keypress}} 0x03 && goto menu ||
+sleep {timeout} || goto auto
 
-        let initramfs_url = self
-            .config
-            .hook_initramfs_url
-            .as_ref()
-            .map(|u| u.clone())
-            .or_else(|| Some(format!("{}/hook/initramfs", self.config.base_url)))
-            .ok_or_else(|| IpxeError::MissingConfig("hook_initramfs_url".to_string()))?;
+:auto
+chain {base}/boot/${{mac}}
 
-        let mut script = self.script_header();
-
-        script.push_str(&format!(
-            r#"
-echo Dragonfly Provisioning Boot
-echo MAC: ${{mac}}
-"#
-        ));
-
-        if let Some(hw) = hardware {
-            script.push_str(&format!("echo Hardware: {}\n", hw.metadata.name));
-        }
-
-        script.push_str(&format!(
-            r#"echo
-
-echo Loading kernel...
-kernel {} {}
-echo Loading initramfs...
-initrd {}
-echo Booting...
-boot
+:menu
+chain {base}/boot/${{mac}}?menu=1
 "#,
-            kernel_url,
-            self.kernel_params_string(hardware),
-            initramfs_url
-        ));
-
-        Ok(script)
+            timeout = timeout_secs,
+            base = self.config.base_url
+        )
     }
 
     /// Generate local boot script
-    fn generate_local_boot_script(&self) -> Result<String> {
-        let mut script = self.script_header();
-
-        script.push_str(
-            r#"
-echo Dragonfly Local Boot
+    ///
+    /// Boots from local disk. Server returns this when:
+    /// - Machine is known
+    /// - Has existing OS
+    /// - Not scheduled for reinstall
+    pub fn local_boot_script(&self) -> String {
+        r#"#!ipxe
+# Dragonfly - Local Boot
 echo Booting from local disk...
-echo
 
-# Try UEFI boot first
-iseq ${platform} efi && goto uefi_boot || goto bios_boot
+# UEFI boot
+iseq ${platform} efi && sanboot --no-describe --drive 0x80 ||
 
-:uefi_boot
-echo Attempting UEFI boot...
-sanboot --no-describe --drive 0x80 || goto boot_failed
-exit
+# BIOS fallback
+sanboot --drive 0x80 ||
 
-:bios_boot
-echo Attempting BIOS boot...
-sanboot --drive 0x80 || goto boot_failed
-exit
+# Failed
+echo Boot failed
+shell
+"#
+        .to_string()
+    }
 
-:boot_failed
-echo Local boot failed
+    /// Generate discovery script
+    ///
+    /// Boots into Mage environment for registration. Server returns this when:
+    /// - Machine is unknown (MAC not in database)
+    /// - Interactive mode is configured
+    ///
+    /// Machine will register with server and wait for user configuration.
+    pub fn discovery_script(&self, hardware: Option<&Hardware>) -> Result<String> {
+        let kernel = self.config.mage_kernel();
+        let initramfs = self.config.mage_initramfs();
+        let params = self.kernel_params(hardware, "discovery");
+
+        Ok(format!(
+            r#"#!ipxe
+# Dragonfly - Discovery Mode
+echo Booting into discovery mode...
+echo MAC: ${{mac}}
+
+kernel {kernel} {params}
+initrd {initramfs}
+boot
+"#
+        ))
+    }
+
+    /// Generate imaging script
+    ///
+    /// Boots into Mage environment for auto-provisioning. Server returns this when:
+    /// - Machine is unknown OR scheduled for imaging
+    /// - Automatic mode is configured
+    /// - No existing bootloader detected (or reinstall forced)
+    ///
+    /// Machine will automatically provision based on configured template.
+    pub fn imaging_script(&self, hardware: Option<&Hardware>, workflow_id: &str) -> Result<String> {
+        let kernel = self.config.mage_kernel();
+        let initramfs = self.config.mage_initramfs();
+        let params = self.kernel_params(hardware, "imaging");
+
+        Ok(format!(
+            r#"#!ipxe
+# Dragonfly - Imaging Mode
+echo Booting into imaging mode...
+echo MAC: ${{mac}}
+echo Workflow: {workflow_id}
+
+kernel {kernel} {params} dragonfly.workflow={workflow_id}
+initrd {initramfs}
+boot
+"#
+        ))
+    }
+
+    /// Generate interactive menu script
+    ///
+    /// Only returned when menu is explicitly requested (keypress or server config).
+    pub fn menu_script(&self, hardware: Option<&Hardware>) -> Result<String> {
+        let hw_name = hardware
+            .map(|h| h.metadata.name.as_str())
+            .unwrap_or("Unknown");
+
+        Ok(format!(
+            r#"#!ipxe
+# Dragonfly - Boot Menu
+menu Dragonfly Boot Menu - {hw_name}
+item --gap -- MAC: ${{mac}}
+item --gap --
+item local     Boot from local disk
+item discovery Discovery mode (register with server)
+item imaging   Imaging mode (reinstall)
+item shell     iPXE shell
+choose --default local --timeout 30000 target && goto ${{target}} || goto local
+
+:local
+echo Booting from local disk...
+sanboot --drive 0x80 || goto failed
+
+:discovery
+echo Booting into discovery mode...
+chain {base}/boot/${{mac}}?mode=discovery || goto failed
+
+:imaging
+echo Booting into imaging mode...
+chain {base}/boot/${{mac}}?mode=imaging || goto failed
+
+:shell
+echo Entering iPXE shell...
+shell
+
+:failed
+echo Boot failed
 shell
 "#,
-        );
-
-        Ok(script)
+            base = self.config.base_url
+        ))
     }
 
-    /// Generate hook script (boot into Dragonfly hook environment)
-    fn generate_hook_script(&self, hardware: Option<&Hardware>) -> Result<String> {
-        let kernel_url = self
-            .config
-            .hook_kernel_url
-            .as_ref()
-            .map(|u| u.clone())
-            .or_else(|| Some(format!("{}/hook/vmlinuz", self.config.base_url)))
-            .ok_or_else(|| IpxeError::MissingConfig("hook_kernel_url".to_string()))?;
-
-        let initramfs_url = self
-            .config
-            .hook_initramfs_url
-            .as_ref()
-            .map(|u| u.clone())
-            .or_else(|| Some(format!("{}/hook/initramfs", self.config.base_url)))
-            .ok_or_else(|| IpxeError::MissingConfig("hook_initramfs_url".to_string()))?;
-
-        let mut script = self.script_header();
-
-        script.push_str(&format!(
-            r#"
-echo Dragonfly Hook Environment
-echo MAC: ${{mac}}
-"#
-        ));
-
-        if let Some(hw) = hardware {
-            script.push_str(&format!("echo Hardware: {}\n", hw.metadata.name));
-        }
-
-        // Get facility code from hardware metadata if available
-        let facility_code = hardware
-            .and_then(|hw| hw.spec.metadata.as_ref())
-            .map(|m| m.instance.id.as_str())
-            .unwrap_or("unknown");
-
-        script.push_str(&format!(
-            r#"echo
-
-echo Loading hook kernel...
-kernel {} {} facility={}
-echo Loading hook initramfs...
-initrd {}
-echo Booting into hook environment...
-boot
-"#,
-            kernel_url,
-            self.kernel_params_string(hardware),
-            facility_code,
-            initramfs_url
-        ));
-
-        Ok(script)
-    }
-
-    /// Build the kernel parameters string
-    fn kernel_params_string(&self, hardware: Option<&Hardware>) -> String {
+    /// Build kernel parameters string
+    fn kernel_params(&self, hardware: Option<&Hardware>, mode: &str) -> String {
         let mut params = self.config.kernel_params.clone();
 
-        // Add console if configured
+        // Console
         if let Some(ref console) = self.config.console {
             params.push(format!("console={}", console));
         }
 
-        // Add verbose flag
+        // Verbose logging
         if self.config.verbose {
             params.push("loglevel=7".to_string());
         }
 
-        // Add server URL
+        // Dragonfly parameters
         params.push(format!("dragonfly.url={}", self.config.base_url));
-
-        // Add MAC address placeholder
+        params.push(format!("dragonfly.mode={}", mode));
         params.push("dragonfly.mac=${mac}".to_string());
 
-        // Add hardware ID if available
+        // Hardware ID if known
         if let Some(hw) = hardware {
             params.push(format!("dragonfly.hardware={}", hw.metadata.name));
         }
 
         params.join(" ")
     }
-
-    /// Generate script header
-    fn script_header(&self) -> String {
-        let mut header = String::from("#!ipxe\n");
-
-        if let Some(ref custom_header) = self.config.script_header {
-            header.push_str(custom_header);
-            header.push('\n');
-        }
-
-        header.push_str("\n# Generated by Dragonfly\n");
-        header
-    }
-}
-
-/// Generate a chainload script that fetches the actual boot script from server
-pub fn chainload_script(base_url: &str) -> String {
-    format!(
-        r#"#!ipxe
-
-# Dragonfly Chainload Script
-# Fetches boot script from server based on MAC address
-
-echo Dragonfly PXE Boot
-echo MAC: ${{mac}}
-echo
-
-chain {}/boot/${{mac}}
-"#,
-        base_url
-    )
-}
-
-/// Generate an auto-registration script for unknown machines
-pub fn auto_register_script(base_url: &str) -> String {
-    format!(
-        r#"#!ipxe
-
-# Dragonfly Auto-Registration Script
-# Registers unknown machines with the server
-
-echo Dragonfly Auto-Registration
-echo MAC: ${{mac}}
-echo UUID: ${{uuid}}
-echo Manufacturer: ${{manufacturer}}
-echo Product: ${{product}}
-echo Serial: ${{serial}}
-echo
-
-# Send hardware info to server
-chain {}/boot/register?mac=${{mac}}&uuid=${{uuid}}&manufacturer=${{manufacturer}}&product=${{product}}&serial=${{serial}}
-"#,
-        base_url
-    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use dragonfly_crd::{HardwareSpec, ObjectMeta, TypeMeta};
+
+    fn test_config() -> IpxeConfig {
+        IpxeConfig::new("http://192.168.1.1:8080")
+            .with_mage_kernel("http://192.168.1.1:8080/mage/vmlinuz")
+            .with_mage_initramfs("http://192.168.1.1:8080/mage/initramfs")
+    }
 
     fn test_hardware() -> Hardware {
         Hardware {
@@ -380,124 +327,108 @@ mod tests {
     }
 
     #[test]
-    fn test_ipxe_config_builder() {
-        let config = IpxeConfig::new("http://192.168.1.1:8080")
-            .with_console("ttyS0,115200")
-            .with_kernel_param("quiet")
-            .with_verbose(true);
-
-        assert_eq!(config.base_url, "http://192.168.1.1:8080");
-        assert_eq!(config.console, Some("ttyS0,115200".to_string()));
-        assert_eq!(config.kernel_params, vec!["quiet"]);
-        assert!(config.verbose);
-    }
-
-    #[test]
-    fn test_generate_discovery_script() {
-        let config = IpxeConfig::new("http://192.168.1.1:8080");
-        let generator = IpxeScriptGenerator::new(config);
-
-        let script = generator.generate(BootMode::Discovery, None).unwrap();
+    fn test_chainload_script() {
+        let gen = IpxeScriptGenerator::new(test_config());
+        let script = gen.chainload_script();
 
         assert!(script.starts_with("#!ipxe"));
-        assert!(script.contains("Discovery Boot"));
-        assert!(script.contains("${mac}"));
-        assert!(script.contains("chain http://192.168.1.1:8080/boot/register"));
+        assert!(script.contains("chain http://192.168.1.1:8080/boot/${mac}"));
+        // No menu, no choices
+        assert!(!script.contains("menu"));
     }
 
     #[test]
-    fn test_generate_provisioning_script() {
-        let config = IpxeConfig::new("http://192.168.1.1:8080")
-            .with_hook_kernel("http://192.168.1.1:8080/hook/vmlinuz")
-            .with_hook_initramfs("http://192.168.1.1:8080/hook/initramfs");
+    fn test_chainload_with_menu_option() {
+        let gen = IpxeScriptGenerator::new(test_config());
+        let script = gen.chainload_script_with_menu_option(3);
 
-        let generator = IpxeScriptGenerator::new(config);
-        let hw = test_hardware();
-
-        let script = generator
-            .generate(BootMode::Provisioning, Some(&hw))
-            .unwrap();
-
-        assert!(script.starts_with("#!ipxe"));
-        assert!(script.contains("Provisioning Boot"));
-        assert!(script.contains("kernel http://192.168.1.1:8080/hook/vmlinuz"));
-        assert!(script.contains("initrd http://192.168.1.1:8080/hook/initramfs"));
-        assert!(script.contains("dragonfly.hardware=test-machine"));
+        assert!(script.contains("press Ctrl for boot menu"));
+        assert!(script.contains("sleep 3"));
+        assert!(script.contains("?menu=1"));
     }
 
     #[test]
-    fn test_generate_local_boot_script() {
-        let config = IpxeConfig::new("http://192.168.1.1:8080");
-        let generator = IpxeScriptGenerator::new(config);
-
-        let script = generator.generate(BootMode::LocalBoot, None).unwrap();
+    fn test_local_boot_script() {
+        let gen = IpxeScriptGenerator::new(test_config());
+        let script = gen.local_boot_script();
 
         assert!(script.starts_with("#!ipxe"));
         assert!(script.contains("Local Boot"));
         assert!(script.contains("sanboot"));
-        assert!(script.contains("uefi_boot"));
-        assert!(script.contains("bios_boot"));
+        // No menu
+        assert!(!script.contains("menu"));
     }
 
     #[test]
-    fn test_generate_hook_script() {
-        let config = IpxeConfig::new("http://192.168.1.1:8080")
-            .with_console("ttyS0,115200")
-            .with_verbose(true);
+    fn test_discovery_script() {
+        let gen = IpxeScriptGenerator::new(test_config());
+        let script = gen.discovery_script(None).unwrap();
 
-        let generator = IpxeScriptGenerator::new(config);
+        assert!(script.starts_with("#!ipxe"));
+        assert!(script.contains("Discovery Mode"));
+        assert!(script.contains("kernel http://192.168.1.1:8080/mage/vmlinuz"));
+        assert!(script.contains("dragonfly.mode=discovery"));
+        // No menu
+        assert!(!script.contains("menu"));
+    }
+
+    #[test]
+    fn test_imaging_script() {
+        let gen = IpxeScriptGenerator::new(test_config());
         let hw = test_hardware();
-
-        let script = generator.generate(BootMode::Hook, Some(&hw)).unwrap();
+        let script = gen.imaging_script(Some(&hw), "workflow-123").unwrap();
 
         assert!(script.starts_with("#!ipxe"));
-        assert!(script.contains("Hook Environment"));
-        assert!(script.contains("console=ttyS0,115200"));
-        assert!(script.contains("loglevel=7"));
-        assert!(script.contains("dragonfly.url=http://192.168.1.1:8080"));
+        assert!(script.contains("Imaging Mode"));
+        assert!(script.contains("dragonfly.workflow=workflow-123"));
+        assert!(script.contains("dragonfly.hardware=test-machine"));
+        // No menu
+        assert!(!script.contains("menu"));
     }
 
     #[test]
-    fn test_chainload_script() {
-        let script = chainload_script("http://192.168.1.1:8080");
+    fn test_menu_script() {
+        let gen = IpxeScriptGenerator::new(test_config());
+        let hw = test_hardware();
+        let script = gen.menu_script(Some(&hw)).unwrap();
 
         assert!(script.starts_with("#!ipxe"));
-        assert!(script.contains("chain http://192.168.1.1:8080/boot/${mac}"));
+        assert!(script.contains("Boot Menu"));
+        assert!(script.contains("test-machine"));
+        // Menu items
+        assert!(script.contains("item local"));
+        assert!(script.contains("item discovery"));
+        assert!(script.contains("item imaging"));
     }
 
     #[test]
-    fn test_auto_register_script() {
-        let script = auto_register_script("http://192.168.1.1:8080");
-
-        assert!(script.starts_with("#!ipxe"));
-        assert!(script.contains("Auto-Registration"));
-        assert!(script.contains("${uuid}"));
-        assert!(script.contains("${manufacturer}"));
-        assert!(script.contains("${serial}"));
-    }
-
-    #[test]
-    fn test_kernel_params_string() {
-        let config = IpxeConfig::new("http://192.168.1.1:8080")
-            .with_console("tty0")
+    fn test_kernel_params() {
+        let config = test_config()
+            .with_console("ttyS0,115200")
             .with_kernel_param("quiet")
-            .with_kernel_param("splash")
             .with_verbose(true);
 
-        let generator = IpxeScriptGenerator::new(config);
-        let params = generator.kernel_params_string(None);
+        let gen = IpxeScriptGenerator::new(config);
+        let params = gen.kernel_params(None, "discovery");
 
         assert!(params.contains("quiet"));
-        assert!(params.contains("splash"));
-        assert!(params.contains("console=tty0"));
+        assert!(params.contains("console=ttyS0,115200"));
         assert!(params.contains("loglevel=7"));
-        assert!(params.contains("dragonfly.url=http://192.168.1.1:8080"));
+        assert!(params.contains("dragonfly.mode=discovery"));
     }
 
     #[test]
-    fn test_boot_mode_enum() {
-        assert_eq!(BootMode::Discovery, BootMode::Discovery);
-        assert_ne!(BootMode::Discovery, BootMode::Provisioning);
-        assert_ne!(BootMode::LocalBoot, BootMode::Hook);
+    fn test_config_builder() {
+        let config = IpxeConfig::new("http://10.0.0.1")
+            .with_console("tty0")
+            .with_kernel_param("nosplash")
+            .with_verbose(true)
+            .with_mage_kernel("http://10.0.0.1/kernel")
+            .with_mage_initramfs("http://10.0.0.1/initramfs");
+
+        assert_eq!(config.base_url, "http://10.0.0.1");
+        assert_eq!(config.console, Some("tty0".to_string()));
+        assert!(config.verbose);
+        assert_eq!(config.mage_kernel(), "http://10.0.0.1/kernel");
     }
 }
