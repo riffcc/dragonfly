@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 authors = ["Sparx"]
 description = "Workflow orchestration engine for Dragonfly bare metal provisioning"
-license = "Apache-2.0"
+license = "AGPL-3.0"
 
 [dependencies]
 dragonfly-crd = { path = "../dragonfly-crd" }

@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 authors = ["Sparx"]
 description = "CRD-compatible types for Dragonfly bare metal provisioning"
-license = "Apache-2.0"
+license = "AGPL-3.0"
 
 [dependencies]
 serde = { workspace = true }
