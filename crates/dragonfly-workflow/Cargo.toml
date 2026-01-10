@@ -1,0 +1,21 @@
+[package]
+name = "dragonfly-workflow"
+version = "0.1.0"
+edition = "2021"
+authors = ["Sparx"]
+description = "Workflow orchestration engine for Dragonfly bare metal provisioning"
+license = "Apache-2.0"
+
+[dependencies]
+dragonfly-crd = { path = "../dragonfly-crd" }
+dragonfly-actions = { path = "../dragonfly-actions" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+chrono = { workspace = true }
+async-trait = "0.1"
+
+[dev-dependencies]
+tokio-test = "0.4"
