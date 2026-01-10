@@ -1423,6 +1423,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "dragonfly-tftp"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "tokio-test",
+ "tracing",
+]
+
+[[package]]
 name = "dragonfly-workflow"
 version = "0.1.0"
 dependencies = [
