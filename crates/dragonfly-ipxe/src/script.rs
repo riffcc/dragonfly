@@ -12,9 +12,13 @@
 //! # Script Types
 //!
 //! - **Local boot**: Machine has existing OS, boot from disk
-//! - **Discovery**: Unknown machine, boot into Mage environment to register
-//! - **Imaging**: Auto-provision machine with configured template
+//! - **Discovery**: Boot into Mage, agent checks in and waits for user
+//! - **Imaging**: Boot into Mage, agent checks in and proceeds automatically
 //! - **Menu**: Optional interactive menu (only when explicitly enabled)
+//!
+//! Discovery and imaging use the same Mage image - only the mode parameter
+//! differs. The agent reads `dragonfly.mode` and either waits (discovery)
+//! or proceeds with the assigned workflow (imaging).
 
 use crate::error::Result;
 use dragonfly_crd::Hardware;
@@ -188,7 +192,7 @@ shell
     /// - Machine is unknown (MAC not in database)
     /// - Interactive mode is configured
     ///
-    /// Machine will register with server and wait for user configuration.
+    /// Same image as imaging mode - agent checks in then waits for user action.
     pub fn discovery_script(&self, hardware: Option<&Hardware>) -> Result<String> {
         let kernel = self.config.mage_kernel();
         let initramfs = self.config.mage_initramfs();
@@ -214,7 +218,7 @@ boot
     /// - Automatic mode is configured
     /// - No existing bootloader detected (or reinstall forced)
     ///
-    /// Machine will automatically provision based on configured template.
+    /// Same image as discovery mode - agent checks in then proceeds automatically.
     pub fn imaging_script(&self, hardware: Option<&Hardware>, workflow_id: &str) -> Result<String> {
         let kernel = self.config.mage_kernel();
         let initramfs = self.config.mage_initramfs();
