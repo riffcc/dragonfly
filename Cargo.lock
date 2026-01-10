@@ -1250,6 +1250,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "dragonfly-actions"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "dragonfly-crd",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+ "tokio-test",
+ "tracing",
+]
+
+[[package]]
 name = "dragonfly-agent"
 version = "0.1.0"
 dependencies = [

@@ -2,6 +2,7 @@
 members = [
     "crates/dragonfly-common",
     "crates/dragonfly-crd",
+    "crates/dragonfly-actions",
     "crates/dragonfly-server",
     "crates/dragonfly-agent",
     "."  # Include the main package
