@@ -38,7 +38,11 @@ pub struct DhcpConfig {
     /// If None, binds to all interfaces
     pub interface: Option<String>,
 
-    /// Server IP address
+    /// IP address to bind socket to (use 0.0.0.0 for all interfaces)
+    pub bind_ip: Ipv4Addr,
+
+    /// Server IP address (used in DHCP responses for boot URLs)
+    /// Must be a routable IP that clients can reach
     pub server_ip: Ipv4Addr,
 
     /// Subnet mask
@@ -74,6 +78,7 @@ impl Default for DhcpConfig {
         Self {
             mode: DhcpMode::Reservation,
             interface: None,
+            bind_ip: Ipv4Addr::new(0, 0, 0, 0),
             server_ip: Ipv4Addr::new(0, 0, 0, 0),
             subnet_mask: Ipv4Addr::new(255, 255, 255, 0),
             gateway: None,
@@ -90,8 +95,12 @@ impl Default for DhcpConfig {
 
 impl DhcpConfig {
     /// Create a new DHCP config with server IP
+    ///
+    /// bind_ip: IP to bind socket to (0.0.0.0 for all interfaces)
+    /// server_ip: IP to use in DHCP responses (must be routable)
     pub fn new(server_ip: Ipv4Addr) -> Self {
         Self {
+            bind_ip: Ipv4Addr::new(0, 0, 0, 0), // Always bind to all interfaces
             server_ip,
             tftp_server: Some(server_ip), // Default TFTP to same server
             ..Default::default()

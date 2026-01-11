@@ -70,7 +70,7 @@ impl DhcpServer {
 
     /// Run the DHCP server
     pub async fn run(&self, shutdown: tokio::sync::watch::Receiver<bool>) -> Result<()> {
-        let bind_addr = SocketAddrV4::new(self.config.server_ip, 67);
+        let bind_addr = SocketAddrV4::new(self.config.bind_ip, 67);
 
         // Create and bind socket
         let socket = self.create_socket(bind_addr).await?;
