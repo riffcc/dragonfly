@@ -1,9 +1,5 @@
 {
   "mcpServers": {
-    "pal": {
-      "command": "pal",
-      "args": ["mcp", "--server"]
-    },
     "playwright": {
       "command": "npx",
       "args": [
