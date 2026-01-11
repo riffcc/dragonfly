@@ -1,20 +1,17 @@
 use anyhow::Context;
 use axum::{
     extract::State,
-    http::StatusCode,
+    http::{StatusCode, Uri},
     response::{IntoResponse, Response},
     Json,
 };
-use hyper_tls::HttpsConnector;
 use proxmox_client::{HttpApiClient, Client as ProxmoxApiClient};
 use std::error::Error as StdError;
-use std::cmp::min;
 use proxmox_login;
 use proxmox_client::Error as ProxmoxClientError;
 use serde::{Serialize, Deserialize};
 use tracing::{error, info, warn};
 use std::net::Ipv4Addr;
-use hyper::StatusCode as HyperStatusCode;
 use serde_json::json;
 
 use crate::AppState;
@@ -330,9 +327,9 @@ pub async fn set_vm_next_boot(
                 error!("Failed to set next boot device for VM {}: Status={}, Body={}", vmid, response.status, error_msg);
                 
                 // Convert status code to a HTTP status code for the error
-                let status_code = match HyperStatusCode::from_u16(response.status) {
+                let status_code = match StatusCode::from_u16(response.status) {
                     Ok(sc) => sc,
-                    Err(_) => HyperStatusCode::INTERNAL_SERVER_ERROR,
+                    Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
                 };
                 
                 // If we got unauthorized, add a helpful message about API tokens
@@ -390,12 +387,12 @@ pub async fn reboot_vm(
                 error!("Failed to reboot VM {}: Status={}, Body={}", vmid, response.status, error_msg);
                 // Convert u16 status to the http::StatusCode expected by ProxmoxClientError::Api
                 // Use hyper's StatusCode
-                let status_code = match HyperStatusCode::from_u16(response.status) {
+                let status_code = match StatusCode::from_u16(response.status) {
                     Ok(sc) => sc,
                     Err(_) => {
                         error!("Invalid status code received from Proxmox: {}", response.status);
                         // Fallback to a generic server error status code (using hyper's StatusCode)
-                        HyperStatusCode::INTERNAL_SERVER_ERROR
+                        StatusCode::INTERNAL_SERVER_ERROR
                     }
                 };
                 
@@ -472,7 +469,7 @@ pub async fn connect_proxmox_handler(
             
             // Create a client for discovery and registration
             let host_url = format!("https://{}:{}", host, port);
-            let host_uri = match host_url.parse::<hyper::Uri>() {
+            let host_uri = match host_url.parse::<Uri>() {
                 Ok(uri) => uri,
                 Err(e) => {
                     error!("Invalid Proxmox URL: {}", e);
@@ -678,7 +675,7 @@ async fn authenticate_with_proxmox(
 ) -> Result<(), String> {
     // Create the client
     let host_url = format!("https://{}:{}", host, port);
-    let host_uri = match host_url.parse::<hyper::Uri>() {
+    let host_uri = match host_url.parse::<Uri>() {
         Ok(uri) => uri,
         Err(e) => return Err(format!("Invalid Proxmox URL: {}", e)),
     };
@@ -737,7 +734,7 @@ pub async fn generate_proxmox_tokens_with_credentials(
     
     // First authenticate with Proxmox
     let host_url = format!("https://{}:{}", host, port);
-    let host_uri = match host_url.parse::<hyper::Uri>() {
+    let host_uri = match host_url.parse::<Uri>() {
         Ok(uri) => uri,
         Err(e) => return Err(format!("Invalid Proxmox URL: {}", e)),
     };
@@ -1914,7 +1911,7 @@ pub async fn connect_to_proxmox(
     
         // Get host URL
     let host_url = format!("https://{}:{}", host, port);
-        let base_uri = host_url.parse::<hyper::Uri>()
+        let base_uri = host_url.parse::<Uri>()
             .context(format!("Invalid Proxmox URL: {}", host_url))?;
             
         // Parse the API token to extract user and token parts
@@ -1961,7 +1958,7 @@ pub async fn connect_to_proxmox(
         
         // Get host URL
         let host_url = format!("https://{}:{}", settings.host, settings.port);
-        let base_uri = host_url.parse::<hyper::Uri>()
+        let base_uri = host_url.parse::<Uri>()
             .context(format!("Invalid Proxmox URL: {}", host_url))?;
         
         // Select the appropriate API token based on operation type
@@ -2320,7 +2317,7 @@ async fn create_proxmox_client(
     skip_tls_verify: bool
 ) -> Result<ProxmoxApiClient, ProxmoxClientError> {
     let host_url = format!("https://{}:{}", host, port);
-    let uri = host_url.parse::<hyper::Uri>()
+    let uri = host_url.parse::<Uri>()
         .map_err(|e| ProxmoxClientError::Api(
             hyper::StatusCode::BAD_REQUEST,
             format!("Invalid Proxmox URL: {}", e)
