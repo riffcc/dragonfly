@@ -2802,14 +2802,17 @@ pub async fn serve_boot_asset_handler(
 /// - /boot/{arch}/modloop -> modloop
 /// - /boot/{arch}/apkovl.tar.gz -> localhost.apkovl.tar.gz
 pub async fn serve_boot_asset(arch: &str, asset: &str) -> Response {
-    // Normalize architecture names (iPXE uses arm64, we use aarch64 internally)
+    // Normalize architecture names
+    // - iPXE BIOS uses i386 (32-bit) but can boot x86_64 kernels
+    // - iPXE EFI uses x86_64
+    // - iPXE ARM uses arm64, we use aarch64 internally
     let normalized_arch = match arch {
-        "x86_64" => "x86_64",
+        "x86_64" | "i386" => "x86_64",  // BIOS iPXE reports i386, but boots x86_64 fine
         "aarch64" | "arm64" => "aarch64",
         _ => {
             return (
                 StatusCode::NOT_FOUND,
-                format!("Unknown architecture: {} (use x86_64, aarch64, or arm64)", arch),
+                format!("Unknown architecture: {} (supported: x86_64, i386, aarch64, arm64)", arch),
             ).into_response();
         }
     };
