@@ -1857,22 +1857,44 @@ pub async fn serve_ipxe_artifact(
 
             // Get base URL with auto-detection fallback
             let base_url = crate::mode::get_base_url(Some(state.store.as_ref())).await;
-            info!("Generating apkovl with base_url: {}", base_url);
 
-            // Delete existing apkovl to ensure regeneration with current URL
-            if generation_target_path.exists() {
-                if let Err(e) = tokio::fs::remove_file(&generation_target_path).await {
-                    warn!("Failed to remove old apkovl: {}", e);
+            // Check if we need to regenerate (base_url changed or file doesn't exist)
+            let url_marker_path = generation_target_path.with_extension("url");
+            let needs_regeneration = if generation_target_path.exists() {
+                // Check if base_url changed
+                match tokio::fs::read_to_string(&url_marker_path).await {
+                    Ok(stored_url) => stored_url.trim() != base_url,
+                    Err(_) => true, // No marker file, regenerate
+                }
+            } else {
+                true // File doesn't exist
+            };
+
+            if !needs_regeneration {
+                info!("Serving cached apkovl (base_url unchanged: {})", base_url);
+                match read_file_as_stream(&generation_target_path, None, None, None).await {
+                    Ok((stream, file_size, _)) => {
+                        return create_streaming_response(stream, "application/gzip", file_size, None);
+                    },
+                    Err(e) => {
+                        warn!("Failed to read cached apkovl, will regenerate: {}", e);
+                    }
                 }
             }
+
+            info!("Generating apkovl with base_url: {}", base_url);
 
             match generate_agent_apkovl(&generation_target_path, &base_url, AGENT_BINARY_URL).await {
                 Ok(()) => {
                     info!("Successfully generated {}, now serving...", generation_target_path.display());
+                    // Save the base_url marker for cache invalidation
+                    if let Err(e) = tokio::fs::write(&url_marker_path, &base_url).await {
+                        warn!("Failed to write URL marker file: {}", e);
+                    }
                     // Serve the newly generated file (no range needed here as it was just created)
-                    match read_file_as_stream(&generation_target_path, None, None, None).await { 
+                    match read_file_as_stream(&generation_target_path, None, None, None).await {
                         Ok((stream, file_size, _)) => {
-                            return create_streaming_response(stream, "application/gzip", file_size, None); 
+                            return create_streaming_response(stream, "application/gzip", file_size, None);
                         },
                         Err(e) => {
                             error!("Failed to stream newly generated apkovl {}: {}", generation_target_path.display(), e);
