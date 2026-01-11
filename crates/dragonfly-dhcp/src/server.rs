@@ -479,13 +479,21 @@ impl DhcpServer {
         let is_uefi = request.client_arch.map(|a| a.is_uefi()).unwrap_or(false);
         let arch = request.client_arch.and_then(|a| a.arch_string());
 
+        info!(
+            mac = %request.mac_address,
+            is_ipxe = %request.is_ipxe,
+            is_uefi = %is_uefi,
+            arch = ?arch,
+            "Building PROXY_OFFER"
+        );
+
         // If this is an iPXE client, send the boot script URL instead of iPXE binary
         let pxe = if request.is_ipxe {
             if let Some(ref script_url) = self.config.ipxe_script_url {
-                debug!(
+                info!(
                     mac = %request.mac_address,
                     script_url = %script_url,
-                    "iPXE client detected, sending boot script URL"
+                    "iPXE client: sending configured boot script URL"
                 );
                 PxeOptions {
                     tftp_server: None,
@@ -500,10 +508,10 @@ impl DhcpServer {
                     self.config.server_ip,
                     self.config.http_port
                 );
-                debug!(
+                info!(
                     mac = %request.mac_address,
                     script_url = %script_url,
-                    "iPXE client detected, using default boot script URL"
+                    "iPXE client: sending default boot script URL"
                 );
                 PxeOptions {
                     tftp_server: None,
@@ -514,7 +522,14 @@ impl DhcpServer {
             }
         } else {
             // Standard PXE client - send iPXE binary via TFTP
-            PxeOptions::from_config(&self.config, is_uefi, arch)
+            let pxe = PxeOptions::from_config(&self.config, is_uefi, arch);
+            info!(
+                mac = %request.mac_address,
+                tftp_server = ?pxe.tftp_server,
+                boot_filename = ?pxe.boot_filename,
+                "PXE client: sending iPXE binary via TFTP"
+            );
+            pxe
         };
 
         DhcpResponseBuilder::new(request.clone(), MessageType::Offer, self.config.server_ip)
