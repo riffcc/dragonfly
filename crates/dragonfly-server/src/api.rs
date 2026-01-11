@@ -999,7 +999,9 @@ pub async fn ipxe_script(
     if let Some(ref provisioning) = state.provisioning {
         match provisioning.get_boot_script(&mac).await {
             Ok(script) => {
-                debug!("Native provisioning returned script for MAC: {}", mac);
+                // Log the first 3 lines of the script for debugging
+                let preview: String = script.lines().take(5).collect::<Vec<_>>().join(" | ");
+                info!("Returning iPXE script for MAC {}: {}", mac, preview);
                 return (
                     StatusCode::OK,
                     [(axum::http::header::CONTENT_TYPE, "text/plain")],
@@ -2849,6 +2851,7 @@ pub async fn serve_boot_asset(arch: &str, asset: &str) -> Response {
         "x86_64" | "i386" => "x86_64",  // BIOS iPXE reports i386, but boots x86_64 fine
         "aarch64" | "arm64" => "aarch64",
         _ => {
+            warn!("404 /boot/{}/{}: Unknown architecture", arch, asset);
             return (
                 StatusCode::NOT_FOUND,
                 format!("Unknown architecture: {} (supported: x86_64, i386, aarch64, arm64)", arch),
@@ -2863,6 +2866,7 @@ pub async fn serve_boot_asset(arch: &str, asset: &str) -> Response {
         "modloop" => "modloop",
         "apkovl.tar.gz" => "localhost.apkovl.tar.gz",
         _ => {
+            warn!("404 /boot/{}/{}: Unknown asset type", arch, asset);
             return (
                 StatusCode::NOT_FOUND,
                 format!("Unknown boot asset: {}", asset),
@@ -2873,6 +2877,7 @@ pub async fn serve_boot_asset(arch: &str, asset: &str) -> Response {
     let file_path = FilePath::new(MAGE_DIR).join(normalized_arch).join(filename);
 
     if !file_path.exists() {
+        warn!("404 /boot/{}/{}: File not found at {:?}", arch, asset, file_path);
         return (
             StatusCode::NOT_FOUND,
             format!("Boot asset not found: {}/{} (run Flight mode setup first)", normalized_arch, asset),
@@ -2882,6 +2887,7 @@ pub async fn serve_boot_asset(arch: &str, asset: &str) -> Response {
     // Read file and serve
     match tokio::fs::read(&file_path).await {
         Ok(content) => {
+            info!("200 /boot/{}/{}: Serving {} bytes from {:?}", arch, asset, content.len(), file_path);
             let content_type = match asset {
                 "apkovl.tar.gz" => "application/gzip",
                 _ => "application/octet-stream",
@@ -2893,7 +2899,7 @@ pub async fn serve_boot_asset(arch: &str, asset: &str) -> Response {
             ).into_response()
         }
         Err(e) => {
-            error!("Failed to read boot asset {}: {}", file_path.display(), e);
+            error!("500 /boot/{}/{}: Failed to read {:?}: {}", arch, asset, file_path, e);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("Failed to read boot asset: {}", e),
