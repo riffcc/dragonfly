@@ -963,7 +963,13 @@ async fn get_hostname_form(
 
 // Handler for initial iPXE script generation (DHCP points here)
 // Determines whether to chain to HookOS or the Dragonfly Agent
-pub async fn ipxe_script(Path(mac): Path<String>) -> Response {
+//
+// When native provisioning is enabled, uses ProvisioningService for boot decisions.
+// Otherwise, falls back to legacy db-based approach.
+pub async fn ipxe_script(
+    State(state): State<AppState>,
+    Path(mac): Path<String>,
+) -> Response {
     if !mac.contains(':') || mac.split(':').count() != 6 {
         warn!("Received invalid MAC format in iPXE request: {}", mac);
         return (StatusCode::BAD_REQUEST, "Invalid MAC Address Format").into_response();
@@ -971,7 +977,29 @@ pub async fn ipxe_script(Path(mac): Path<String>) -> Response {
 
     info!("Generating initial iPXE script for MAC: {}", mac);
 
-    // Read required base URL from environment variable
+    // Use native provisioning if enabled
+    if let Some(ref provisioning) = state.provisioning {
+        match provisioning.get_boot_script(&mac).await {
+            Ok(script) => {
+                debug!("Native provisioning returned script for MAC: {}", mac);
+                return (
+                    StatusCode::OK,
+                    [(axum::http::header::CONTENT_TYPE, "text/plain")],
+                    script,
+                ).into_response();
+            }
+            Err(e) => {
+                error!("Provisioning error for MAC {}: {}", mac, e);
+                let error_response = ErrorResponse {
+                    error: "Provisioning Error".to_string(),
+                    message: e.to_string(),
+                };
+                return (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response)).into_response();
+            }
+        }
+    }
+
+    // Legacy fallback: Read required base URL from environment variable
     let base_url = match env::var("DRAGONFLY_BASE_URL") {
         Ok(url) => url,
         Err(_) => {
@@ -1434,25 +1462,24 @@ exit
                     error!("CRITICAL: DRAGONFLY_BASE_URL environment variable is not set. Agent iPXE script requires this.");
                     Error::Internal("Server is missing required DRAGONFLY_BASE_URL configuration.".to_string())
                 })?;
-                
-            // Format the Dragonfly Agent iPXE script
+
+            // Detect architecture from iPXE buildarch variable
+            // Default to x86_64, script will detect at runtime
             Ok(format!(r#"#!ipxe
-kernel {}/ipxe/dragonfly-agent/vmlinuz \
+# Detect architecture
+iseq ${{buildarch}} arm64 && set arch aarch64 || set arch x86_64
+
+kernel {base_url}/boot/${{arch}}/kernel \
   ip=dhcp \
-  alpine_repo=http://dl-cdn.alpinelinux.org/alpine/v3.21/main \
+  alpine_repo=http://dl-cdn.alpinelinux.org/alpine/v3.23/main \
   modules=loop,squashfs,sd-mod,usb-storage \
-  initrd=initramfs-lts \
-  modloop={}/ipxe/dragonfly-agent/modloop \
-  apkovl={}/ipxe/dragonfly-agent/localhost.apkovl.tar.gz \
+  initrd=initramfs \
+  modloop={base_url}/boot/${{arch}}/modloop \
+  apkovl={base_url}/boot/${{arch}}/apkovl.tar.gz \
   rw
-initrd {}/ipxe/dragonfly-agent/initramfs-lts
+initrd {base_url}/boot/${{arch}}/initramfs
 boot
-"#, 
-            base_url, // for kernel path
-            base_url, // for modloop path
-            base_url, // for apkovl path
-            base_url  // for initrd path
-            ))
+"#))
         },
         _ => {
             warn!("Cannot generate unknown IPXE script: {}", script_name); // Log the specific script name
@@ -2515,6 +2542,500 @@ pub async fn download_hookos_artifacts(version: &str) -> anyhow::Result<()> {
     
     info!("HookOS artifacts downloaded, extracted, and cleaned up successfully to {:?}", hookos_dir);
     Ok(())
+}
+
+// ============================================================================
+// Mage Boot Environment
+// ============================================================================
+
+/// Mage artifacts directory
+const MAGE_DIR: &str = "/var/lib/dragonfly/mage";
+
+/// Alpine mirror for netboot artifacts
+const ALPINE_MIRROR: &str = "https://dl-cdn.alpinelinux.org/alpine";
+
+/// Check if Mage artifacts exist
+pub async fn check_mage_artifacts() -> bool {
+    let mage_dir = FilePath::new(MAGE_DIR);
+
+    // Required files for Mage boot
+    let files = vec!["vmlinuz", "initramfs", "modloop"];
+
+    for file in files {
+        let path = mage_dir.join(file);
+        if !path.exists() {
+            debug!("Mage artifact missing: {:?}", path);
+            return false;
+        }
+    }
+
+    info!("All Mage artifacts found");
+    true
+}
+
+/// Download Mage (Alpine netboot) artifacts
+///
+/// Downloads Alpine Linux netboot files for use as Dragonfly's boot environment:
+/// - vmlinuz (kernel)
+/// - initramfs (initial RAM filesystem)
+/// - modloop (kernel modules squashfs)
+///
+/// # Arguments
+/// * `alpine_version` - Alpine version (e.g., "3.21")
+/// * `arch` - Architecture: "x86_64" or "aarch64"
+pub async fn download_mage_artifacts(alpine_version: &str, arch: &str) -> anyhow::Result<()> {
+    // Store in arch-specific subdirectory
+    let mage_dir = FilePath::new(MAGE_DIR).join(arch);
+
+    // Create directory if it doesn't exist
+    if !mage_dir.exists() {
+        info!("Creating Mage directory: {:?}", mage_dir);
+        std::fs::create_dir_all(&mage_dir)?;
+    }
+
+    // Construct base URL for Alpine netboot
+    let netboot_base = format!("{}/v{}/releases/{}/netboot", ALPINE_MIRROR, alpine_version, arch);
+
+    // Alpine netboot files (use -lts variants for LTS kernel)
+    let files = vec![
+        ("vmlinuz", "vmlinuz-lts"),
+        ("initramfs", "initramfs-lts"),
+        ("modloop", "modloop-lts"),
+    ];
+
+    info!("Downloading Mage (Alpine {}) artifacts from {}", alpine_version, netboot_base);
+
+    // Create download futures for parallel execution
+    let download_futures = files.iter().map(|(local_name, remote_name)| {
+        let local_name = local_name.to_string();
+        let remote_name = remote_name.to_string();
+        let netboot_base = netboot_base.clone();
+        let mage_dir = mage_dir.to_path_buf();
+
+        async move {
+            let dest_path = mage_dir.join(&local_name);
+
+            // Skip if file already exists and has content
+            if dest_path.exists() {
+                if let Ok(metadata) = std::fs::metadata(&dest_path) {
+                    if metadata.len() > 0 {
+                        info!("Mage artifact {} already exists, skipping download", local_name);
+                        return Ok::<_, anyhow::Error>(());
+                    }
+                }
+            }
+
+            // Try primary name first
+            let url = format!("{}/{}", netboot_base, remote_name);
+            info!("Downloading Mage artifact: {} -> {}", url, local_name);
+
+            let response = reqwest::get(&url).await;
+
+            match response {
+                Ok(resp) if resp.status().is_success() => {
+                    let content = resp.bytes().await?;
+                    if content.is_empty() {
+                        anyhow::bail!("Downloaded {} is empty", local_name);
+                    }
+                    std::fs::write(&dest_path, &content)?;
+                    info!("Downloaded {} ({} bytes)", local_name, content.len());
+                }
+                _ => {
+                    // Try fallback name (vmlinuz-virt instead of vmlinuz-lts)
+                    let fallback_name = remote_name.replace("-lts", "-virt");
+                    let fallback_url = format!("{}/{}", netboot_base, fallback_name);
+                    info!("Primary download failed, trying fallback: {}", fallback_url);
+
+                    let fallback_resp = reqwest::get(&fallback_url).await?;
+                    if !fallback_resp.status().is_success() {
+                        anyhow::bail!("Failed to download {}: HTTP {}", local_name, fallback_resp.status());
+                    }
+
+                    let content = fallback_resp.bytes().await?;
+                    if content.is_empty() {
+                        anyhow::bail!("Downloaded {} is empty", local_name);
+                    }
+                    std::fs::write(&dest_path, &content)?;
+                    info!("Downloaded {} from fallback ({} bytes)", local_name, content.len());
+                }
+            }
+
+            Ok(())
+        }
+    }).collect::<Vec<_>>();
+
+    // Execute all downloads in parallel
+    futures::future::try_join_all(download_futures).await?;
+
+    info!("Mage artifacts downloaded successfully to {:?}", mage_dir);
+    Ok(())
+}
+
+/// Generate Mage APK overlay with dragonfly-agent
+///
+/// Creates a localhost.apkovl.tar.gz file containing the agent and startup configuration
+/// for the Mage boot environment.
+///
+/// # Arguments
+/// * `base_url` - Dragonfly server URL for agent to connect to
+/// * `arch` - Architecture: "x86_64" or "aarch64"
+///
+/// Uses the locally-built agent binary (no network download - supports airgapped environments)
+pub async fn generate_mage_apkovl_arch(base_url: &str, arch: &str) -> Result<(), dragonfly_common::Error> {
+    let mage_dir = FilePath::new(MAGE_DIR).join(arch);
+    let target_path = mage_dir.join("localhost.apkovl.tar.gz");
+    let agent_binary_path = mage_dir.join("dragonfly-agent");
+
+    // Ensure Mage directory exists
+    if !mage_dir.exists() {
+        std::fs::create_dir_all(&mage_dir)
+            .map_err(|e| dragonfly_common::Error::Internal(format!("Failed to create Mage directory: {}", e)))?;
+    }
+
+    // Check that agent binary exists (should be built by agent_build_fut)
+    if !agent_binary_path.exists() {
+        return Err(dragonfly_common::Error::Internal(
+            format!("Agent binary not found at {:?} - build failed?", agent_binary_path)
+        ));
+    }
+
+    // Generate APK overlay using local agent binary
+    generate_agent_apkovl_local(&target_path, base_url, &agent_binary_path).await
+}
+
+/// Generate APK overlay using a local agent binary (no network download)
+async fn generate_agent_apkovl_local(
+    target_apkovl_path: &StdPath,
+    base_url: &str,
+    agent_binary_path: &StdPath,
+) -> Result<(), dragonfly_common::Error> {
+    info!("Generating agent APK overlay at: {:?} (using local binary)", target_apkovl_path);
+
+    // 1. Create a temporary directory
+    let temp_dir = tempdir()
+        .map_err(|e| dragonfly_common::Error::Internal(format!("Failed to create temp directory: {}", e)))?;
+    let temp_path = temp_dir.path();
+
+    // 2. Create directory structure
+    fs::create_dir_all(temp_path.join("etc/local.d")).await
+        .map_err(|e| dragonfly_common::Error::Internal(format!("Failed to create dir: {}", e)))?;
+    fs::create_dir_all(temp_path.join("etc/apk/protected_paths.d")).await
+        .map_err(|e| dragonfly_common::Error::Internal(format!("Failed to create dir: {}", e)))?;
+    fs::create_dir_all(temp_path.join("etc/runlevels/default")).await
+        .map_err(|e| dragonfly_common::Error::Internal(format!("Failed to create dir: {}", e)))?;
+    fs::create_dir_all(temp_path.join("usr/local/bin")).await
+        .map_err(|e| dragonfly_common::Error::Internal(format!("Failed to create dir: {}", e)))?;
+
+    // 3. Write static files
+    fs::write(temp_path.join("etc/hosts"), HOSTS_CONTENT).await
+        .map_err(|e| dragonfly_common::Error::Internal(format!("Failed to write: {}", e)))?;
+    fs::write(temp_path.join("etc/hostname"), HOSTNAME_CONTENT).await
+        .map_err(|e| dragonfly_common::Error::Internal(format!("Failed to write: {}", e)))?;
+    fs::write(temp_path.join("etc/apk/arch"), APK_ARCH_CONTENT).await
+        .map_err(|e| dragonfly_common::Error::Internal(format!("Failed to write: {}", e)))?;
+    fs::write(temp_path.join("etc/apk/protected_paths.d/lbu.list"), LBU_LIST_CONTENT).await
+        .map_err(|e| dragonfly_common::Error::Internal(format!("Failed to write: {}", e)))?;
+    fs::write(temp_path.join("etc/apk/repositories"), REPOSITORIES_CONTENT).await
+        .map_err(|e| dragonfly_common::Error::Internal(format!("Failed to write: {}", e)))?;
+    fs::write(temp_path.join("etc/apk/world"), WORLD_CONTENT).await
+        .map_err(|e| dragonfly_common::Error::Internal(format!("Failed to write: {}", e)))?;
+    fs::write(temp_path.join("etc/mtab"), "").await
+        .map_err(|e| dragonfly_common::Error::Internal(format!("Failed to write: {}", e)))?;
+    fs::write(temp_path.join("etc/.default_boot_services"), "").await
+        .map_err(|e| dragonfly_common::Error::Internal(format!("Failed to write: {}", e)))?;
+
+    // 4. Write start script
+    let start_script_path = temp_path.join("etc/local.d/dragonfly-agent.start");
+    let script_content = format!(
+        "#!/bin/sh\n# Start dragonfly-agent\n/usr/local/bin/dragonfly-agent --server {} --setup\nexit 0\n",
+        base_url
+    );
+    fs::write(&start_script_path, script_content).await
+        .map_err(|e| dragonfly_common::Error::Internal(format!("Failed to write: {}", e)))?;
+    set_executable_permission(&start_script_path).await?;
+
+    // 5. Create symlink for local service
+    let link_target = "/etc/init.d/local";
+    let link_path = temp_path.join("etc/runlevels/default/local");
+    unix_symlink(link_target, &link_path)
+        .map_err(|e| dragonfly_common::Error::Internal(format!("Failed to create symlink: {}", e)))?;
+
+    // 6. Copy the local agent binary (no download!)
+    let dest_agent_path = temp_path.join("usr/local/bin/dragonfly-agent");
+    fs::copy(agent_binary_path, &dest_agent_path).await
+        .map_err(|e| dragonfly_common::Error::Internal(format!("Failed to copy agent binary: {}", e)))?;
+    set_executable_permission(&dest_agent_path).await?;
+
+    // 7. Create tar.gz archive
+    info!("Creating tarball: {:?}", target_apkovl_path);
+    let output = Command::new("tar")
+        .arg("-czf")
+        .arg(target_apkovl_path)
+        .arg("-C")
+        .arg(temp_path)
+        .arg(".")
+        .output()
+        .await
+        .map_err(|e| dragonfly_common::Error::Internal(format!("Failed to execute tar: {}", e)))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(dragonfly_common::Error::Internal(format!("tar failed: {}", stderr)));
+    }
+
+    info!("APK overlay generated at: {:?}", target_apkovl_path);
+    Ok(())
+}
+
+/// Serve boot assets (kernel, initramfs, modloop, apkovl) for a specific architecture
+///
+/// Maps URL paths to internal Mage files:
+/// - /boot/{arch}/kernel -> vmlinuz
+/// - /boot/{arch}/initramfs -> initramfs
+/// - /boot/{arch}/modloop -> modloop
+/// - /boot/{arch}/apkovl.tar.gz -> localhost.apkovl.tar.gz
+pub async fn serve_boot_asset(arch: &str, asset: &str) -> Response {
+    // Validate architecture
+    if arch != "x86_64" && arch != "aarch64" {
+        return (
+            StatusCode::NOT_FOUND,
+            format!("Unknown architecture: {} (use x86_64 or aarch64)", arch),
+        ).into_response();
+    }
+
+    // Map URL names to internal file names
+    let filename = match asset {
+        "kernel" => "vmlinuz",
+        "initramfs" => "initramfs",
+        "modloop" => "modloop",
+        "apkovl.tar.gz" => "localhost.apkovl.tar.gz",
+        _ => {
+            return (
+                StatusCode::NOT_FOUND,
+                format!("Unknown boot asset: {}", asset),
+            ).into_response();
+        }
+    };
+
+    let file_path = FilePath::new(MAGE_DIR).join(arch).join(filename);
+
+    if !file_path.exists() {
+        return (
+            StatusCode::NOT_FOUND,
+            format!("Boot asset not found: {}/{} (run Flight mode setup first)", arch, asset),
+        ).into_response();
+    }
+
+    // Read file and serve
+    match tokio::fs::read(&file_path).await {
+        Ok(content) => {
+            let content_type = match asset {
+                "apkovl.tar.gz" => "application/gzip",
+                _ => "application/octet-stream",
+            };
+            (
+                StatusCode::OK,
+                [(axum::http::header::CONTENT_TYPE, content_type)],
+                content,
+            ).into_response()
+        }
+        Err(e) => {
+            error!("Failed to read boot asset {}: {}", file_path.display(), e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to read boot asset: {}", e),
+            ).into_response()
+        }
+    }
+}
+
+/// Check if iPXE binaries exist
+pub fn ipxe_binaries_exist() -> bool {
+    let tftp_dir = FilePath::new("/var/lib/dragonfly/tftp");
+
+    let files = vec!["ipxe.efi", "undionly.kpxe"];
+
+    for file in files {
+        let path = tftp_dir.join(file);
+        if !path.exists() {
+            return false;
+        }
+    }
+
+    info!("All iPXE binaries found");
+    true
+}
+
+/// Download iPXE binaries for PXE boot
+///
+/// Downloads:
+/// - ipxe.efi (UEFI boot)
+/// - undionly.kpxe (BIOS legacy boot)
+///
+/// Binaries are placed in /var/lib/dragonfly/tftp/ for the TFTP server.
+pub async fn download_ipxe_binaries() -> anyhow::Result<()> {
+    let tftp_dir = FilePath::new("/var/lib/dragonfly/tftp");
+
+    // Create directory structure if it doesn't exist
+    if !tftp_dir.exists() {
+        info!("Creating TFTP directory: {:?}", tftp_dir);
+        std::fs::create_dir_all(&tftp_dir)?;
+    }
+
+    // iPXE binaries to download from boot.ipxe.org
+    let binaries = vec![
+        ("ipxe.efi", "https://boot.ipxe.org/ipxe.efi"),
+        ("undionly.kpxe", "https://boot.ipxe.org/undionly.kpxe"),
+    ];
+
+    // Create download futures for parallel execution
+    let download_futures = binaries.iter().map(|(filename, url)| {
+        let filename = filename.to_string();
+        let url = url.to_string();
+        let tftp_dir = tftp_dir.to_path_buf();
+
+        async move {
+            let dest_path = tftp_dir.join(&filename);
+
+            // Skip if file already exists and has content
+            if dest_path.exists() {
+                if let Ok(metadata) = std::fs::metadata(&dest_path) {
+                    if metadata.len() > 0 {
+                        info!("iPXE binary {} already exists, skipping download", filename);
+                        return Ok::<_, anyhow::Error>(());
+                    }
+                }
+            }
+
+            info!("Downloading {} from {}", filename, url);
+            let response = reqwest::get(&url).await?;
+
+            if !response.status().is_success() {
+                anyhow::bail!(
+                    "Failed to download {}: HTTP {}",
+                    filename,
+                    response.status()
+                );
+            }
+
+            let content = response.bytes().await?;
+
+            if content.is_empty() {
+                anyhow::bail!("Downloaded {} is empty", filename);
+            }
+
+            std::fs::write(&dest_path, &content)?;
+            info!("Downloaded {} ({} bytes) to {:?}", filename, content.len(), dest_path);
+
+            Ok(())
+        }
+    }).collect::<Vec<_>>();
+
+    // Execute all downloads in parallel
+    futures::future::try_join_all(download_futures).await?;
+
+    info!("iPXE binaries downloaded successfully to {:?}", tftp_dir);
+    Ok(())
+}
+
+// ============================================================================
+// OS Image Downloads (JIT)
+// ============================================================================
+
+/// OS images directory
+const OS_IMAGES_DIR: &str = "/var/lib/dragonfly/os-images";
+
+/// Download Debian 13 cloud image (tar.xz format - smaller, faster)
+///
+/// Downloads to /var/lib/dragonfly/os-images/debian/debian-13-generic-{arch}.tar.xz
+pub async fn download_debian_13_image(arch: &str) -> anyhow::Result<()> {
+    let os_dir = FilePath::new(OS_IMAGES_DIR).join("debian");
+
+    // Create directory if needed
+    if !os_dir.exists() {
+        std::fs::create_dir_all(&os_dir)?;
+    }
+
+    let filename = format!("debian-13-generic-{}.tar.xz", arch);
+    let dest_path = os_dir.join(&filename);
+
+    // Skip if already downloaded
+    if dest_path.exists() {
+        if let Ok(metadata) = std::fs::metadata(&dest_path) {
+            if metadata.len() > 0 {
+                info!("Debian 13 {} image already exists, skipping download", arch);
+                return Ok(());
+            }
+        }
+    }
+
+    // Debian cloud image URL
+    let url = format!(
+        "https://cloud.debian.org/images/cloud/trixie/20251117-2299/debian-13-generic-{}-20251117-2299.tar.xz",
+        arch
+    );
+
+    info!("Downloading Debian 13 {} from {}", arch, url);
+
+    let client = reqwest::Client::new();
+    let response = client.get(&url).send().await?;
+
+    if !response.status().is_success() {
+        anyhow::bail!("Failed to download Debian 13: HTTP {}", response.status());
+    }
+
+    // Stream to file (large image)
+    let bytes = response.bytes().await?;
+    std::fs::write(&dest_path, &bytes)?;
+
+    info!("Downloaded Debian 13 {} image ({} bytes)", arch, bytes.len());
+    Ok(())
+}
+
+/// Check if an OS image exists
+pub fn os_image_exists(os: &str, arch: &str) -> bool {
+    let path = match os {
+        "debian-13" => {
+            let filename = format!("debian-13-generic-{}.tar.xz", arch);
+            FilePath::new(OS_IMAGES_DIR).join("debian").join(filename)
+        }
+        _ => return false,
+    };
+
+    path.exists()
+}
+
+/// Serve OS image file
+pub async fn serve_os_image(os: &str, arch: &str) -> Response {
+    let path = match os {
+        "debian-13" => {
+            let filename = format!("debian-13-generic-{}.tar.xz", arch);
+            FilePath::new(OS_IMAGES_DIR).join("debian").join(filename)
+        }
+        _ => {
+            return (StatusCode::NOT_FOUND, "Unknown OS".to_string()).into_response();
+        }
+    };
+
+    if !path.exists() {
+        return (
+            StatusCode::NOT_FOUND,
+            format!("OS image not downloaded. Use API to download first."),
+        ).into_response();
+    }
+
+    match tokio::fs::read(&path).await {
+        Ok(content) => {
+            (
+                StatusCode::OK,
+                [(axum::http::header::CONTENT_TYPE, "application/x-xz")],
+                content,
+            ).into_response()
+        }
+        Err(e) => {
+            (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to read: {}", e)).into_response()
+        }
+    }
 }
 
 // OS information struct

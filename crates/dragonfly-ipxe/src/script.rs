@@ -108,6 +108,14 @@ impl IpxeConfig {
             .clone()
             .unwrap_or_else(|| format!("{}/mage/initramfs", self.base_url))
     }
+
+    fn mage_modloop(&self) -> String {
+        format!("{}/mage/modloop", self.base_url)
+    }
+
+    fn mage_apkovl(&self) -> String {
+        format!("{}/mage/localhost.apkovl.tar.gz", self.base_url)
+    }
 }
 
 /// iPXE script generator
@@ -196,15 +204,19 @@ shell
     pub fn discovery_script(&self, hardware: Option<&Hardware>) -> Result<String> {
         let kernel = self.config.mage_kernel();
         let initramfs = self.config.mage_initramfs();
+        let modloop = self.config.mage_modloop();
+        let apkovl = self.config.mage_apkovl();
         let params = self.kernel_params(hardware, "discovery");
 
         Ok(format!(
             r#"#!ipxe
-# Dragonfly - Discovery Mode
+# Dragonfly - Discovery Mode (Mage)
 echo Booting into discovery mode...
 echo MAC: ${{mac}}
 
-kernel {kernel} {params}
+kernel {kernel} {params} \
+  modloop={modloop} \
+  apkovl={apkovl}
 initrd {initramfs}
 boot
 "#
@@ -222,16 +234,21 @@ boot
     pub fn imaging_script(&self, hardware: Option<&Hardware>, workflow_id: &str) -> Result<String> {
         let kernel = self.config.mage_kernel();
         let initramfs = self.config.mage_initramfs();
+        let modloop = self.config.mage_modloop();
+        let apkovl = self.config.mage_apkovl();
         let params = self.kernel_params(hardware, "imaging");
 
         Ok(format!(
             r#"#!ipxe
-# Dragonfly - Imaging Mode
+# Dragonfly - Imaging Mode (Mage)
 echo Booting into imaging mode...
 echo MAC: ${{mac}}
 echo Workflow: {workflow_id}
 
-kernel {kernel} {params} dragonfly.workflow={workflow_id}
+kernel {kernel} {params} \
+  dragonfly.workflow={workflow_id} \
+  modloop={modloop} \
+  apkovl={apkovl}
 initrd {initramfs}
 boot
 "#
@@ -286,9 +303,18 @@ shell
     fn kernel_params(&self, hardware: Option<&Hardware>, mode: &str) -> String {
         let mut params = self.config.kernel_params.clone();
 
-        // Console
+        // Alpine-specific boot parameters
+        params.push("ip=dhcp".to_string());
+        params.push("alpine_repo=http://dl-cdn.alpinelinux.org/alpine/v3.21/main".to_string());
+        params.push("modules=loop,squashfs,sd-mod,usb-storage".to_string());
+
+        // Console configuration
         if let Some(ref console) = self.config.console {
             params.push(format!("console={}", console));
+        } else {
+            // Default console for broad hardware compatibility
+            params.push("console=tty1".to_string());
+            params.push("console=ttyS0,115200".to_string());
         }
 
         // Verbose logging
@@ -332,8 +358,8 @@ mod tests {
 
     #[test]
     fn test_chainload_script() {
-        let gen = IpxeScriptGenerator::new(test_config());
-        let script = gen.chainload_script();
+        let generator = IpxeScriptGenerator::new(test_config());
+        let script = generator.chainload_script();
 
         assert!(script.starts_with("#!ipxe"));
         assert!(script.contains("chain http://192.168.1.1:8080/boot/${mac}"));
@@ -343,8 +369,8 @@ mod tests {
 
     #[test]
     fn test_chainload_with_menu_option() {
-        let gen = IpxeScriptGenerator::new(test_config());
-        let script = gen.chainload_script_with_menu_option(3);
+        let generator = IpxeScriptGenerator::new(test_config());
+        let script = generator.chainload_script_with_menu_option(3);
 
         assert!(script.contains("press Ctrl for boot menu"));
         assert!(script.contains("sleep 3"));
@@ -353,8 +379,8 @@ mod tests {
 
     #[test]
     fn test_local_boot_script() {
-        let gen = IpxeScriptGenerator::new(test_config());
-        let script = gen.local_boot_script();
+        let generator = IpxeScriptGenerator::new(test_config());
+        let script = generator.local_boot_script();
 
         assert!(script.starts_with("#!ipxe"));
         assert!(script.contains("Local Boot"));
@@ -365,8 +391,8 @@ mod tests {
 
     #[test]
     fn test_discovery_script() {
-        let gen = IpxeScriptGenerator::new(test_config());
-        let script = gen.discovery_script(None).unwrap();
+        let generator = IpxeScriptGenerator::new(test_config());
+        let script = generator.discovery_script(None).unwrap();
 
         assert!(script.starts_with("#!ipxe"));
         assert!(script.contains("Discovery Mode"));
@@ -378,9 +404,9 @@ mod tests {
 
     #[test]
     fn test_imaging_script() {
-        let gen = IpxeScriptGenerator::new(test_config());
+        let generator = IpxeScriptGenerator::new(test_config());
         let hw = test_hardware();
-        let script = gen.imaging_script(Some(&hw), "workflow-123").unwrap();
+        let script = generator.imaging_script(Some(&hw), "workflow-123").unwrap();
 
         assert!(script.starts_with("#!ipxe"));
         assert!(script.contains("Imaging Mode"));
@@ -392,9 +418,9 @@ mod tests {
 
     #[test]
     fn test_menu_script() {
-        let gen = IpxeScriptGenerator::new(test_config());
+        let generator = IpxeScriptGenerator::new(test_config());
         let hw = test_hardware();
-        let script = gen.menu_script(Some(&hw)).unwrap();
+        let script = generator.menu_script(Some(&hw)).unwrap();
 
         assert!(script.starts_with("#!ipxe"));
         assert!(script.contains("Boot Menu"));
@@ -412,8 +438,8 @@ mod tests {
             .with_kernel_param("quiet")
             .with_verbose(true);
 
-        let gen = IpxeScriptGenerator::new(config);
-        let params = gen.kernel_params(None, "discovery");
+        let generator = IpxeScriptGenerator::new(config);
+        let params = generator.kernel_params(None, "discovery");
 
         assert!(params.contains("quiet"));
         assert!(params.contains("console=ttyS0,115200"));
