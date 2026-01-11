@@ -30,8 +30,10 @@ pub struct HardwareCheckIn {
     /// Memory in bytes
     pub memory_bytes: Option<u64>,
     /// Disk info
+    #[serde(default)]
     pub disks: Vec<DiskInfo>,
     /// Network interfaces
+    #[serde(default)]
     pub interfaces: Vec<InterfaceInfo>,
     /// BMC info (if detected)
     pub bmc_address: Option<String>,
