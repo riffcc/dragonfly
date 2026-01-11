@@ -988,6 +988,11 @@ pub async fn ipxe_script(
     State(state): State<AppState>,
     Path(mac): Path<String>,
 ) -> Response {
+    // URL-decode the MAC address (iPXE URL-encodes colons as %3A)
+    let mac = urlencoding::decode(&mac)
+        .map(|s| s.into_owned())
+        .unwrap_or(mac);
+
     if !mac.contains(':') || mac.split(':').count() != 6 {
         warn!("Received invalid MAC format in iPXE request: {}", mac);
         return (StatusCode::BAD_REQUEST, "Invalid MAC Address Format").into_response();
