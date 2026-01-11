@@ -11,9 +11,10 @@ use axum::{
 use std::convert::Infallible;
 use serde_json::json;
 use uuid::Uuid;
-use dragonfly_common::models::{MachineStatus, HostnameUpdateRequest, HostnameUpdateResponse, OsInstalledUpdateRequest, OsInstalledUpdateResponse, BmcType, BmcCredentials, StatusUpdateRequest, BmcCredentialsUpdateRequest, InstallationProgressUpdateRequest, RegisterRequest, Machine};
+use dragonfly_common::models::{MachineStatus, HostnameUpdateRequest, HostnameUpdateResponse, OsInstalledUpdateRequest, OsInstalledUpdateResponse, BmcType, BmcCredentials, StatusUpdateRequest, BmcCredentialsUpdateRequest, InstallationProgressUpdateRequest, RegisterRequest, Machine, DiskInfo as CommonDiskInfo};
 use crate::db::{self, RegisterResponse, ErrorResponse, OsAssignmentRequest, get_machine_tags, update_machine_tags as db_update_machine_tags};
 use crate::provisioning::HardwareCheckIn;
+use dragonfly_crd::{Hardware, HardwareState};
 use crate::AppState;
 use crate::auth::AuthSession;
 use std::collections::HashMap;
@@ -52,6 +53,91 @@ use axum::middleware::Next; // Add this import back
 use chrono::Utc;
 use axum::extract::DefaultBodyLimit;
 use serde::Deserialize;
+
+/// Convert Hardware (from DragonflyStore/ReDB) to Machine (for UI)
+fn hardware_to_machine(hw: &Hardware) -> Machine {
+    // Generate deterministic UUID from hardware name
+    let namespace = uuid::Uuid::NAMESPACE_DNS;
+    let id = uuid::Uuid::new_v5(&namespace, hw.metadata.name.as_bytes());
+
+    // Get MAC address from first interface
+    let mac_address = hw.spec.interfaces.first()
+        .and_then(|i| i.dhcp.as_ref())
+        .map(|d| d.mac.clone())
+        .unwrap_or_default();
+
+    // Get IP address from first interface
+    let ip_address = hw.spec.interfaces.first()
+        .and_then(|i| i.dhcp.as_ref())
+        .and_then(|d| d.ip.as_ref())
+        .map(|ip| ip.address.clone())
+        .unwrap_or_default();
+
+    // Get hostname from instance metadata or DHCP
+    let hostname = hw.spec.metadata.as_ref()
+        .map(|m| m.instance.hostname.clone())
+        .or_else(|| {
+            hw.spec.interfaces.first()
+                .and_then(|i| i.dhcp.as_ref())
+                .and_then(|d| d.hostname.clone())
+        });
+
+    // Convert disks
+    let disks: Vec<CommonDiskInfo> = hw.spec.disks.iter().map(|d| CommonDiskInfo {
+        device: d.device.clone(),
+        size_bytes: 0, // Not stored in HardwareSpec
+        model: None,
+        calculated_size: None,
+    }).collect();
+
+    // Convert hardware state to machine status
+    let status = match hw.status.as_ref().map(|s| &s.state) {
+        Some(HardwareState::Ready) => MachineStatus::AwaitingAssignment,
+        Some(HardwareState::Provisioning) => MachineStatus::InstallingOS,
+        Some(HardwareState::Provisioned) => MachineStatus::Ready,
+        Some(HardwareState::Error) => MachineStatus::Error("Hardware error".to_string()),
+        _ => MachineStatus::AwaitingAssignment,
+    };
+
+    // Get timestamps
+    let now = Utc::now();
+    let last_seen = hw.status.as_ref()
+        .and_then(|s| s.last_seen)
+        .unwrap_or(now);
+
+    // Generate memorable name from MAC
+    let memorable_name = if !mac_address.is_empty() {
+        Some(dragonfly_common::mac_to_words::mac_to_words_safe(&mac_address))
+    } else {
+        None
+    };
+
+    Machine {
+        id,
+        mac_address,
+        ip_address,
+        hostname,
+        os_choice: None, // TODO: get from workflow/template
+        os_installed: None,
+        status,
+        disks,
+        nameservers: vec![],
+        created_at: last_seen,
+        updated_at: last_seen,
+        memorable_name,
+        bmc_credentials: None, // TODO: convert from hw.spec.bmc
+        installation_progress: 0,
+        installation_step: None,
+        last_deployment_duration: None,
+        cpu_model: None,
+        cpu_cores: None,
+        total_ram_bytes: None,
+        proxmox_vmid: None,
+        proxmox_node: None,
+        proxmox_cluster: None,
+        is_proxmox_host: false,
+    }
+}
 
 pub fn api_router() -> Router<crate::AppState> {
     // Core API routes
@@ -332,6 +418,7 @@ async fn register_machine(
 
 #[axum::debug_handler]
 async fn get_all_machines(
+    State(state): State<crate::AppState>,
     auth_session: AuthSession,
     req: axum::http::Request<axum::body::Body>
 ) -> Response {
@@ -339,23 +426,41 @@ async fn get_all_machines(
     let is_htmx = req.headers()
         .get("HX-Request")
         .is_some();
-    
+
     // Check if user is authenticated as admin
     let is_admin = auth_session.user.is_some();
 
-    match db::get_all_machines().await {
-        Ok(machines) => {
-            // Get workflow info for machines that are installing OS
-            let mut workflow_infos = HashMap::new();
-            for machine in &machines {
-                if machine.status == MachineStatus::InstallingOS {
-                    if let Ok(Some(info)) = crate::tinkerbell::get_workflow_info(machine).await {
-                        workflow_infos.insert(machine.id, info);
-                    }
-                }
+    // Query DragonflyStore (ReDB) for hardware, convert to machines
+    let machines: Vec<Machine> = if let Some(ref provisioning) = state.provisioning {
+        match provisioning.store().list_hardware().await {
+            Ok(hardware_list) => hardware_list.iter().map(hardware_to_machine).collect(),
+            Err(e) => {
+                error!("Failed to list hardware from store: {}", e);
+                vec![]
             }
+        }
+    } else {
+        // Fallback to SQLite if provisioning not initialized
+        match db::get_all_machines().await {
+            Ok(m) => m,
+            Err(e) => {
+                error!("Failed to get machines from db: {}", e);
+                vec![]
+            }
+        }
+    };
 
-            if is_htmx {
+    // Get workflow info for machines that are installing OS
+    let mut workflow_infos = HashMap::new();
+    for machine in &machines {
+        if machine.status == MachineStatus::InstallingOS {
+            if let Ok(Some(info)) = crate::tinkerbell::get_workflow_info(machine).await {
+                workflow_infos.insert(machine.id, info);
+            }
+        }
+    }
+
+    if is_htmx {
                 // For HTMX requests, return HTML table rows
                 if machines.is_empty() {
                     Html(r#"<tr>
@@ -493,19 +598,9 @@ async fn get_all_machines(
                     }
                     Html(html).into_response()
                 }
-            } else {
-                // For non-HTMX requests, return JSON (already includes new fields via db query)
-                (StatusCode::OK, Json(machines)).into_response()
-            }
-        },
-        Err(e) => {
-            error!("Failed to retrieve machines: {}", e);
-            let error_response = ErrorResponse {
-                error: "Database Error".to_string(),
-                message: e.to_string(),
-            };
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response)).into_response()
-        }
+    } else {
+        // For non-HTMX requests, return JSON
+        (StatusCode::OK, Json(machines)).into_response()
     }
 }
 
