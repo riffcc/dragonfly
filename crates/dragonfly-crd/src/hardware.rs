@@ -145,12 +145,12 @@ pub struct HardwareSpec {
 }
 
 impl HardwareSpec {
-    /// Create a new hardware spec with a single interface
+    /// Create a new hardware spec with a single interface (PXE enabled by default)
     pub fn new(mac: impl Into<String>) -> Self {
         Self {
             metadata: None,
             disks: Vec::new(),
-            interfaces: vec![InterfaceSpec::new(mac)],
+            interfaces: vec![InterfaceSpec::with_pxe(mac)],
             bmc: None,
             user_data: None,
             os_choice: None,
