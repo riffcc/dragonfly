@@ -134,7 +134,7 @@ pub fn hardware_to_machine(hw: &Hardware) -> Machine {
         mac_address,
         ip_address,
         hostname,
-        os_choice: None, // TODO: get from workflow/template
+        os_choice: hw.spec.os_choice.clone(),
         os_installed: Some("".to_string()), // Empty string instead of None to avoid template errors
         status,
         disks,
@@ -663,6 +663,7 @@ async fn get_machine(
 // Combined OS assignment handler
 #[axum::debug_handler]
 async fn assign_os(
+    State(app_state): State<AppState>,
     auth_session: AuthSession,
     Path(id): Path<Uuid>,
     req: axum::http::Request<axum::body::Body>,
@@ -680,9 +681,9 @@ async fn assign_os(
         .get(axum::http::header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
-    
+
     info!("Content-Type received: {}", content_type);
-    
+
     let os_choice = if content_type.starts_with("application/json") {
         // Extract JSON
         match axum::Json::<OsAssignmentRequest>::from_request(req, &()).await {
@@ -705,9 +706,9 @@ async fn assign_os(
         error!("Unsupported content type: {}", content_type);
         None
     };
-    
+
     match os_choice {
-        Some(os_choice) => assign_os_internal(id, os_choice).await,
+        Some(os_choice) => assign_os_internal(&app_state, id, os_choice).await,
         None => {
             let error_response = ErrorResponse {
                 error: "Bad Request".to_string(),
@@ -718,32 +719,78 @@ async fn assign_os(
     }
 }
 
-// Shared implementation
-async fn assign_os_internal(id: Uuid, os_choice: String) -> Response {
+// Shared implementation - uses DragonflyStore (ReDB)
+async fn assign_os_internal(app_state: &AppState, id: Uuid, os_choice: String) -> Response {
     info!("Assigning OS {} to machine {}", os_choice, id);
-    
-    match db::assign_os(&id, &os_choice).await {
-        Ok(true) => {
-            // Return a success response, but don't create a workflow anymore
-            let html = format!(r###"
-                <div class="p-4 mb-4 text-sm text-green-700 bg-green-100 rounded-lg" role="alert">
-                    <span class="font-medium">Success!</span> OS choice set to {} for machine {}. 
-                    <p>To apply this change, click the "Reimage" button.</p>
+
+    // Get the provisioning service
+    let provisioning = match &app_state.provisioning {
+        Some(p) => p,
+        None => {
+            error!("Provisioning service not available");
+            let error_html = r###"
+                <div class="p-4 mb-4 text-sm text-red-700 bg-red-100 rounded-lg" role="alert">
+                    <span class="font-medium">Error!</span> Provisioning service not available.
                 </div>
-            "###, os_choice, id);
-            
-            (StatusCode::OK, [(axum::http::header::CONTENT_TYPE, "text/html")], html).into_response()
-        },
-        Ok(false) => {
+            "###;
+            return (StatusCode::INTERNAL_SERVER_ERROR, [(axum::http::header::CONTENT_TYPE, "text/html")], error_html).into_response();
+        }
+    };
+
+    let store = provisioning.store();
+
+    // Find hardware by UUID
+    let hardware_list = match store.list_hardware().await {
+        Ok(list) => list,
+        Err(e) => {
+            error!("Failed to list hardware: {}", e);
+            let error_html = format!(r###"
+                <div class="p-4 mb-4 text-sm text-red-700 bg-red-100 rounded-lg" role="alert">
+                    <span class="font-medium">Error!</span> Database error: {}.
+                </div>
+            "###, e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, [(axum::http::header::CONTENT_TYPE, "text/html")], error_html).into_response();
+        }
+    };
+
+    // Find the hardware with matching UUID
+    let mut found_hw: Option<dragonfly_crd::Hardware> = None;
+    for hw in hardware_list {
+        if hardware_uuid(&hw) == id {
+            found_hw = Some(hw);
+            break;
+        }
+    }
+
+    let mut hw = match found_hw {
+        Some(hw) => hw,
+        None => {
             let error_html = format!(r###"
                 <div class="p-4 mb-4 text-sm text-red-700 bg-red-100 rounded-lg" role="alert">
                     <span class="font-medium">Error!</span> Machine with ID {} not found.
                 </div>
             "###, id);
-            (StatusCode::NOT_FOUND, [(axum::http::header::CONTENT_TYPE, "text/html")], error_html).into_response()
+            return (StatusCode::NOT_FOUND, [(axum::http::header::CONTENT_TYPE, "text/html")], error_html).into_response();
+        }
+    };
+
+    // Update os_choice
+    hw.spec.os_choice = Some(os_choice.clone());
+
+    // Save back to store
+    match store.put_hardware(&hw).await {
+        Ok(()) => {
+            let html = format!(r###"
+                <div class="p-4 mb-4 text-sm text-green-700 bg-green-100 rounded-lg" role="alert">
+                    <span class="font-medium">Success!</span> OS choice set to {} for machine {}.
+                    <p>To apply this change, click the "Reimage" button.</p>
+                </div>
+            "###, os_choice, id);
+
+            (StatusCode::OK, [(axum::http::header::CONTENT_TYPE, "text/html")], html).into_response()
         },
         Err(e) => {
-            error!("Failed to assign OS to machine {}: {}", id, e);
+            error!("Failed to save hardware: {}", e);
             let error_html = format!(r###"
                 <div class="p-4 mb-4 text-sm text-red-700 bg-red-100 rounded-lg" role="alert">
                     <span class="font-medium">Error!</span> Database error: {}.
