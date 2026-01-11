@@ -390,11 +390,10 @@ dependencies = [
 
 [[package]]
 name = "axum-login"
-version = "0.17.0"
+version = "0.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b0da8e8e4cf127a9b71b578e9a8fa9833e70f893e428ed5453c85e44bf0fd8eb"
+checksum = "964ea6eb764a227baa8c3368e45c94d23b6863cc7b880c6c9e341c143c5a5ff7"
 dependencies = [
- "async-trait",
  "axum",
  "form_urlencoded",
  "serde",
@@ -1258,6 +1257,7 @@ dependencies = [
  "libc",
  "listenfd",
  "network-interface",
+ "notify 6.1.1",
  "once_cell",
  "predicates",
  "reqwest 0.11.27",
@@ -1284,9 +1284,11 @@ name = "dragonfly-actions"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "base64 0.22.1",
  "dragonfly-crd",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 1.0.69",
  "tokio",
  "tokio-test",
@@ -1300,15 +1302,29 @@ dependencies = [
  "anyhow",
  "chrono",
  "clap",
+ "dragonfly-actions",
  "dragonfly-common",
+ "dragonfly-crd",
+ "dragonfly-workflow",
  "reqwest 0.11.27",
  "serde",
  "serde_json",
  "sysinfo",
+ "thiserror 1.0.69",
  "tokio",
  "tracing",
  "tracing-subscriber",
  "uuid",
+]
+
+[[package]]
+name = "dragonfly-bmc"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "thiserror 1.0.69",
+ "tokio",
+ "tokio-test",
 ]
 
 [[package]]
@@ -1356,6 +1372,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "dragonfly-metadata"
+version = "0.1.0"
+dependencies = [
+ "dragonfly-crd",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "dragonfly-server"
 version = "0.1.0"
 dependencies = [
@@ -1377,25 +1403,32 @@ dependencies = [
  "dirs 5.0.1",
  "dns-lookup",
  "dragonfly-common",
+ "dragonfly-crd",
+ "dragonfly-dhcp",
+ "dragonfly-ipxe",
+ "dragonfly-metadata",
+ "dragonfly-tftp",
+ "dragonfly-workflow",
  "flate2",
  "futures",
  "hickory-resolver",
  "http 1.4.0",
  "http-body 1.0.1",
  "http-body-util",
- "hyper 0.14.32",
- "hyper-tls 0.5.0",
+ "hyper 1.8.1",
+ "hyper-tls 0.6.0",
  "k8s-openapi",
  "kube",
  "lazy_static",
  "libc",
  "listenfd",
+ "mime_guess",
  "minijinja",
  "minijinja-autoreload",
  "minijinja-embed",
  "netdev",
  "netscan",
- "nix 0.28.0",
+ "nix",
  "oauth2",
  "once_cell",
  "proxmox-client",
@@ -1403,8 +1436,10 @@ dependencies = [
  "proxmox-login",
  "proxmox-schema",
  "rand 0.8.5",
+ "redb",
  "regex",
  "reqwest 0.12.28",
+ "rust-embed",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -2515,6 +2550,17 @@ checksum = "dc1804bdb6a9784758b200007273a8b84e2b0b0b97a8f1e18e763eceb3e9f98a"
 
 [[package]]
 name = "inotify"
+version = "0.9.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f8069d3ec154eb856955c1c0fbffefbf5f3c40a104ec912d4797314c1801abff"
+dependencies = [
+ "bitflags 1.3.2",
+ "inotify-sys",
+ "libc",
+]
+
+[[package]]
+name = "inotify"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f37dccff2791ab604f9babef0ba14fbe0be30bd368dc541e2b08d07c8aa908f3"
@@ -3039,7 +3085,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8b3b3e03fd996419103425efd6895e77b9c08c61b65965787dd35b0213ca22b5"
 dependencies = [
  "minijinja",
- "notify",
+ "notify 8.2.0",
 ]
 
 [[package]]
@@ -3333,18 +3379,6 @@ dependencies = [
  "cfg-if 1.0.4",
  "cfg_aliases 0.1.1",
  "libc",
-]
-
-[[package]]
-name = "nix"
-version = "0.29.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "71e2746dc3a24dd78b3cfcb7be93368c6de9963d30f43a6a73998a9cf4b17b46"
-dependencies = [
- "bitflags 2.10.0",
- "cfg-if 1.0.4",
- "cfg_aliases 0.2.1",
- "libc",
  "memoffset",
 ]
 
@@ -3366,13 +3400,32 @@ checksum = "61807f77802ff30975e01f4f071c8ba10c022052f98b3294119f3e615d13e5be"
 
 [[package]]
 name = "notify"
+version = "6.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6205bd8bb1e454ad2e27422015fb5e4f2bcc7e08fa8f27058670d208324a4d2d"
+dependencies = [
+ "bitflags 2.10.0",
+ "crossbeam-channel",
+ "filetime",
+ "fsevent-sys",
+ "inotify 0.9.6",
+ "kqueue",
+ "libc",
+ "log",
+ "mio 0.8.11",
+ "walkdir",
+ "windows-sys 0.48.0",
+]
+
+[[package]]
+name = "notify"
 version = "8.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4d3d07927151ff8575b7087f245456e549fea62edf0ec4e565a5ee50c8402bc3"
 dependencies = [
  "bitflags 2.10.0",
  "fsevent-sys",
- "inotify",
+ "inotify 0.11.0",
  "kqueue",
  "libc",
  "log",
@@ -3961,7 +4014,6 @@ dependencies = [
 [[package]]
 name = "proxmox-compression"
 version = "1.0.1"
-source = "git+https://github.com/proxmox/proxmox-rs#0645c1cb4c36fdb69f2eed139dad0c4d9a52a308"
 dependencies = [
  "anyhow",
  "bytes",
@@ -3982,7 +4034,6 @@ dependencies = [
 [[package]]
 name = "proxmox-http"
 version = "1.0.5"
-source = "git+https://github.com/proxmox/proxmox-rs#0645c1cb4c36fdb69f2eed139dad0c4d9a52a308"
 dependencies = [
  "anyhow",
  "bytes",
@@ -3992,6 +4043,7 @@ dependencies = [
  "http-body-util",
  "hyper 1.8.1",
  "hyper-util",
+ "nix",
  "openssl",
  "proxmox-base64",
  "proxmox-compression",
@@ -4070,12 +4122,11 @@ dependencies = [
 [[package]]
 name = "proxmox-sys"
 version = "1.0.0"
-source = "git+https://github.com/proxmox/proxmox-rs#0645c1cb4c36fdb69f2eed139dad0c4d9a52a308"
 dependencies = [
  "anyhow",
  "libc",
  "log",
- "nix 0.29.0",
+ "nix",
  "proxmox-io",
  "proxmox-lang",
  "regex",
@@ -4086,7 +4137,6 @@ dependencies = [
 [[package]]
 name = "proxmox-time"
 version = "2.1.0"
-source = "git+https://github.com/proxmox/proxmox-rs#0645c1cb4c36fdb69f2eed139dad0c4d9a52a308"
 dependencies = [
  "anyhow",
  "bitflags 2.10.0",
@@ -4261,6 +4311,15 @@ checksum = "22e18b0f0062d30d4230b2e85ff77fdfe4326feb054b9783a3460d8435c8ab91"
 dependencies = [
  "crossbeam-deque",
  "crossbeam-utils",
+]
+
+[[package]]
+name = "redb"
+version = "3.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ae323eb086579a3769daa2c753bb96deb95993c534711e0dbe881b5192906a06"
+dependencies = [
+ "libc",
 ]
 
 [[package]]
@@ -4498,6 +4557,41 @@ dependencies = [
  "blake2b_simd",
  "constant_time_eq",
  "crossbeam-utils",
+]
+
+[[package]]
+name = "rust-embed"
+version = "8.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "947d7f3fad52b283d261c4c99a084937e2fe492248cb9a68a8435a861b8798ca"
+dependencies = [
+ "rust-embed-impl",
+ "rust-embed-utils",
+ "walkdir",
+]
+
+[[package]]
+name = "rust-embed-impl"
+version = "8.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5fa2c8c9e8711e10f9c4fd2d64317ef13feaab820a4c51541f1a8c8e2e851ab2"
+dependencies = [
+ "proc-macro2 1.0.105",
+ "quote 1.0.43",
+ "rust-embed-utils",
+ "shellexpand",
+ "syn 2.0.114",
+ "walkdir",
+]
+
+[[package]]
+name = "rust-embed-utils"
+version = "8.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "60b161f275cb337fe0a44d924a5f4df0ed69c2c39519858f931ce61c779d3475"
+dependencies = [
+ "sha2 0.10.9",
+ "walkdir",
 ]
 
 [[package]]
@@ -4898,6 +4992,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f40ca3c46823713e0d4209592e8d6e826aa57e928f09752619fc696c499637f6"
 dependencies = [
  "lazy_static",
+]
+
+[[package]]
+name = "shellexpand"
+version = "3.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8b1fdf65dd6331831494dd616b30351c38e96e45921a27745cf98490458b90bb"
+dependencies = [
+ "dirs 5.0.1",
 ]
 
 [[package]]
