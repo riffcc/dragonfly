@@ -29,6 +29,8 @@ pub struct ServicesConfig {
     pub tftp: Option<TftpServiceConfig>,
     /// Server IP address (used for DHCP next-server and TFTP bind)
     pub server_ip: Ipv4Addr,
+    /// HTTP port for boot script URLs (must match the main server port)
+    pub http_port: u16,
 }
 
 impl Default for ServicesConfig {
@@ -37,6 +39,7 @@ impl Default for ServicesConfig {
             dhcp: None,
             tftp: None,
             server_ip: Ipv4Addr::new(0, 0, 0, 0),
+            http_port: 3000,
         }
     }
 }
@@ -146,7 +149,8 @@ impl ServiceRunner {
         let dhcp_config = DhcpConfig::new(actual_ip)
             .with_mode(config.mode.clone())
             .with_tftp_server(actual_ip)
-            .with_boot_filename(&config.boot_filename_uefi);
+            .with_boot_filename(&config.boot_filename_uefi)
+            .with_http_port(self.config.http_port);
 
         // Create hardware lookup wrapper
         let lookup = StoreHardwareLookup::new(self.store.clone());

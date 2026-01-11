@@ -686,6 +686,7 @@ pub async fn run() -> anyhow::Result<()> {
                 boot_dir: PathBuf::from("/var/lib/dragonfly/tftp"),
             }),
             server_ip: std::net::Ipv4Addr::new(0, 0, 0, 0), // Bind to all interfaces
+            http_port: read_port_from_config(), // Use same port as HTTP server
         };
 
         // Create service runner with native store for hardware lookup

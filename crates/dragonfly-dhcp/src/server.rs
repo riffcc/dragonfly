@@ -504,9 +504,10 @@ impl DhcpServer {
             } else {
                 // No script URL configured, use default based on server URL
                 let script_url = format!(
-                    "http://{}:{}/boot/${{mac}}",
+                    "http://{}:{}/boot/{}",
                     self.config.server_ip,
-                    self.config.http_port
+                    self.config.http_port,
+                    request.mac_address
                 );
                 info!(
                     mac = %request.mac_address,
