@@ -882,19 +882,6 @@ pub async fn configure_flight_mode(store: std::sync::Arc<dyn DragonflyStore>) ->
     // The checks inside these functions (like artifact download) will handle idempotency.
     
     // Execute multiple prerequisite tasks in parallel
-    let hooks_download_fut = async {
-        info!("Checking/Downloading HookOS artifacts...");
-        // The download function itself should be idempotent or check existence
-        match crate::api::download_hookos_artifacts("v0.10.0").await {
-            Ok(_) => info!("HookOS artifacts check/download complete."),
-            Err(e) => {
-                warn!("Failed to download/verify HookOS artifacts: {}", e);
-                // Non-fatal for configuration, might affect PXE booting later
-            }
-        }
-        Ok::<(), anyhow::Error>(()) // Return Result for try_join
-    };
-    
     let k8s_check_fut = async {
         info!("Checking Kubernetes connectivity...");
         match check_kubernetes_connectivity().await {
@@ -1110,7 +1097,6 @@ pub async fn configure_flight_mode(store: std::sync::Arc<dyn DragonflyStore>) ->
     // Run prerequisite tasks - some in parallel, some sequential
     // Phase 1: Downloads and builds (parallel)
     match tokio::try_join!(
-        hooks_download_fut,
         k8s_check_fut,
         webui_check_fut,
         agent_builder_fut,

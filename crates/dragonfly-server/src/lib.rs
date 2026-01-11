@@ -526,17 +526,8 @@ pub async fn run() -> anyhow::Result<()> {
             verbose: false,
         };
 
-        // Determine provisioning mode (defaults to Simple)
-        // Native provisioning uses the same DeploymentMode as the main server
-        let provisioning_mode = match std::env::var("DRAGONFLY_PROVISIONING_MODE")
-            .unwrap_or_else(|_| "simple".to_string())
-            .to_lowercase()
-            .as_str()
-        {
-            "flight" => mode::DeploymentMode::Flight,
-            "swarm" => mode::DeploymentMode::Swarm,
-            _ => mode::DeploymentMode::Simple,
-        };
+        // Use the deployment mode from ReDB (already read earlier), default to Simple
+        let provisioning_mode = current_mode.clone().unwrap_or(mode::DeploymentMode::Simple);
 
         info!("Native provisioning mode: {:?}", provisioning_mode);
 
