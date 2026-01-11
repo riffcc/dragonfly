@@ -1855,13 +1855,16 @@ pub async fn serve_ipxe_artifact(
             let generation_target_path = PathBuf::from(AGENT_APKOVL_PATH);
             info!("Generating {} on demand...", generation_target_path.display());
 
-            let base_url = match env::var("DRAGONFLY_BASE_URL") {
-                Ok(url) => url,
-                Err(_) => {
-                    error!("Cannot generate apkovl: DRAGONFLY_BASE_URL environment variable is not set.");
-                    return (StatusCode::INTERNAL_SERVER_ERROR, "Server configuration error for apkovl generation").into_response();
+            // Get base URL with auto-detection fallback
+            let base_url = crate::mode::get_base_url(Some(state.store.as_ref())).await;
+            info!("Generating apkovl with base_url: {}", base_url);
+
+            // Delete existing apkovl to ensure regeneration with current URL
+            if generation_target_path.exists() {
+                if let Err(e) = tokio::fs::remove_file(&generation_target_path).await {
+                    warn!("Failed to remove old apkovl: {}", e);
                 }
-            };
+            }
 
             match generate_agent_apkovl(&generation_target_path, &base_url, AGENT_BINARY_URL).await {
                 Ok(()) => {
