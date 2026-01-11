@@ -157,7 +157,15 @@ impl ProvisioningService {
             return Ok(script);
         }
 
-        // No active workflow - check hardware status
+        // Check if os_choice is set - if so, boot into Mage for imaging
+        if hw.spec.os_choice.is_some() {
+            info!("Hardware {} has os_choice set, booting into Mage for imaging", hw.metadata.name);
+            let script = self.ipxe_generator.discovery_script(Some(hw))
+                .map_err(|e| ProvisioningError::IpxeGeneration(e.to_string()))?;
+            return Ok(script);
+        }
+
+        // No active workflow and no os_choice - check hardware status
         match hw.status.as_ref().map(|s| &s.state) {
             Some(HardwareState::Ready) | Some(HardwareState::Provisioned) => {
                 // Hardware is ready - boot from local disk
@@ -262,21 +270,30 @@ impl ProvisioningService {
             )
         });
 
-        // Determine action based on mode and workflow
+        // Determine action based on mode, workflow, and os_choice
         let (workflow_id, action) = match active_workflow {
             Some(wf) => {
                 let wf_id = wf.metadata.name.clone();
                 (Some(wf_id.clone()), AgentAction::Execute(wf_id))
             }
             None => {
-                match self.mode {
-                    DeploymentMode::Flight if is_new => {
-                        // Flight mode with new hardware - wait for default template
-                        (None, AgentAction::Wait)
-                    }
-                    _ => {
-                        // No workflow assigned - wait
-                        (None, AgentAction::Wait)
+                // No active workflow - check if os_choice is set
+                if let Some(ref os_choice) = hardware.spec.os_choice {
+                    // os_choice is set - create workflow and tell agent to execute
+                    info!("Hardware {} has os_choice {}, creating imaging workflow", hardware.metadata.name, os_choice);
+                    let workflow = self.create_imaging_workflow(&hardware, os_choice).await?;
+                    let wf_id = workflow.metadata.name.clone();
+                    (Some(wf_id.clone()), AgentAction::Execute(wf_id))
+                } else {
+                    match self.mode {
+                        DeploymentMode::Flight if is_new => {
+                            // Flight mode with new hardware - wait for default template
+                            (None, AgentAction::Wait)
+                        }
+                        _ => {
+                            // No workflow assigned - wait
+                            (None, AgentAction::Wait)
+                        }
                     }
                 }
             }
@@ -317,6 +334,39 @@ impl ProvisioningService {
         info!(
             "Assigned workflow {} to hardware {} using template {}",
             workflow_id, hardware_id, template_name
+        );
+
+        Ok(workflow)
+    }
+
+    /// Create an imaging workflow for hardware based on os_choice
+    async fn create_imaging_workflow(&self, hardware: &Hardware, os_choice: &str) -> Result<Workflow, ProvisioningError> {
+        // Create workflow ID
+        let workflow_id = format!("{}-{}", hardware.metadata.name, uuid::Uuid::new_v4().to_string().split('-').next().unwrap());
+
+        // Create workflow with os_choice as the template name
+        // The agent will use this to determine what OS to install
+        let mut workflow = Workflow::new(&workflow_id, &hardware.metadata.name, os_choice);
+
+        // Set workflow to pending state
+        workflow.status = Some(dragonfly_crd::WorkflowStatus {
+            state: WorkflowState::StatePending,
+            current_action: None,
+            progress: 0,
+            global_timeout: None,
+            started_at: None,
+            completed_at: None,
+            error: None,
+            tasks: Vec::new(),
+        });
+
+        // Store workflow
+        self.store.put_workflow(&workflow).await
+            .map_err(|e| ProvisioningError::Store(e))?;
+
+        info!(
+            "Created imaging workflow {} for hardware {} with OS {}",
+            workflow_id, hardware.metadata.name, os_choice
         );
 
         Ok(workflow)
