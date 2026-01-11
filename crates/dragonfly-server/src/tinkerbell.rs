@@ -23,27 +23,28 @@ pub async fn init() -> Result<()> {
             // Replace tilde with home directory
             if let Ok(home) = std::env::var("HOME") {
                 let expanded_path = kubeconfig.replacen('~', &home, 1);
-                std::env::set_var("KUBECONFIG", &expanded_path);
+                // SAFETY: Single-threaded initialization before spawning async tasks
+                unsafe { std::env::set_var("KUBECONFIG", &expanded_path); }
                 info!("Expanded KUBECONFIG path: {}", expanded_path);
             }
         }
     }
-    
+
     // Create a new client using the current environment (KUBECONFIG)
     let client = Client::try_default().await
         .map_err(|e| anyhow!("Failed to create Kubernetes client: {}", e))?;
-    
+
     // Test the client to ensure it can connect to the cluster
     client
         .apiserver_version()
         .await
         .map_err(|e| anyhow!("Failed to connect to Kubernetes API server: {}", e))?;
-    
+
     // Set the global client
     if let Err(_) = KUBE_CLIENT.set(client) {
         return Err(anyhow!("Failed to set global Kubernetes client"));
     }
-    
+
     info!("Kubernetes client initialized successfully");
     Ok(())
 }
@@ -52,19 +53,20 @@ pub async fn init() -> Result<()> {
 pub async fn get_client() -> Result<&'static Client> {
     if KUBE_CLIENT.get().is_none() {
         info!("Kubernetes client not initialized, initializing now");
-        
+
         // Expand the tilde in KUBECONFIG if present
         if let Ok(kubeconfig) = std::env::var("KUBECONFIG") {
             if kubeconfig.starts_with('~') {
                 // Replace tilde with home directory
                 if let Ok(home) = std::env::var("HOME") {
                     let expanded_path = kubeconfig.replacen('~', &home, 1);
-                    std::env::set_var("KUBECONFIG", &expanded_path);
+                    // SAFETY: Single-threaded initialization before spawning async tasks
+                    unsafe { std::env::set_var("KUBECONFIG", &expanded_path); }
                     info!("Expanded KUBECONFIG path: {}", expanded_path);
                 }
             }
         }
-        
+
         // Create a new client using the current environment (KUBECONFIG)
         let client = match Client::try_default().await {
             Ok(client) => client,
@@ -72,20 +74,20 @@ pub async fn get_client() -> Result<&'static Client> {
                 return Err(anyhow!("Failed to create Kubernetes client: {}", e));
             }
         };
-        
+
         // Test the client to ensure it can connect to the cluster
         if let Err(e) = client.apiserver_version().await {
             return Err(anyhow!("Failed to connect to Kubernetes API server: {}", e));
         }
-        
+
         // Set the global client
         if let Err(_) = KUBE_CLIENT.set(client) {
             return Err(anyhow!("Failed to set global Kubernetes client"));
         }
-        
+
         info!("Kubernetes client initialized successfully");
     }
-    
+
     KUBE_CLIENT.get().ok_or_else(|| anyhow!("Kubernetes client initialization failed"))
 }
 
@@ -187,14 +189,14 @@ pub async fn register_machine(machine: &Machine) -> Result<()> {
             return Ok(());
         }
     };
-    
+
     // Create a unique name for the hardware resource based on MAC address
     let resource_name = format!("machine-{}", machine.mac_address.replace(":", "-"));
-    
+
     // --- Determine Hostname (Final Complete Rewrite) ---
     // Start with the fallback/default (MAC-based name)
-    let mut resolved_hostname = resource_name.clone(); 
-    
+    let mut resolved_hostname = resource_name.clone();
+
     // Try hostname if set (Fallback 2)
     if let Some(hostname) = &machine.hostname {
         resolved_hostname = hostname.clone();
@@ -204,10 +206,10 @@ pub async fn register_machine(machine: &Machine) -> Result<()> {
     if let Ok(ip_addr) = std::net::IpAddr::from_str(&machine.ip_address) {
         // Create resolver - note: this function returns the resolver itself, not a Result
         let resolver = hickory_resolver::AsyncResolver::tokio(
-            hickory_resolver::config::ResolverConfig::default(), 
+            hickory_resolver::config::ResolverConfig::default(),
             hickory_resolver::config::ResolverOpts::default()
         );
-        
+
         // Try reverse lookup
         if let Ok(response) = resolver.reverse_lookup(ip_addr).await {
             if let Some(name) = response.iter().next() {
@@ -223,7 +225,7 @@ pub async fn register_machine(machine: &Machine) -> Result<()> {
     } else {
         warn!("Invalid IP address format for DNS lookup: '{}'", machine.ip_address);
     }
-    
+
     // --- End Determine Hostname ---
 
     register_machine_internal(client, machine, &resource_name, &resolved_hostname).await
@@ -239,7 +241,7 @@ async fn register_machine_internal(
     let memorable_name = machine.memorable_name.clone().unwrap_or_else(|| resource_name.to_string());
 
     info!("Registering machine {} with Tinkerbell", resource_name);
-    
+
     // Create the Hardware resource, focusing only on the specific fields we need to set
     // to reduce conflicts with other field managers
     let hardware = Hardware {
@@ -281,10 +283,10 @@ async fn register_machine_internal(
             }]),
         },
     };
-    
+
     // Convert the Hardware resource to JSON
     let hardware_json = serde_json::to_value(&hardware)?;
-    
+
     // Create the ApiResource for the Hardware CRD
     let api_resource = kube::core::ApiResource {
         group: "tinkerbell.org".to_string(),
@@ -293,13 +295,13 @@ async fn register_machine_internal(
         api_version: "tinkerbell.org/v1alpha1".to_string(),
         plural: "hardware".to_string(),
     };
-    
-    info!("Using Kubernetes API Resource: group={}, version={}, kind={}, plural={}", 
+
+    info!("Using Kubernetes API Resource: group={}, version={}, kind={}, plural={}",
           api_resource.group, api_resource.version, api_resource.kind, api_resource.plural);
-    
+
     // Create a dynamic API to interact with the Hardware custom resource
     let api: Api<DynamicObject> = Api::namespaced_with(client.clone(), TINKERBELL_NAMESPACE, &api_resource);
-    
+
     // Create a DynamicObject from our hardware_json
     let mut dynamic_obj = DynamicObject {
         metadata: kube::core::ObjectMeta {
@@ -313,17 +315,17 @@ async fn register_machine_internal(
         }),
         data: hardware_json,
     };
-    
+
     // Check if the hardware resource already exists
     match api.get(&resource_name).await {
         Ok(_existing) => {
             info!("Found existing Hardware resource in Tinkerbell: {}", resource_name);
-            
+
             // Use JSON merge patch instead of server-side apply
             let patch_params = PatchParams::default();
-            
+
             info!("Applying update via JSON merge patch");
-            
+
             // Use JSON merge patch to update the resource
             match api.patch(&resource_name, &patch_params, &Patch::Merge(dynamic_obj)).await {
                 Ok(patched) => {
@@ -342,14 +344,14 @@ async fn register_machine_internal(
         },
         Err(KubeError::Api(ae)) if ae.code == 404 => {
             info!("No existing Hardware resource found, creating new one: {}", resource_name);
-            
+
             // For creation, ensure we have a clean metadata without resourceVersion
             dynamic_obj.metadata = kube::core::ObjectMeta {
                 name: Some(resource_name.to_string()),
                 namespace: Some(TINKERBELL_NAMESPACE.to_string()),
                 ..Default::default()
             };
-            
+
             // Create a new hardware resource
             match api.create(&PostParams::default(), &dynamic_obj).await {
                 Ok(created) => {
@@ -383,10 +385,10 @@ pub async fn delete_hardware(mac_address: &str) -> Result<()> {
             return Err(anyhow!("Kubernetes client not initialized: {}", e));
         }
     };
-    
+
     let resource_name = mac_address.to_lowercase();
     info!("Deleting hardware resource from Tinkerbell: {}", resource_name);
-    
+
     // Create the ApiResource for the Hardware CRD
     let api_resource = kube::core::ApiResource {
         group: "tinkerbell.org".to_string(),
@@ -395,10 +397,10 @@ pub async fn delete_hardware(mac_address: &str) -> Result<()> {
         api_version: "tinkerbell.org/v1alpha1".to_string(),
         plural: "hardware".to_string(),
     };
-    
+
     // Create a dynamic API to interact with the Hardware custom resource
     let api: Api<DynamicObject> = Api::namespaced_with(client.clone(), TINKERBELL_NAMESPACE, &api_resource);
-    
+
     // Delete the hardware resource
     let hardware_result = api.delete(&resource_name, &kube::api::DeleteParams::default()).await;
 
@@ -460,15 +462,15 @@ pub async fn create_workflow(machine: &Machine, _os_choice: &str) -> Result<()> 
             return Ok(());
         }
     };
-    
+
     // Use MAC address without colons as part of the workflow name
     let resource_name = format!("os-install-{}", machine.mac_address.replace(":", "-"));
-    
+
     // Hardware reference name (matches what we create in register_machine)
     let hardware_ref = format!("machine-{}", machine.mac_address.replace(":", "-"));
-    
+
     info!("Creating workflow {} for machine {}", resource_name, machine.id);
-    
+
     // Map OS choice to template reference
     let template_ref = match machine.os_choice.as_ref() {
         Some(os) if os == "ubuntu-2204" => "ubuntu-2204",
@@ -479,7 +481,7 @@ pub async fn create_workflow(machine: &Machine, _os_choice: &str) -> Result<()> 
         Some(os) => os,
         None => "ubuntu-2204", // Default if no OS choice is specified
     };
-    
+
     // First check if the Template exists
     let template_api_resource = kube::core::ApiResource {
         group: "tinkerbell.org".to_string(),
@@ -488,9 +490,9 @@ pub async fn create_workflow(machine: &Machine, _os_choice: &str) -> Result<()> 
         api_version: "tinkerbell.org/v1alpha1".to_string(),
         plural: "templates".to_string(),
     };
-    
+
     let template_api: Api<DynamicObject> = Api::namespaced_with(client.clone(), TINKERBELL_NAMESPACE, &template_api_resource);
-    
+
     match template_api.get(template_ref).await {
         Ok(_) => {
             info!("Template '{}' found in Tinkerbell, proceeding with workflow creation", template_ref);
@@ -503,7 +505,7 @@ pub async fn create_workflow(machine: &Machine, _os_choice: &str) -> Result<()> 
             warn!("Error checking for template '{}': {}. Proceeding with workflow creation anyway.", template_ref, e);
         }
     }
-    
+
     // Create the Workflow resource
     let workflow_json = serde_json::json!({
         "apiVersion": "tinkerbell.org/v1alpha1",
@@ -520,7 +522,7 @@ pub async fn create_workflow(machine: &Machine, _os_choice: &str) -> Result<()> 
             }
         }
     });
-    
+
     // Create the ApiResource for the Workflow CRD
     let api_resource = kube::core::ApiResource {
         group: "tinkerbell.org".to_string(),
@@ -529,13 +531,13 @@ pub async fn create_workflow(machine: &Machine, _os_choice: &str) -> Result<()> 
         api_version: "tinkerbell.org/v1alpha1".to_string(),
         plural: "workflows".to_string(),
     };
-    
-    info!("Using Kubernetes API Resource for Workflow: group={}, version={}, kind={}, plural={}", 
+
+    info!("Using Kubernetes API Resource for Workflow: group={}, version={}, kind={}, plural={}",
           api_resource.group, api_resource.version, api_resource.kind, api_resource.plural);
-    
+
     // Create a dynamic API to interact with the Workflow custom resource
     let api: Api<DynamicObject> = Api::namespaced_with(client.clone(), TINKERBELL_NAMESPACE, &api_resource);
-    
+
     // Create a DynamicObject from our workflow_json
     let dynamic_obj = DynamicObject {
         metadata: kube::core::ObjectMeta {
@@ -549,12 +551,12 @@ pub async fn create_workflow(machine: &Machine, _os_choice: &str) -> Result<()> 
         }),
         data: workflow_json,
     };
-    
+
     // Check if the workflow resource already exists
     match api.get(&resource_name).await {
         Ok(_existing) => {
             info!("Found existing Workflow resource in Tinkerbell: {}", resource_name);
-            
+
             // Use JSON merge patch to update the resource
             let patch_params = PatchParams::default();
             match api.patch(&resource_name, &patch_params, &Patch::Merge(&dynamic_obj)).await {
@@ -574,7 +576,7 @@ pub async fn create_workflow(machine: &Machine, _os_choice: &str) -> Result<()> 
         },
         Err(KubeError::Api(ae)) if ae.code == 404 => {
             info!("No existing Workflow resource found, creating new one: {}", resource_name);
-            
+
             // Create a new workflow resource
             match api.create(&PostParams::default(), &dynamic_obj).await {
                 Ok(created) => {
@@ -643,14 +645,14 @@ fn get_avg_time_for_action(template_name: &str, action_name: &str) -> Option<u64
                     return Some(avg);
                 }
             }
-            
+
             // If no data for this specific template/action, try to use data from any template as fallback
             for (other_template, template_data) in timings.iter() {
                 if let Some(durations) = template_data.get(action_name) {
                     if !durations.is_empty() {
                         let sum: u64 = durations.iter().sum();
                         let avg = sum / durations.len() as u64;
-                        info!("Using fallback timing from {}/{}: avg={}s from {} samples", 
+                        info!("Using fallback timing from {}/{}: avg={}s from {} samples",
                               other_template, action_name, avg, durations.len());
                         return Some(avg);
                     }
@@ -658,14 +660,14 @@ fn get_avg_time_for_action(template_name: &str, action_name: &str) -> Option<u64
             }
         }
     }
-    
+
     None
 }
 
 // Load previously saved timing data from the database
 pub async fn load_historical_timings() -> Result<()> {
     info!("Loading historical timing data from database");
-    
+
     // Get timing data from database
     let timings = match crate::db::load_template_timings().await {
         Ok(t) => t,
@@ -674,36 +676,36 @@ pub async fn load_historical_timings() -> Result<()> {
             return Ok(()); // Continue without historical data
         }
     };
-    
+
     // Update in-memory timing data
     if let Ok(mut timing_map) = HISTORICAL_TIMINGS.write() {
         for timing in timings {
             let template_timings = timing_map
                 .entry(timing.template_name)
                 .or_insert_with(HashMap::new);
-                
+
             template_timings.insert(timing.action_name, timing.durations);
         }
     }
-    
-    info!("Loaded historical timing data for {} templates", 
+
+    info!("Loaded historical timing data for {} templates",
         HISTORICAL_TIMINGS.read().map(|map| map.len()).unwrap_or(0));
-    
+
     Ok(())
 }
 
 // Store timing information after a successful workflow
 fn store_timing_info(template_name: &str, tasks: &[TaskInfo]) {
     const MAX_TIMING_HISTORY: usize = 50; // Keep only the last 50 runs of timing data
-    
+
     info!("Attempting to store timing data for {} tasks in template '{}'", tasks.len(), template_name);
-    
+
     if let Ok(mut timings) = HISTORICAL_TIMINGS.write() {
         // Get or create the template's timing map
         let template_timings = timings
             .entry(template_name.to_string())
             .or_insert_with(HashMap::new);
-            
+
         // Add each task's timing data and save to database
         for task in tasks {
             // Skip tasks with zero duration as they don't provide useful timing data
@@ -711,22 +713,22 @@ fn store_timing_info(template_name: &str, tasks: &[TaskInfo]) {
                 warn!("Task '{}' has zero reported_duration, skipping", task.name);
                 continue;
             }
-            
+
             info!("Saving timing data: {}:{} = {}s", template_name, task.name, task.reported_duration);
-            
+
             let durations = template_timings
                 .entry(task.name.clone())
                 .or_insert_with(Vec::new);
-                
+
             // Only store reported_duration (actual time taken)
             durations.push(task.reported_duration);
-            
+
             // Trim the list to keep only the most recent MAX_TIMING_HISTORY entries
             if durations.len() > MAX_TIMING_HISTORY {
                 // Remove the oldest entries (those at the start of the vector)
                 *durations = durations.iter().skip(durations.len() - MAX_TIMING_HISTORY).cloned().collect();
             }
-            
+
             // Save to database asynchronously
             tokio::spawn(save_timing_to_db(
                 template_name.to_string(),
@@ -762,10 +764,10 @@ pub async fn get_workflow_info(machine: &Machine) -> Result<Option<WorkflowInfo>
             return Ok(None);
         }
     };
-    
+
     // Create the workflow resource name based on the MAC address
     let workflow_name = format!("os-install-{}", machine.mac_address.replace(":", "-"));
-    
+
     // Create the ApiResource for the Workflow CRD
     let api_resource = kube::core::ApiResource {
         group: "tinkerbell.org".to_string(),
@@ -774,10 +776,10 @@ pub async fn get_workflow_info(machine: &Machine) -> Result<Option<WorkflowInfo>
         api_version: "tinkerbell.org/v1alpha1".to_string(),
         plural: "workflows".to_string(),
     };
-    
+
     // Create a dynamic API to interact with the Workflow custom resource
     let api: Api<DynamicObject> = Api::namespaced_with(client.clone(), TINKERBELL_NAMESPACE, &api_resource);
-    
+
     // Try to get the workflow
     match api.get(&workflow_name).await {
         Ok(workflow) => {
@@ -786,20 +788,20 @@ pub async fn get_workflow_info(machine: &Machine) -> Result<Option<WorkflowInfo>
                 .and_then(|spec| spec.get("templateRef"))
                 .and_then(|t| t.as_str())
                 .unwrap_or("unknown");
-            
+
             // Process workflow status from the DynamicObject
             if let Some(status) = workflow.data.get("status") {
                 let state = status.get("state").and_then(|s| s.as_str()).unwrap_or("UNKNOWN");
                 let current_action = status.get("currentAction").and_then(|a| a.as_str()).map(|s| s.to_string());
-                
-                // HACK: If a machine is stuck in STATE_RUNNING with current action "kexec to boot OS", 
+
+                // HACK: If a machine is stuck in STATE_RUNNING with current action "kexec to boot OS",
                 // it has likely successfully booted the OS. Mark it as Ready and delete the workflow.
                 // STATE_FAILED is always considered a failure regardless of the current action.
                 if (state == "STATE_RUNNING" && current_action.as_deref() == Some("kexec to boot OS")) ||
                    is_workflow_timed_out(status, current_action.as_deref()) {
-                    info!("HACK: Detected machine {} in STATE_RUNNING for 'kexec to boot OS' or timed out. Marking as Ready and deleting workflow.", 
+                    info!("HACK: Detected machine {} in STATE_RUNNING for 'kexec to boot OS' or timed out. Marking as Ready and deleting workflow.",
                           machine.id);
-                    
+
                     // Extract tasks to get timing data before marking as complete
                     let mut tasks = Vec::new();
                     if let Some(task_array) = status.get("tasks") {
@@ -811,12 +813,12 @@ pub async fn get_workflow_info(machine: &Machine) -> Result<Option<WorkflowInfo>
                                             let name = action.get("name").and_then(|n| n.as_str()).unwrap_or("unknown").to_string();
                                             let status = action.get("status").and_then(|s| s.as_str()).unwrap_or("UNKNOWN").to_string();
                                             let started_at = action.get("startedAt").and_then(|s| s.as_str()).unwrap_or("").to_string();
-                                            
+
                                             // Only collect completed tasks for timing data
                                             if status == "STATE_SUCCESS" {
                                                 let reported_seconds = action.get("seconds").and_then(|s| s.as_i64()).unwrap_or(0) as u64;
                                                 let estimated_seconds = get_avg_time_for_action(template_ref, &name).unwrap_or(0);
-                                                
+
                                                 tasks.push(TaskInfo {
                                                     name,
                                                     status,
@@ -831,7 +833,7 @@ pub async fn get_workflow_info(machine: &Machine) -> Result<Option<WorkflowInfo>
                                             else if status == "STATE_RUNNING" && name == "kexec to boot OS" {
                                                 let reported_seconds = action.get("seconds").and_then(|s| s.as_i64()).unwrap_or(0) as u64;
                                                 let estimated_seconds = get_avg_time_for_action(template_ref, &name).unwrap_or(0);
-                                                
+
                                                 // Add the kexec task but mark it as successful since we're considering the workflow complete
                                                 tasks.push(TaskInfo {
                                                     name,
@@ -849,13 +851,13 @@ pub async fn get_workflow_info(machine: &Machine) -> Result<Option<WorkflowInfo>
                             }
                         }
                     }
-                    
+
                     // Store timing data for completed tasks
                     if !tasks.is_empty() {
                         info!("Storing timing data for {} completed tasks from kexec-detected workflow", tasks.len());
                         store_timing_info(template_ref, &tasks);
                     }
-                    
+
                     // Create a special WorkflowInfo to indicate this was handled by the hack
                     let workflow_info = WorkflowInfo {
                         state: "STATE_SUCCESS".to_string(),
@@ -872,40 +874,40 @@ pub async fn get_workflow_info(machine: &Machine) -> Result<Option<WorkflowInfo>
                     } else {
                         info!("Successfully stored completed workflow info for {}", machine.id);
                     }
-                    
+
                     // Send a machine_updated event to refresh the UI
                     if let Some(event_manager) = get_event_manager() {
                         info!("Sending machine_updated event after kexec detection success for: {}", machine.id);
                         event_manager.send(format!("machine_updated:{}", machine.id));
                     }
-                    
+
                     // Add a short delay to ensure the UI has time to update and show the completion message
                     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                    
+
                     // Update machine status to Ready AFTER UI has chance to show completion message
                     if let Err(e) = update_machine_status_on_success(machine).await {
                         warn!("Failed to update machine status after kexec detection: {}", e);
                     } else {
                         info!("Successfully marked machine {} as Ready", machine.id);
                     }
-                    
+
                     // Delete the workflow
                     let delete_params = kube::api::DeleteParams::default();
                     match api.delete(&workflow_name, &delete_params).await {
                         Ok(_) => info!("Successfully deleted workflow {}", workflow_name),
                         Err(e) => warn!("Failed to delete workflow {}: {}", workflow_name, e),
                     }
-                    
+
                     return Ok(Some(workflow_info));
                 }
-                
+
                 // Extract all tasks from the workflow
                 let mut tasks = Vec::new();
                 let mut total_seconds = 0;
                 let mut completed_seconds = 0;
                 let mut running_task_info = None;
                 let mut running_task_started_at = None;
-                
+
                 if let Some(task_array) = status.get("tasks") {
                     if let Some(task_array) = task_array.as_array() {
                         for task_obj in task_array {
@@ -915,13 +917,13 @@ pub async fn get_workflow_info(machine: &Machine) -> Result<Option<WorkflowInfo>
                                         let name = action.get("name").and_then(|n| n.as_str()).unwrap_or("unknown").to_string();
                                         let status = action.get("status").and_then(|s| s.as_str()).unwrap_or("UNKNOWN").to_string();
                                         let started_at = action.get("startedAt").and_then(|s| s.as_str()).unwrap_or("").to_string();
-                                        
+
                                         // Get actual duration from completed actions or estimate from template history
                                         let reported_seconds = action.get("seconds").and_then(|s| s.as_i64()).unwrap_or(0) as u64;
-                                        
+
                                         // Only rely on historical timing data or reported seconds
                                         let estimated_seconds = get_avg_time_for_action(template_ref, &name);
-                                        
+
                                         // Use the reported seconds for completed tasks, or estimated seconds if available
                                         let seconds = if status == "STATE_SUCCESS" {
                                             reported_seconds  // Use actual time for completed tasks
@@ -933,9 +935,9 @@ pub async fn get_workflow_info(machine: &Machine) -> Result<Option<WorkflowInfo>
                                             // We have no data at all
                                             0 // Can't make any assumptions
                                         };
-                                        
+
                                         total_seconds += seconds;
-                                        
+
                                         if status == "STATE_SUCCESS" {
                                             completed_seconds += seconds;
                                         } else if status == "STATE_RUNNING" {
@@ -947,12 +949,12 @@ pub async fn get_workflow_info(machine: &Machine) -> Result<Option<WorkflowInfo>
                                             } else {
                                                 None
                                             };
-                                            
+
                                             // Store the current running task info for later progress calculation
                                             running_task_info = Some((name.clone(), seconds));
                                             running_task_started_at = started_at_parsed;
                                         }
-                                        
+
                                         // Add tasks to the array
                                         let _current_date = chrono::Utc::now();
                                         tasks.push(TaskInfo {
@@ -970,7 +972,7 @@ pub async fn get_workflow_info(machine: &Machine) -> Result<Option<WorkflowInfo>
                         }
                     }
                 }
-                
+
                 // Calculate progress for all tasks based on elapsed time
                 let current_time = chrono::Utc::now();
                 for (i, task) in tasks.iter_mut().enumerate() {
@@ -978,16 +980,16 @@ pub async fn get_workflow_info(machine: &Machine) -> Result<Option<WorkflowInfo>
                         if let Ok(started_at) = chrono::DateTime::parse_from_rfc3339(&task.started_at) {
                             let started_at_utc = started_at.with_timezone(&chrono::Utc);
                             let elapsed_seconds = current_time.signed_duration_since(started_at_utc).num_seconds().max(0) as u64;
-                            
+
                             if task.estimated_duration > 0 {
                                 // Calculate raw progress as elapsed/estimated, capped at 100%
                                 let progress_pct = (elapsed_seconds as f64 / task.estimated_duration as f64 * 100.0).min(100.0);
-                                
+
                                 // Update the task progress
                                 task.progress = progress_pct as u8;
-                                
+
                                 // Log the progress calculation
-                                info!("Task '{}'(#{}) progress updated: {}% ({}/{}s elapsed)", 
+                                info!("Task '{}'(#{}) progress updated: {}% ({}/{}s elapsed)",
                                     task.name, i, task.progress, elapsed_seconds, task.estimated_duration);
                             }
                         }
@@ -995,39 +997,39 @@ pub async fn get_workflow_info(machine: &Machine) -> Result<Option<WorkflowInfo>
                         task.progress = 100;
                     }
                 }
-                
+
                 // Calculate fluid progress percentage using timing data
                 let progress = if total_seconds > 0 {
                     // Start with progress from completed tasks
                     let mut time_based_progress = completed_seconds as f64 / total_seconds as f64 * 100.0;
-                    
+
                     // If there's a running task, use its task-specific progress for the overall calculation
                     if let (Some((running_task_name, expected_duration)), Some(started_at)) = (&running_task_info, &running_task_started_at) {
                         // Find the actual task in our tasks list to get its calculated progress
                         if let Some(task) = tasks.iter().find(|t| t.name == *running_task_name && t.status == "STATE_RUNNING") {
                             // Use the task's progress percentage (0-100)
                             let task_progress_ratio = task.progress as f64 / 100.0;
-                            
+
                             // Weight of this task in the overall time
                             let task_weight = *expected_duration as f64 / total_seconds as f64;
-                            
+
                             // Add weighted progress from running task
                             time_based_progress += task_weight * task_progress_ratio * 100.0;
                         } else {
                             // Fallback if we can't find the task - calculate progress directly
                             let now = chrono::Utc::now();
                             let elapsed = now.signed_duration_since(*started_at).num_seconds() as f64;
-                            
+
                             // Ratio of elapsed time to expected duration, capped at 100%
                             let task_progress_ratio = if *expected_duration > 0 {
                                 (elapsed / *expected_duration as f64).min(1.0)
                             } else {
                                 0.0
                             };
-                            
+
                             // Weight of this task in the overall time
                             let task_weight = *expected_duration as f64 / total_seconds as f64;
-                            
+
                             // Add partial progress from running task
                             time_based_progress += task_weight * task_progress_ratio * 100.0;
                         }
@@ -1046,33 +1048,33 @@ pub async fn get_workflow_info(machine: &Machine) -> Result<Option<WorkflowInfo>
                         },
                         _ => 0.0, // No previous workflow info
                     };
-                    
+
                     // Take the maximum of current progress and previous progress
                     let final_progress = time_based_progress.max(previous_progress);
-                    
+
                     // Cap at 100%
                     final_progress.min(100.0) as u8
                 } else {
                     0
                 };
-                
+
                 // Calculate estimated completion time using template-specific timing data
                 let estimated_completion = if state != "STATE_SUCCESS" && state != "STATE_FAILED" && !tasks.is_empty() {
                     if let (Some((_task_name, expected_duration)), Some(started_at)) = (&running_task_info, &running_task_started_at) {
                         // Calculate elapsed time since the task started
                         let now = chrono::Utc::now();
                         let elapsed = now.signed_duration_since(*started_at).num_seconds() as i64;
-                        
+
                         // Calculate remaining time for current task
                         let remaining_seconds = *expected_duration as i64 - elapsed;
                         let remaining_seconds = remaining_seconds.max(0); // Ensure non-negative
-                        
+
                         // If we're near completion of this task, look ahead to how much time is left overall
                         if remaining_seconds < 10 {
                             // Sum the durations of all remaining tasks
                             let mut remaining_total = remaining_seconds;
                             let mut found_current = false;
-                            
+
                             for task in &tasks {
                                 if found_current {
                                     // This is a future task
@@ -1082,7 +1084,7 @@ pub async fn get_workflow_info(machine: &Machine) -> Result<Option<WorkflowInfo>
                                     found_current = true;
                                 }
                             }
-                            
+
                             format_remaining_time(remaining_total)
                         } else {
                             // Just focus on current task
@@ -1094,38 +1096,38 @@ pub async fn get_workflow_info(machine: &Machine) -> Result<Option<WorkflowInfo>
                 } else {
                     None
                 };
-                
+
                 // If the workflow completed successfully, store the timing information with template reference
                 if state == "STATE_SUCCESS" && tasks.iter().all(|t| t.status == "STATE_SUCCESS") {
                     store_timing_info(template_ref, &tasks);
-                    
+
                     // Send a machine_updated event
                     if let Some(event_manager) = get_event_manager() {
                         info!("Sending machine_updated event for completed workflow: {}", machine.id);
                         event_manager.send(format!("machine_updated:{}", machine.id));
                     }
                 }
-                
+
                 // If the workflow failed, update the machine status to Error
                 if state == "STATE_FAILED" {
                     if let Err(e) = update_machine_status_on_failure(machine).await {
                         warn!("Failed to update machine status after workflow failure: {}", e);
                     }
-                    
+
                     // Send a machine_updated event
                     if let Some(event_manager) = get_event_manager() {
                         info!("Sending machine_updated event for failed workflow: {}", machine.id);
                         event_manager.send(format!("machine_updated:{}", machine.id));
                     }
                 }
-                
+
                 // Only mark as Ready if ALL tasks are complete successfully
                 if state == "STATE_SUCCESS" && tasks.iter().all(|t| t.status == "STATE_SUCCESS") {
                     if let Err(e) = update_machine_status_on_success(machine).await {
                         warn!("Failed to update machine status after workflow success: {}", e);
                     }
                 }
-                
+
                 // Also send an update event for normal workflow progress
                 if state == "STATE_RUNNING" {
                     // Send a machine_updated event for real-time progress updates
@@ -1134,7 +1136,7 @@ pub async fn get_workflow_info(machine: &Machine) -> Result<Option<WorkflowInfo>
                         event_manager.send(format!("machine_updated:{}", machine.id));
                     }
                 }
-                
+
                 let workflow_info = WorkflowInfo {
                     state: state.to_string(),
                     current_action,
@@ -1143,7 +1145,7 @@ pub async fn get_workflow_info(machine: &Machine) -> Result<Option<WorkflowInfo>
                     estimated_completion,
                     template_name: template_ref.to_string(),
                 };
-                
+
                 Ok(Some(workflow_info))
             } else {
                 info!("No status information found for workflow {}", workflow_name);
@@ -1164,9 +1166,9 @@ pub async fn get_workflow_info(machine: &Machine) -> Result<Option<WorkflowInfo>
 // Helper function to get the event manager
 fn get_event_manager() -> Option<&'static crate::event_manager::EventManager> {
     // Get the event manager from the AppState
-    // This is a simplified approach - in a real implementation you would 
+    // This is a simplified approach - in a real implementation you would
     // pass the event manager as a parameter to avoid static references
-    
+
     // Access the global event manager reference
     if let Ok(event_manager_ref) = crate::EVENT_MANAGER_REF.read() {
         if let Some(event_manager) = event_manager_ref.as_ref() {
@@ -1180,19 +1182,19 @@ fn get_event_manager() -> Option<&'static crate::event_manager::EventManager> {
             return Some(static_ref);
         }
     }
-    
+
     None // For now, we'll rely on callers to send events properly
 }
 
 // Update machine status when workflow fails
 async fn update_machine_status_on_failure(machine: &Machine) -> Result<()> {
     use dragonfly_common::models::MachineStatus;
-    
+
     info!("Workflow failed for machine {}, updating status to Error", machine.id);
-    
+
     let mut updated_machine = machine.clone();
     updated_machine.status = MachineStatus::Error("OS installation failed".to_string());
-    
+
     crate::db::update_machine(&updated_machine).await?;
     Ok(())
 }
@@ -1202,19 +1204,19 @@ async fn update_machine_status_on_success(machine: &Machine) -> Result<()> {
     use dragonfly_common::models::MachineStatus;
     use dragonfly_common::models::Machine;
     use anyhow::anyhow;
-    
+
     info!("Workflow completed successfully for machine {}, updating status to Ready", machine.id);
-    
+
     // First update just the status for reliability
     match crate::db::update_status(&machine.id, MachineStatus::Ready).await {
         Ok(true) => {
             info!("Successfully updated status to Ready for machine {}", machine.id);
-            
+
             // Calculate deployment duration
             if machine.status == MachineStatus::InstallingOS {
                 let now = chrono::Utc::now();
                 let duration = now.signed_duration_since(machine.updated_at).num_seconds();
-                
+
                 // Try to update the duration separately
                 if let Err(e) = crate::db::update_machine(&Machine {
                     last_deployment_duration: Some(duration),
@@ -1223,7 +1225,7 @@ async fn update_machine_status_on_success(machine: &Machine) -> Result<()> {
                     warn!("Failed to update deployment duration: {}", e);
                 }
             }
-            
+
             Ok(())
         },
         Ok(false) => {
@@ -1242,20 +1244,20 @@ fn format_remaining_time(seconds: i64) -> Option<String> {
     if seconds <= 0 {
         return Some("Completing soon".to_string());
     }
-    
+
     if seconds < 60 {
         return Some(format!("Less than a minute remaining"));
     }
-    
+
     let minutes = seconds / 60;
     if minutes < 60 {
-        return Some(format!("Approximately {} minute{} remaining", 
+        return Some(format!("Approximately {} minute{} remaining",
             minutes, if minutes == 1 { "" } else { "s" }));
     }
-    
+
     let hours = minutes / 60;
     let remaining_minutes = minutes % 60;
-    
+
     if remaining_minutes == 0 {
         Some(format!("Approximately {} hour{} remaining",
             hours, if hours == 1 { "" } else { "s" }))
@@ -1273,12 +1275,12 @@ fn is_workflow_timed_out(status: &serde_json::Value, current_action: Option<&str
     if state != "STATE_RUNNING" {
         return false;
     }
-    
+
     // Check if the current action is kexec to boot OS
     if current_action != Some("kexec to boot OS") {
         return false;
     }
-    
+
     // Try to get the time for the last action
     if let Some(tasks) = status.get("tasks") {
         if let Some(tasks_array) = tasks.as_array() {
@@ -1292,7 +1294,7 @@ fn is_workflow_timed_out(status: &serde_json::Value, current_action: Option<&str
                                     if let Ok(started_at) = chrono::DateTime::parse_from_rfc3339(started_at_str) {
                                         let now = chrono::Utc::now();
                                         let elapsed = now.signed_duration_since(started_at);
-                                        
+
                                         // If it's been more than 30 minutes, consider it timed out
                                         if elapsed.num_minutes() > 30 {
                                             return true;
@@ -1306,7 +1308,7 @@ fn is_workflow_timed_out(status: &serde_json::Value, current_action: Option<&str
             }
         }
     }
-    
+
     false
 }
 
@@ -1316,7 +1318,7 @@ pub async fn cleanup_historical_timings() -> anyhow::Result<()> {
     let to_save = {
         let mut timings = HISTORICAL_TIMINGS.write().map_err(|_| anyhow::anyhow!("Failed to acquire write lock"))?;
         let mut data = Vec::new();
-        
+
         // Clone the data we need
         for (template_name, actions) in timings.iter() {
             for (action_name, durations) in actions.iter() {
@@ -1327,19 +1329,19 @@ pub async fn cleanup_historical_timings() -> anyhow::Result<()> {
                 ));
             }
         }
-        
+
         // Clear the in-memory timings
         timings.clear();
         data
     }; // Lock is dropped here
-    
+
     // Save each timing to the database
     for (template_name, action_name, durations) in to_save {
         if let Err(e) = crate::db::save_template_timing(&template_name, &action_name, &durations).await {
             error!("Failed to save timing data: {}", e);
         }
     }
-    
+
     Ok(())
 }
 
@@ -1348,7 +1350,7 @@ pub async fn start_timing_cleanup_task(mut shutdown_rx: tokio::sync::watch::Rece
     tokio::spawn(async move {
         // Run the cleanup task every 24 hours
         let cleanup_interval = std::time::Duration::from_secs(24 * 60 * 60);
-        
+
         loop {
             tokio::select! {
                 _ = tokio::time::sleep(cleanup_interval) => {
@@ -1375,11 +1377,12 @@ fn calculate_progress(tasks: &[TaskInfo]) -> u8 {
     // Calculate percentage based on completed tasks (this is now just a fallback)
     let total_tasks = tasks.len();
     let completed_tasks = tasks.iter().filter(|t| t.status == "STATE_SUCCESS").count();
-    
+
     ((completed_tasks as f64 / total_tasks as f64) * 100.0).min(99.0) as u8
 }
 
 // Estimate completion time based on historical timing data
+#[allow(dead_code)]
 async fn estimate_completion_time(template_name: &str, current_action: &str, tasks: &[TaskInfo], state: &str) -> (Option<std::time::Duration>, u8) {
     // Load all template timing data
     let timings = match crate::db::load_template_timings().await {
@@ -1391,7 +1394,7 @@ async fn estimate_completion_time(template_name: &str, current_action: &str, tas
     let mut total_estimated_time = 0u64;
     let mut time_elapsed = 0u64;
     let mut current_action_found = false;
-    
+
     // First pass: collect all task names to build a complete sequence
     let mut all_task_names = Vec::new();
     for task in tasks {
@@ -1401,11 +1404,11 @@ async fn estimate_completion_time(template_name: &str, current_action: &str, tas
     // Second pass: calculate estimates
     for task_name in &all_task_names {
         // Find historical timing data for this action
-        let timing_data = timings.iter().find(|t| 
-            t.template_name == template_name && 
+        let timing_data = timings.iter().find(|t|
+            t.template_name == template_name &&
             t.action_name == *task_name
         );
-        
+
         // Get average duration for this action
         let avg_duration = match timing_data {
             Some(data) if !data.durations.is_empty() => {
@@ -1418,9 +1421,9 @@ async fn estimate_completion_time(template_name: &str, current_action: &str, tas
                 return (None, calculate_progress(tasks));
             }
         };
-        
+
         total_estimated_time += avg_duration;
-        
+
         // If we haven't reached the current action yet, add to elapsed time
         if task_name != current_action {
             if !current_action_found {
@@ -1428,7 +1431,7 @@ async fn estimate_completion_time(template_name: &str, current_action: &str, tas
             }
         } else {
             current_action_found = true;
-            
+
             // For the current action, add partial time based on task state
             if state == "STATE_RUNNING" {
                 // Assume we're halfway through the current action
@@ -1436,20 +1439,20 @@ async fn estimate_completion_time(template_name: &str, current_action: &str, tas
             }
         }
     }
-    
+
     // Calculate time remaining and progress percentage
     let time_remaining = if time_elapsed < total_estimated_time {
         Some(std::time::Duration::from_millis(total_estimated_time - time_elapsed))
     } else {
         None
     };
-    
+
     let progress = if total_estimated_time > 0 {
         ((time_elapsed as f64 / total_estimated_time as f64) * 100.0).min(99.0) as u8
     } else {
         calculate_progress(tasks)
     };
-    
+
     (time_remaining, progress)
 }
 
@@ -1461,21 +1464,21 @@ pub async fn start_workflow_polling_task(
     use dragonfly_common::models::MachineStatus;
     use std::collections::HashMap;
     use std::time::Duration;
-    
+
     // Clone the event manager for the task
     let event_manager_clone = event_manager.clone();
-    
+
     tokio::spawn(async move {
         let poll_interval = Duration::from_secs(1);
         info!("Starting workflow polling task with interval of {:?}", poll_interval);
-        
+
         // Track the last seen workflow state by machine ID
         let mut last_seen_states: HashMap<uuid::Uuid, (String, Option<String>)> = HashMap::new();
-        
+
         loop {
             // Wait for the poll interval or shutdown signal
             tokio::select! {
-                _ = tokio::time::sleep(poll_interval) => { 
+                _ = tokio::time::sleep(poll_interval) => {
                     // Get all machines with InstallingOS status
                     let machines = match crate::db::get_machines_by_status(MachineStatus::InstallingOS).await {
                         Ok(machines) => machines,
@@ -1484,24 +1487,24 @@ pub async fn start_workflow_polling_task(
                             continue;
                         }
                     };
-                    
+
                     if machines.is_empty() {
                         // No machines are currently installing OS
                         continue;
                     }
-                    
+
                     // Check each machine's workflow
                     for machine in machines.iter() {
                         match get_workflow_info(machine).await {
                             Ok(Some(info)) => {
                                 let current_state = (info.state.clone(), info.current_action.clone());
-                                
+
                                 if let Some(last_state) = last_seen_states.get(&machine.id) {
                                     if *last_state != current_state {
-                                        info!("Workflow update: machine={} old_state={} -> new_state={} action={:?}", 
-                                            machine.id, 
-                                            last_state.0, 
-                                            current_state.0, 
+                                        info!("Workflow update: machine={} old_state={} -> new_state={} action={:?}",
+                                            machine.id,
+                                            last_state.0,
+                                            current_state.0,
                                             current_state.1
                                         );
                                         // Send machine updated event on state change
@@ -1511,14 +1514,14 @@ pub async fn start_workflow_polling_task(
                                 } else {
                                     // First time seeing this machine - log it once
                                     info!("New workflow: machine={} state={} action={:?}",
-                                        machine.id, 
-                                        current_state.0, 
+                                        machine.id,
+                                        current_state.0,
                                         current_state.1
                                     );
-                                    
+
                                     // Send initial machine updated event
                                     event_manager_clone.send(format!("machine_updated:{}", machine.id));
-                                    
+
                                     // Add to last seen states
                                     last_seen_states.insert(machine.id, current_state);
                                 }
@@ -1535,11 +1538,11 @@ pub async fn start_workflow_polling_task(
                             }
                         }
                     }
-                    
+
                     // Clean up stale entries without logging - just remove machines no longer installing OS
-                    let active_machine_ids: std::collections::HashSet<uuid::Uuid> = 
+                    let active_machine_ids: std::collections::HashSet<uuid::Uuid> =
                         machines.iter().map(|m| m.id).collect();
-                    
+
                     last_seen_states.retain(|machine_id, _| active_machine_ids.contains(machine_id));
                 }
                 _ = shutdown_rx.changed() => {
@@ -1568,4 +1571,4 @@ pub async fn get_workflow_info_by_id(id: &uuid::Uuid) -> Result<Option<WorkflowI
             Err(anyhow!("Error fetching machine: {}", e))
         }
     }
-} 
+}

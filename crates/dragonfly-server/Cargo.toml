@@ -1,7 +1,7 @@
 [package]
 name = "dragonfly-server"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 authors = ["Sparx"]
 description = "API server for Dragonfly bare metal infrastructure management"
 
@@ -13,8 +13,7 @@ server-binary = []
 # Web Framework
 axum = { version = "0.8.3", features = ["macros", "ws", "http2"] }
 # Authentication
-# Revert axum-login back to stable version
-axum-login = { version = "0.17.0" }
+axum-login = "0.18"
 axum-extra = { version = "0.10.1", features = ["typed-header", "cookie", "cookie-signed"] }
 # Sessions
 tower-sessions = { version = "0.14.0" }
@@ -61,6 +60,11 @@ hickory-resolver = { version = "0.24.4", features = ["tokio-runtime"] } # Rename
 # Local dependencies
 dragonfly-common = { path = "../dragonfly-common" }
 dragonfly-crd = { path = "../dragonfly-crd" }
+dragonfly-ipxe = { path = "../dragonfly-ipxe" }
+dragonfly-workflow = { path = "../dragonfly-workflow" }
+dragonfly-dhcp = { path = "../dragonfly-dhcp" }
+dragonfly-tftp = { path = "../dragonfly-tftp" }
+dragonfly-metadata = { path = "../dragonfly-metadata" }
 
 # Storage
 redb = "3.1.0"
@@ -110,13 +114,12 @@ urlencoding = "2.1"
 aes-gcm = "0.10.3"
 
 # Proxmox & Network Scanning
-# proxmox-rs = { version = "0.1" } # Adjust version as needed - Incorrect, it's a workspace
 proxmox-client = { git = "https://github.com/proxmox/proxmox-rs", features = ["hyper-client"] }
 proxmox-schema = { git = "https://github.com/proxmox/proxmox-rs", features = ["api-types"] }
-proxmox-http = { git = "https://github.com/proxmox/proxmox-rs" } # Remove client-sync feature if present
-proxmox-login = { git = "https://github.com/proxmox/proxmox-rs" } # ADDED
-hyper = { version = "0.14", features = ["client", "http1", "http2", "tcp"] } # ADDED
-hyper-tls = { version = "0.5" } # ADDED
+proxmox-http = { git = "https://github.com/proxmox/proxmox-rs" }
+proxmox-login = { git = "https://github.com/proxmox/proxmox-rs" }
+hyper = { version = "1", features = ["client", "http1", "http2"] }
+hyper-tls = { version = "0.6" }
 netscan = { version = "0.28" }
 netdev = { version = "0.26" }
 dns-lookup = "2.0"
@@ -126,6 +129,10 @@ regex = "1"
 
 # Add http crate dependency
 http = "1"
+
+# Embed static assets in release builds
+rust-embed = { version = "8", features = ["interpolate-folder-path"] }
+mime_guess = "2"
 
 [dev-dependencies]
 tempfile = "3.8"

@@ -13,6 +13,7 @@ pub struct MemoryStore {
     hardware: RwLock<HashMap<String, Hardware>>,
     workflows: RwLock<HashMap<String, Workflow>>,
     templates: RwLock<HashMap<String, Template>>,
+    settings: RwLock<HashMap<String, String>>,
     /// Index: MAC address -> hardware ID
     mac_index: RwLock<HashMap<String, String>>,
 }
@@ -24,6 +25,7 @@ impl MemoryStore {
             hardware: RwLock::new(HashMap::new()),
             workflows: RwLock::new(HashMap::new()),
             templates: RwLock::new(HashMap::new()),
+            settings: RwLock::new(HashMap::new()),
             mac_index: RwLock::new(HashMap::new()),
         }
     }
@@ -190,6 +192,31 @@ impl DragonflyStore for MemoryStore {
             StoreError::Database(format!("lock poisoned: {}", e))
         })?;
         guard.remove(name);
+        Ok(())
+    }
+
+    // === Settings Operations ===
+
+    async fn get_setting(&self, key: &str) -> Result<Option<String>> {
+        let guard = self.settings.read().map_err(|e| {
+            StoreError::Database(format!("lock poisoned: {}", e))
+        })?;
+        Ok(guard.get(key).cloned())
+    }
+
+    async fn put_setting(&self, key: &str, value: &str) -> Result<()> {
+        let mut guard = self.settings.write().map_err(|e| {
+            StoreError::Database(format!("lock poisoned: {}", e))
+        })?;
+        guard.insert(key.to_string(), value.to_string());
+        Ok(())
+    }
+
+    async fn delete_setting(&self, key: &str) -> Result<()> {
+        let mut guard = self.settings.write().map_err(|e| {
+            StoreError::Database(format!("lock poisoned: {}", e))
+        })?;
+        guard.remove(key);
         Ok(())
     }
 }

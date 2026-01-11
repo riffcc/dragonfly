@@ -90,6 +90,17 @@ pub trait DragonflyStore: Send + Sync {
 
     /// Delete template by name
     async fn delete_template(&self, name: &str) -> Result<()>;
+
+    // === Settings Operations ===
+
+    /// Get a setting value by key
+    async fn get_setting(&self, key: &str) -> Result<Option<String>>;
+
+    /// Store a setting
+    async fn put_setting(&self, key: &str, value: &str) -> Result<()>;
+
+    /// Delete a setting
+    async fn delete_setting(&self, key: &str) -> Result<()>;
 }
 
 /// Storage configuration

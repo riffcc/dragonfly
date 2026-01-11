@@ -5,7 +5,7 @@
 use super::{DragonflyStore, Result, StoreError};
 use async_trait::async_trait;
 use dragonfly_crd::{Hardware, Workflow, Template};
-use redb::{Database, TableDefinition, ReadableTable};
+use redb::{Database, TableDefinition, ReadableTable, ReadableDatabase};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -14,6 +14,7 @@ const HARDWARE_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("hardw
 const WORKFLOW_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("workflows");
 const TEMPLATE_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("templates");
 const MAC_INDEX_TABLE: TableDefinition<&str, &str> = TableDefinition::new("mac_index");
+const SETTINGS_TABLE: TableDefinition<&str, &str> = TableDefinition::new("settings");
 
 /// ReDB storage backend
 pub struct RedbStore {
@@ -44,6 +45,9 @@ impl RedbStore {
         })?;
         write_txn.open_table(MAC_INDEX_TABLE).map_err(|e| {
             StoreError::Database(format!("failed to create mac_index table: {}", e))
+        })?;
+        write_txn.open_table(SETTINGS_TABLE).map_err(|e| {
+            StoreError::Database(format!("failed to create settings table: {}", e))
         })?;
 
         write_txn.commit().map_err(|e| {
@@ -389,6 +393,66 @@ impl DragonflyStore for RedbStore {
                 StoreError::Database(format!("failed to open table: {}", e))
             })?;
             table.remove(name).map_err(|e| {
+                StoreError::Database(format!("remove failed: {}", e))
+            })?;
+        }
+
+        write_txn.commit().map_err(|e| {
+            StoreError::Database(format!("commit failed: {}", e))
+        })?;
+
+        Ok(())
+    }
+
+    // === Settings Operations ===
+
+    async fn get_setting(&self, key: &str) -> Result<Option<String>> {
+        let read_txn = self.db.begin_read().map_err(|e| {
+            StoreError::Database(format!("failed to begin read: {}", e))
+        })?;
+
+        let table = read_txn.open_table(SETTINGS_TABLE).map_err(|e| {
+            StoreError::Database(format!("failed to open table: {}", e))
+        })?;
+
+        match table.get(key) {
+            Ok(Some(value)) => Ok(Some(value.value().to_string())),
+            Ok(None) => Ok(None),
+            Err(e) => Err(StoreError::Database(format!("get failed: {}", e))),
+        }
+    }
+
+    async fn put_setting(&self, key: &str, value: &str) -> Result<()> {
+        let write_txn = self.db.begin_write().map_err(|e| {
+            StoreError::Database(format!("failed to begin write: {}", e))
+        })?;
+
+        {
+            let mut table = write_txn.open_table(SETTINGS_TABLE).map_err(|e| {
+                StoreError::Database(format!("failed to open table: {}", e))
+            })?;
+            table.insert(key, value).map_err(|e| {
+                StoreError::Database(format!("insert failed: {}", e))
+            })?;
+        }
+
+        write_txn.commit().map_err(|e| {
+            StoreError::Database(format!("commit failed: {}", e))
+        })?;
+
+        Ok(())
+    }
+
+    async fn delete_setting(&self, key: &str) -> Result<()> {
+        let write_txn = self.db.begin_write().map_err(|e| {
+            StoreError::Database(format!("failed to begin write: {}", e))
+        })?;
+
+        {
+            let mut table = write_txn.open_table(SETTINGS_TABLE).map_err(|e| {
+                StoreError::Database(format!("failed to open table: {}", e))
+            })?;
+            table.remove(key).map_err(|e| {
                 StoreError::Database(format!("remove failed: {}", e))
             })?;
         }

@@ -102,6 +102,7 @@ pub struct SettingsTemplate {
     pub default_os_ubuntu2204: bool,
     pub default_os_ubuntu2404: bool,
     pub default_os_debian12: bool,
+    pub default_os_debian13: bool,
     pub default_os_proxmox: bool,
     pub default_os_talos: bool,
     pub has_initial_password: bool,
@@ -411,7 +412,15 @@ pub async fn index(
     let require_login = app_state.settings.lock().await.require_login;
     let current_path = uri.path().to_string();
 
-    // --- Scenario B Logic --- 
+    // --- Login check FIRST (before any other logic) ---
+    // If require_login is enabled and user is not authenticated, redirect to login
+    // This applies regardless of mode or installation state (except demo mode)
+    if require_login && !is_authenticated && !app_state.is_demo_mode {
+        info!("Login required, redirecting to /login");
+        return Redirect::to("/login").into_response();
+    }
+
+    // --- Scenario B Logic ---
     if app_state.is_demo_mode {
         // Case B.3: Not installed (or explicitly demo) -> Show Demo Experience
         info!("Rendering Demo Experience (root route)");
@@ -419,7 +428,8 @@ pub async fn index(
         // Ensure is_demo_mode is passed to the template
     } else if app_state.is_installed {
         // Case B.1 & B.2: Installed
-        let current_mode = mode::get_current_mode().await.unwrap_or(None);
+        // Use the already-open store to check mode (avoids ReDB lock conflict)
+        let current_mode = app_state.store.get_setting("deployment_mode").await.ok().flatten();
         if current_mode.is_none() {
             // Case B.2: Installed, no mode selected -> Show Welcome Screen
             // BUT ONLY if not in installation server mode
@@ -461,15 +471,6 @@ pub async fn index(
         }
     }
     // --- End Scenario B Logic ---
-
-    // Login check (only applies if *not* demo and mode *is* selected)
-    if require_login && !is_authenticated && app_state.is_installed {
-        let current_mode = mode::get_current_mode().await.unwrap_or(None);
-        if current_mode.is_some() { // Only redirect if mode is selected
-             info!("Login required, redirecting to /login");
-             return Redirect::to("/login").into_response();
-        }
-    }
 
     // --- Continue with Dashboard/Demo Rendering --- 
     let installation_in_progress = std::env::var("DRAGONFLY_INSTALL_SERVER_MODE").is_ok() || app_state.is_installation_server;
@@ -555,10 +556,10 @@ pub async fn machine_list(
 
     let require_login = app_state.settings.lock().await.require_login;
 
-    // --- Scenario B: Mode/Install Check --- 
+    // --- Scenario B: Mode/Install Check ---
     // Redirect to welcome if installed but no mode selected
     if app_state.is_installed && !app_state.is_demo_mode { // Don't check mode if in demo
-        let current_mode = mode::get_current_mode().await.unwrap_or(None);
+        let current_mode = app_state.store.get_setting("deployment_mode").await.ok().flatten();
         if current_mode.is_none() {
             info!("/machines accessed before mode selection, redirecting to /welcome");
             // Need to return a response that HTMX can use to redirect
@@ -980,6 +981,7 @@ pub async fn settings_page(
         default_os_ubuntu2204: default_os.as_deref() == Some("ubuntu-2204"),
         default_os_ubuntu2404: default_os.as_deref() == Some("ubuntu-2404"),
         default_os_debian12: default_os.as_deref() == Some("debian-12"),
+        default_os_debian13: default_os.as_deref() == Some("debian-13"),
         default_os_proxmox: default_os.as_deref() == Some("proxmox"),
         default_os_talos: default_os.as_deref() == Some("talos"),
         has_initial_password,
@@ -1108,6 +1110,7 @@ pub async fn update_settings(
                 default_os_ubuntu2204: default_os.as_deref() == Some("ubuntu-2204"),
                 default_os_ubuntu2404: default_os.as_deref() == Some("ubuntu-2404"),
                 default_os_debian12: default_os.as_deref() == Some("debian-12"),
+                default_os_debian13: default_os.as_deref() == Some("debian-13"),
                 default_os_proxmox: default_os.as_deref() == Some("proxmox"),
                 default_os_talos: default_os.as_deref() == Some("talos"),
                 has_initial_password,
@@ -1116,13 +1119,13 @@ pub async fn update_settings(
                 error_message,
                 current_path, // Make sure current_path is passed here
             };
-            
+
             // Return the error template
             let mut cookie = Cookie::new("dragonfly_theme", theme.clone());
             cookie.set_path("/");
             cookie.set_max_age(time::Duration::days(365));
             cookie.set_same_site(SameSite::Lax);
-            
+
             return (
                 [(header::SET_COOKIE, cookie.to_string())],
                 render_minijinja(&app_state, "settings.html", context)
@@ -1179,6 +1182,7 @@ pub async fn update_settings(
                                 default_os_ubuntu2204: default_os.as_deref() == Some("ubuntu-2204"),
                                 default_os_ubuntu2404: default_os.as_deref() == Some("ubuntu-2404"),
                                 default_os_debian12: default_os.as_deref() == Some("debian-12"),
+                                default_os_debian13: default_os.as_deref() == Some("debian-13"),
                                 default_os_proxmox: default_os.as_deref() == Some("proxmox"),
                                 default_os_talos: default_os.as_deref() == Some("talos"),
                                 has_initial_password,
@@ -1187,13 +1191,13 @@ pub async fn update_settings(
                                 error_message,
                                 current_path, // Add current_path here
                             };
-                            
+
                             // Return the error template
                             let mut cookie = Cookie::new("dragonfly_theme", theme.clone());
                             cookie.set_path("/");
                             cookie.set_max_age(time::Duration::days(365));
                             cookie.set_same_site(SameSite::Lax);
-                            
+
                             return (
                                 [(header::SET_COOKIE, cookie.to_string())],
                                 render_minijinja(&app_state, "settings.html", context)
@@ -1235,6 +1239,7 @@ pub async fn update_settings(
                             default_os_ubuntu2204: default_os.as_deref() == Some("ubuntu-2204"),
                             default_os_ubuntu2404: default_os.as_deref() == Some("ubuntu-2404"),
                             default_os_debian12: default_os.as_deref() == Some("debian-12"),
+                            default_os_debian13: default_os.as_deref() == Some("debian-13"),
                             default_os_proxmox: default_os.as_deref() == Some("proxmox"),
                             default_os_talos: default_os.as_deref() == Some("talos"),
                             has_initial_password,
@@ -1243,13 +1248,13 @@ pub async fn update_settings(
                             error_message,
                             current_path, // Add current_path here
                         };
-                        
+
                         // Return the error template
                         let mut cookie = Cookie::new("dragonfly_theme", theme.clone());
                         cookie.set_path("/");
                         cookie.set_max_age(time::Duration::days(365));
                         cookie.set_same_site(SameSite::Lax);
-                        
+
                         return (
                             [(header::SET_COOKIE, cookie.to_string())],
                             render_minijinja(&app_state, "settings.html", context)
@@ -1258,7 +1263,7 @@ pub async fn update_settings(
                 }
             }
         }
-        
+
         // Check form password and confirm (moving this out of previous if-let block to fix scope)
         if form.password.is_some() || form.password_confirm.is_some() {
             let password = form.password.as_deref().unwrap_or("");
@@ -1290,6 +1295,7 @@ pub async fn update_settings(
                     default_os_ubuntu2204: default_os.as_deref() == Some("ubuntu-2204"),
                     default_os_ubuntu2404: default_os.as_deref() == Some("ubuntu-2404"),
                     default_os_debian12: default_os.as_deref() == Some("debian-12"),
+                    default_os_debian13: default_os.as_deref() == Some("debian-13"),
                     default_os_proxmox: default_os.as_deref() == Some("proxmox"),
                     default_os_talos: default_os.as_deref() == Some("talos"),
                     has_initial_password,
@@ -1298,13 +1304,13 @@ pub async fn update_settings(
                     error_message,
                     current_path, // Make sure current_path is passed here
                 };
-                
+
                 // Return the error template
                 let mut cookie = Cookie::new("dragonfly_theme", theme.clone());
                 cookie.set_path("/");
                 cookie.set_max_age(time::Duration::days(365));
                 cookie.set_same_site(SameSite::Lax);
-                
+
                 return (
                     [(header::SET_COOKIE, cookie.to_string())],
                     render_minijinja(&app_state, "settings.html", context)
@@ -1338,7 +1344,13 @@ pub async fn welcome_page(
     let theme = get_theme_from_cookie(&headers);
     let is_authenticated = auth_session.user.is_some();
     let current_path = uri.path().to_string();
-    
+
+    // Welcome page allows changing installation mode - always require authentication
+    if !is_authenticated {
+        info!("Login required for /welcome (mode selection), redirecting to /login");
+        return Redirect::to("/login").into_response();
+    }
+
     // Replace Askama render with placeholder
     let context = WelcomeTemplate {
         theme,
@@ -1361,11 +1373,17 @@ pub async fn setup_simple(
     let theme = get_theme_from_cookie(&headers);
     let is_authenticated = auth_session.user.is_some();
     let current_path = uri.path().to_string();
-    
-    // Save mode to database immediately
-    if let Err(e) = mode::save_mode(mode::DeploymentMode::Simple, false).await {
+
+    // Setup endpoints change the installation mode - require authentication
+    if !is_authenticated {
+        info!("Login required for /setup/simple, redirecting to /login");
+        return Redirect::to("/login").into_response();
+    }
+
+    // Save mode to ReDB using the already-open store (avoids lock conflict)
+    if let Err(e) = app_state.store.put_setting("deployment_mode", "simple").await {
         error!("Failed to save Simple mode to database: {}", e);
-        
+
         // Return error template
         let context = ErrorTemplate {
             theme,
@@ -1425,11 +1443,17 @@ pub async fn setup_flight(
     let theme = get_theme_from_cookie(&headers);
     let is_authenticated = auth_session.user.is_some();
     let current_path = uri.path().to_string();
-    
-    // Save mode to database immediately
-    if let Err(e) = mode::save_mode(mode::DeploymentMode::Flight, false).await {
+
+    // Setup endpoints change the installation mode - require authentication
+    if !is_authenticated {
+        info!("Login required for /setup/flight, redirecting to /login");
+        return Redirect::to("/login").into_response();
+    }
+
+    // Save mode to ReDB using the already-open store (avoids lock conflict)
+    if let Err(e) = app_state.store.put_setting("deployment_mode", "flight").await {
         error!("Failed to save Flight mode to database: {}", e);
-        
+
         // Return error template
         let context = ErrorTemplate {
             theme,
@@ -1489,11 +1513,17 @@ pub async fn setup_swarm(
     let theme = get_theme_from_cookie(&headers);
     let is_authenticated = auth_session.user.is_some();
     let current_path = uri.path().to_string();
-    
-    // Save mode to database immediately
-    if let Err(e) = mode::save_mode(mode::DeploymentMode::Swarm, false).await {
+
+    // Setup endpoints change the installation mode - require authentication
+    if !is_authenticated {
+        info!("Login required for /setup/swarm, redirecting to /login");
+        return Redirect::to("/login").into_response();
+    }
+
+    // Save mode to ReDB using the already-open store (avoids lock conflict)
+    if let Err(e) = app_state.store.put_setting("deployment_mode", "swarm").await {
         error!("Failed to save Swarm mode to database: {}", e);
-        
+
         // Return error template
         let context = ErrorTemplate {
             theme,
@@ -1778,15 +1808,13 @@ pub async fn tags_page(
     let theme = get_theme_from_cookie(&headers);
     let is_authenticated = auth_session.user.is_some();
     let current_path = uri.path().to_string();
-    
+
     // Check if user is authenticated if login is required
     let require_login = app_state.settings.lock().await.require_login;
-    if require_login && !is_authenticated && app_state.is_installed {
-        if let Some(_) = mode::get_current_mode().await.unwrap_or(None) {
-            return Redirect::to("/login").into_response();
-        }
+    if require_login && !is_authenticated && !app_state.is_demo_mode {
+        return Redirect::to("/login").into_response();
     }
-    
+
     // Fetch all machines to display in the tag editor
     let machines = match crate::db::get_all_machines().await {
         Ok(machines) => machines,
