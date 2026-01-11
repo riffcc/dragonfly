@@ -1483,8 +1483,9 @@ pub async fn setup_flight(
     
     // Configure the system for Flight mode in the background
     let event_manager = app_state.event_manager.clone();
+    let store_for_flight = app_state.store.clone();
     tokio::spawn(async move {
-        match mode::configure_flight_mode().await {
+        match mode::configure_flight_mode(store_for_flight).await {
             Ok(_) => {
                 info!("Flight mode configuration completed successfully in background");
                 // Send event for successful configuration

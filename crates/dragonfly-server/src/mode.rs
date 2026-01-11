@@ -875,7 +875,7 @@ pub async fn start_handoff_listener(mut shutdown_rx: watch::Receiver<()>) -> Res
 }
 
 // Configure the system for Flight mode
-pub async fn configure_flight_mode() -> Result<()> {
+pub async fn configure_flight_mode(store: std::sync::Arc<dyn DragonflyStore>) -> Result<()> {
     info!("Configuring system for Flight mode");
     
     // Always attempt the configuration steps for Flight mode
@@ -994,51 +994,72 @@ pub async fn configure_flight_mode() -> Result<()> {
         Ok::<(), anyhow::Error>(())
     };
 
-    // Build dragonfly-agent binaries locally (JIT) for both architectures
+    // Download or build dragonfly-agent binaries for both architectures
     let agent_build_fut = async {
         // Create mage directories for each arch
         let _ = std::fs::create_dir_all("/var/lib/dragonfly/mage/x86_64");
         let _ = std::fs::create_dir_all("/var/lib/dragonfly/mage/aarch64");
 
-        // Build for x86_64
-        info!("Building dragonfly-agent for x86_64-unknown-linux-musl...");
-        let output_x86 = tokio::process::Command::new("cargo")
-            .args(["build", "--release", "--package", "dragonfly-agent", "--target", "x86_64-unknown-linux-musl"])
-            .output()
-            .await;
+        // Try to download pre-built binaries first, fall back to local build
+        for (arch, target) in [("x86_64", "x86_64-unknown-linux-musl"), ("aarch64", "aarch64-unknown-linux-musl")] {
+            let dest = format!("/var/lib/dragonfly/mage/{}/dragonfly-agent", arch);
+            let dest_path = std::path::Path::new(&dest);
 
-        if let Ok(output) = output_x86 {
-            if output.status.success() {
-                let src = std::path::Path::new("target/x86_64-unknown-linux-musl/release/dragonfly-agent");
-                let dest = std::path::Path::new("/var/lib/dragonfly/mage/x86_64/dragonfly-agent");
-                if let Err(e) = std::fs::copy(src, dest) {
-                    warn!("Failed to copy x86_64 agent: {}", e);
-                } else {
-                    info!("x86_64 agent binary ready");
-                }
-            } else {
-                warn!("x86_64 agent build failed: {}", String::from_utf8_lossy(&output.stderr));
+            // Skip if already exists
+            if dest_path.exists() {
+                info!("{} agent binary already exists, skipping", arch);
+                continue;
             }
-        }
 
-        // Build for aarch64
-        info!("Building dragonfly-agent for aarch64-unknown-linux-musl...");
-        let output_arm = tokio::process::Command::new("cargo")
-            .args(["build", "--release", "--package", "dragonfly-agent", "--target", "aarch64-unknown-linux-musl"])
-            .output()
-            .await;
+            // Try downloading from GitHub releases first
+            let download_url = format!(
+                "https://github.com/Zorlin/dragonfly/releases/download/latest/dragonfly-agent-{}",
+                arch
+            );
+            info!("Trying to download {} agent from {}", arch, download_url);
 
-        if let Ok(output) = output_arm {
-            if output.status.success() {
-                let src = std::path::Path::new("target/aarch64-unknown-linux-musl/release/dragonfly-agent");
-                let dest = std::path::Path::new("/var/lib/dragonfly/mage/aarch64/dragonfly-agent");
-                if let Err(e) = std::fs::copy(src, dest) {
-                    warn!("Failed to copy aarch64 agent: {}", e);
+            let download_result = async {
+                let client = reqwest::Client::new();
+                let response = client.get(&download_url).send().await?;
+                if response.status().is_success() {
+                    let bytes = response.bytes().await?;
+                    tokio::fs::write(&dest, &bytes).await?;
+                    // Make executable
+                    let mut perms = tokio::fs::metadata(&dest).await?.permissions();
+                    perms.set_mode(0o755);
+                    tokio::fs::set_permissions(&dest, perms).await?;
+                    Ok::<(), anyhow::Error>(())
                 } else {
-                    info!("aarch64 agent binary ready");
+                    Err(anyhow!("HTTP {}", response.status()))
+                }
+            }.await;
+
+            if download_result.is_ok() {
+                info!("{} agent binary downloaded successfully", arch);
+                continue;
+            }
+
+            // Fall back to local build if download failed
+            warn!("Failed to download {} agent, trying local build...", arch);
+            info!("Building dragonfly-agent for {}...", target);
+            let output = tokio::process::Command::new("cargo")
+                .args(["build", "--release", "--package", "dragonfly-agent", "--target", target])
+                .output()
+                .await;
+
+            if let Ok(output) = output {
+                if output.status.success() {
+                    let src = format!("target/{}/release/dragonfly-agent", target);
+                    if let Err(e) = std::fs::copy(&src, &dest) {
+                        warn!("Failed to copy {} agent: {}", arch, e);
+                    } else {
+                        info!("{} agent binary ready (built locally)", arch);
+                    }
+                } else {
+                    warn!("{} agent build failed: {}", arch, String::from_utf8_lossy(&output.stderr));
                 }
             } else {
-                warn!("aarch64 agent build failed: {}", String::from_utf8_lossy(&output.stderr));
+                warn!("{} agent build command failed to execute", arch);
             }
         }
 
@@ -1121,7 +1142,7 @@ pub async fn configure_flight_mode() -> Result<()> {
 
     // Initialize OS templates now that Flight mode is configured
     info!("Initializing OS templates for Flight mode...");
-    match crate::os_templates::init_os_templates().await {
+    match crate::os_templates::init_os_templates(store).await {
         Ok(_) => info!("OS templates initialized successfully"),
         Err(e) => warn!("Failed to initialize OS templates: {}", e),
     }

@@ -350,8 +350,9 @@ pub async fn run() -> anyhow::Result<()> {
     if is_flight_mode && !is_installation_server {
         info!("Starting OS templates initialization for Flight mode...");
         let event_manager_clone = event_manager.clone(); // Clone for the task
-        tokio::spawn(async move { 
-            match os_templates::init_os_templates().await {
+        let store_for_templates = native_store.clone();
+        tokio::spawn(async move {
+            match os_templates::init_os_templates(store_for_templates).await {
                 Ok(_) => { info!("OS templates initialized successfully"); },
                 Err(e) => { warn!("Failed to initialize OS templates: {}", e); }
             }
