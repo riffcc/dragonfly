@@ -132,9 +132,20 @@ impl ServiceRunner {
         config: &DhcpServiceConfig,
         shutdown: watch::Receiver<bool>,
     ) -> Result<(Arc<DhcpServer>, tokio::task::JoinHandle<()>), ServiceError> {
-        let dhcp_config = DhcpConfig::new(self.config.server_ip)
+        // Use auto-detected IP if server_ip is 0.0.0.0 (bind all)
+        let actual_ip = if self.config.server_ip == Ipv4Addr::new(0, 0, 0, 0) {
+            crate::mode::detect_server_ip()
+                .and_then(|ip| ip.parse().ok())
+                .unwrap_or(self.config.server_ip)
+        } else {
+            self.config.server_ip
+        };
+
+        info!(bind_ip = %self.config.server_ip, actual_ip = %actual_ip, "DHCP using detected server IP");
+
+        let dhcp_config = DhcpConfig::new(actual_ip)
             .with_mode(config.mode.clone())
-            .with_tftp_server(self.config.server_ip)
+            .with_tftp_server(actual_ip)
             .with_boot_filename(&config.boot_filename_uefi);
 
         // Create hardware lookup wrapper
@@ -144,7 +155,7 @@ impl ServiceRunner {
         let server_clone = server.clone();
 
         info!(
-            ip = %self.config.server_ip,
+            ip = %actual_ip,
             mode = ?config.mode,
             "Starting DHCP server"
         );
