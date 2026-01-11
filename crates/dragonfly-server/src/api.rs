@@ -54,6 +54,23 @@ use chrono::Utc;
 use axum::extract::DefaultBodyLimit;
 use serde::Deserialize;
 
+/// Get UUID for a hardware entry (deterministic from name)
+pub fn hardware_uuid(hw: &Hardware) -> Uuid {
+    let namespace = uuid::Uuid::NAMESPACE_DNS;
+    uuid::Uuid::new_v5(&namespace, hw.metadata.name.as_bytes())
+}
+
+/// Find machine by UUID from the store
+pub async fn get_machine_by_uuid(store: &dyn crate::store::DragonflyStore, id: &Uuid) -> Result<Option<Machine>, anyhow::Error> {
+    let hardware_list = store.list_hardware().await?;
+    for hw in &hardware_list {
+        if hardware_uuid(hw) == *id {
+            return Ok(Some(hardware_to_machine(hw)));
+        }
+    }
+    Ok(None)
+}
+
 /// Convert Hardware (from DragonflyStore/ReDB) to Machine (for UI)
 pub fn hardware_to_machine(hw: &Hardware) -> Machine {
     // Generate deterministic UUID from hardware name

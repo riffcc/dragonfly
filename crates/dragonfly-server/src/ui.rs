@@ -606,8 +606,23 @@ pub async fn machine_list(
         };
         return render_minijinja(&app_state, "machine_list.html", context);
     } else { // Normal mode
-        // Normal mode - fetch machines from database
-        match db::get_all_machines().await {
+        // Normal mode - fetch machines from DragonflyStore (ReDB)
+        let machines_result = if let Some(ref provisioning) = app_state.provisioning {
+            match provisioning.store().list_hardware().await {
+                Ok(hardware_list) => {
+                    let machines: Vec<Machine> = hardware_list
+                        .iter()
+                        .map(|hw| crate::api::hardware_to_machine(hw))
+                        .collect();
+                    Ok(machines)
+                }
+                Err(e) => Err(e)
+            }
+        } else {
+            Ok(vec![]) // No provisioning service means no machines
+        };
+
+        match machines_result {
             Ok(machines) => {
                 let mut workflow_infos = HashMap::new();
                 for machine in &machines {
@@ -619,13 +634,11 @@ pub async fn machine_list(
                             Ok(None) => { /* No active workflow found */ }
                             Err(e) => {
                                 error!("Error fetching workflow info for machine {}: {}", machine.id, e);
-                                // Optionally insert a default/error state info
                             }
                         }
                     }
                 }
 
-                // Replace Askama render with placeholder
                 let context = MachineListTemplate {
                     machines,
                     theme,
@@ -634,12 +647,10 @@ pub async fn machine_list(
                     workflow_infos,
                     current_path,
                 };
-                // Pass AppState to render_minijinja
                 render_minijinja(&app_state, "machine_list.html", context)
             },
             Err(e) => {
-                error!("Error fetching machines for machine list page: {}", e);
-                // Replace Askama render with placeholder
+                error!("Error fetching machines from ReDB: {}", e);
                 let context = MachineListTemplate {
                     machines: vec![],
                     theme,
@@ -648,7 +659,6 @@ pub async fn machine_list(
                     workflow_infos: HashMap::new(),
                     current_path,
                 };
-                // Pass AppState to render_minijinja
                 render_minijinja(&app_state, "machine_list.html", context)
             }
         }
@@ -773,8 +783,14 @@ pub async fn machine_details(
                 }
             }
             
-            // Normal mode - get machine by ID from database
-            match db::get_machine_by_id(&uuid).await {
+            // Normal mode - get machine by ID from DragonflyStore (ReDB)
+            let machine_result = if let Some(ref provisioning) = app_state.provisioning {
+                crate::api::get_machine_by_uuid(provisioning.store().as_ref(), &uuid).await
+            } else {
+                Ok(None) // No provisioning service means no machine found
+            };
+
+            match machine_result {
                 Ok(Some(machine)) => {
                     info!("Rendering machine details page for machine {}", uuid);
                     
@@ -844,8 +860,7 @@ pub async fn machine_details(
                 },
                 Ok(None) => {
                     error!("Machine not found: {}", uuid);
-                    // Use MiniJinja for error template
-                    let context = ErrorTemplate { // Use ErrorTemplate for consistency
+                    let context = ErrorTemplate {
                         theme,
                         is_authenticated,
                         title: "Machine Not Found".to_string(),
@@ -857,24 +872,23 @@ pub async fn machine_details(
                         retry_url: "".to_string(),
                         current_path,
                     };
-                    render_minijinja(&app_state, "error.html", context) // Render error template
+                    render_minijinja(&app_state, "error.html", context)
                 },
                 Err(e) => {
-                    error!("Error fetching machine {}: {}", uuid, e);
-                    // Use MiniJinja for error template
-                    let context = ErrorTemplate { // Use ErrorTemplate
+                    error!("Database error fetching machine {}: {}", uuid, e);
+                    let context = ErrorTemplate {
                         theme,
                         is_authenticated,
                         title: "Database Error".to_string(),
-                        message: "An error occurred while fetching machine details.".to_string(),
+                        message: "An error occurred while fetching the machine from the database.".to_string(),
                         error_details: format!("Error: {}", e),
                         back_url: "/machines".to_string(),
                         back_text: "Back to Machines".to_string(),
-                        show_retry: false,
-                        retry_url: "".to_string(),
+                        show_retry: true,
+                        retry_url: format!("/machines/{}", uuid),
                         current_path,
                     };
-                    render_minijinja(&app_state, "error.html", context) // Render error template
+                    render_minijinja(&app_state, "error.html", context)
                 }
             }
         },
