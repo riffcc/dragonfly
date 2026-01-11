@@ -188,6 +188,9 @@ pub fn api_router() -> Router<crate::AppState> {
         .route("/tags/{tag_name}/machines", get(api_get_machines_by_tag))
         // --- Agent Routes ---
         .route("/agent/checkin", post(agent_checkin_handler))
+        // --- Workflow Routes (for agent) ---
+        .route("/workflows/{id}", get(get_workflow_handler))
+        .route("/templates/{name}", get(get_template_handler))
         .layer(DefaultBodyLimit::max(1024 * 1024 * 50)) // 50 MB
 }
 
@@ -2637,6 +2640,153 @@ pub async fn agent_checkin_handler(
             ).into_response()
         }
     }
+}
+
+/// Get workflow by ID for agent execution
+pub async fn get_workflow_handler(
+    State(state): State<crate::AppState>,
+    Path(workflow_id): Path<String>,
+) -> Response {
+    debug!(workflow_id = %workflow_id, "Fetching workflow for agent");
+
+    let provisioning = match &state.provisioning {
+        Some(p) => p,
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({ "error": "Provisioning service not available" })),
+            ).into_response();
+        }
+    };
+
+    match provisioning.store().get_workflow(&workflow_id).await {
+        Ok(Some(workflow)) => {
+            info!(workflow_id = %workflow_id, "Returning workflow to agent");
+            Json(workflow).into_response()
+        }
+        Ok(None) => {
+            warn!(workflow_id = %workflow_id, "Workflow not found");
+            (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({ "error": "Workflow not found" })),
+            ).into_response()
+        }
+        Err(e) => {
+            error!(error = %e, workflow_id = %workflow_id, "Failed to fetch workflow");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": e.to_string() })),
+            ).into_response()
+        }
+    }
+}
+
+/// Get template by name for agent execution
+///
+/// Templates define the actions to execute for OS installation.
+/// We generate them dynamically based on the OS name.
+pub async fn get_template_handler(
+    State(_state): State<crate::AppState>,
+    Path(template_name): Path<String>,
+) -> Response {
+    debug!(template_name = %template_name, "Generating template for agent");
+
+    // Generate template based on OS name
+    let template = generate_os_template(&template_name);
+
+    match template {
+        Some(t) => {
+            info!(template_name = %template_name, "Returning template to agent");
+            Json(t).into_response()
+        }
+        None => {
+            warn!(template_name = %template_name, "Unknown OS template");
+            (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({ "error": format!("Unknown OS: {}", template_name) })),
+            ).into_response()
+        }
+    }
+}
+
+/// Generate an OS installation template
+fn generate_os_template(os_name: &str) -> Option<dragonfly_crd::Template> {
+    use dragonfly_crd::{Template, TemplateSpec, Task, Action};
+    use std::collections::HashMap;
+
+    // Map OS names to their cloud image URLs
+    let (img_url, os_display_name) = match os_name {
+        "debian-13" => (
+            "https://cloud.debian.org/images/cloud/trixie/daily/latest/debian-13-genericcloud-amd64-daily.raw",
+            "Debian 13 (Trixie)"
+        ),
+        "debian-12" => (
+            "https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-genericcloud-amd64.raw",
+            "Debian 12 (Bookworm)"
+        ),
+        "ubuntu-2404" => (
+            "https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img",
+            "Ubuntu 24.04 LTS"
+        ),
+        "ubuntu-2204" => (
+            "https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64.img",
+            "Ubuntu 22.04 LTS"
+        ),
+        "alpine-320" => (
+            "https://dl-cdn.alpinelinux.org/alpine/v3.20/releases/cloud/nocloud_alpine-3.20.6-x86_64-bios-cloudinit-r0.qcow2",
+            "Alpine Linux 3.20"
+        ),
+        "rocky-9" => (
+            "https://download.rockylinux.org/pub/rocky/9/images/x86_64/Rocky-9-GenericCloud-Base.latest.x86_64.qcow2",
+            "Rocky Linux 9"
+        ),
+        "flatcar" => (
+            "https://stable.release.flatcar-linux.net/amd64-usr/current/flatcar_production_image.bin.bz2",
+            "Flatcar Container Linux"
+        ),
+        _ => return None,
+    };
+
+    // Create environment variables for the image2disk action
+    let mut env: HashMap<String, String> = HashMap::new();
+    env.insert("IMG_URL".to_string(), img_url.to_string());
+    env.insert("DEST_DISK".to_string(), "/dev/sda".to_string());
+
+    // Create the imaging action
+    let action = Action {
+        name: "image2disk".to_string(),
+        action_type: "image2disk".to_string(),
+        timeout: Some(1800), // 30 minutes
+        environment: env,
+        volumes: vec!["/dev:/dev".to_string()],
+        command: Vec::new(),
+        args: Vec::new(),
+        pid: None,
+        config: HashMap::new(),
+    };
+
+    // Create the imaging task
+    let task = Task {
+        name: format!("install-{}", os_name),
+        worker: "{{.device_1}}".to_string(),
+        volumes: vec!["/dev:/dev".to_string()],
+        actions: vec![action],
+    };
+
+    // Create the template
+    let mut template = Template::new(os_name);
+    template.spec = TemplateSpec {
+        version: Some("1.0".to_string()),
+        global_timeout: Some(3600), // 1 hour
+        tasks: vec![task],
+        volumes: Vec::new(),
+        env: HashMap::new(),
+    };
+
+    // Add a description label
+    template.metadata.labels.insert("os.display_name".to_string(), os_display_name.to_string());
+
+    Some(template)
 }
 
 // Add stubs for functions called from mode.rs
