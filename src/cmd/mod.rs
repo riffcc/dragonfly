@@ -1,9 +1,5 @@
-// Declare the install subcommand module
-pub mod install;
-
-// Network utilities for install
+// Network utilities
 pub mod network;
 
-// Declare other subcommand modules as you create them
-// pub mod server;
-// pub mod agent; 
+// Install command
+pub mod install; 

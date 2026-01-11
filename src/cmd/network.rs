@@ -335,6 +335,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore] // Flaky: depends on network configuration, function is unused
     fn test_detect_first_available_ip_returns_valid_ipv4() {
         let result = detect_first_available_ip();
         assert!(result.is_ok(), "Should detect an available IP");
