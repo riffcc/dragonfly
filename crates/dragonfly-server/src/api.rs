@@ -2787,6 +2787,13 @@ async fn generate_agent_apkovl_local(
     Ok(())
 }
 
+/// Handler for /boot/{arch}/{asset} routes - extracts path parameters
+pub async fn serve_boot_asset_handler(
+    axum::extract::Path((arch, asset)): axum::extract::Path<(String, String)>,
+) -> Response {
+    serve_boot_asset(&arch, &asset).await
+}
+
 /// Serve boot assets (kernel, initramfs, modloop, apkovl) for a specific architecture
 ///
 /// Maps URL paths to internal Mage files:
@@ -2795,13 +2802,17 @@ async fn generate_agent_apkovl_local(
 /// - /boot/{arch}/modloop -> modloop
 /// - /boot/{arch}/apkovl.tar.gz -> localhost.apkovl.tar.gz
 pub async fn serve_boot_asset(arch: &str, asset: &str) -> Response {
-    // Validate architecture
-    if arch != "x86_64" && arch != "aarch64" {
-        return (
-            StatusCode::NOT_FOUND,
-            format!("Unknown architecture: {} (use x86_64 or aarch64)", arch),
-        ).into_response();
-    }
+    // Normalize architecture names (iPXE uses arm64, we use aarch64 internally)
+    let normalized_arch = match arch {
+        "x86_64" => "x86_64",
+        "aarch64" | "arm64" => "aarch64",
+        _ => {
+            return (
+                StatusCode::NOT_FOUND,
+                format!("Unknown architecture: {} (use x86_64, aarch64, or arm64)", arch),
+            ).into_response();
+        }
+    };
 
     // Map URL names to internal file names
     let filename = match asset {
@@ -2817,12 +2828,12 @@ pub async fn serve_boot_asset(arch: &str, asset: &str) -> Response {
         }
     };
 
-    let file_path = FilePath::new(MAGE_DIR).join(arch).join(filename);
+    let file_path = FilePath::new(MAGE_DIR).join(normalized_arch).join(filename);
 
     if !file_path.exists() {
         return (
             StatusCode::NOT_FOUND,
-            format!("Boot asset not found: {}/{} (run Flight mode setup first)", arch, asset),
+            format!("Boot asset not found: {}/{} (run Flight mode setup first)", normalized_arch, asset),
         ).into_response();
     }
 

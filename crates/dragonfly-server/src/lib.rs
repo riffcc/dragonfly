@@ -608,16 +608,8 @@ pub async fn run() -> anyhow::Result<()> {
         .route("/favicon.ico", get(handle_favicon))
         // Boot endpoints - /boot/{mac} for iPXE scripts, /boot/{arch}/{asset} for kernel/initramfs
         .route("/boot/{mac}", get(api::ipxe_script))
-        // x86_64 boot assets
-        .route("/boot/x86_64/kernel", get(|| async { api::serve_boot_asset("x86_64", "kernel").await }))
-        .route("/boot/x86_64/initramfs", get(|| async { api::serve_boot_asset("x86_64", "initramfs").await }))
-        .route("/boot/x86_64/modloop", get(|| async { api::serve_boot_asset("x86_64", "modloop").await }))
-        .route("/boot/x86_64/apkovl.tar.gz", get(|| async { api::serve_boot_asset("x86_64", "apkovl.tar.gz").await }))
-        // aarch64 boot assets
-        .route("/boot/aarch64/kernel", get(|| async { api::serve_boot_asset("aarch64", "kernel").await }))
-        .route("/boot/aarch64/initramfs", get(|| async { api::serve_boot_asset("aarch64", "initramfs").await }))
-        .route("/boot/aarch64/modloop", get(|| async { api::serve_boot_asset("aarch64", "modloop").await }))
-        .route("/boot/aarch64/apkovl.tar.gz", get(|| async { api::serve_boot_asset("aarch64", "apkovl.tar.gz").await }))
+        // Dynamic boot assets - supports x86_64, aarch64, and arm64 (iPXE uses arm64)
+        .route("/boot/{arch}/{asset}", get(api::serve_boot_asset_handler))
         // OS images (served during provisioning)
         .route("/os/debian-13/amd64", get(|| async { api::serve_os_image("debian-13", "amd64").await }))
         .route("/os/debian-13/arm64", get(|| async { api::serve_os_image("debian-13", "arm64").await }))

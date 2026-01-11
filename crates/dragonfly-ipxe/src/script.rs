@@ -100,21 +100,22 @@ impl IpxeConfig {
     fn mage_kernel(&self) -> String {
         self.mage_kernel_url
             .clone()
-            .unwrap_or_else(|| format!("{}/mage/vmlinuz", self.base_url))
+            // Use iPXE's ${buildarch} variable for architecture detection
+            .unwrap_or_else(|| format!("{}/boot/${{buildarch}}/kernel", self.base_url))
     }
 
     fn mage_initramfs(&self) -> String {
         self.mage_initramfs_url
             .clone()
-            .unwrap_or_else(|| format!("{}/mage/initramfs", self.base_url))
+            .unwrap_or_else(|| format!("{}/boot/${{buildarch}}/initramfs", self.base_url))
     }
 
     fn mage_modloop(&self) -> String {
-        format!("{}/mage/modloop", self.base_url)
+        format!("{}/boot/${{buildarch}}/modloop", self.base_url)
     }
 
     fn mage_apkovl(&self) -> String {
-        format!("{}/mage/localhost.apkovl.tar.gz", self.base_url)
+        format!("{}/boot/${{buildarch}}/apkovl.tar.gz", self.base_url)
     }
 }
 
