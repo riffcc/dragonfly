@@ -60,6 +60,10 @@ hickory-resolver = { version = "0.24.4", features = ["tokio-runtime"] } # Rename
 
 # Local dependencies
 dragonfly-common = { path = "../dragonfly-common" }
+dragonfly-crd = { path = "../dragonfly-crd" }
+
+# Storage
+redb = "3.1.0"
 
 # Kubernetes integration (moved from root)
 kube = { version = "0.87.1", features = ["client", "derive", "runtime"] } # Use version from root Cargo.toml
@@ -124,3 +128,4 @@ regex = "1"
 http = "1"
 
 [dev-dependencies]
+tempfile = "3.8"
