@@ -13,6 +13,7 @@ use serde_json::json;
 use uuid::Uuid;
 use dragonfly_common::models::{MachineStatus, HostnameUpdateRequest, HostnameUpdateResponse, OsInstalledUpdateRequest, OsInstalledUpdateResponse, BmcType, BmcCredentials, StatusUpdateRequest, BmcCredentialsUpdateRequest, InstallationProgressUpdateRequest, RegisterRequest, Machine};
 use crate::db::{self, RegisterResponse, ErrorResponse, OsAssignmentRequest, get_machine_tags, update_machine_tags as db_update_machine_tags};
+use crate::provisioning::HardwareCheckIn;
 use crate::AppState;
 use crate::auth::AuthSession;
 use std::collections::HashMap;
@@ -82,6 +83,8 @@ pub fn api_router() -> Router<crate::AppState> {
         .route("/tags", get(api_get_tags).post(api_create_tag))
         .route("/tags/{tag_name}", delete(api_delete_tag))
         .route("/tags/{tag_name}/machines", get(api_get_machines_by_tag))
+        // --- Agent Routes ---
+        .route("/agent/checkin", post(agent_checkin_handler))
         .layer(DefaultBodyLimit::max(1024 * 1024 * 50)) // 50 MB
 }
 
@@ -2440,6 +2443,47 @@ pub async fn get_workflow_progress(
 // Stub for heartbeat
 pub async fn heartbeat() -> Response {
     (StatusCode::OK, "OK").into_response()
+}
+
+/// Handle agent check-in from Mage environment
+///
+/// Called when the dragonfly-agent boots and registers with the server.
+/// Returns instructions for what the agent should do next.
+pub async fn agent_checkin_handler(
+    State(state): State<crate::AppState>,
+    Json(checkin): Json<HardwareCheckIn>,
+) -> Response {
+    info!(mac = %checkin.mac, hostname = ?checkin.hostname, "Agent check-in received");
+
+    let provisioning = match &state.provisioning {
+        Some(p) => p,
+        None => {
+            error!("Provisioning service not initialized");
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({ "error": "Provisioning service not available" })),
+            ).into_response();
+        }
+    };
+
+    match provisioning.handle_checkin(&checkin).await {
+        Ok(response) => {
+            info!(
+                hardware_id = %response.hardware_id,
+                is_new = response.is_new,
+                action = ?response.action,
+                "Agent check-in successful"
+            );
+            Json(response).into_response()
+        }
+        Err(e) => {
+            error!(error = %e, mac = %checkin.mac, "Agent check-in failed");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": e.to_string() })),
+            ).into_response()
+        }
+    }
 }
 
 // Add stubs for functions called from mode.rs

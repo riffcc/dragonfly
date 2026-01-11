@@ -11,11 +11,12 @@ use crate::mode::DeploymentMode;
 use crate::store::{DragonflyStore, Result as StoreResult, StoreError};
 use dragonfly_crd::{Hardware, HardwareSpec, HardwareStatus, HardwareState, Workflow, WorkflowState, Template};
 use dragonfly_ipxe::{IpxeConfig, IpxeScriptGenerator};
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tracing::{debug, info, warn, error};
 
 /// Hardware registration request from agent check-in
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct HardwareCheckIn {
     /// Primary MAC address
     pub mac: String,
@@ -37,7 +38,7 @@ pub struct HardwareCheckIn {
 }
 
 /// Disk information from agent
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct DiskInfo {
     pub name: String,
     pub size_bytes: u64,
@@ -45,7 +46,7 @@ pub struct DiskInfo {
 }
 
 /// Network interface information from agent
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct InterfaceInfo {
     pub name: String,
     pub mac: String,
@@ -53,20 +54,21 @@ pub struct InterfaceInfo {
 }
 
 /// Response to agent check-in
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct CheckInResponse {
     /// Hardware ID assigned
     pub hardware_id: String,
     /// Whether this is a new registration
     pub is_new: bool,
-    /// Assigned workflow (if any)
-    pub workflow: Option<Workflow>,
     /// Instructions for agent
     pub action: AgentAction,
+    /// Workflow ID to execute (if action is Execute)
+    pub workflow_id: Option<String>,
 }
 
 /// What the agent should do after check-in
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum AgentAction {
     /// Wait for user to assign a workflow
     Wait,
@@ -259,10 +261,10 @@ impl ProvisioningService {
         });
 
         // Determine action based on mode and workflow
-        let (workflow, action) = match active_workflow {
+        let (workflow_id, action) = match active_workflow {
             Some(wf) => {
                 let wf_id = wf.metadata.name.clone();
-                (Some(wf), AgentAction::Execute(wf_id))
+                (Some(wf_id.clone()), AgentAction::Execute(wf_id))
             }
             None => {
                 match self.mode {
@@ -281,8 +283,8 @@ impl ProvisioningService {
         Ok(CheckInResponse {
             hardware_id: hardware.metadata.name,
             is_new,
-            workflow,
             action,
+            workflow_id,
         })
     }
 
@@ -522,7 +524,7 @@ mod tests {
         let response = service.handle_checkin(&checkin).await.unwrap();
 
         assert!(response.is_new);
-        assert!(response.workflow.is_none());
+        assert!(response.workflow_id.is_none());
         assert_eq!(response.action, AgentAction::Wait);
 
         // Verify hardware was stored
