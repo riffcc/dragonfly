@@ -166,10 +166,11 @@ impl DhcpServer {
             }
         };
 
-        debug!(
+        info!(
             mac = %request.mac_address,
             msg_type = ?request.message_type,
             is_pxe = request.is_pxe_request(),
+            is_ipxe = request.is_ipxe,
             "Received DHCP request"
         );
 
@@ -326,10 +327,18 @@ impl DhcpServer {
         request: &DhcpRequest,
         hardware: Option<&Hardware>,
     ) -> Result<Option<(Vec<u8>, Option<Ipv4Addr>, String)>> {
-        // Only respond to PXE requests
-        if !request.is_pxe_request() {
+        // Respond to PXE requests OR iPXE clients (some iPXE firmware doesn't send PXEClient option)
+        if !request.is_pxe_request() && !request.is_ipxe {
+            debug!(mac = %request.mac_address, "Not a PXE or iPXE request, ignoring in AutoProxy mode");
             return Ok(None);
         }
+
+        info!(
+            mac = %request.mac_address,
+            is_pxe = request.is_pxe_request(),
+            is_ipxe = request.is_ipxe,
+            "AutoProxy: processing request"
+        );
 
         // If we have hardware, check if PXE is allowed
         if let Some(hw) = hardware {
