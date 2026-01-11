@@ -512,9 +512,9 @@ pub async fn run() -> anyhow::Result<()> {
     let provisioning_service = if !native_provisioning_disabled && !is_installation_server {
         info!("Native provisioning enabled - initializing ProvisioningService");
 
-        // Get boot server URL from environment or use default
-        let boot_server_url = std::env::var("DRAGONFLY_BOOT_SERVER_URL")
-            .unwrap_or_else(|_| "http://localhost:3000".to_string());
+        // Get boot server URL with auto-detection (env var > ReDB > auto-detect > localhost)
+        let boot_server_url = mode::get_base_url(Some(native_store.as_ref())).await;
+        info!("Using boot server URL: {}", boot_server_url);
 
         // Build iPXE configuration
         let ipxe_config = dragonfly_ipxe::IpxeConfig {

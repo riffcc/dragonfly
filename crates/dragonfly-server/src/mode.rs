@@ -1899,9 +1899,97 @@ async fn check_webui_service_status() -> anyhow::Result<bool> {
     }
 }
 
+/// Detect the server's primary IP address from network interfaces
+///
+/// Uses `ip route get 1` to find the interface used for outbound traffic,
+/// which gives us the most likely correct IP for clients to connect to.
+pub fn detect_server_ip() -> Option<String> {
+    // Method 1: Use ip route to find the source IP for outbound traffic
+    // This is the most reliable method as it shows which IP would be used
+    // to reach external hosts
+    if let Ok(output) = Command::new("ip")
+        .args(["route", "get", "1"])
+        .output()
+    {
+        if output.status.success() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            // Output looks like: "1.0.0.0 via 10.7.1.1 dev eth0 src 10.7.1.125 uid 0"
+            // We want the IP after "src"
+            if let Some(src_idx) = stdout.find(" src ") {
+                let after_src = &stdout[src_idx + 5..];
+                if let Some(ip) = after_src.split_whitespace().next() {
+                    if !ip.starts_with("127.") {
+                        info!("Detected server IP from route: {}", ip);
+                        return Some(ip.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    // Method 2: Parse hostname -I for the first non-localhost IP
+    if let Ok(output) = Command::new("hostname")
+        .args(["-I"])
+        .output()
+    {
+        if output.status.success() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            for ip in stdout.split_whitespace() {
+                // Skip localhost and IPv6 link-local
+                if !ip.starts_with("127.") && !ip.starts_with("::1") && !ip.contains(':') {
+                    info!("Detected server IP from hostname: {}", ip);
+                    return Some(ip.to_string());
+                }
+            }
+        }
+    }
+
+    warn!("Could not auto-detect server IP address");
+    None
+}
+
+/// Get the base URL for the Dragonfly server
+///
+/// Priority:
+/// 1. DRAGONFLY_BASE_URL environment variable
+/// 2. Stored setting in ReDB (base_url)
+/// 3. Auto-detected IP with port 3000
+/// 4. Fallback to localhost:3000
+pub async fn get_base_url(store: Option<&dyn DragonflyStore>) -> String {
+    // 1. Check environment variable first
+    if let Ok(url) = std::env::var("DRAGONFLY_BASE_URL") {
+        debug!("Using DRAGONFLY_BASE_URL from environment: {}", url);
+        return url;
+    }
+
+    // 2. Check stored setting in ReDB
+    if let Some(store) = store {
+        if let Ok(Some(url)) = store.get_setting("base_url").await {
+            debug!("Using base_url from ReDB: {}", url);
+            return url;
+        }
+    }
+
+    // 3. Auto-detect IP
+    if let Some(ip) = detect_server_ip() {
+        let url = format!("http://{}:3000", ip);
+        info!("Auto-detected base URL: {}", url);
+        return url;
+    }
+
+    // 4. Fallback
+    warn!("Using localhost as base URL - PXE clients won't be able to reach this!");
+    "http://localhost:3000".to_string()
+}
+
 // Helper function to get the load balancer IP for connections
 async fn get_loadbalancer_ip() -> Result<String> {
-    // Try to get the load balancer IP from the service
+    // First try auto-detection from network interfaces
+    if let Some(ip) = detect_server_ip() {
+        return Ok(ip);
+    }
+
+    // Try to get the load balancer IP from K8s service (if available)
     match get_webui_address().await {
         Ok(Some(url)) => {
             // Extract host from URL (remove http:// prefix and port)
@@ -1916,26 +2004,7 @@ async fn get_loadbalancer_ip() -> Result<String> {
             debug!("Could not determine load balancer IP from web UI service");
         }
     }
-    
-    // If we can't get the load balancer IP, try to get the node IP
-    let kubectl_output = Command::new("kubectl")
-        .args(["get", "nodes", "-o", "jsonpath='{.items[0].status.addresses[?(@.type==\"InternalIP\")].address}'"])
-        .output();
-        
-    if let Ok(output) = kubectl_output {
-        if output.status.success() {
-            let node_ip = String::from_utf8_lossy(&output.stdout)
-                .trim()
-                .trim_matches('\'')
-                .to_string();
-                
-            if !node_ip.is_empty() {
-                debug!("Using node IP as load balancer address: {}", node_ip);
-                return Ok(node_ip);
-            }
-        }
-    }
-    
+
     // Fallback to localhost
     debug!("Using localhost as load balancer address");
     Ok("localhost".to_string())
