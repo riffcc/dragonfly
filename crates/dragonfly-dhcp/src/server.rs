@@ -382,8 +382,26 @@ impl DhcpServer {
         }
 
         // Add PXE options if this is a PXE request and allowed
-        if request.is_pxe_request() && hardware.allows_pxe() && !request.is_ipxe {
-            let pxe = PxeOptions::from_config(&self.config, is_uefi, arch);
+        if request.is_pxe_request() && hardware.allows_pxe() {
+            let pxe = if request.is_ipxe {
+                // iPXE client - send boot script URL
+                let script_url = self.config.ipxe_script_url.clone().unwrap_or_else(|| {
+                    format!(
+                        "http://{}:{}/boot/${{mac}}",
+                        self.config.server_ip,
+                        self.config.http_port
+                    )
+                });
+                PxeOptions {
+                    tftp_server: None,
+                    boot_filename: Some(script_url),
+                    vendor_class: Some("PXEClient".to_string()),
+                    boot_servers: vec![],
+                }
+            } else {
+                // Standard PXE client - send iPXE binary
+                PxeOptions::from_config(&self.config, is_uefi, arch)
+            };
             builder = builder.with_pxe_options(pxe);
         }
 
@@ -419,8 +437,27 @@ impl DhcpServer {
             builder = builder.with_dns_servers(self.config.dns_servers.clone());
         }
 
-        if request.is_pxe_request() && hardware.allows_pxe() && !request.is_ipxe {
-            let pxe = PxeOptions::from_config(&self.config, is_uefi, arch);
+        // Add PXE options if this is a PXE request and allowed
+        if request.is_pxe_request() && hardware.allows_pxe() {
+            let pxe = if request.is_ipxe {
+                // iPXE client - send boot script URL
+                let script_url = self.config.ipxe_script_url.clone().unwrap_or_else(|| {
+                    format!(
+                        "http://{}:{}/boot/${{mac}}",
+                        self.config.server_ip,
+                        self.config.http_port
+                    )
+                });
+                PxeOptions {
+                    tftp_server: None,
+                    boot_filename: Some(script_url),
+                    vendor_class: Some("PXEClient".to_string()),
+                    boot_servers: vec![],
+                }
+            } else {
+                // Standard PXE client - send iPXE binary
+                PxeOptions::from_config(&self.config, is_uefi, arch)
+            };
             builder = builder.with_pxe_options(pxe);
         }
 
@@ -442,7 +479,43 @@ impl DhcpServer {
         let is_uefi = request.client_arch.map(|a| a.is_uefi()).unwrap_or(false);
         let arch = request.client_arch.and_then(|a| a.arch_string());
 
-        let pxe = PxeOptions::from_config(&self.config, is_uefi, arch);
+        // If this is an iPXE client, send the boot script URL instead of iPXE binary
+        let pxe = if request.is_ipxe {
+            if let Some(ref script_url) = self.config.ipxe_script_url {
+                debug!(
+                    mac = %request.mac_address,
+                    script_url = %script_url,
+                    "iPXE client detected, sending boot script URL"
+                );
+                PxeOptions {
+                    tftp_server: None,
+                    boot_filename: Some(script_url.clone()),
+                    vendor_class: Some("PXEClient".to_string()),
+                    boot_servers: vec![],
+                }
+            } else {
+                // No script URL configured, use default based on server URL
+                let script_url = format!(
+                    "http://{}:{}/boot/${{mac}}",
+                    self.config.server_ip,
+                    self.config.http_port
+                );
+                debug!(
+                    mac = %request.mac_address,
+                    script_url = %script_url,
+                    "iPXE client detected, using default boot script URL"
+                );
+                PxeOptions {
+                    tftp_server: None,
+                    boot_filename: Some(script_url),
+                    vendor_class: Some("PXEClient".to_string()),
+                    boot_servers: vec![],
+                }
+            }
+        } else {
+            // Standard PXE client - send iPXE binary via TFTP
+            PxeOptions::from_config(&self.config, is_uefi, arch)
+        };
 
         DhcpResponseBuilder::new(request.clone(), MessageType::Offer, self.config.server_ip)
             .with_pxe_options(pxe)
