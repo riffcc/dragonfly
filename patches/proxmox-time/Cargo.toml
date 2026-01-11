@@ -1,0 +1,17 @@
+[package]
+name = "proxmox-time"
+description = "Time utilities and TmEditor (patched for macOS)"
+version = "2.1.0"
+edition = "2024"
+license = "AGPL-3.0-or-later"
+
+[dependencies]
+anyhow = "1"
+bitflags = "2"
+nom = "7"
+
+[target.'cfg(not(target_arch="wasm32"))'.dependencies]
+libc = { version = "0.2", features = ["extra_traits"] }
+
+[target.'cfg(target_arch="wasm32")'.dependencies]
+js-sys = "0.3.55"

@@ -1,0 +1,26 @@
+diff --git a/proxmox-time/src/posix.rs b/proxmox-time/src/posix.rs
+index abc123..def456 100644
+--- a/proxmox-time/src/posix.rs
++++ b/proxmox-time/src/posix.rs
+@@ -44,7 +44,7 @@ pub fn epoch_to_gmtime(epoch: i64) -> Result<libc::tm, Error> {
+         tm_yday: 0,
+         tm_isdst: 0,
+         tm_gmtoff: 0,
+-        tm_zone: std::ptr::null(),
++        tm_zone: std::ptr::null_mut(),
+     };
+
+     unsafe {
+diff --git a/proxmox-time/src/tm_editor.rs b/proxmox-time/src/tm_editor.rs
+index abc123..def456 100644
+--- a/proxmox-time/src/tm_editor.rs
++++ b/proxmox-time/src/tm_editor.rs
+@@ -23,7 +23,7 @@ impl TmEditor {
+             tm_yday: 0,
+             tm_isdst: -1,
+             tm_gmtoff: 0,
+-            tm_zone: std::ptr::null(),
++            tm_zone: std::ptr::null_mut(),
+         };
+
+         unsafe {
