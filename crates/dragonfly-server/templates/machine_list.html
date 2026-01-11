@@ -556,7 +556,7 @@
     <div class="mt-8 flex flex-col">
         <div class="-my-2 -mx-4 overflow-x-auto sm:-mx-6 lg:-mx-8">
           <div class="inline-block min-w-full py-2 align-middle md:px-6 lg:px-8">
-            <div class="overflow-hidden rounded-xl border border-purple-500 dark:border-purple-700 shadow">
+            <div class="overflow-visible rounded-xl border border-purple-500 dark:border-purple-700 shadow">
               <table class="min-w-full divide-y divide-gray-300 dark:divide-purple-800/50">
                 <thead class="bg-gray-50 dark:bg-gray-950">      
                             <tr>
@@ -786,7 +786,7 @@
                                             x-transition:leave="transition ease-in duration-75"
                                             x-transition:leave-start="transform opacity-100 scale-100"
                                             x-transition:leave-end="transform opacity-0 scale-95"
-                                            class="absolute z-10 mt-1 w-48 rounded-md shadow-lg bg-white ring-1 ring-black ring-opacity-5 focus:outline-none dark:bg-black dark:ring-gray-700"
+                                            class="absolute z-50 mt-1 w-48 rounded-md shadow-lg bg-white ring-1 ring-black ring-opacity-5 focus:outline-none dark:bg-black dark:ring-gray-700"
                                             @click.outside="osDropdowns['{{ machine.id }}'] = false"
                                             x-cloak
                                         >
