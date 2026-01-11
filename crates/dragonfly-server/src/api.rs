@@ -2860,9 +2860,10 @@ exit 0
 
 /// Handler for /boot/{arch}/{asset} routes - extracts path parameters
 pub async fn serve_boot_asset_handler(
+    State(state): State<AppState>,
     axum::extract::Path((arch, asset)): axum::extract::Path<(String, String)>,
 ) -> Response {
-    serve_boot_asset(&arch, &asset).await
+    serve_boot_asset(&arch, &asset, &state).await
 }
 
 /// Serve boot assets (kernel, initramfs, modloop, apkovl) for a specific architecture
@@ -2871,8 +2872,8 @@ pub async fn serve_boot_asset_handler(
 /// - /boot/{arch}/kernel -> vmlinuz
 /// - /boot/{arch}/initramfs -> initramfs
 /// - /boot/{arch}/modloop -> modloop
-/// - /boot/{arch}/apkovl.tar.gz -> localhost.apkovl.tar.gz
-pub async fn serve_boot_asset(arch: &str, asset: &str) -> Response {
+/// - /boot/{arch}/apkovl.tar.gz -> localhost.apkovl.tar.gz (dynamically generated)
+pub async fn serve_boot_asset(arch: &str, asset: &str, state: &AppState) -> Response {
     // Normalize architecture names
     // - iPXE BIOS uses i386 (32-bit) but can boot x86_64 kernels
     // - iPXE EFI uses x86_64
@@ -2905,6 +2906,41 @@ pub async fn serve_boot_asset(arch: &str, asset: &str) -> Response {
     };
 
     let file_path = FilePath::new(MAGE_DIR).join(normalized_arch).join(filename);
+
+    // Special handling for apkovl - generate dynamically if needed
+    if asset == "apkovl.tar.gz" {
+        let base_url = crate::mode::get_base_url(Some(state.store.as_ref())).await;
+        let url_marker_path = file_path.with_extension("url");
+
+        // Check if we need to regenerate
+        let needs_regeneration = if file_path.exists() {
+            match tokio::fs::read_to_string(&url_marker_path).await {
+                Ok(stored_url) => stored_url.trim() != base_url,
+                Err(_) => true,
+            }
+        } else {
+            true
+        };
+
+        if needs_regeneration {
+            info!("Generating apkovl for {} with base_url: {}", normalized_arch, base_url);
+            match generate_mage_apkovl_arch(&base_url, normalized_arch).await {
+                Ok(()) => {
+                    // Save URL marker
+                    if let Err(e) = tokio::fs::write(&url_marker_path, &base_url).await {
+                        warn!("Failed to write URL marker: {}", e);
+                    }
+                }
+                Err(e) => {
+                    error!("Failed to generate apkovl: {}", e);
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("Failed to generate apkovl: {}", e),
+                    ).into_response();
+                }
+            }
+        }
+    }
 
     if !file_path.exists() {
         warn!("404 /boot/{}/{}: File not found at {:?}", arch, asset, file_path);
