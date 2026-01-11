@@ -97,8 +97,8 @@ ff02::2 ip6-allrouters
 const HOSTNAME_CONTENT: &str = "localhost";
 const APK_ARCH_CONTENT: &str = "x86_64"; // Assuming amd64/x86_64 for now
 const LBU_LIST_CONTENT: &str = "+usr/local";
-const REPOSITORIES_CONTENT: &str = r#"https://dl-cdn.alpinelinux.org/alpine/v3.21/main
-https://dl-cdn.alpinelinux.org/alpine/v3.21/community
+const REPOSITORIES_CONTENT: &str = r#"https://dl-cdn.alpinelinux.org/alpine/v3.23/main
+https://dl-cdn.alpinelinux.org/alpine/v3.23/community
 "#;
 const WORLD_CONTENT: &str = r#"alpine-baselayout
 alpine-conf
@@ -160,14 +160,32 @@ pub async fn generate_agent_apkovl(
     
     // 4. Write dynamic dragonfly-agent.start script
     let start_script_path = temp_path.join("etc/local.d/dragonfly-agent.start");
-    
-    // Create script content with explicit newline characters
-    let script_content = format!(
-        "#!/bin/sh\n\
-        # Start dragonfly-agent\n\
-        /usr/local/bin/dragonfly-agent --server {} --setup\n\
-        exit 0\n", 
-        base_url
+
+    // Create script content - runs agent in background with logging
+    // The agent auto-detects native mode from kernel parameters (dragonfly.*)
+    let script_content = format!(r#"#!/bin/sh
+# Dragonfly Agent startup script
+exec 2>&1
+echo "=== Dragonfly Agent starting ==="
+echo "Date: $(date)"
+echo "Kernel params: $(cat /proc/cmdline)"
+echo "Server URL: {}"
+
+# Verify agent binary exists
+if [ ! -x /usr/local/bin/dragonfly-agent ]; then
+    echo "ERROR: Agent binary not found or not executable"
+    ls -la /usr/local/bin/
+    exit 1
+fi
+
+# Run agent - it will detect native mode from kernel params
+echo "Starting dragonfly-agent..."
+/usr/local/bin/dragonfly-agent --server {} 2>&1 &
+AGENT_PID=$!
+echo "Agent started with PID: $AGENT_PID"
+exit 0
+"#,
+        base_url, base_url
     );
     
     // Write the file
@@ -2744,11 +2762,32 @@ async fn generate_agent_apkovl_local(
     fs::write(temp_path.join("etc/.default_boot_services"), "").await
         .map_err(|e| dragonfly_common::Error::Internal(format!("Failed to write: {}", e)))?;
 
-    // 4. Write start script
+    // 4. Write start script - runs agent in background with logging
+    // The agent auto-detects native mode from kernel parameters (dragonfly.*)
     let start_script_path = temp_path.join("etc/local.d/dragonfly-agent.start");
-    let script_content = format!(
-        "#!/bin/sh\n# Start dragonfly-agent\n/usr/local/bin/dragonfly-agent --server {} --setup\nexit 0\n",
-        base_url
+    let script_content = format!(r#"#!/bin/sh
+# Dragonfly Agent startup script
+exec 2>&1
+echo "=== Dragonfly Agent starting ==="
+echo "Date: $(date)"
+echo "Kernel params: $(cat /proc/cmdline)"
+echo "Server URL: {}"
+
+# Verify agent binary exists
+if [ ! -x /usr/local/bin/dragonfly-agent ]; then
+    echo "ERROR: Agent binary not found or not executable"
+    ls -la /usr/local/bin/
+    exit 1
+fi
+
+# Run agent - it will detect native mode from kernel params
+echo "Starting dragonfly-agent..."
+/usr/local/bin/dragonfly-agent --server {} 2>&1 &
+AGENT_PID=$!
+echo "Agent started with PID: $AGENT_PID"
+exit 0
+"#,
+        base_url, base_url
     );
     fs::write(&start_script_path, script_content).await
         .map_err(|e| dragonfly_common::Error::Internal(format!("Failed to write: {}", e)))?;
