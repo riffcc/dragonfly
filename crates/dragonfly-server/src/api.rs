@@ -135,7 +135,7 @@ pub fn hardware_to_machine(hw: &Hardware) -> Machine {
         ip_address,
         hostname,
         os_choice: None, // TODO: get from workflow/template
-        os_installed: None,
+        os_installed: Some("".to_string()), // Empty string instead of None to avoid template errors
         status,
         disks,
         nameservers: vec![],
