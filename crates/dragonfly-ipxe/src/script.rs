@@ -215,9 +215,7 @@ shell
 echo Booting into discovery mode...
 echo MAC: ${{mac}}
 
-kernel {kernel} {params} \
-  modloop={modloop} \
-  apkovl={apkovl}
+kernel {kernel} {params} modloop={modloop} apkovl={apkovl}
 initrd {initramfs}
 boot
 "#
@@ -246,10 +244,7 @@ echo Booting into imaging mode...
 echo MAC: ${{mac}}
 echo Workflow: {workflow_id}
 
-kernel {kernel} {params} \
-  dragonfly.workflow={workflow_id} \
-  modloop={modloop} \
-  apkovl={apkovl}
+kernel {kernel} {params} dragonfly.workflow={workflow_id} modloop={modloop} apkovl={apkovl}
 initrd {initramfs}
 boot
 "#
@@ -304,12 +299,11 @@ shell
     fn kernel_params(&self, hardware: Option<&Hardware>, mode: &str) -> String {
         let mut params = self.config.kernel_params.clone();
 
-        // Alpine-specific boot parameters for network boot
+        // Alpine-specific boot parameters for network boot (diskless mode)
+        // Don't specify root= - let initramfs handle tmpfs setup
         params.push("ip=dhcp".to_string());
-        params.push("alpine_repo=http://dl-cdn.alpinelinux.org/alpine/v3.21/main".to_string());
-        params.push("modules=loop,squashfs,sd-mod,usb-storage,virtio_net,virtio_blk".to_string());
-        // Required for diskless/netboot - tells initramfs to use tmpfs as root
-        params.push("root=".to_string());  // Empty root tells Alpine to use tmpfs
+        params.push("alpine_repo=http://dl-cdn.alpinelinux.org/alpine/v3.23/main".to_string());
+        params.push("modules=loop,squashfs,sd-mod,usb-storage,virtio_net,virtio_blk,e1000,8139cp".to_string());
 
         // Console configuration
         if let Some(ref console) = self.config.console {
