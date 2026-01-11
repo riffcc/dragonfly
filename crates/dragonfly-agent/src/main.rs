@@ -921,6 +921,7 @@ fn build_hardware_from_detected_info(
         metadata: Some(instance_metadata),
         bmc: None,
         user_data: None,
+        os_choice: None,
     };
 
     // Create hardware with generated ID based on MAC
