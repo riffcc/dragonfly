@@ -304,10 +304,12 @@ shell
     fn kernel_params(&self, hardware: Option<&Hardware>, mode: &str) -> String {
         let mut params = self.config.kernel_params.clone();
 
-        // Alpine-specific boot parameters
+        // Alpine-specific boot parameters for network boot
         params.push("ip=dhcp".to_string());
         params.push("alpine_repo=http://dl-cdn.alpinelinux.org/alpine/v3.21/main".to_string());
-        params.push("modules=loop,squashfs,sd-mod,usb-storage".to_string());
+        params.push("modules=loop,squashfs,sd-mod,usb-storage,virtio_net,virtio_blk".to_string());
+        // Required for diskless/netboot - tells initramfs to use tmpfs as root
+        params.push("root=".to_string());  // Empty root tells Alpine to use tmpfs
 
         // Console configuration
         if let Some(ref console) = self.config.console {
