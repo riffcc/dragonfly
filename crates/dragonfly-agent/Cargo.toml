@@ -1,18 +1,22 @@
 [package]
 name = "dragonfly-agent"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 authors = ["Sparx"]
 description = "Agent for Dragonfly bare metal infrastructure management"
 
 [dependencies]
 dragonfly-common = { path = "../dragonfly-common" }
+dragonfly-crd = { path = "../dragonfly-crd" }
+dragonfly-actions = { path = "../dragonfly-actions" }
+dragonfly-workflow = { path = "../dragonfly-workflow" }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
 anyhow = { workspace = true }
+thiserror = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 reqwest = { workspace = true }
