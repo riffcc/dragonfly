@@ -504,21 +504,28 @@ pub async fn index(
                 .collect();
             (demo_machines, counts, counts_json, dates)
         } else {
-            // Normal mode - fetch real machines from database
-            match db::get_all_machines().await {
-                Ok(m) => {
-                    let counts = count_machines_by_status(&m);
-                    let counts_json = serde_json::to_string(&counts).unwrap_or_else(|_| "{}".to_string());
-                    let dates = m.iter()
-                        .map(|mach| (mach.id.to_string(), format_datetime(&mach.created_at)))
-                        .collect();
-                    (m, counts, counts_json, dates)
-                },
-                Err(e) => {
-                    error!("Error fetching machines for index page: {}", e);
-                    (vec![], HashMap::new(), "{}".to_string(), HashMap::new())
+            // Normal mode - fetch machines from DragonflyStore (ReDB)
+            let m: Vec<Machine> = if let Some(ref provisioning) = app_state.provisioning {
+                match provisioning.store().list_hardware().await {
+                    Ok(hardware_list) => {
+                        hardware_list.iter().map(crate::api::hardware_to_machine).collect()
+                    }
+                    Err(e) => {
+                        error!("Failed to list hardware from store: {}", e);
+                        vec![]
+                    }
                 }
-            }
+            } else {
+                error!("Provisioning service not initialized");
+                vec![]
+            };
+
+            let counts = count_machines_by_status(&m);
+            let counts_json = serde_json::to_string(&counts).unwrap_or_else(|_| "{}".to_string());
+            let dates = m.iter()
+                .map(|mach| (mach.id.to_string(), format_datetime(&mach.created_at)))
+                .collect();
+            (m, counts, counts_json, dates)
         }
     } else {
         // Provide empty defaults if installing

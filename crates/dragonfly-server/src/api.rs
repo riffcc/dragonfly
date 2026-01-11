@@ -55,7 +55,7 @@ use axum::extract::DefaultBodyLimit;
 use serde::Deserialize;
 
 /// Convert Hardware (from DragonflyStore/ReDB) to Machine (for UI)
-fn hardware_to_machine(hw: &Hardware) -> Machine {
+pub fn hardware_to_machine(hw: &Hardware) -> Machine {
     // Generate deterministic UUID from hardware name
     let namespace = uuid::Uuid::NAMESPACE_DNS;
     let id = uuid::Uuid::new_v5(&namespace, hw.metadata.name.as_bytes());
@@ -440,14 +440,8 @@ async fn get_all_machines(
             }
         }
     } else {
-        // Fallback to SQLite if provisioning not initialized
-        match db::get_all_machines().await {
-            Ok(m) => m,
-            Err(e) => {
-                error!("Failed to get machines from db: {}", e);
-                vec![]
-            }
-        }
+        error!("Provisioning service not initialized");
+        vec![]
     };
 
     // Get workflow info for machines that are installing OS

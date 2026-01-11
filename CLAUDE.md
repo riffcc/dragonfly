@@ -8,7 +8,9 @@ reinstalling an entire datacentre.
 ## Architecture - READ THIS FIRST
 
 ### Storage Backends (CRITICAL)
-Dragonfly supports TWO storage backends. They are INDEPENDENT of deployment mode:
+**USE REDB OR K8S/ETCD. REMOVE SQLITE.**
+
+Dragonfly supports TWO storage backends via `DragonflyStore` trait:
 
 1. **ReDB (DEFAULT)** - Embedded Rust database at `/var/lib/dragonfly/dragonfly.redb`
    - Used by default when no env var is set
@@ -18,9 +20,11 @@ Dragonfly supports TWO storage backends. They are INDEPENDENT of deployment mode
 2. **Kubernetes/etcd (OPTIONAL)** - Store everything in etcd via K8s CRDs
    - Enabled via env var (e.g., `DRAGONFLY_BACKEND=kubernetes`)
    - Uses whatever KUBECONFIG points to
-   - For running inside K8s where you want data in etcd, not persistent storage
+   - For running inside K8s where you want data in etcd
 
-**K8s IS NOT REQUIRED. EVER.** The storage backend choice is completely independent of features.
+**SQLite (`db.rs`) is DEPRECATED and being removed - DO NOT USE IT.**
+
+**K8s IS NOT REQUIRED. EVER.** The storage backend choice is independent of features.
 
 ### Deployment Modes
 These control WHAT Dragonfly does, not WHERE it stores data:
