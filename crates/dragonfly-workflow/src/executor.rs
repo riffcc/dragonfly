@@ -287,7 +287,9 @@ impl WorkflowExecutor {
             });
 
             // Build action context with environment from template
-            let env = action_step.to_environment(&hardware_disks, &self.server_url);
+            // Get MAC address for template variable substitution (instance_id, friendly_name)
+            let mac = hardware.primary_mac().unwrap_or("00:00:00:00:00:00");
+            let env = action_step.to_environment(&hardware_disks, &self.server_url, mac);
             let reporter = Arc::new(EventProgressReporter {
                 workflow_name: workflow.metadata.name.clone(),
                 action_name: action_type.to_string(),

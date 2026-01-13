@@ -192,7 +192,15 @@ impl ActionStep {
     }
 
     /// Convert action config to environment variables for the action executor
-    pub fn to_environment(&self, hardware_disks: &[String], server: &str) -> HashMap<String, String> {
+    ///
+    /// Template variables supported in content:
+    /// - `{{ server }}` - Dragonfly server URL
+    /// - `{{ instance_id }}` - UUID derived from MAC address (for cloud-init instance-id)
+    /// - `{{ friendly_name }}` - BIP39-style memorable name derived from MAC (for hostname)
+    pub fn to_environment(&self, hardware_disks: &[String], server: &str, mac: &str) -> HashMap<String, String> {
+        // Compute instance_id and friendly_name from MAC address
+        let instance_id = dragonfly_common::mac_to_words::mac_to_uuid(mac).to_string();
+        let friendly_name = dragonfly_common::mac_to_words::mac_to_words_safe(mac);
         let mut env = HashMap::new();
 
         match self {
@@ -231,7 +239,10 @@ impl ActionStep {
 
                 if let Some(content) = &cfg.content {
                     // Substitute variables in content
-                    let content = content.replace("{{ server }}", server);
+                    let content = content
+                        .replace("{{ server }}", server)
+                        .replace("{{ instance_id }}", &instance_id)
+                        .replace("{{ friendly_name }}", &friendly_name);
                     env.insert("CONTENTS".to_string(), content);
                 }
                 if let Some(content_b64) = &cfg.content_b64 {
@@ -519,7 +530,7 @@ mod tests {
         });
 
         let disks = vec!["/dev/sda".to_string()];
-        let env = action.to_environment(&disks, "10.1.120.120");
+        let env = action.to_environment(&disks, "10.1.120.120", "00:11:22:33:44:55");
 
         assert_eq!(env.get("IMG_URL").unwrap(), "http://10.1.120.120:3000/image.raw");
         assert_eq!(env.get("DEST_DISK").unwrap(), "/dev/sda");
@@ -557,12 +568,50 @@ mod tests {
         });
 
         let disks = vec!["/dev/sda".to_string()];
-        let env = action.to_environment(&disks, "myserver");
+        let env = action.to_environment(&disks, "myserver", "00:11:22:33:44:55");
 
         assert_eq!(env.get("DEST_DISK").unwrap(), "/dev/sda1");
         assert_eq!(env.get("DEST_PATH").unwrap(), "/etc/test.cfg");
         assert_eq!(env.get("CONTENTS").unwrap(), "server=myserver");
         assert_eq!(env.get("MODE").unwrap(), "0644");
+    }
+
+    #[test]
+    fn test_writefile_template_variables() {
+        // Test all template variables: server, instance_id, friendly_name
+        let action = ActionStep::Writefile(WritefileConfig {
+            path: "/etc/cloud/meta-data".to_string(),
+            partition: Some(1),
+            fs_type: None,
+            content: Some("instance-id: {{ instance_id }}\nlocal-hostname: {{ friendly_name }}\nserver: {{ server }}".to_string()),
+            content_b64: None,
+            mode: Some("0644".to_string()),
+            uid: None,
+            gid: None,
+            timeout: None,
+        });
+
+        let disks = vec!["/dev/sda".to_string()];
+        let mac = "04:7c:16:eb:74:ed";
+        let env = action.to_environment(&disks, "10.0.0.1", mac);
+
+        let contents = env.get("CONTENTS").unwrap();
+
+        // Verify instance_id is a valid UUID
+        assert!(contents.contains("instance-id: "));
+        let instance_id_line = contents.lines().find(|l| l.starts_with("instance-id:")).unwrap();
+        let uuid_str = instance_id_line.strip_prefix("instance-id: ").unwrap();
+        assert!(uuid::Uuid::parse_str(uuid_str).is_ok(), "instance_id should be a valid UUID");
+
+        // Verify friendly_name is a BIP39-style name (4 capitalized words)
+        assert!(contents.contains("local-hostname: "));
+        let hostname_line = contents.lines().find(|l| l.starts_with("local-hostname:")).unwrap();
+        let friendly_name = hostname_line.strip_prefix("local-hostname: ").unwrap();
+        let capital_count = friendly_name.chars().filter(|c| c.is_uppercase()).count();
+        assert_eq!(capital_count, 4, "friendly_name should have 4 capitalized words");
+
+        // Verify server substitution
+        assert!(contents.contains("server: 10.0.0.1"));
     }
 
     #[test]
@@ -577,7 +626,7 @@ mod tests {
         });
 
         let disks = vec!["/dev/nvme0n1".to_string()];
-        let env = action.to_environment(&disks, "server");
+        let env = action.to_environment(&disks, "server", "00:11:22:33:44:55");
 
         assert_eq!(env.get("BLOCK_DEVICE").unwrap(), "/dev/nvme0n1p1");
         assert_eq!(env.get("CMD_LINE").unwrap(), "root=/dev/nvme0n1p1 ro quiet");

@@ -1380,6 +1380,7 @@ name = "dragonfly-crd"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "dragonfly-common",
  "pretty_assertions",
  "serde",
  "serde_json",

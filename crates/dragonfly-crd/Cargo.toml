@@ -12,6 +12,7 @@ serde_json = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
 thiserror = { workspace = true }
+dragonfly-common = { path = "../dragonfly-common" }
 
 [dev-dependencies]
 pretty_assertions = "1.4"

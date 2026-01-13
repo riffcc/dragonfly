@@ -6,21 +6,33 @@ spec:
   timeout: 9800
   actions:
     - action: image2disk
-      url: "https://cloud.debian.org/images/cloud/trixie/daily/latest/debian-13-genericcloud-amd64-daily.tar.xz"
+      url: "https://cloud.debian.org/images/cloud/trixie/daily/latest/debian-13-generic-amd64-daily.tar.xz"
       disk: auto
       timeout: 9600
 
     - action: writefile
-      path: /etc/cloud/cloud.cfg.d/10_dragonfly.cfg
+      path: /etc/cloud/ds-identify.cfg
       partition: 1
       content: |
-        datasource:
-          Ec2:
-            metadata_urls: ["http://{{ server }}:50061"]
-            strict_id: false
+        datasource: NoCloud
+      mode: "0644"
+      timeout: 90
+
+    - action: writefile
+      path: /var/lib/cloud/seed/nocloud/meta-data
+      partition: 1
+      content: |
+        instance-id: {{ instance_id }}
+        local-hostname: {{ friendly_name }}
+      mode: "0644"
+      timeout: 90
+
+    - action: writefile
+      path: /var/lib/cloud/seed/nocloud/user-data
+      partition: 1
+      content: |
+        #cloud-config
         manage_etc_hosts: localhost
-        warnings:
-          dsid_missing_source: off
         users:
           - default
         disable_root: true
@@ -32,15 +44,7 @@ spec:
         runcmd:
           - systemctl enable qemu-guest-agent
           - systemctl start qemu-guest-agent
-      mode: "0600"
-      timeout: 90
-
-    - action: writefile
-      path: /etc/cloud/ds-identify.cfg
-      partition: 1
-      content: |
-        datasource: Ec2
-      mode: "0600"
+      mode: "0644"
       timeout: 90
 
     - action: writefile
