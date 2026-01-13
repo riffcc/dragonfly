@@ -4,7 +4,6 @@ use sqlx::{Pool, Sqlite, SqlitePool, Row};
 use tokio::sync::OnceCell;
 use tracing::{error, info};
 use uuid::Uuid;
-use std::fs::{File, OpenOptions};
 use std::path::Path;
 use serde_json;
 
@@ -2546,12 +2545,11 @@ pub async fn update_proxmox_api_tokens(
     token_type: &str,
     token_value: &str
 ) -> Result<bool> {
-    use sqlx::query;
-    use crate::encryption::{encrypt_string, decrypt_string};
+    use crate::encryption::encrypt_string;
     use tracing::info;
 
     // Get the existing settings
-    let settings = match get_proxmox_settings().await? {
+    let _settings = match get_proxmox_settings().await? {
         Some(s) => s,
         None => {
             return Err(anyhow::anyhow!("Cannot update API tokens: No Proxmox settings exist").into());

@@ -9,7 +9,6 @@ use color_eyre::eyre::Result;
 use tracing::{error, info};
 use tracing_subscriber::{fmt, prelude::*, registry, EnvFilter};
 use tokio::sync::watch;
-use clap::CommandFactory;
 use std::path::Path;
 
 // Reference the cmd module where subcommands live

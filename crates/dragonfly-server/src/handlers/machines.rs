@@ -3,7 +3,6 @@ use serde::Deserialize;
 use uuid::Uuid;
 use tracing::{error, info, warn};
 use proxmox_client::HttpApiClient;
-use serde_json::json;
 
 use crate::AppState;
 use crate::db;

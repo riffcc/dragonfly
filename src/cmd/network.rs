@@ -4,7 +4,7 @@ use std::process::Command;
 use std::io::{self, Write};
 use network_interface::{NetworkInterface, NetworkInterfaceConfig, Addr};
 use crossterm::{
-    event::{self, Event, KeyCode, KeyEvent},
+    event::{self, Event, KeyCode},
     terminal::{self, disable_raw_mode, enable_raw_mode},
     style::{Color, Print, ResetColor, SetForegroundColor},
     execute,

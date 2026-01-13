@@ -878,6 +878,7 @@ pub async fn get_workflow_info(machine: &Machine) -> Result<Option<WorkflowInfo>
                     // Send a machine_updated event to refresh the UI
                     if let Some(event_manager) = get_event_manager() {
                         info!("Sending machine_updated event after kexec detection success for: {}", machine.id);
+                        // TODO: Handle error
                         event_manager.send(format!("machine_updated:{}", machine.id));
                     }
 
@@ -1104,6 +1105,7 @@ pub async fn get_workflow_info(machine: &Machine) -> Result<Option<WorkflowInfo>
                     // Send a machine_updated event
                     if let Some(event_manager) = get_event_manager() {
                         info!("Sending machine_updated event for completed workflow: {}", machine.id);
+                        // TODO: Handle error
                         event_manager.send(format!("machine_updated:{}", machine.id));
                     }
                 }
@@ -1117,6 +1119,7 @@ pub async fn get_workflow_info(machine: &Machine) -> Result<Option<WorkflowInfo>
                     // Send a machine_updated event
                     if let Some(event_manager) = get_event_manager() {
                         info!("Sending machine_updated event for failed workflow: {}", machine.id);
+                        // TODO: Handle error
                         event_manager.send(format!("machine_updated:{}", machine.id));
                     }
                 }
@@ -1133,6 +1136,7 @@ pub async fn get_workflow_info(machine: &Machine) -> Result<Option<WorkflowInfo>
                     // Send a machine_updated event for real-time progress updates
                     if let Some(event_manager) = get_event_manager() {
                         info!("Sending machine_updated event for workflow progress: {}", machine.id);
+                        // TODO: Handle error
                         event_manager.send(format!("machine_updated:{}", machine.id));
                     }
                 }
@@ -1508,6 +1512,7 @@ pub async fn start_workflow_polling_task(
                                             current_state.1
                                         );
                                         // Send machine updated event on state change
+                                        // TODO: Handle error
                                         event_manager_clone.send(format!("machine_updated:{}", machine.id));
                                         last_seen_states.insert(machine.id, current_state);
                                     }
@@ -1520,6 +1525,7 @@ pub async fn start_workflow_polling_task(
                                     );
 
                                     // Send initial machine updated event
+                                    // TODO: Handle error
                                     event_manager_clone.send(format!("machine_updated:{}", machine.id));
 
                                     // Add to last seen states
@@ -1530,6 +1536,7 @@ pub async fn start_workflow_polling_task(
                                 // If we previously had a workflow but now it's gone, send an event
                                 if last_seen_states.remove(&machine.id).is_some() {
                                     info!("Workflow completed for machine {}", machine.id);
+                                    // TODO: Handle error
                                     event_manager_clone.send(format!("machine_updated:{}", machine.id));
                                 }
                             },

@@ -2314,7 +2314,7 @@ fn extract_token_value(token_str: &str) -> Option<String> {
 async fn create_proxmox_client(
     host: &str,
     port: i32,
-    skip_tls_verify: bool
+    _skip_tls_verify: bool
 ) -> Result<ProxmoxApiClient, ProxmoxClientError> {
     let host_url = format!("https://{}:{}", host, port);
     let uri = host_url.parse::<Uri>()

@@ -8,12 +8,12 @@
 //! It uses the `DragonflyStore` trait for storage, making it backend-agnostic.
 
 use crate::mode::DeploymentMode;
-use crate::store::{DragonflyStore, Result as StoreResult, StoreError};
-use dragonfly_crd::{Hardware, HardwareSpec, HardwareStatus, HardwareState, Workflow, WorkflowState, Template};
+use crate::store::{DragonflyStore, StoreError};
+use dragonfly_crd::{Hardware, HardwareSpec, HardwareStatus, HardwareState, Workflow, WorkflowState};
 use dragonfly_ipxe::{IpxeConfig, IpxeScriptGenerator};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use tracing::{debug, info, warn, error};
+use tracing::{debug, info};
 
 /// Hardware registration request from agent check-in
 #[derive(Debug, Clone, Deserialize)]
@@ -314,7 +314,7 @@ impl ProvisioningService {
         template_name: &str,
     ) -> Result<Workflow, ProvisioningError> {
         // Verify hardware exists
-        let hardware = self.store.get_hardware(hardware_id).await
+        let _hardware = self.store.get_hardware(hardware_id).await
             .map_err(|e| ProvisioningError::Store(e))?
             .ok_or_else(|| ProvisioningError::NotFound(format!("hardware: {}", hardware_id)))?;
 
