@@ -74,8 +74,8 @@ pub struct CheckInResponse {
 pub enum AgentAction {
     /// Wait for user to assign a workflow
     Wait,
-    /// Execute the assigned workflow
-    Execute(String),
+    /// Execute the assigned workflow (workflow_id is in CheckInResponse)
+    Execute,
     /// Reboot the machine
     Reboot,
 }
@@ -274,7 +274,7 @@ impl ProvisioningService {
         let (workflow_id, action) = match active_workflow {
             Some(wf) => {
                 let wf_id = wf.metadata.name.clone();
-                (Some(wf_id.clone()), AgentAction::Execute(wf_id))
+                (Some(wf_id), AgentAction::Execute)
             }
             None => {
                 // No active workflow - check if os_choice is set
@@ -283,7 +283,7 @@ impl ProvisioningService {
                     info!("Hardware {} has os_choice {}, creating imaging workflow", hardware.metadata.name, os_choice);
                     let workflow = self.create_imaging_workflow(&hardware, os_choice).await?;
                     let wf_id = workflow.metadata.name.clone();
-                    (Some(wf_id.clone()), AgentAction::Execute(wf_id))
+                    (Some(wf_id), AgentAction::Execute)
                 } else {
                     match self.mode {
                         DeploymentMode::Flight if is_new => {
