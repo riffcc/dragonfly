@@ -20,6 +20,8 @@ pub struct AgentWorkflowRunner {
     client: Client,
     server_url: String,
     hardware: Hardware,
+    /// Optional filter to only run specific actions (1-indexed)
+    action_filter: Option<Vec<usize>>,
 }
 
 impl AgentWorkflowRunner {
@@ -29,7 +31,14 @@ impl AgentWorkflowRunner {
             client,
             server_url,
             hardware,
+            action_filter: None,
         }
+    }
+
+    /// Set the action filter (1-indexed action numbers to run)
+    pub fn with_action_filter(mut self, filter: Option<Vec<usize>>) -> Self {
+        self.action_filter = filter;
+        self
     }
 
     /// Execute a workflow
@@ -72,9 +81,15 @@ impl AgentWorkflowRunner {
         let action_engine = self.create_action_engine();
 
         // Create executor with server URL for template variable substitution
-        let executor = WorkflowExecutor::new(action_engine, store.clone())
+        let mut executor = WorkflowExecutor::new(action_engine, store.clone())
             .with_server_url(&self.server_url)
             .with_global_timeout(Duration::from_secs(3600)); // 1 hour default timeout
+
+        // Apply action filter if specified
+        if let Some(ref filter) = self.action_filter {
+            info!(filter = ?filter, "Action filter enabled - only running specified actions");
+            executor = executor.with_action_filter(filter.clone());
+        }
 
         // Subscribe to events for progress reporting
         let mut event_rx = executor.subscribe();

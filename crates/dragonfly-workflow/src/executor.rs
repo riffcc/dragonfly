@@ -60,6 +60,9 @@ pub struct WorkflowExecutor {
 
     /// Server URL for template variable substitution
     server_url: String,
+
+    /// Optional filter to only run specific actions (1-indexed)
+    action_filter: Option<Vec<usize>>,
 }
 
 impl WorkflowExecutor {
@@ -75,6 +78,7 @@ impl WorkflowExecutor {
             event_sender,
             global_timeout: None,
             server_url: "127.0.0.1".to_string(),
+            action_filter: None,
         }
     }
 
@@ -87,6 +91,15 @@ impl WorkflowExecutor {
     /// Set the global workflow timeout
     pub fn with_global_timeout(mut self, timeout: Duration) -> Self {
         self.global_timeout = Some(timeout);
+        self
+    }
+
+    /// Set the action filter (1-indexed action numbers to run)
+    ///
+    /// Only actions whose 1-indexed position is in the filter will be executed.
+    /// Example: `vec![1, 3]` runs only the 1st and 3rd actions.
+    pub fn with_action_filter(mut self, filter: Vec<usize>) -> Self {
+        self.action_filter = Some(filter);
         self
     }
 
@@ -243,6 +256,20 @@ impl WorkflowExecutor {
 
         for (action_idx, action_step) in template.spec.actions.iter().enumerate() {
             let action_type = action_step.action_type();
+            let action_number = action_idx + 1; // 1-indexed for user-facing
+
+            // Check if action should be skipped due to filter
+            if let Some(ref filter) = self.action_filter {
+                if !filter.contains(&action_number) {
+                    info!(
+                        action = %action_type,
+                        number = action_number,
+                        "Skipping action (not in filter: {:?})", filter
+                    );
+                    continue;
+                }
+            }
+
             debug!(action = %action_type, index = action_idx, "Starting action");
 
             // Update current action

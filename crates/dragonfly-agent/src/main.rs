@@ -45,6 +45,13 @@ struct Args {
     /// Check-in interval in seconds (for native mode)
     #[arg(long, default_value = "30")]
     checkin_interval: u64,
+
+    /// Only run specific actions (1-indexed, comma-separated)
+    /// Example: --action 1 (first action only)
+    /// Example: --action 1,2,3 (first three actions)
+    /// Example: --action 5 (fifth action only)
+    #[arg(long, value_delimiter = ',')]
+    action: Option<Vec<usize>>,
 }
 
 /// Parameters parsed from kernel command line (for Mage boot environment)
@@ -563,6 +570,7 @@ async fn main() -> Result<()> {
             Some(&ip_address_str),
             hardware,
             Duration::from_secs(args.checkin_interval),
+            args.action.clone(),
         ).await?;
 
         return Ok(());
@@ -937,6 +945,7 @@ async fn run_native_provisioning_loop(
     ip_address: Option<&str>,
     hardware: Hardware,
     checkin_interval: Duration,
+    action_filter: Option<Vec<usize>>,
 ) -> Result<()> {
     info!("Starting native provisioning check-in loop");
 
@@ -965,7 +974,7 @@ async fn run_native_provisioning_loop(
                                 client.clone(),
                                 server_url.to_string(),
                                 hardware.clone(),
-                            );
+                            ).with_action_filter(action_filter.clone());
 
                             match runner.execute(&workflow_id).await {
                                 Ok(()) => {
