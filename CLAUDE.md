@@ -57,6 +57,8 @@ Flight and Swarm are equally capable for datacenter management. Swarm adds multi
 - **Commit Regularly** - Test after every change and commit very regularly with tiny atomic chunks
 - **Follow Language Style Guides** - Adhere to the style guide of your primary language
 - **Use Palace Tools** - Use `pal test`, `pal build`, `pal run` for development workflows
+- **NEVER REVERT FILES** - Do NOT use `git checkout` or `git restore` to revert files unless explicitly asked
+- **NEVER SHELL OUT** - Do NOT use `Command::new()` to call external binaries. Use native Rust crates for EVERYTHING. No lsblk, no fdisk, no tar commands, no exceptions.
 
 ## Quality Standards
 - Write comprehensive tests for all new features

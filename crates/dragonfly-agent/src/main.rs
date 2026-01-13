@@ -329,101 +329,71 @@ fn parse_os_release(content: &str) -> Result<(String, String)> {
     Ok((name, version))
 }
 
-// Detect disks on the system
+// Detect disks on the system using block-utils (native Rust, no shelling out)
+#[cfg(target_os = "linux")]
 fn detect_disks() -> Vec<DiskInfo> {
     let mut disks = Vec::new();
-    
-    // Use lsblk to get disk information
-    if let Ok(output) = Command::new("lsblk")
-        .args(["-b", "-d", "-n", "-o", "NAME,SIZE,MODEL"])
-        .output()
-    {
-        if output.status.success() {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            
-            for line in stdout.lines() {
-                let parts: Vec<&str> = line.split_whitespace().collect();
-                if parts.len() >= 2 {
-                    let device_name = parts[0].trim();
-                    
-                    // Skip loop, ram devices, etc.
-                    if device_name.starts_with("loop") || device_name.starts_with("ram") {
-                        continue;
-                    }
-                    
-                    let device = format!("/dev/{}", device_name);
-                    
-                    // Parse size - defaults to 0 if parsing fails
-                    let size_bytes = parts[1].parse::<u64>().unwrap_or(0);
-                    
-                    // Get model if available (parts 2 onwards joined)
-                    let model = if parts.len() > 2 {
-                        Some(parts[2..].join(" "))
-                    } else {
-                        None
-                    };
-                    
-                    disks.push(DiskInfo {
-                        device,
-                        size_bytes,
-                        model,
-                        calculated_size: None,
-                    });
-                }
-            }
-        }
-    }
-    
-    // If lsblk failed, try with fdisk as a fallback
-    if disks.is_empty() {
-        if let Ok(output) = Command::new("fdisk")
-            .args(["-l"])
-            .output()
-        {
-            if output.status.success() {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                
-                for line in stdout.lines() {
-                    if line.contains("Disk /dev/") && !line.contains("loop") && !line.contains("ram") {
-                        // Example: "Disk /dev/sda: 20 GiB, 21474836480 bytes, 41943040 sectors"
-                        let parts: Vec<&str> = line.split(": ").collect();
-                        if parts.len() >= 2 {
-                            let device = parts[0].trim_start_matches("Disk ").trim().to_string();
-                            
-                            // Extract size in bytes if available
-                            let size_info = parts[1];
-                            let size_bytes = if let Some(start) = size_info.find(", ") {
-                                if let Some(end) = size_info[start + 2..].find(" bytes") {
-                                    size_info[start + 2..start + 2 + end].replace(",", "").parse::<u64>().unwrap_or(0)
-                                } else {
-                                    0
-                                }
-                            } else {
-                                0
-                            };
-                            
-                            disks.push(DiskInfo {
-                                device,
-                                size_bytes,
-                                model: None, // fdisk doesn't provide model info
-                                calculated_size: None,
-                            });
+
+    // Use block-utils to get block devices
+    match block_utils::get_block_devices() {
+        Ok(devices) => {
+            for device_path in devices {
+                // Get device info
+                match block_utils::get_device_info(&device_path) {
+                    Ok(info) => {
+                        // Skip partitions (we only want whole disks)
+                        if info.partition.is_some() {
+                            continue;
                         }
+
+                        let device: String = device_path.to_string_lossy().to_string();
+                        let size_bytes: u64 = info.capacity;
+                        let model: Option<String> = info.model.filter(|s: &String| !s.is_empty());
+
+                        tracing::debug!(
+                            "Found disk {} via block-utils: {} bytes, model: {:?}",
+                            device, size_bytes, model
+                        );
+
+                        disks.push(DiskInfo {
+                            device,
+                            size_bytes,
+                            model,
+                            calculated_size: None,
+                        });
+                    }
+                    Err(e) => {
+                        tracing::debug!(
+                            "Failed to get info for {:?}: {}",
+                            device_path, e
+                        );
                     }
                 }
             }
         }
+        Err(e) => {
+            tracing::error!("Failed to enumerate block devices: {}", e);
+        }
     }
-    
+
     tracing::info!("Detected {} disks", disks.len());
     for disk in &disks {
-        tracing::info!("  Disk: {} ({} bytes){}", 
-            disk.device, 
+        tracing::info!(
+            "  Disk: {} ({} bytes){}",
+            disk.device,
             disk.size_bytes,
-            disk.model.as_ref().map_or("".to_string(), |m| format!(", Model: {}", m)));
+            disk.model.as_ref().map_or("".to_string(), |m| format!(", Model: {}", m))
+        );
     }
-    
+
     disks
+}
+
+// Stub for non-Linux platforms (development only)
+#[cfg(not(target_os = "linux"))]
+fn detect_disks() -> Vec<DiskInfo> {
+    tracing::warn!("Disk detection not available on this platform");
+    Vec::new()
 }
 
 // Detect nameservers from resolv.conf
