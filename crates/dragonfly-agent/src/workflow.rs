@@ -153,13 +153,20 @@ async fn report_event(
             action,
             progress,
         } => {
+            // Send full progress data for real-time UI updates
             serde_json::json!({
                 "type": "action_progress",
                 "workflow": workflow,
                 "action": action,
                 "progress": {
                     "percent": progress.percentage,
-                    "message": progress.message
+                    "message": progress.message,
+                    "bytes_transferred": progress.bytes_transferred,
+                    "bytes_total": progress.bytes_total,
+                    "eta_secs": progress.eta.map(|d| d.as_secs()),
+                    "phase": progress.phase,
+                    "phase_number": progress.phase_number,
+                    "total_phases": progress.total_phases
                 }
             })
         }

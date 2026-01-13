@@ -418,7 +418,7 @@ async fn stream_compressed_file(
 async fn write_to_disk<R: AsyncRead + Unpin>(
     mut reader: R,
     dest: &mut tokio::fs::File,
-    _total_size: Option<u64>,
+    total_size: Option<u64>,
     reporter: &dyn crate::progress::ProgressReporter,
     action_name: &str,
 ) -> Result<u64> {
@@ -428,6 +428,7 @@ async fn write_to_disk<R: AsyncRead + Unpin>(
     let mut buffer = vec![0u8; 4 * 1024 * 1024];
     let mut bytes_written: u64 = 0;
     let mut last_report = std::time::Instant::now();
+    let start_time = std::time::Instant::now();
 
     loop {
         let n = reader.read(&mut buffer).await.map_err(|e| {
@@ -446,19 +447,67 @@ async fn write_to_disk<R: AsyncRead + Unpin>(
 
         // Report progress every 500ms to avoid flooding
         if last_report.elapsed() > Duration::from_millis(500) {
-            reporter.report(Progress::new(
-                action_name,
-                50, // We don't know exact progress without decompressed size
-                format!("Written {} to disk", format_bytes(bytes_written)),
-            ));
+            let elapsed = start_time.elapsed();
+            let speed = if elapsed.as_secs() > 0 {
+                bytes_written / elapsed.as_secs()
+            } else {
+                bytes_written
+            };
+
+            // Calculate ETA if we know total size
+            let eta = total_size.and_then(|total| {
+                if speed > 0 && bytes_written < total {
+                    let remaining = total - bytes_written;
+                    Some(Duration::from_secs(remaining / speed))
+                } else {
+                    None
+                }
+            });
+
+            let progress = if let Some(total) = total_size {
+                Progress::new(
+                    action_name,
+                    0, // will be calculated by with_bytes
+                    format!("{} @ {}/s", format_bytes(bytes_written), format_bytes(speed)),
+                )
+                .with_bytes(bytes_written, total)
+            } else {
+                // No total size known - report raw bytes
+                Progress::new(
+                    action_name,
+                    50, // Unknown progress
+                    format!("{} @ {}/s", format_bytes(bytes_written), format_bytes(speed)),
+                )
+            };
+
+            let progress = if let Some(eta) = eta {
+                progress.with_eta(eta)
+            } else {
+                progress
+            };
+
+            reporter.report(progress);
             last_report = std::time::Instant::now();
         }
     }
 
+    // Final progress report
+    let elapsed = start_time.elapsed();
+    let avg_speed = if elapsed.as_secs() > 0 {
+        bytes_written / elapsed.as_secs()
+    } else {
+        bytes_written
+    };
+
     reporter.report(Progress::new(
         action_name,
         95,
-        format!("Syncing {} to disk", format_bytes(bytes_written)),
+        format!(
+            "Syncing {} (avg {}/s, took {:.1}s)",
+            format_bytes(bytes_written),
+            format_bytes(avg_speed),
+            elapsed.as_secs_f64()
+        ),
     ));
 
     Ok(bytes_written)

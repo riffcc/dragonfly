@@ -190,6 +190,7 @@ pub fn api_router() -> Router<crate::AppState> {
         .route("/agent/checkin", post(agent_checkin_handler))
         // --- Workflow Routes (for agent) ---
         .route("/workflows/{id}", get(get_workflow_handler))
+        .route("/workflows/{id}/events", post(workflow_events_handler))
         .route("/templates/{name}", get(get_template_handler))
         .layer(DefaultBodyLimit::max(1024 * 1024 * 50)) // 50 MB
 }
@@ -2787,6 +2788,93 @@ fn generate_os_template(os_name: &str) -> Option<dragonfly_crd::Template> {
     template.metadata.labels.insert("os.display_name".to_string(), os_display_name.to_string());
 
     Some(template)
+}
+
+/// Workflow event data from agent
+#[derive(Debug, serde::Deserialize)]
+pub struct WorkflowEventPayload {
+    #[serde(rename = "type")]
+    pub event_type: String,
+    pub workflow: Option<String>,
+    pub action: Option<String>,
+    pub progress: Option<WorkflowProgress>,
+    pub success: Option<bool>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct WorkflowProgress {
+    pub percent: u8,
+    pub message: String,
+    pub bytes_transferred: Option<u64>,
+    pub bytes_total: Option<u64>,
+    pub eta_secs: Option<u64>,
+    pub phase: Option<String>,
+    pub phase_number: Option<u32>,
+    pub total_phases: Option<u32>,
+}
+
+/// Receive workflow events from agent for real-time UI updates
+///
+/// The agent POSTs progress events here as it executes workflow actions.
+/// We broadcast them via SSE so the UI can show real-time progress.
+pub async fn workflow_events_handler(
+    State(state): State<crate::AppState>,
+    Path(workflow_id): Path<String>,
+    Json(event): Json<WorkflowEventPayload>,
+) -> Response {
+    debug!(
+        workflow_id = %workflow_id,
+        event_type = %event.event_type,
+        "Received workflow event from agent"
+    );
+
+    // Build event message for SSE broadcast
+    let event_message = match event.event_type.as_str() {
+        "action_progress" => {
+            if let Some(progress) = &event.progress {
+                // Include full progress data for UI
+                format!(
+                    "workflow_progress:{}:{}:{}:{}:{}:{}",
+                    workflow_id,
+                    event.action.as_deref().unwrap_or("unknown"),
+                    progress.percent,
+                    progress.message,
+                    progress.bytes_transferred.unwrap_or(0),
+                    progress.bytes_total.unwrap_or(0)
+                )
+            } else {
+                format!("workflow_progress:{}:unknown:0:No progress data:0:0", workflow_id)
+            }
+        }
+        "started" => format!("workflow_started:{}", workflow_id),
+        "action_started" => format!(
+            "action_started:{}:{}",
+            workflow_id,
+            event.action.as_deref().unwrap_or("unknown")
+        ),
+        "action_completed" => format!(
+            "action_completed:{}:{}:{}",
+            workflow_id,
+            event.action.as_deref().unwrap_or("unknown"),
+            event.success.unwrap_or(false)
+        ),
+        "completed" => {
+            let success = event.success.unwrap_or(false);
+            info!(
+                workflow_id = %workflow_id,
+                success = success,
+                "Workflow completed"
+            );
+            format!("workflow_completed:{}:{}", workflow_id, success)
+        }
+        _ => format!("workflow_event:{}:{}", workflow_id, event.event_type),
+    };
+
+    // Broadcast to SSE subscribers
+    let _ = state.event_manager.send(event_message);
+
+    // Return success
+    (StatusCode::OK, Json(serde_json::json!({ "status": "ok" }))).into_response()
 }
 
 // Add stubs for functions called from mode.rs
