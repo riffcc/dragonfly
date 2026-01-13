@@ -440,14 +440,36 @@ pub async fn run() -> anyhow::Result<()> {
             let _ = event_manager_clone.send("templates_ready".to_string());
         });
 
-        // Verify Mage boot artifacts exist - fail hard if they don't
+        // Verify Mage boot artifacts exist - auto-download if missing
         info!("Verifying Mage boot artifacts for Flight mode...");
         if let Err(e) = crate::api::verify_mage_artifacts(&["x86_64", "aarch64"]) {
-            error!("Flight mode requires Mage boot artifacts, but verification failed: {}", e);
-            error!("Please run Flight mode setup again to download missing artifacts");
-            return Err(anyhow!("Mage boot artifacts verification failed: {}. Run Flight mode setup to download artifacts.", e));
+            warn!("Mage boot artifacts verification failed: {}", e);
+            info!("Auto-downloading missing Mage boot artifacts...");
+
+
+            // Download x86_64 artifacts
+            if let Err(download_err) = crate::api::download_mage_artifacts("3.23", "x86_64").await {
+                error!("Failed to download x86_64 Mage artifacts: {}", download_err);
+                error!("Flight mode requires Mage artifacts - cannot continue");
+                return Err(anyhow!("Failed to download required Mage artifacts: {}", download_err));
+            }
+            info!("Downloaded x86_64 Mage artifacts");
+
+            // Download aarch64 artifacts
+            if let Err(download_err) = crate::api::download_mage_artifacts("3.23", "aarch64").await {
+                error!("Failed to download aarch64 Mage artifacts: {}", download_err);
+                error!("Flight mode requires Mage artifacts - cannot continue");
+                return Err(anyhow!("Failed to download required Mage artifacts: {}", download_err));
+            }
+            info!("Downloaded aarch64 Mage artifacts");
+
+            // Verify download succeeded
+            crate::api::verify_mage_artifacts(&["x86_64", "aarch64"])
+                .map_err(|e| anyhow!("Mage artifact verification failed after download: {}", e))?;
+            info!("Mage boot artifacts downloaded and verified successfully");
+        } else {
+            info!("Mage boot artifacts verified successfully");
         }
-        info!("Mage boot artifacts verified successfully");
     } else {
         debug!("Skipping OS templates initialization (not in Flight mode)");
     } // End conditional OS template init
