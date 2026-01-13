@@ -43,11 +43,14 @@ spec:
         ssh_import_id:
           - gh:zorlin
           - gh:michatinkers
-        packages:
-          - qemu-guest-agent
         runcmd:
-          - systemctl enable qemu-guest-agent
-          - systemctl start qemu-guest-agent
+          - |
+            # Only install qemu-guest-agent if virtio serial port exists (running on QEMU/KVM)
+            if [ -e /dev/virtio-ports/org.qemu.guest_agent.0 ]; then
+              apt-get install -y qemu-guest-agent
+              systemctl enable qemu-guest-agent
+              systemctl start qemu-guest-agent
+            fi
       mode: "0644"
       timeout: 90
 
