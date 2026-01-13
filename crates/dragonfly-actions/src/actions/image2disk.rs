@@ -133,6 +133,24 @@ impl Action for Image2DiskAction {
 
         match result {
             Ok(bytes_written) => {
+                // Run partprobe to make kernel re-read partition table
+                // This is critical because the partition table changed during imaging
+                reporter.report(Progress::new(
+                    self.name(),
+                    95,
+                    "Re-reading partition table with partprobe",
+                ));
+
+                if let Err(e) = Command::new("partprobe")
+                    .arg(&dest_disk)
+                    .output()
+                    .await
+                    .map_err(|e| ActionError::ExecutionFailed(format!("Failed to run partprobe: {}", e)))
+                {
+                    // Log warning but don't fail - partprobe may fail harmlessly
+                    tracing::warn!("partprobe failed (non-critical): {}", e);
+                }
+
                 reporter.report(Progress::completed(self.name()));
                 Ok(ActionResult::success(format!(
                     "Successfully streamed image to {} ({} bytes written)",
