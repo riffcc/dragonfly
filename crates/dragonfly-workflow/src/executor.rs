@@ -223,11 +223,14 @@ impl WorkflowExecutor {
         hardware: &Hardware,
     ) -> Result<()> {
         let total_actions = template.spec.actions.len();
+        info!(total_actions = total_actions, template = %template.metadata.name, "Starting workflow actions");
 
         // Get hardware disk paths for template variable substitution
         let hardware_disks: Vec<String> = hardware.spec.disks.iter()
             .map(|d| d.device.clone())
             .collect();
+
+        debug!(disks = ?hardware_disks, server = %self.server_url, "Action context setup");
 
         for (action_idx, action_step) in template.spec.actions.iter().enumerate() {
             let action_type = action_step.action_type();
