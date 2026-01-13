@@ -1,7 +1,7 @@
 //! Workflow CRD types
 //!
-//! These types are compatible with Tinkerbell's Workflow CRD format
-//! for migration and interoperability.
+//! Workflows represent a provisioning job for a machine, linking
+//! a Hardware resource to a Template.
 
 use crate::{ObjectMeta, TypeMeta, CrdError, Result};
 use serde::{Deserialize, Serialize};
@@ -158,9 +158,9 @@ pub struct WorkflowStatus {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub global_timeout: Option<u64>,
 
-    /// Task statuses
+    /// Action statuses (flat list)
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub tasks: Vec<TaskStatus>,
+    pub actions: Vec<ActionStatus>,
 
     /// Start time
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -202,22 +202,7 @@ impl WorkflowState {
     pub const Timeout: WorkflowState = WorkflowState::StateTimeout;
 }
 
-/// Task status within a workflow
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct TaskStatus {
-    /// Task name
-    pub name: String,
-
-    /// Worker address (MAC address)
-    pub worker: String,
-
-    /// Action statuses
-    #[serde(default)]
-    pub actions: Vec<ActionStatus>,
-}
-
-/// Action status within a task
+/// Action status within a workflow
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ActionStatus {
@@ -417,9 +402,9 @@ mod tests {
     }
 
     #[test]
-    fn test_workflow_tinkerbell_compatible_format() {
-        // Test parsing Tinkerbell-style Workflow
-        let tinkerbell_style = r#"{
+    fn test_workflow_status_with_actions() {
+        // Test workflow with action statuses
+        let workflow_json = r#"{
             "apiVersion": "dragonfly.computer/v1",
             "kind": "Workflow",
             "metadata": {
@@ -435,25 +420,27 @@ mod tests {
             },
             "status": {
                 "state": "STATE_RUNNING",
-                "currentAction": "stream image",
+                "currentAction": "image2disk",
                 "progress": 25,
-                "tasks": [
+                "actions": [
                     {
-                        "name": "os installation",
-                        "worker": "00:11:22:33:44:55",
-                        "actions": [
-                            {
-                                "name": "stream image",
-                                "status": "STATE_RUNNING",
-                                "startedAt": "2024-01-15T10:30:00Z"
-                            }
-                        ]
+                        "name": "image2disk",
+                        "status": "STATE_RUNNING",
+                        "startedAt": "2024-01-15T10:30:00Z"
+                    },
+                    {
+                        "name": "writefile",
+                        "status": "STATE_PENDING"
+                    },
+                    {
+                        "name": "kexec",
+                        "status": "STATE_PENDING"
                     }
                 ]
             }
         }"#;
 
-        let wf: Workflow = serde_json::from_str(tinkerbell_style).unwrap();
+        let wf: Workflow = serde_json::from_str(workflow_json).unwrap();
 
         assert_eq!(wf.metadata.name, "os-install-00-11-22-33-44-55");
         assert_eq!(wf.spec.hardware_ref, "machine-00-11-22-33-44-55");
@@ -462,9 +449,10 @@ mod tests {
         assert_eq!(wf.progress(), 25);
 
         let status = wf.status.as_ref().unwrap();
-        assert_eq!(status.current_action, Some("stream image".to_string()));
-        assert_eq!(status.tasks.len(), 1);
-        assert_eq!(status.tasks[0].actions.len(), 1);
+        assert_eq!(status.current_action, Some("image2disk".to_string()));
+        assert_eq!(status.actions.len(), 3);
+        assert!(matches!(status.actions[0].status, ActionState::StateRunning));
+        assert!(matches!(status.actions[1].status, ActionState::StatePending));
     }
 
     #[test]

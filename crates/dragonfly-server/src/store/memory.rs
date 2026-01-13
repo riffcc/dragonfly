@@ -229,7 +229,7 @@ fn normalize_mac(mac: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dragonfly_crd::{HardwareSpec, Task, Action, actions};
+    use dragonfly_crd::{HardwareSpec, ActionStep, Image2DiskConfig};
 
     #[tokio::test]
     async fn test_hardware_crud() {
@@ -286,15 +286,17 @@ mod tests {
         let store = MemoryStore::new();
 
         let template = Template::new("ubuntu-2404")
-            .with_task(
-                Task::new("install", "{{.device_1}}")
-                    .with_action(Action::new("image", actions::IMAGE))
-            );
+            .with_action(ActionStep::Image2disk(Image2DiskConfig {
+                url: "http://example.com/ubuntu.raw".to_string(),
+                disk: "auto".to_string(),
+                checksum: None,
+                timeout: Some(1800),
+            }));
 
         store.put_template(&template).await.unwrap();
 
         let retrieved = store.get_template("ubuntu-2404").await.unwrap().unwrap();
-        assert_eq!(retrieved.spec.tasks.len(), 1);
+        assert_eq!(retrieved.spec.actions.len(), 1);
 
         let all = store.list_templates().await.unwrap();
         assert_eq!(all.len(), 1);

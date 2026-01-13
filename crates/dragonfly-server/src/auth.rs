@@ -730,7 +730,7 @@ mod tests {
     }
 
     fn create_test_app_state(pool: sqlx::Pool<sqlx::Sqlite>) -> AppState {
-        let (shutdown_tx, _shutdown_rx) = tokio::sync::watch::channel(());
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
         let env = Environment::new();
 
         AppState {
@@ -739,6 +739,7 @@ mod tests {
             setup_mode: false,
             first_run: false,
             shutdown_tx,
+            shutdown_rx,
             template_env: TemplateEnv::Static(Arc::new(env)),
             is_installed: false,
             is_demo_mode: true,
@@ -748,6 +749,7 @@ mod tests {
             tokens: Arc::new(Mutex::new(std::collections::HashMap::new())),
             provisioning: None,
             store: Arc::new(crate::store::MemoryStore::new()),
+            network_services_started: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 

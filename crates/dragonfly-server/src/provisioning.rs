@@ -357,7 +357,7 @@ impl ProvisioningService {
             started_at: None,
             completed_at: None,
             error: None,
-            tasks: Vec::new(),
+            actions: Vec::new(),
         });
 
         // Store workflow
@@ -648,7 +648,7 @@ mod tests {
             current_action: None,
             progress: 0,
             global_timeout: None,
-            tasks: vec![],
+            actions: vec![],
             started_at: None,
             completed_at: None,
             error: None,

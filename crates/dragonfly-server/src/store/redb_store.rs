@@ -473,7 +473,7 @@ fn normalize_mac(mac: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dragonfly_crd::{HardwareSpec, Task, Action, actions};
+    use dragonfly_crd::{HardwareSpec, ActionStep, Image2DiskConfig};
     use tempfile::tempdir;
 
     #[tokio::test]
@@ -529,15 +529,17 @@ mod tests {
         let store = RedbStore::open(tmp.path().join("test.redb")).unwrap();
 
         let template = Template::new("ubuntu-2404")
-            .with_task(
-                Task::new("install", "{{.device_1}}")
-                    .with_action(Action::new("image", actions::IMAGE))
-            );
+            .with_action(ActionStep::Image2disk(Image2DiskConfig {
+                url: "http://example.com/ubuntu.raw".to_string(),
+                disk: "auto".to_string(),
+                checksum: None,
+                timeout: Some(1800),
+            }));
 
         store.put_template(&template).await.unwrap();
 
         let retrieved = store.get_template("ubuntu-2404").await.unwrap().unwrap();
-        assert_eq!(retrieved.spec.tasks.len(), 1);
+        assert_eq!(retrieved.spec.actions.len(), 1);
 
         store.delete_template("ubuntu-2404").await.unwrap();
         assert!(store.get_template("ubuntu-2404").await.unwrap().is_none());

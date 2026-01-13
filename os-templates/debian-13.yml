@@ -1,95 +1,58 @@
-apiVersion: tinkerbell.org/v1alpha1
+apiVersion: dragonfly.computer/v1
 kind: Template
 metadata:
   name: debian-13
-  namespace: tinkerbell
 spec:
-  data: |
-    name: debian-13
-    version: "0.1"
-    global_timeout: 9800
-    tasks:
-      - name: "os installation"
-        worker: "{{.device_1}}"
-        volumes:
-          - /dev:/dev
-          - /dev/console:/dev/console
-          - /lib/firmware:/lib/firmware:ro
-        actions:
-          - name: "stream debian image"
-            image: quay.io/tinkerbell/actions/qemuimg2disk:latest
-            timeout: 9600
-            environment:
-              DEST_DISK: {{ index .Hardware.Disks 0 }}
-              IMG_URL: "http://{{ base_url_bare }}:3000/ipxe/debian/debian-13-generic-amd64.qcow2"
+  timeout: 9800
+  actions:
+    - action: image2disk
+      url: "https://cloud.debian.org/images/cloud/trixie/daily/latest/debian-13-genericcloud-amd64-daily.raw"
+      disk: auto
+      timeout: 9600
 
-          - name: "write cloud-init config"
-            image: quay.io/tinkerbell/actions/writefile:latest
-            timeout: 90
-            environment:
-              DEST_DISK: {{ formatPartition ( index .Hardware.Disks 0 ) 1 }}
-              DEST_PATH: /etc/cloud/cloud.cfg.d/10_tinkerbell.cfg
-              FS_TYPE: ext4
-              UID: 0
-              GID: 0
-              MODE: 0600
-              DIRMODE: 0700
-              CONTENTS: |
-                datasource:
-                  Ec2:
-                    metadata_urls: ["http://{{ base_url_bare }}:50061"]
-                    strict_id: false
-                manage_etc_hosts: localhost
-                warnings:
-                  dsid_missing_source: off
-                users:
-                  - default
-                disable_root: true
-                ssh_import_id:
-                  - gh:zorlin
-                  - gh:michatinkers
-                packages:
-                  - qemu-guest-agent
-                runcmd:
-                  - systemctl enable qemu-guest-agent
-                  - systemctl start qemu-guest-agent
+    - action: writefile
+      path: /etc/cloud/cloud.cfg.d/10_dragonfly.cfg
+      partition: 1
+      content: |
+        datasource:
+          Ec2:
+            metadata_urls: ["http://{{ server }}:50061"]
+            strict_id: false
+        manage_etc_hosts: localhost
+        warnings:
+          dsid_missing_source: off
+        users:
+          - default
+        disable_root: true
+        ssh_import_id:
+          - gh:zorlin
+          - gh:michatinkers
+        packages:
+          - qemu-guest-agent
+        runcmd:
+          - systemctl enable qemu-guest-agent
+          - systemctl start qemu-guest-agent
+      mode: "0600"
+      timeout: 90
 
-          - name: "write ds-identify config"
-            image: quay.io/tinkerbell/actions/writefile:latest
-            timeout: 90
-            environment:
-              DEST_DISK: {{ formatPartition ( index .Hardware.Disks 0 ) 1 }}
-              DEST_PATH: /etc/cloud/ds-identify.cfg
-              FS_TYPE: ext4
-              UID: 0
-              GID: 0
-              MODE: 0600
-              DIRMODE: 0700
-              CONTENTS: |
-                datasource: Ec2
+    - action: writefile
+      path: /etc/cloud/ds-identify.cfg
+      partition: 1
+      content: |
+        datasource: Ec2
+      mode: "0600"
+      timeout: 90
 
-          - name: "write network config"
-            image: quay.io/tinkerbell/actions/writefile:latest
-            timeout: 90
-            environment:
-              DEST_DISK: {{ formatPartition ( index .Hardware.Disks 0 ) 1 }}
-              DEST_PATH: /etc/network/interfaces.d/eth0
-              FS_TYPE: ext4
-              UID: 0
-              GID: 0
-              MODE: 0644
-              DIRMODE: 0755
-              CONTENTS: |
-                auto eth0
-                iface eth0 inet dhcp
+    - action: writefile
+      path: /etc/network/interfaces.d/eth0
+      partition: 1
+      content: |
+        auto eth0
+        iface eth0 inet dhcp
+      mode: "0644"
+      timeout: 90
 
-          - name: "kexec to boot OS"
-            image: quay.io/tinkerbell/actions/kexec:latest
-            timeout: 90
-            pid: host
-            environment:
-                BLOCK_DEVICE: {{ formatPartition ( index .Hardware.Disks 0 ) 1 }}
-                FS_TYPE: ext4
-                KERNEL_PATH: /boot/vmlinuz
-                INITRD_PATH: /boot/initrd.img
-                CMD_LINE: "root={{ formatPartition ( index .Hardware.Disks 0 ) 1 }} ro"
+    - action: kexec
+      partition: 1
+      cmdline: "ro quiet"
+      timeout: 90
