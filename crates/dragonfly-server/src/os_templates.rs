@@ -1,8 +1,11 @@
 //! OS Template Management
 //!
 //! This module handles loading and managing OS templates for provisioning.
-//! Templates are loaded from YAML files and stored in the configured
-//! storage backend (ReDB, K8s, etc.) via the DragonflyStore trait.
+//! Templates are loaded from YAML files in /opt/dragonfly/templates/ and stored
+//! in the configured storage backend (ReDB, K8s, etc.) via the DragonflyStore trait.
+//!
+//! The file system is the source of truth - templates are always loaded from files
+//! on startup, allowing updates without database wipes.
 //!
 //! Templates use `{{ server }}` as a placeholder for the Dragonfly server address,
 //! which is substituted at workflow execution time based on the machine's context.
@@ -16,22 +19,35 @@ use std::sync::Arc;
 use crate::store::DragonflyStore;
 use dragonfly_crd::Template;
 
-/// Default templates to install
-const DEFAULT_TEMPLATES: &[&str] = &[
-    "ubuntu-2204",
-    "ubuntu-2404",
-    "debian-12",
-    "debian-13",
+/// Primary template directory (installed by `dragonfly install`)
+const TEMPLATE_DIR: &str = "/opt/dragonfly/templates";
+
+/// Fallback template directories for development
+const FALLBACK_TEMPLATE_DIRS: &[&str] = &[
+    "/var/lib/dragonfly/os-templates",
+    "os-templates",
 ];
 
 /// Initialize the OS templates using the provided store
+///
+/// Templates are always loaded from files, making the file system the source of truth.
+/// This allows updating templates without wiping the database.
 pub async fn init_os_templates(store: Arc<dyn DragonflyStore>) -> Result<()> {
-    info!("Initializing OS templates...");
+    info!("Initializing OS templates from files...");
 
-    for template_name in DEFAULT_TEMPLATES {
-        if let Err(e) = install_template(store.clone(), template_name).await {
-            warn!("Failed to install {} template: {}", template_name, e);
-            // Continue with other templates even if one fails
+    // Find the template directory
+    let template_dir = find_template_dir().await;
+
+    if let Some(dir) = &template_dir {
+        info!("Loading templates from: {}", dir.display());
+        load_templates_from_dir(store.clone(), dir).await?;
+    } else {
+        warn!("No template directory found. Templates will be downloaded on demand.");
+        // Fall back to downloading default templates
+        for template_name in &["ubuntu-2204", "ubuntu-2404", "debian-12", "debian-13"] {
+            if let Err(e) = install_template_if_missing(store.clone(), template_name).await {
+                warn!("Failed to install {} template: {}", template_name, e);
+            }
         }
     }
 
@@ -39,8 +55,76 @@ pub async fn init_os_templates(store: Arc<dyn DragonflyStore>) -> Result<()> {
     Ok(())
 }
 
-/// Check if a template exists in the store, and install it if it doesn't
-async fn install_template(store: Arc<dyn DragonflyStore>, template_name: &str) -> Result<()> {
+/// Find the template directory to use
+async fn find_template_dir() -> Option<std::path::PathBuf> {
+    // Check primary location first
+    let primary = Path::new(TEMPLATE_DIR);
+    if primary.exists() {
+        return Some(primary.to_path_buf());
+    }
+
+    // Check fallback locations
+    for fallback in FALLBACK_TEMPLATE_DIRS {
+        let path = Path::new(fallback);
+        if path.exists() {
+            return Some(path.to_path_buf());
+        }
+    }
+
+    None
+}
+
+/// Load all templates from a directory
+async fn load_templates_from_dir(store: Arc<dyn DragonflyStore>, dir: &Path) -> Result<()> {
+    let mut entries = fs::read_dir(dir).await
+        .map_err(|e| anyhow!("Failed to read template directory: {}", e))?;
+
+    while let Some(entry) = entries.next_entry().await? {
+        let path = entry.path();
+
+        // Only process .yml files
+        if path.extension().and_then(|e| e.to_str()) != Some("yml") {
+            continue;
+        }
+
+        let template_name = path.file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("unknown");
+
+        match load_template_from_path(&path).await {
+            Ok(template) => {
+                // Always update the template in the store (file is source of truth)
+                if let Err(e) = store.put_template(&template).await {
+                    warn!("Failed to store template '{}': {}", template_name, e);
+                } else {
+                    info!("Loaded template '{}' from {}", template_name, path.display());
+                }
+            }
+            Err(e) => {
+                warn!("Failed to load template from {:?}: {}", path, e);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Load and validate a template from a file path
+async fn load_template_from_path(path: &Path) -> Result<Template> {
+    let content = fs::read_to_string(path).await
+        .map_err(|e| anyhow!("Failed to read template file: {}", e))?;
+
+    let template: Template = serde_yaml::from_str(&content)
+        .map_err(|e| anyhow!("Failed to parse template YAML: {}", e))?;
+
+    template.validate()
+        .map_err(|e| anyhow!("Template validation failed: {}", e))?;
+
+    Ok(template)
+}
+
+/// Install a template if it doesn't exist (fallback for when no template dir exists)
+async fn install_template_if_missing(store: Arc<dyn DragonflyStore>, template_name: &str) -> Result<()> {
     // Check if template already exists in store
     match store.get_template(template_name).await {
         Ok(Some(_)) => {
@@ -48,8 +132,8 @@ async fn install_template(store: Arc<dyn DragonflyStore>, template_name: &str) -
             Ok(())
         },
         Ok(None) => {
-            info!("Template '{}' not found in store, installing...", template_name);
-            install_template_from_file(store, template_name).await
+            info!("Template '{}' not found in store, downloading...", template_name);
+            install_template_from_download(store, template_name).await
         },
         Err(e) => {
             error!("Error checking for template '{}': {}", template_name, e);
@@ -58,39 +142,10 @@ async fn install_template(store: Arc<dyn DragonflyStore>, template_name: &str) -
     }
 }
 
-/// Install a template from a YAML file into the store
-async fn install_template_from_file(store: Arc<dyn DragonflyStore>, template_name: &str) -> Result<()> {
-    // Try multiple locations for template files
-    let template_paths = [
-        Path::new("/var/lib/dragonfly/os-templates").join(format!("{}.yml", template_name)),
-        Path::new("os-templates").join(format!("{}.yml", template_name)),
-    ];
-
-    let mut template_yaml = None;
-
-    for path in &template_paths {
-        if path.exists() {
-            debug!("Found template at: {:?}", path);
-            match fs::read_to_string(path).await {
-                Ok(content) => {
-                    template_yaml = Some(content);
-                    break;
-                },
-                Err(e) => {
-                    warn!("Failed to read template from {:?}: {}", path, e);
-                }
-            }
-        }
-    }
-
-    // If not found locally, try downloading from GitHub
-    let yaml_content = match template_yaml {
-        Some(content) => content,
-        None => {
-            info!("Template '{}' not found locally, downloading from GitHub...", template_name);
-            download_template(template_name).await?
-        }
-    };
+/// Download and install a template from GitHub
+async fn install_template_from_download(store: Arc<dyn DragonflyStore>, template_name: &str) -> Result<()> {
+    info!("Downloading template '{}' from GitHub...", template_name);
+    let yaml_content = download_template(template_name).await?;
 
     // Parse YAML to Template
     let template: Template = serde_yaml::from_str(&yaml_content)
@@ -182,11 +237,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_default_templates() {
-        // Verify all default templates are defined
-        assert!(DEFAULT_TEMPLATES.contains(&"ubuntu-2204"));
-        assert!(DEFAULT_TEMPLATES.contains(&"ubuntu-2404"));
-        assert!(DEFAULT_TEMPLATES.contains(&"debian-12"));
-        assert!(DEFAULT_TEMPLATES.contains(&"debian-13"));
+    fn test_template_dir_constant() {
+        // Verify primary template directory is set correctly
+        assert_eq!(TEMPLATE_DIR, "/opt/dragonfly/templates");
+    }
+
+    #[test]
+    fn test_fallback_dirs() {
+        // Verify fallback directories are configured
+        assert!(FALLBACK_TEMPLATE_DIRS.contains(&"/var/lib/dragonfly/os-templates"));
+        assert!(FALLBACK_TEMPLATE_DIRS.contains(&"os-templates"));
     }
 }

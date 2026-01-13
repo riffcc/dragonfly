@@ -240,6 +240,7 @@ pub async fn run_install(args: InstallArgs, _shutdown_rx: tokio::sync::watch::Re
         install_binary()?;
     }
     install_web_assets(args.dev)?;
+    install_os_templates(args.dev)?;
     if !args.no_service {
         let binary_path = get_binary_path(args.dev)?;
         install_service(&binary_path, args.dev)?;
@@ -482,6 +483,56 @@ fn install_binary() -> Result<()> {
 
 // TODO: Enable when releases are available
 // const GITHUB_WEB_ASSETS_URL: &str = "https://github.com/zorlin/dragonfly/releases/latest/download/dragonfly-web.zip";
+
+fn install_os_templates(dev_mode: bool) -> Result<()> {
+    let os_templates_src = Path::new("os-templates");
+    let os_templates_dest = format!("{}/templates", OPT_DIR);
+
+    if !os_templates_src.exists() {
+        // Not in project directory, skip OS template copy
+        // Templates will be downloaded on demand if not present
+        return Ok(());
+    }
+
+    std::process::Command::new("sudo")
+        .args(["mkdir", "-p", &os_templates_dest])
+        .status()?;
+
+    if dev_mode {
+        // In dev mode, symlink for easy updates
+        let os_templates_abs = std::fs::canonicalize(os_templates_src)?;
+
+        let _ = std::process::Command::new("sudo")
+            .args(["rm", "-rf", &os_templates_dest])
+            .status();
+
+        std::process::Command::new("sudo")
+            .args(["ln", "-s", &os_templates_abs.to_string_lossy(), &os_templates_dest])
+            .status()?;
+    } else {
+        // Production: copy all .yml files
+        let _ = std::process::Command::new("sudo")
+            .args(["rm", "-rf", &os_templates_dest])
+            .status();
+
+        std::process::Command::new("sudo")
+            .args(["mkdir", "-p", &os_templates_dest])
+            .status()?;
+
+        // Copy all .yml files from os-templates/
+        for entry in std::fs::read_dir(os_templates_src)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) == Some("yml") {
+                std::process::Command::new("sudo")
+                    .args(["cp", &path.to_string_lossy(), &os_templates_dest])
+                    .status()?;
+            }
+        }
+    }
+
+    Ok(())
+}
 
 fn install_web_assets(dev_mode: bool) -> Result<()> {
     let templates_src = Path::new("crates/dragonfly-server/templates");
