@@ -215,14 +215,12 @@ async fn save_template_locally(template_name: &str, content: &str) {
     let path = Path::new("/var/lib/dragonfly/os-templates").join(format!("{}.yml", template_name));
 
     // Create directory if needed
-    if let Some(parent) = path.parent() {
-        if !parent.exists() {
-            if let Err(e) = fs::create_dir_all(parent).await {
+    if let Some(parent) = path.parent()
+        && !parent.exists()
+            && let Err(e) = fs::create_dir_all(parent).await {
                 debug!("Failed to create template directory: {}", e);
                 return;
             }
-        }
-    }
 
     // Save the file
     if let Err(e) = fs::write(&path, content).await {

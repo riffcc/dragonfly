@@ -104,11 +104,10 @@ fn read_configured_port() -> Option<u16> {
     let content = std::fs::read_to_string(DRAGONFLY_CONFIG).ok()?;
     for line in content.lines() {
         let line = line.trim();
-        if line.starts_with("port") {
-            if let Some(val) = line.split('=').nth(1) {
+        if line.starts_with("port")
+            && let Some(val) = line.split('=').nth(1) {
                 return val.trim().parse().ok();
             }
-        }
     }
     None
 }
@@ -387,13 +386,11 @@ fn wipe_installation() -> Result<()> {
 
 fn check_admin_access() -> Result<bool> {
     // Check if we're already root by running `id -u`
-    if let Ok(output) = std::process::Command::new("id").arg("-u").output() {
-        if let Ok(uid_str) = String::from_utf8(output.stdout) {
-            if uid_str.trim() == "0" {
+    if let Ok(output) = std::process::Command::new("id").arg("-u").output()
+        && let Ok(uid_str) = String::from_utf8(output.stdout)
+            && uid_str.trim() == "0" {
                 return Ok(true);
             }
-        }
-    }
 
     let status = std::process::Command::new("sudo")
         .args(["-n", "true"])

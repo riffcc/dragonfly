@@ -5,7 +5,6 @@ use tokio::sync::OnceCell;
 use tracing::{error, info};
 use uuid::Uuid;
 use std::path::Path;
-use serde_json;
 
 use dragonfly_common::models::{Machine, MachineStatus, RegisterRequest};
 // Make re-exports public and correct the imported names
@@ -2501,6 +2500,7 @@ pub async fn are_proxmox_tickets_valid(settings: &ProxmoxSettings) -> bool {
 }
 
 // Deprecated - will be removed in future, kept for backward compatibility
+#[allow(clippy::too_many_arguments)]
 pub async fn update_proxmox_auth_tickets_with_tokens(
     host: &str, 
     port: i32, 
@@ -2552,7 +2552,7 @@ pub async fn update_proxmox_api_tokens(
     let _settings = match get_proxmox_settings().await? {
         Some(s) => s,
         None => {
-            return Err(anyhow::anyhow!("Cannot update API tokens: No Proxmox settings exist").into());
+            return Err(anyhow::anyhow!("Cannot update API tokens: No Proxmox settings exist"));
         }
     };
 
@@ -2560,7 +2560,7 @@ pub async fn update_proxmox_api_tokens(
     let encrypted_token = match encrypt_string(token_value) {
         Ok(token) => token,
         Err(e) => {
-            return Err(anyhow::anyhow!("Failed to encrypt API token: {}", e).into());
+            return Err(anyhow::anyhow!("Failed to encrypt API token: {}", e));
         }
     };
 
@@ -2615,7 +2615,7 @@ pub async fn update_proxmox_api_tokens(
             .await
         },
         _ => {
-            return Err(anyhow::anyhow!("Invalid token type: {}", token_type).into());
+            return Err(anyhow::anyhow!("Invalid token type: {}", token_type));
         }
     };
 

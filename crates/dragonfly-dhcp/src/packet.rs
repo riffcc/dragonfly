@@ -105,7 +105,7 @@ impl DhcpRequest {
             .get(OptionCode::MessageType)
             .and_then(|opt| {
                 if let DhcpOption::MessageType(mt) = opt {
-                    Some(mt.clone())
+                    Some(*mt)
                 } else {
                     None
                 }
@@ -138,7 +138,7 @@ impl DhcpRequest {
             .get(OptionCode::RequestedIpAddress)
             .and_then(|opt| {
                 if let DhcpOption::RequestedIpAddress(ip) = opt {
-                    Some(ip.clone())
+                    Some(*ip)
                 } else {
                     None
                 }

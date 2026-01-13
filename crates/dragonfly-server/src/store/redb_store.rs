@@ -187,8 +187,8 @@ impl DragonflyStore for RedbStore {
         }
 
         // Remove from MAC index
-        if let Some(hw) = hw {
-            if let Some(mac) = hw.primary_mac() {
+        if let Some(hw) = hw
+            && let Some(mac) = hw.primary_mac() {
                 let normalized = normalize_mac(mac);
                 let mut index_table = write_txn.open_table(MAC_INDEX_TABLE).map_err(|e| {
                     StoreError::Database(format!("failed to open index table: {}", e))
@@ -197,7 +197,6 @@ impl DragonflyStore for RedbStore {
                     StoreError::Database(format!("index remove failed: {}", e))
                 })?;
             }
-        }
 
         write_txn.commit().map_err(|e| {
             StoreError::Database(format!("commit failed: {}", e))

@@ -26,7 +26,7 @@ fn get_encryption_key() -> [u8; 32] {
                 key.copy_from_slice(&stretched[0..32]);
             }
             
-            return key;
+            key
         },
         Err(_) => {
             // SECRET_KEY not found in environment, check for .env file
@@ -64,14 +64,13 @@ fn load_or_create_key_file(file_path: &str) -> Option<[u8; 32]> {
                 let key_str = line.trim_start_matches("SECRET_KEY=");
                 
                 // If the key is base64 encoded, decode it
-                if let Ok(decoded) = general_purpose::STANDARD.decode(key_str) {
-                    if decoded.len() >= 32 {
+                if let Ok(decoded) = general_purpose::STANDARD.decode(key_str)
+                    && decoded.len() >= 32 {
                         let mut key = [0u8; 32];
                         key.copy_from_slice(&decoded[0..32]);
                         info!("Successfully loaded encryption key from {}", file_path);
                         return Some(key);
                     }
-                }
                 
                 // If not base64 encoded or not long enough, use as a password
                 let mut key = [0u8; 32];
@@ -97,17 +96,15 @@ fn load_or_create_key_file(file_path: &str) -> Option<[u8; 32]> {
     }
     
     // Try to create the directory if it doesn't exist
-    if let Some(parent_dir) = Path::new(file_path).parent() {
-        if !parent_dir.exists() {
-            if let Err(e) = fs::create_dir_all(parent_dir) {
+    if let Some(parent_dir) = Path::new(file_path).parent()
+        && !parent_dir.exists()
+            && let Err(e) = fs::create_dir_all(parent_dir) {
                 error!("Failed to create directory {}: {}", parent_dir.display(), e);
                 return None;
             }
-        }
-    }
     
     // Write the key to the file
-    let key_b64 = general_purpose::STANDARD.encode(&key);
+    let key_b64 = general_purpose::STANDARD.encode(key);
     let env_content = format!("SECRET_KEY={}\n", key_b64);
     
     match fs::OpenOptions::new()

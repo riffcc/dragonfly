@@ -142,7 +142,7 @@ impl Action for Image2DiskAction {
                 ));
 
                 if let Err(e) = Command::new("partprobe")
-                    .arg(&dest_disk)
+                    .arg(dest_disk)
                     .output()
                     .await
                     .map_err(|e| ActionError::ExecutionFailed(format!("Failed to run partprobe: {}", e)))
@@ -330,7 +330,7 @@ async fn stream_from_url(
         format!(
             "Downloading {} ({})",
             url,
-            total_size.map(|s| format_bytes(s)).unwrap_or_else(|| "unknown size".to_string())
+            total_size.map(format_bytes).unwrap_or_else(|| "unknown size".to_string())
         ),
     ));
 
@@ -344,7 +344,7 @@ async fn stream_from_url(
     // Convert response body to async reader
     let stream = response.bytes_stream();
     let stream_reader = tokio_util::io::StreamReader::new(
-        stream.map(|result| result.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e)))
+        stream.map(|result| result.map_err(std::io::Error::other))
     );
     let buffered = BufReader::new(stream_reader);
 
@@ -640,14 +640,14 @@ async fn stream_tar_from_url(
         format!(
             "Downloading tar archive {} ({})",
             url,
-            total_size.map(|s| format_bytes(s)).unwrap_or_else(|| "unknown size".to_string())
+            total_size.map(format_bytes).unwrap_or_else(|| "unknown size".to_string())
         ),
     ));
 
     // Convert response body to async reader
     let stream = response.bytes_stream();
     let stream_reader = tokio_util::io::StreamReader::new(
-        stream.map(|result| result.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e)))
+        stream.map(|result| result.map_err(std::io::Error::other))
     );
     let buffered = BufReader::new(stream_reader);
 

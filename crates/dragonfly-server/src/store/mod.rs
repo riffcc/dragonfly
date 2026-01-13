@@ -104,9 +104,10 @@ pub trait DragonflyStore: Send + Sync {
 }
 
 /// Storage configuration
-#[derive(Debug, Clone)]
+#[derive(Default, Debug, Clone)]
 pub enum StoreConfig {
     /// In-memory storage (for testing)
+    #[default]
     Memory,
 
     /// ReDB local database
@@ -117,11 +118,6 @@ pub enum StoreConfig {
     Kubernetes { namespace: String },
 }
 
-impl Default for StoreConfig {
-    fn default() -> Self {
-        StoreConfig::Memory
-    }
-}
 
 /// Create a store from configuration
 pub async fn create_store(config: &StoreConfig) -> Result<Arc<dyn DragonflyStore>> {
@@ -132,7 +128,7 @@ pub async fn create_store(config: &StoreConfig) -> Result<Arc<dyn DragonflyStore
             Ok(Arc::new(store))
         }
         #[cfg(feature = "k8s")]
-        StoreConfig::Kubernetes { namespace } => {
+        StoreConfig::Kubernetes { namespace: _ } => {
             // K8sStore will be implemented when refactoring tinkerbell.rs
             todo!("K8sStore not yet implemented")
         }

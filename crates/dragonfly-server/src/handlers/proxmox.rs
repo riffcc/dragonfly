@@ -301,7 +301,7 @@ pub async fn set_vm_next_boot(
     
     // Need to use URL-encoded form data for Proxmox API rather than JSON
     // This is critical for the VM configuration APIs to work properly
-    let _params_map = vec![("boot", boot_param.as_str())];
+    let _params_map = [("boot", boot_param.as_str())];
     
     // First, try to make the request directly - API tokens may already be set up correctly
     info!("DEBUG: Sending PUT request to set boot order");
@@ -336,10 +336,8 @@ pub async fn set_vm_next_boot(
                 if response.status == 401 || response.status == 403 {
                     error!("Proxmox API Error: unauthorized - You need to create a VM configuration API token");
                     
-                    let token_error_msg = format!(
-                        "Authorization failed for VM configuration change. Please go to Settings, reconnect to Proxmox to create proper API tokens. \
-                         The 'config' token needs VM.Config.Options permission."
-                    );
+                    let token_error_msg = "Authorization failed for VM configuration change. Please go to Settings, reconnect to Proxmox to create proper API tokens. \
+                         The 'config' token needs VM.Config.Options permission.".to_string();
                     
                     Err(ProxmoxHandlerError::ApiError(ProxmoxClientError::Api(status_code, token_error_msg)))
                 } else {
@@ -400,10 +398,8 @@ pub async fn reboot_vm(
                 if response.status == 401 || response.status == 403 {
                     error!("Proxmox API Error: unauthorized - You need to create a VM power API token");
                     
-                    let token_error_msg = format!(
-                        "Authorization failed for VM power operation. Please go to Settings, reconnect to Proxmox to create proper API tokens. \
-                         The 'power' token needs VM.PowerMgmt permission."
-                    );
+                    let token_error_msg = "Authorization failed for VM power operation. Please go to Settings, reconnect to Proxmox to create proper API tokens. \
+                         The 'power' token needs VM.PowerMgmt permission.".to_string();
                     
                     Err(ProxmoxHandlerError::ApiError(ProxmoxClientError::Api(status_code, token_error_msg)))
                 } else {
@@ -435,10 +431,7 @@ pub async fn connect_proxmox_handler(
 ) -> impl IntoResponse {
     // Extract fields from the request
     let host = request.host.clone();
-    let port = match request.port {
-        Some(p) => p,
-        None => 8006, // Default Proxmox port
-    };
+    let port = request.port.unwrap_or(8006);
     
     let username = request.username.clone();
     let password = request.password.clone();
@@ -619,10 +612,10 @@ pub async fn connect_proxmox_handler(
                 },
                 Ok(Some(_)) => {
                     error!("Two-factor authentication is required but not supported");
-                    return (StatusCode::BAD_REQUEST, Json(json!({
+                    (StatusCode::BAD_REQUEST, Json(json!({
                         "success": false,
                         "message": "Two-factor authentication is required but not supported"
-                    })));
+                    })))
                 },
                 Err(e) => {
                     error!("Failed to authenticate client for VM discovery: {}", e);
@@ -697,7 +690,7 @@ async fn authenticate_with_proxmox(
             // No longer save the credentials - we only need them once to create tokens
             // Just add host, port, and whether to skip TLS verification (no credentials)
             match crate::db::update_proxmox_connection_settings(
-                host, port as i32, username, skip_tls_verify
+                host, port, username, skip_tls_verify
             ).await {
                 Ok(_) => info!("Proxmox connection settings saved to database (without storing password)"),
                 Err(e) => warn!("Failed to save Proxmox settings to database: {}", e),
@@ -1114,8 +1107,8 @@ async fn discover_and_register_proxmox_vms(
                             .and_then(|h| h.as_str());
 
                         // Prioritize known physical/bridge interfaces
-                        if let Some(mac_str) = mac {
-                            if iface_type == "eth" || iface_type == "bond" || iface_name.starts_with("vmbr") {
+                        if let Some(mac_str) = mac
+                            && (iface_type == "eth" || iface_type == "bond" || iface_name.starts_with("vmbr")) {
                                 // Basic validation
                                 if mac_str.len() == 17 && mac_str.contains(':') {
                                     host_mac_address = Some(mac_str.to_lowercase());
@@ -1123,7 +1116,6 @@ async fn discover_and_register_proxmox_vms(
                                     break; // Found a likely candidate
                                 }
                             }
-                        }
                     }
                 }
                  if host_mac_address.is_none() {
@@ -1236,9 +1228,9 @@ async fn discover_and_register_proxmox_vms(
             let mut vm_mem_bytes = 0;
             let mut vm_cpu_cores = 0;
             
-            if let Ok(vm_details_response) = client.get(&vm_details_path).await {
-                if let Ok(vm_details_value) = serde_json::from_slice::<serde_json::Value>(&vm_details_response.body) {
-                    if let Some(vm_details_data) = vm_details_value.get("data") {
+            if let Ok(vm_details_response) = client.get(&vm_details_path).await
+                && let Ok(vm_details_value) = serde_json::from_slice::<serde_json::Value>(&vm_details_response.body)
+                    && let Some(vm_details_data) = vm_details_value.get("data") {
                         // Get memory info
                         if let Some(mem) = vm_details_data.get("maxmem").and_then(|m| m.as_u64()) {
                             vm_mem_bytes = mem;
@@ -1249,8 +1241,6 @@ async fn discover_and_register_proxmox_vms(
                             vm_cpu_cores = cpu as u32;
                         }
                     }
-                }
-            }
             
             // Get VM config to retrieve MAC address and other details
             let vm_config_path = format!("/api2/json/nodes/{}/qemu/{}/config", node_name, vmid);
@@ -1330,7 +1320,7 @@ async fn discover_and_register_proxmox_vms(
                     Ok(ping_response) => {
                         if let Ok(ping_value) = serde_json::from_slice::<serde_json::Value>(&ping_response.body) {
                             // Check for successful response (should contain data with no error)
-                            ping_value.get("data").is_some() && !ping_value.get("data").and_then(|d| d.get("error")).is_some()
+                            ping_value.get("data").is_some() && ping_value.get("data").and_then(|d| d.get("error")).is_none()
                         } else {
                             false
                         }
@@ -2085,8 +2075,9 @@ async fn sync_proxmox_machines(
                                     if status == "running" && agent_enabled {
                                         let agent_ping_path = format!("/api2/json/nodes/{}/qemu/{}/agent/ping", node_name, vmid);
                                         agent_running = match client.get(&agent_ping_path).await {
+                                            #[allow(clippy::unnecessary_map_or)]
                                             Ok(ping_resp) => serde_json::from_slice::<serde_json::Value>(&ping_resp.body)
-                                                .map_or(false, |v| v.get("data").is_some() && !v.get("data").and_then(|d| d.get("error")).is_some()),
+                                                .map_or(false, |v| v.get("data").is_some() && v.get("data").and_then(|d| d.get("error")).is_none()),
                                             Err(_) => false
                                         };
                                     }
@@ -2164,22 +2155,21 @@ async fn sync_proxmox_machines(
                                         for iface_info in result_array {
                                             if let Some(ip_addrs) = iface_info.get("ip-addresses").and_then(|a| a.as_array()) {
                                                 for addr_info in ip_addrs {
-                                                    if addr_info.get("ip-address-type").and_then(|t| t.as_str()) == Some("ipv4") {
-                                                        if let Some(ip_str) = addr_info.get("ip-address").and_then(|i| i.as_str()) {
+                                                    if addr_info.get("ip-address-type").and_then(|t| t.as_str()) == Some("ipv4")
+                                                        && let Some(ip_str) = addr_info.get("ip-address").and_then(|i| i.as_str()) {
                                                             // Check if it's not a loopback address
                                                             if !ip_str.starts_with("127.") {
                                                                 found_ip = Some(ip_str.to_string());
                                                             break;
                                                         }
                                                     }
-                                                }
                                             }
                                             }
                                             if found_ip.is_some() { break; }
                                         }
 
-                                        if let Some(current_ip) = found_ip {
-                                            if db_machine.ip_address != current_ip {
+                                        if let Some(current_ip) = found_ip
+                                            && db_machine.ip_address != current_ip {
                                                 info!(
                                                     "Sync: Updating IP for VM {} (ID: {}) from {} to {} (via agent)",
                                                     vmid, db_machine.id, db_machine.ip_address, current_ip
@@ -2200,7 +2190,6 @@ async fn sync_proxmox_machines(
                                                     Err(e) => error!("Sync: Failed to fetch machine {} for IP update: {}", db_machine.id, e),
                                                 }
                                             }
-                                        }
                                     }
                                 }
                                 Err(e) => warn!("Sync: Failed to parse agent IP response for VM {}: {}", vmid, e),
@@ -2266,12 +2255,12 @@ async fn create_api_client(
             // TODO: Implement API token authentication when proxmox-client supports it
             // For now, return a basic client
             let client = create_proxmox_client(host, port, skip_tls_verify).await?;
-            return Ok(client);
+            Ok(client)
                                                     } else {
-            return Err(ProxmoxClientError::Api(
+            Err(ProxmoxClientError::Api(
                 hyper::StatusCode::BAD_REQUEST,
                 "Invalid API token format. Expected format: username@realm!tokenname=TOKEN_UUID".to_string()
-            ));
+            ))
                                                 }
                                             } else {
         // Regular username/password authentication
@@ -2280,7 +2269,7 @@ async fn create_api_client(
         
         // Create login request
         let login_builder = proxmox_login::Login::new(
-            &format!("https://{}:{}", host, port),
+            format!("https://{}:{}", host, port),
             username.to_string(), 
             password.to_string()
         );
@@ -2422,7 +2411,7 @@ async fn generate_proxmox_tokens(
     let sync_token_id = "dragonfly-sync";
     
     // First, check if user has permission to create tokens
-    let user_permissions_path = format!("/api2/json/access/permissions");
+    let user_permissions_path = "/api2/json/access/permissions".to_string();
     info!("DEBUG: Checking user permissions at path: {}", user_permissions_path);
     
     match client.get(&user_permissions_path).await {
@@ -2587,7 +2576,7 @@ async fn create_token(
                                 _ => "PVEVMUser" // Default to basic VM user role
                             };
                             
-                            let acl_path = format!("/api2/json/access/acl");
+                            let acl_path = "/api2/json/access/acl".to_string();
                             let acl_params = serde_json::json!({
                                 "path": "/",  // Base path for permissions
                                 "roles": role_name,  // Use standard Proxmox role

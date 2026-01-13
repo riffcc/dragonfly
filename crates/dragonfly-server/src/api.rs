@@ -472,11 +472,10 @@ async fn get_all_machines(
     // Get workflow info for machines that are installing OS
     let mut workflow_infos = HashMap::new();
     for machine in &machines {
-        if machine.status == MachineStatus::InstallingOS {
-            if let Ok(Some(info)) = crate::tinkerbell::get_workflow_info(machine).await {
+        if machine.status == MachineStatus::InstallingOS
+            && let Ok(Some(info)) = crate::tinkerbell::get_workflow_info(machine).await {
                 workflow_infos.insert(machine.id, info);
             }
-        }
     }
 
     if is_htmx {
@@ -498,7 +497,7 @@ async fn get_all_machines(
                             .unwrap_or(&id_string);
                         
                         let secondary_name = if machine.hostname.is_some() && machine.memorable_name.is_some() {
-                            machine.memorable_name.as_ref().map(|s| s.as_str()).unwrap_or("")
+                            machine.memorable_name.as_deref().unwrap_or("")
                         } else {
                             ""
                         };
@@ -860,11 +859,11 @@ async fn update_status(
     let status = match status {
         Some(s) => s,
         None => {
-            return Html(format!(r#"
+            return Html(r#"
                 <div class="p-4 mb-4 text-sm text-red-700 bg-red-100 rounded-lg" role="alert">
                     <span class="font-medium">Error!</span> Invalid or missing status field.
                 </div>
-            "#)).into_response();
+            "#.to_string()).into_response();
         }
     };
 
@@ -882,15 +881,14 @@ async fn update_status(
                 // If the status is AwaitingAssignment, check if we should apply a default OS
                 if status == MachineStatus::AwaitingAssignment {
                     // Check if a default OS is configured
-                    if let Ok(settings) = db::get_app_settings().await {
-                        if let Some(default_os) = settings.default_os {
+                    if let Ok(settings) = db::get_app_settings().await
+                        && let Some(default_os) = settings.default_os {
                             info!("Applying default OS '{}' to newly registered machine {}", default_os, id);
                             // Assign the OS without triggering installation
                             if let Ok(true) = db::assign_os(&id, &default_os).await {
                                 info!("Default OS choice '{}' applied to machine {}", default_os, id);
                             }
                         }
-                    }
                 }
             }
             
@@ -898,7 +896,7 @@ async fn update_status(
             let _ = state.event_manager.send(format!("machine_updated:{}", id));
             
             // Return HTML success message
-            Html(format!(r#"
+            Html(r#"
                 <div class="p-4 mb-4 text-sm text-green-700 bg-green-100 rounded-lg" role="alert">
                     <span class="font-medium">Success!</span> Machine status has been updated.
                 </div>
@@ -908,7 +906,7 @@ async fn update_status(
                     // Refresh the machine list
                     htmx.trigger(document.querySelector('tbody'), 'refreshMachines');
                 </script>
-            "#)).into_response()
+            "#.to_string()).into_response()
         },
         Ok(false) => {
             Html(format!(r#"
@@ -1057,16 +1055,16 @@ async fn update_bmc(
             // Emit machine updated event
             let _ = state.event_manager.send(format!("machine_updated:{}", id));
             
-            (StatusCode::OK, Html(format!(r#"
+            (StatusCode::OK, Html(r#"
                 <div class="p-4 mb-4 text-sm text-green-700 bg-green-100 rounded-lg" role="alert">
                     <span class="font-medium">Success!</span> BMC credentials updated.
                 </div>
                 <script>
-                    setTimeout(function() {{
+                    setTimeout(function() {
                         window.location.reload();
-                    }}, 1500);
+                    }, 1500);
                 </script>
-            "#))).into_response()
+            "#.to_string())).into_response()
         },
         Ok(false) => {
             let error_message = format!("Machine with ID {} not found", id);
@@ -1802,13 +1800,12 @@ async fn read_file_as_stream(
     tokio::spawn(async move {
         // Handle Range requests differently: read the whole range at once
         if content_range_header_clone.is_some() { // Use the clone
-            if start > 0 {
-                if let Err(e) = file.seek(std::io::SeekFrom::Start(start)).await {
+            if start > 0
+                && let Err(e) = file.seek(std::io::SeekFrom::Start(start)).await {
                     error!("Failed to seek file {}: {}", path_buf.display(), e);
                     let _ = tx.send(Err(Error::Internal(format!("File seek error: {}", e)))).await;
                     return;
                 }
-            }
             
             // Allocate buffer for the exact range size
             let mut buffer = Vec::with_capacity(response_length as usize); // Use with_capacity
@@ -1821,8 +1818,8 @@ async fn read_file_as_stream(
                 Ok(_) => {
                     // Track progress for range requests too
                     // For range requests, we use the start offset as an indicator of download progress
-                    if let (Some(state_ref), Some(machine_id_captured)) = (&task_state_owned, task_machine_id_copied) {
-                        if total_size > 0 {
+                    if let (Some(state_ref), Some(machine_id_captured)) = (&task_state_owned, task_machine_id_copied)
+                        && total_size > 0 {
                             // Use start position + current range size as effective progress indicator
                             let bytes_read = buffer.len() as u64;
                             let effective_progress = start + bytes_read;
@@ -1838,7 +1835,6 @@ async fn read_file_as_stream(
                                 track_download_progress(Some(machine_id_captured), effective_progress, total_size, owned_state).await;
                             });
                         }
-                    }
                 
                     // Send the complete range as a single chunk
                     if tx.send(Ok(Bytes::from(buffer))).await.is_err() {
@@ -1874,8 +1870,8 @@ async fn read_file_as_stream(
 
                         // Use the owned/copied state and machine_id captured by the 'move' closure
                         // Match against the Option<&AppState> and Option<Uuid> directly
-                        if let (Some(state_ref), Some(machine_id_captured)) = (&task_state_owned, task_machine_id_copied) {
-                            if total_size > 0 { // Avoid division by zero
+                        if let (Some(state_ref), Some(machine_id_captured)) = (&task_state_owned, task_machine_id_copied)
+                            && total_size > 0 { // Avoid division by zero
                                 debug!("[PROGRESS_DEBUG][CACHE_READ] Calling track_download_progress (machine_id: {}, sent: {}, total: {})", machine_id_captured, total_bytes_sent, total_size);
                                 // Clone the AppState here to get an owned value for the inner task.
                                 let owned_state = state_ref.clone(); // <-- Add this line
@@ -1885,7 +1881,7 @@ async fn read_file_as_stream(
                                     track_download_progress(Some(machine_id_captured), total_bytes_sent, total_size, owned_state).await; // <-- Use owned_state here
                                 });
                             } // else: Skipping progress track because total_size is 0 (logged elsewhere if needed)
-                        } // else: Skipping progress track because machine_id or state is missing
+                         // else: Skipping progress track because machine_id or state is missing
 
                         if tx.send(Ok(chunk)).await.is_err() {
                             warn!("Client stream receiver dropped for file {}", path_buf.display());
@@ -2001,11 +1997,11 @@ pub async fn serve_ipxe_artifact(
         match read_file_as_stream(&artifact_path, headers.get(axum::http::header::RANGE), Some(&state), machine_id).await {
             Ok((stream, file_size, content_range)) => {
                 info!("Streaming cached artifact from disk: {}", requested_path);
-                return create_streaming_response(stream, content_type, file_size, content_range); // Pass content_range
+                create_streaming_response(stream, content_type, file_size, content_range)// Pass content_range
             },
             Err(e) => {
                 error!("Failed to stream cached iPXE artifact: {}", e);
-                return (StatusCode::INTERNAL_SERVER_ERROR, "Error reading iPXE artifact").into_response();
+                (StatusCode::INTERNAL_SERVER_ERROR, "Error reading iPXE artifact").into_response()
             }
         }
     } else {
@@ -2086,12 +2082,11 @@ pub async fn serve_ipxe_artifact(
                     let requested_path_clone = requested_path.clone(); // Clone for the task
                     tokio::spawn(async move {
                         // Ensure parent directory exists before writing
-                        if let Some(parent) = path_clone.parent() {
-                             if let Err(e) = fs::create_dir_all(parent).await {
+                        if let Some(parent) = path_clone.parent()
+                             && let Err(e) = fs::create_dir_all(parent).await {
                                  warn!("Failed to create directory for caching {}: {}", requested_path_clone, e);
                                  return; 
                              }
-                         }
                         if let Err(e) = fs::write(&path_clone, &script_clone).await {
                              warn!("Failed to cache generated {} script: {}", requested_path_clone, e);
                         }
@@ -2111,7 +2106,7 @@ pub async fn serve_ipxe_artifact(
                             (StatusCode::INTERNAL_SERVER_ERROR, "Failed to build response").into_response()
                         });
                 },
-                Err(Error::NotFound { .. }) => {
+                Err(Error::NotFound) => {
                     warn!("IPXE script {} not found or could not be generated.", requested_path);
                     // Fall through to final 404
                 },
@@ -2257,7 +2252,7 @@ async fn track_download_progress(
         });
 
         // Construct the event string
-        let ip_progress_event_string = format!("ip_download_progress:{}", ip_progress_event_payload.to_string());
+        let ip_progress_event_string = format!("ip_download_progress:{}", ip_progress_event_payload);
 
         info!(client_ip = %client_ip, event_payload = %ip_progress_event_payload, "[PROGRESS_SEND] Attempting to send ip_download_progress event NOW"); // ADDED LOUD LOG
         let send_result = state.event_manager.send(ip_progress_event_string.clone()); // Clone for logging
@@ -2291,8 +2286,8 @@ async fn stream_download_with_caching(
     // Check if file is already cached
     if cache_path.exists() {
         // Even when serving from cache, track progress for range requests
-        if let (Some(machine_id), Some(state), Some(range_val)) = (machine_id, state, range_header) {
-            if let Ok(range_str) = range_val.to_str() {
+        if let (Some(machine_id), Some(state), Some(range_val)) = (machine_id, state, range_header)
+            && let Ok(range_str) = range_val.to_str() {
                 let file_size = fs::metadata(cache_path).await
                     .map(|m| m.len())
                     .unwrap_or(0);
@@ -2311,7 +2306,6 @@ async fn stream_download_with_caching(
                     tokio::spawn(track_download_progress(Some(machine_id), effective_progress, file_size, state.clone()));
                 }
             }
-        }
         
         // info!("Serving cached artifact from: {:?}", cache_path); // Commented out log
         return read_file_as_stream(cache_path, range_header, state, machine_id).await; // Pass Range header
@@ -2374,8 +2368,8 @@ async fn stream_download_with_caching(
                     // ADDED LOG: Log chunk size and total downloaded
                     debug!(url = %url_clone, chunk_size = chunk_size, total_bytes_downloaded = total_bytes_downloaded, total_size = total_size, "[STREAM_DOWNLOAD_LOOP] Downloaded chunk");
 
-                    if let (Some(machine_id), Some(state)) = (tracking_machine_id, &app_state_clone) {
-                        if total_size > 0 {
+                    if let (Some(machine_id), Some(state)) = (tracking_machine_id, &app_state_clone)
+                        && total_size > 0 {
                             // ADDED LOG: Confirm call to track_download_progress
                             debug!("[PROGRESS_DEBUG] Calling track_download_progress (machine_id: {}, downloaded: {}, total: {})", machine_id, total_bytes_downloaded, total_size);
                             
@@ -2384,16 +2378,14 @@ async fn stream_download_with_caching(
                             
                             track_download_progress(Some(machine_id), total_bytes_downloaded, total_size, state.clone()).await;
                         }
-                    }
                     
                     // Attempt to send to client only if not already disconnected
-                    if !client_disconnected {
-                        if tx.send(Ok(chunk)).await.is_err() {
+                    if !client_disconnected
+                        && tx.send(Ok(chunk)).await.is_err() {
                             warn!("Client stream receiver dropped for {}. Continuing download in background.", url_clone);
                             client_disconnected = true;
                             // DO NOT break here - let download continue for caching
                         }
-                    }
 
                     // Await the write operation regardless of client connection status
                     match write_handle.await { // Await the JoinHandle itself
@@ -2436,19 +2428,17 @@ async fn stream_download_with_caching(
         drop(stream);
 
         // Report final progress on successful download
-        if !download_error && total_size > 0 {
-            if let (Some(machine_id), Some(state)) = (tracking_machine_id, &app_state_clone) {
+        if !download_error && total_size > 0
+            && let (Some(machine_id), Some(state)) = (tracking_machine_id, &app_state_clone) {
                 track_download_progress(Some(machine_id), total_size, total_size, state.clone()).await;
             }
-        }
 
         // Ensure file is flushed and closed first
-        if let Ok(mut file) = Arc::try_unwrap(file).map_err(|_| "Failed to unwrap Arc").and_then(|mutex| Ok(mutex.into_inner())) {
-            if let Err(e) = file.flush().await {
+        if let Ok(mut file) = Arc::try_unwrap(file).map_err(|_| "Failed to unwrap Arc").map(|mutex| mutex.into_inner())
+            && let Err(e) = file.flush().await {
                 warn!("Failed to flush cache file {}: {}", cache_path_clone.display(), e);
             }
             // File is closed when it goes out of scope here
-        }
         
         // Only send EOF signal if the download completed without error AND the client is still connected
         if !download_error && !client_disconnected {
@@ -2506,7 +2496,7 @@ async fn parse_range_header(
         // Suffix range: "-<length>"
         if end_str.is_empty() { return None; } // Invalid: "-"
         let suffix_len = end_str.parse::<u64>().ok()?;
-        if suffix_len >= total_size { 0 } else { total_size - suffix_len }
+        total_size.saturating_sub(suffix_len)
     } else {
         // Normal range: "start-" or "start-end"
         start_str.parse::<u64>().ok()?
@@ -2859,12 +2849,10 @@ pub async fn download_hookos_artifacts(version: &str) -> anyhow::Result<()> {
     std::fs::write(checksum_path, checksum_content)?;
 
     // Files to download
-    let files = vec![
-        "hook_x86_64.tar.gz",
+    let files = ["hook_x86_64.tar.gz",
         "hook_aarch64.tar.gz",
         "hook_latest-lts-x86_64.tar.gz",
-        "hook_latest-lts-aarch64.tar.gz",
-    ];
+        "hook_latest-lts-aarch64.tar.gz"];
 
     // Create a vector of download futures
     let download_futures = files.iter().map(|file| {
@@ -3021,11 +3009,9 @@ pub async fn download_mage_artifacts(alpine_version: &str, arch: &str) -> anyhow
     let netboot_base = format!("{}/v{}/releases/{}/netboot", ALPINE_MIRROR, alpine_version, arch);
 
     // Alpine netboot files (use -lts variants for LTS kernel)
-    let files = vec![
-        ("vmlinuz", "vmlinuz-lts"),
+    let files = [("vmlinuz", "vmlinuz-lts"),
         ("initramfs", "initramfs-lts"),
-        ("modloop", "modloop-lts"),
-    ];
+        ("modloop", "modloop-lts")];
 
     info!("Downloading Mage (Alpine {}) artifacts from {}", alpine_version, netboot_base);
 
@@ -3040,14 +3026,12 @@ pub async fn download_mage_artifacts(alpine_version: &str, arch: &str) -> anyhow
             let dest_path = mage_dir.join(&local_name);
 
             // Skip if file already exists and has content
-            if dest_path.exists() {
-                if let Ok(metadata) = std::fs::metadata(&dest_path) {
-                    if metadata.len() > 0 {
+            if dest_path.exists()
+                && let Ok(metadata) = std::fs::metadata(&dest_path)
+                    && metadata.len() > 0 {
                         info!("Mage artifact {} already exists, skipping download", local_name);
                         return Ok::<_, anyhow::Error>(());
                     }
-                }
-            }
 
             // Try primary name first
             let url = format!("{}/{}", netboot_base, remote_name);
@@ -3115,11 +3099,10 @@ pub fn verify_mage_artifacts(architectures: &[&str]) -> anyhow::Result<()> {
 
             if !file_path.exists() {
                 missing.push(format!("{}/{}", arch, file));
-            } else if let Ok(metadata) = std::fs::metadata(&file_path) {
-                if metadata.len() == 0 {
+            } else if let Ok(metadata) = std::fs::metadata(&file_path)
+                && metadata.len() == 0 {
                     empty.push(format!("{}/{}", arch, file));
                 }
-            }
         }
     }
 
@@ -3425,14 +3408,12 @@ pub async fn download_ipxe_binaries() -> anyhow::Result<()> {
     // Create directory structure if it doesn't exist
     if !tftp_dir.exists() {
         info!("Creating TFTP directory: {:?}", tftp_dir);
-        std::fs::create_dir_all(&tftp_dir)?;
+        std::fs::create_dir_all(tftp_dir)?;
     }
 
     // iPXE binaries to download from boot.ipxe.org
-    let binaries = vec![
-        ("ipxe.efi", "https://boot.ipxe.org/ipxe.efi"),
-        ("undionly.kpxe", "https://boot.ipxe.org/undionly.kpxe"),
-    ];
+    let binaries = [("ipxe.efi", "https://boot.ipxe.org/ipxe.efi"),
+        ("undionly.kpxe", "https://boot.ipxe.org/undionly.kpxe")];
 
     // Create download futures for parallel execution
     let download_futures = binaries.iter().map(|(filename, url)| {
@@ -3444,14 +3425,12 @@ pub async fn download_ipxe_binaries() -> anyhow::Result<()> {
             let dest_path = tftp_dir.join(&filename);
 
             // Skip if file already exists and has content
-            if dest_path.exists() {
-                if let Ok(metadata) = std::fs::metadata(&dest_path) {
-                    if metadata.len() > 0 {
+            if dest_path.exists()
+                && let Ok(metadata) = std::fs::metadata(&dest_path)
+                    && metadata.len() > 0 {
                         info!("iPXE binary {} already exists, skipping download", filename);
                         return Ok::<_, anyhow::Error>(());
                     }
-                }
-            }
 
             info!("Downloading {} from {}", filename, url);
             let response = reqwest::get(&url).await?;
@@ -3506,14 +3485,12 @@ pub async fn download_debian_13_image(arch: &str) -> anyhow::Result<()> {
     let dest_path = os_dir.join(&filename);
 
     // Skip if already downloaded
-    if dest_path.exists() {
-        if let Ok(metadata) = std::fs::metadata(&dest_path) {
-            if metadata.len() > 0 {
+    if dest_path.exists()
+        && let Ok(metadata) = std::fs::metadata(&dest_path)
+            && metadata.len() > 0 {
                 info!("Debian 13 {} image already exists, skipping download", arch);
                 return Ok(());
             }
-        }
-    }
 
     // Debian cloud image URL
     let url = format!(
@@ -3566,7 +3543,7 @@ pub async fn serve_os_image(os: &str, arch: &str) -> Response {
     if !path.exists() {
         return (
             StatusCode::NOT_FOUND,
-            format!("OS image not downloaded. Use API to download first."),
+            "OS image not downloaded. Use API to download first.".to_string(),
         ).into_response();
     }
 
@@ -3724,7 +3701,7 @@ async fn api_update_machine_tags(
 ) -> Response {
     // Check if user is authenticated as admin
     if let Err(response) = crate::auth::require_admin(&auth_session) {
-        return response;
+        return *response;
     }
 
     match db_update_machine_tags(&id, &tags).await {
@@ -3943,7 +3920,7 @@ async fn api_get_tags(
 ) -> Response {
     // Check if user is authenticated as admin
     if let Err(response) = crate::auth::require_admin(&auth_session) {
-        return response;
+        return *response;
     }
 
     match db::get_all_tags().await {
@@ -3968,7 +3945,7 @@ async fn api_create_tag(
 ) -> Response {
     // Check if user is authenticated as admin
     if let Err(response) = crate::auth::require_admin(&auth_session) {
-        return response;
+        return *response;
     }
 
     // Extract tag name from JSON payload
@@ -4021,7 +3998,7 @@ async fn api_delete_tag(
 ) -> Response {
     // Check if user is authenticated as admin
     if let Err(response) = crate::auth::require_admin(&auth_session) {
-        return response;
+        return *response;
     }
 
     match db::delete_tag(&tag_name).await {
@@ -4054,7 +4031,7 @@ async fn api_get_machines_by_tag(
 ) -> Response {
     // Check if user is authenticated as admin
     if let Err(response) = crate::auth::require_admin(&auth_session) {
-        return response;
+        return *response;
     }
 
     match db::get_machines_by_tag(&tag_name).await {
@@ -4120,7 +4097,7 @@ async fn reimage_machine(
     match db::reimage_machine(&id).await {
         Ok(true) => {
             // Create a workflow for OS installation
-            match crate::tinkerbell::create_workflow(&machine, &os_choice).await {
+            match crate::tinkerbell::create_workflow(&machine, os_choice).await {
                 Ok(_) => {
                     // Emit machine updated event
                     let _ = _state.event_manager.send(format!("machine_updated:{}", id));
@@ -4171,17 +4148,17 @@ async fn reimage_machine(
             }
         },
         Ok(false) => {
-            return (StatusCode::NOT_FOUND, Json(json!({
+            (StatusCode::NOT_FOUND, Json(json!({
                 "error": "Not Found",
                 "message": format!("Machine with ID {} not found", id)
-            }))).into_response();
+            }))).into_response()
         },
         Err(e) => {
             error!("Failed to set machine {} status to InstallingOS: {}", id, e);
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
                 "error": "Database Error",
                 "message": e.to_string()
-            }))).into_response();
+            }))).into_response()
         }
     }
 }

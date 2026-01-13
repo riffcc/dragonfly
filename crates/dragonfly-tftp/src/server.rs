@@ -214,7 +214,7 @@ async fn handle_read_request(
     // Negotiate options
     let block_size = options
         .blksize
-        .map(|b| b.min(MAX_BLOCK_SIZE).max(8))
+        .map(|b| b.clamp(8, MAX_BLOCK_SIZE))
         .unwrap_or(DEFAULT_BLOCK_SIZE);
 
     let timeout_secs = options.timeout.unwrap_or(DEFAULT_TIMEOUT);

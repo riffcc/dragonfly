@@ -121,7 +121,7 @@ impl ProvisioningService {
 
         // Look up hardware by MAC
         let hardware = self.store.get_hardware_by_mac(&normalized_mac).await
-            .map_err(|e| ProvisioningError::Store(e))?;
+            .map_err(ProvisioningError::Store)?;
 
         match hardware {
             Some(hw) => {
@@ -139,7 +139,7 @@ impl ProvisioningService {
     async fn boot_script_for_known_hardware(&self, hw: &Hardware) -> Result<String, ProvisioningError> {
         // Check for active workflow
         let workflows = self.store.get_workflows_for_hardware(&hw.metadata.name).await
-            .map_err(|e| ProvisioningError::Store(e))?;
+            .map_err(ProvisioningError::Store)?;
 
         // Find pending or running workflow
         let active_workflow = workflows.iter().find(|wf| {
@@ -238,14 +238,14 @@ impl ProvisioningService {
 
         // Look up existing hardware
         let existing = self.store.get_hardware_by_mac(&normalized_mac).await
-            .map_err(|e| ProvisioningError::Store(e))?;
+            .map_err(ProvisioningError::Store)?;
 
         let (hardware, is_new) = match existing {
             Some(mut hw) => {
                 // Update existing hardware info
                 self.update_hardware_from_checkin(&mut hw, info);
                 self.store.put_hardware(&hw).await
-                    .map_err(|e| ProvisioningError::Store(e))?;
+                    .map_err(ProvisioningError::Store)?;
                 info!("Updated hardware {} from check-in", hw.metadata.name);
                 (hw, false)
             }
@@ -253,7 +253,7 @@ impl ProvisioningService {
                 // Create new hardware
                 let hw = self.create_hardware_from_checkin(info);
                 self.store.put_hardware(&hw).await
-                    .map_err(|e| ProvisioningError::Store(e))?;
+                    .map_err(ProvisioningError::Store)?;
                 info!("Created new hardware {} from check-in", hw.metadata.name);
                 (hw, true)
             }
@@ -261,7 +261,7 @@ impl ProvisioningService {
 
         // Check for assigned workflow
         let workflows = self.store.get_workflows_for_hardware(&hardware.metadata.name).await
-            .map_err(|e| ProvisioningError::Store(e))?;
+            .map_err(ProvisioningError::Store)?;
 
         let active_workflow = workflows.into_iter().find(|wf| {
             matches!(
@@ -315,12 +315,12 @@ impl ProvisioningService {
     ) -> Result<Workflow, ProvisioningError> {
         // Verify hardware exists
         let _hardware = self.store.get_hardware(hardware_id).await
-            .map_err(|e| ProvisioningError::Store(e))?
+            .map_err(ProvisioningError::Store)?
             .ok_or_else(|| ProvisioningError::NotFound(format!("hardware: {}", hardware_id)))?;
 
         // Get template
         let _template = self.store.get_template(template_name).await
-            .map_err(|e| ProvisioningError::Store(e))?
+            .map_err(ProvisioningError::Store)?
             .ok_or_else(|| ProvisioningError::NotFound(format!("template: {}", template_name)))?;
 
         // Create workflow
@@ -329,7 +329,7 @@ impl ProvisioningService {
 
         // Store workflow
         self.store.put_workflow(&workflow).await
-            .map_err(|e| ProvisioningError::Store(e))?;
+            .map_err(ProvisioningError::Store)?;
 
         info!(
             "Assigned workflow {} to hardware {} using template {}",
@@ -362,7 +362,7 @@ impl ProvisioningService {
 
         // Store workflow
         self.store.put_workflow(&workflow).await
-            .map_err(|e| ProvisioningError::Store(e))?;
+            .map_err(ProvisioningError::Store)?;
 
         info!(
             "Created imaging workflow {} for hardware {} with OS {}",
@@ -428,8 +428,8 @@ impl ProvisioningService {
     /// Update existing hardware with check-in info
     fn update_hardware_from_checkin(&self, hw: &mut Hardware, info: &HardwareCheckIn) {
         // Update IP address if provided
-        if let Some(ip) = &info.ip_address {
-            if let Some(dhcp) = hw.spec.interfaces.first_mut().and_then(|i| i.dhcp.as_mut()) {
+        if let Some(ip) = &info.ip_address
+            && let Some(dhcp) = hw.spec.interfaces.first_mut().and_then(|i| i.dhcp.as_mut()) {
                 if let Some(ref mut ip_config) = dhcp.ip {
                     ip_config.address = ip.clone();
                 } else {
@@ -440,14 +440,12 @@ impl ProvisioningService {
                     });
                 }
             }
-        }
 
         // Update hostname
-        if let Some(hostname) = &info.hostname {
-            if let Some(dhcp) = hw.spec.interfaces.first_mut().and_then(|i| i.dhcp.as_mut()) {
+        if let Some(hostname) = &info.hostname
+            && let Some(dhcp) = hw.spec.interfaces.first_mut().and_then(|i| i.dhcp.as_mut()) {
                 dhcp.hostname = Some(hostname.clone());
             }
-        }
 
         // Update disk info if empty
         if hw.spec.disks.is_empty() {

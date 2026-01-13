@@ -33,7 +33,7 @@ impl DeploymentMode {
         }
     }
 
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn maybe_from_str(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
             "simple" => Some(DeploymentMode::Simple),
             "flight" => Some(DeploymentMode::Flight),
@@ -61,7 +61,7 @@ pub async fn get_current_mode() -> Result<Option<DeploymentMode>> {
             Ok(store) => {
                 match store.get_setting("deployment_mode").await {
                     Ok(Some(mode_str)) => {
-                        let mode = DeploymentMode::from_str(&mode_str);
+                        let mode = DeploymentMode::maybe_from_str(&mode_str);
                         if mode.is_some() {
                             debug!("Found deployment mode '{}' in ReDB", mode_str);
                             return Ok(mode);
@@ -88,7 +88,7 @@ pub async fn get_current_mode() -> Result<Option<DeploymentMode>> {
             .await
             .context("Failed to read mode file")?;
 
-        let mode = DeploymentMode::from_str(content.trim());
+        let mode = DeploymentMode::maybe_from_str(content.trim());
         return Ok(mode);
     }
 
@@ -486,13 +486,10 @@ fn has_root_privileges() -> bool {
         if let Ok(uid) = std::process::Command::new("id")
             .args(["-u"])
             .output()
-        {
-            if let Ok(uid_str) = String::from_utf8(uid.stdout) {
-                if let Ok(uid_num) = uid_str.trim().parse::<u32>() {
+            && let Ok(uid_str) = String::from_utf8(uid.stdout)
+                && let Ok(uid_num) = uid_str.trim().parse::<u32>() {
                     return uid_num == 0;
                 }
-            }
-        }
         
         // Fallback to checking if we can write to a protected directory
         std::fs::metadata("/root").is_ok()
@@ -535,12 +532,10 @@ pub async fn configure_simple_mode() -> Result<()> {
                     if let Ok(chmod_output) = Command::new("chmod")
                         .args(["+x", EXECUTABLE_TARGET_PATH])
                         .output()
-                    {
-                        if !chmod_output.status.success() {
+                        && !chmod_output.status.success() {
                             warn!("Failed to set executable permissions: {}", 
                                   String::from_utf8_lossy(&chmod_output.stderr));
                         }
-                    }
                 },
                 _ => {
                     info!("Need elevated permissions to copy executable to {}", EXECUTABLE_TARGET_PATH);
@@ -830,15 +825,14 @@ pub async fn start_handoff_listener(mut shutdown_rx: watch::Receiver<()>) -> Res
                     info!("Handoff file detected - initiating handoff");
                     
                     // Read the content to get the pid if available
-                    if let Ok(content) = tokio::fs::read_to_string(&handoff_file).await {
-                        if let Ok(pid) = content.trim().parse::<i32>() {
+                    if let Ok(content) = tokio::fs::read_to_string(&handoff_file).await
+                        && let Ok(pid) = content.trim().parse::<i32>() {
                             info!("Sending ACK to k3s pod with pid {}", pid);
                             // Send ACK to the k3s pod if pid is available
                             let _ = Command::new("kill")
                                 .args(["-SIGUSR2", &pid.to_string()])
                                 .output();
                         }
-                    }
                     
                     // Remove the handoff file
                     let _ = tokio::fs::remove_file(&handoff_file).await;
@@ -849,7 +843,7 @@ pub async fn start_handoff_listener(mut shutdown_rx: watch::Receiver<()>) -> Res
             }
         } => {
             info!("Handoff initiated by file - gracefully shutting down");
-            return Ok(());
+            Ok(())
         },
         
         // Wait for SIGUSR1 signal
@@ -861,13 +855,13 @@ pub async fn start_handoff_listener(mut shutdown_rx: watch::Receiver<()>) -> Res
                 .await
                 .context("Failed to write handoff ACK file");
                 
-            return Ok(());
+            Ok(())
         },
         
         // Wait for shutdown signal
         _ = shutdown_rx.changed() => {
             info!("Shutdown received - terminating handoff listener");
-            return Ok(());
+            Ok(())
         }
     }
     
@@ -1318,23 +1312,21 @@ pub async fn enter_flight_mode() -> Result<()> {
                     .args(["list", "-n", "tinkerbell", "-a"])
                     .output();
 
-                if let Ok(list_output) = helm_list {
-                    if list_output.status.success() {
+                if let Ok(list_output) = helm_list
+                    && list_output.status.success() {
                         let list_stdout = String::from_utf8_lossy(&list_output.stdout);
                         error!("Current Helm releases in tinkerbell namespace:\n{}", list_stdout);
                     }
-                }
 
                 let pod_list = Command::new("kubectl")
                     .args(["get", "pods", "-n", "tinkerbell", "-o", "wide"])
                     .output();
                 
-                if let Ok(pod_output) = pod_list {
-                    if pod_output.status.success() {
+                if let Ok(pod_output) = pod_list
+                    && pod_output.status.success() {
                         let pod_stdout = String::from_utf8_lossy(&pod_output.stdout);
                         error!("Current pods in tink namespace:\n{}", pod_stdout);
                     }
-                }
                 
                 // Return the original error with context
                 return Err(anyhow!("Failed to upgrade Tinkerbell stack: {}. Check logs for diagnostics.", e));
@@ -1663,11 +1655,10 @@ async fn configure_kubectl() -> Result<PathBuf> {
             .args(["--kubeconfig", dest_path.to_str().unwrap(), "cluster-info"])
             .output();
             
-        if let Ok(output) = test_result {
-            if output.status.success() {
+        if let Ok(output) = test_result
+            && output.status.success() {
                 return Ok(dest_path);
             }
-        }
     }
 
     // Wait for k3s to create the config file
@@ -1683,10 +1674,7 @@ async fn configure_kubectl() -> Result<PathBuf> {
 
     // Determine if sudo is needed by checking if we can read the file directly
     // This avoids using libc directly for better musl compatibility
-    let needs_sudo = match tokio::fs::metadata(&source_path).await {
-        Ok(_) => false, // If we can stat the file, we likely have access
-        Err(_) => true,  // If we can't, we likely need sudo
-    };
+    let needs_sudo = (tokio::fs::metadata(&source_path).await).is_err();
 
     // Copy the file
     let cp_cmd = format!(
@@ -1769,8 +1757,8 @@ async fn wait_for_node_ready(kubeconfig_path: &PathBuf) -> Result<()> {
                 .env("KUBECONFIG", kubeconfig_path)
                 .output();
                 
-            if let Ok(output) = &coredns_exists_result {
-                if output.status.success() && !String::from_utf8_lossy(&output.stdout).trim().is_empty() {
+            if let Ok(output) = &coredns_exists_result
+                && output.status.success() && !String::from_utf8_lossy(&output.stdout).trim().is_empty() {
                     let coredns_status = Command::new("kubectl")
                         .args(["get", "pods", "-n", "kube-system", "-l", "k8s-app=kube-dns", 
                                "-o", "jsonpath='{.items[*].status.conditions[?(@.type==\"Ready\")].status}'"])
@@ -1789,7 +1777,6 @@ async fn wait_for_node_ready(kubeconfig_path: &PathBuf) -> Result<()> {
                         }
                     }
                 }
-            }
         }
 
         // Exit if both are ready
@@ -1953,29 +1940,25 @@ pub fn detect_server_ip() -> Option<String> {
     if let Ok(output) = Command::new("ip")
         .args(["route", "get", "1"])
         .output()
-    {
-        if output.status.success() {
+        && output.status.success() {
             let stdout = String::from_utf8_lossy(&output.stdout);
             // Output looks like: "1.0.0.0 via 10.7.1.1 dev eth0 src 10.7.1.125 uid 0"
             // We want the IP after "src"
             if let Some(src_idx) = stdout.find(" src ") {
                 let after_src = &stdout[src_idx + 5..];
-                if let Some(ip) = after_src.split_whitespace().next() {
-                    if !ip.starts_with("127.") {
+                if let Some(ip) = after_src.split_whitespace().next()
+                    && !ip.starts_with("127.") {
                         info!("Detected server IP from route: {}", ip);
                         return Some(ip.to_string());
                     }
-                }
             }
         }
-    }
 
     // Method 2: Parse hostname -I for the first non-localhost IP
     if let Ok(output) = Command::new("hostname")
         .args(["-I"])
         .output()
-    {
-        if output.status.success() {
+        && output.status.success() {
             let stdout = String::from_utf8_lossy(&output.stdout);
             for ip in stdout.split_whitespace() {
                 // Skip localhost and IPv6 link-local
@@ -1985,7 +1968,6 @@ pub fn detect_server_ip() -> Option<String> {
                 }
             }
         }
-    }
 
     warn!("Could not auto-detect server IP address");
     None
@@ -2034,11 +2016,10 @@ async fn get_loadbalancer_ip() -> Result<String> {
     match get_webui_address().await {
         Ok(Some(url)) => {
             // Extract host from URL (remove http:// prefix and port)
-            if let Ok(parsed_url) = url::Url::parse(&url) {
-                if let Some(host) = parsed_url.host_str() {
+            if let Ok(parsed_url) = url::Url::parse(&url)
+                && let Some(host) = parsed_url.host_str() {
                     return Ok(host.to_string());
                 }
-            }
         }
         _ => {
             // Failed to get URL or URL was None

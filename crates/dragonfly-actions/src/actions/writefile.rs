@@ -102,7 +102,7 @@ impl Action for WriteFileAction {
             let mount_action = {
                 let mounted_guard = MOUNTED.lock().unwrap();
                 match mounted_guard.as_ref() {
-                    Some(current) if current == &disk => {
+                    Some(current) if current == disk => {
                         drop(mounted_guard);
                         None // Already mounted
                     }
@@ -123,7 +123,7 @@ impl Action for WriteFileAction {
                     // Different disk mounted, unmount first
                     do_unmount().await?;
                 }
-                do_mount(&disk).await?;
+                do_mount(disk).await?;
                 let mut guard = MOUNTED.lock().unwrap();
                 *guard = Some(disk.to_string());
                 drop(guard);
@@ -165,7 +165,7 @@ impl Action for WriteFileAction {
 
         // Prepend mount point if we're writing to a mounted partition
         let actual_path = if let Some(mnt) = mount_point {
-            Path::new(mnt).join(&dest_path.strip_prefix('/').unwrap_or(&dest_path))
+            Path::new(mnt).join(dest_path.strip_prefix('/').unwrap_or(dest_path))
         } else {
             Path::new(dest_path).to_path_buf()
         };
@@ -174,9 +174,9 @@ impl Action for WriteFileAction {
         let create_dirs = ctx.env("CREATE_DIRS").map(|v| v == "true").unwrap_or(true);
         let path = &actual_path;
 
-        if create_dirs {
-            if let Some(parent) = path.parent() {
-                if !parent.exists() {
+        if create_dirs
+            && let Some(parent) = path.parent()
+                && !parent.exists() {
                     reporter.report(Progress::new(
                         self.name(),
                         30,
@@ -190,8 +190,6 @@ impl Action for WriteFileAction {
                         ))
                     })?;
                 }
-            }
-        }
 
         // Write the file
         reporter.report(Progress::new(
@@ -275,44 +273,39 @@ fn detect_filesystem(device: &str) -> Option<String> {
     let mut buf = [0u8; 8];
 
     // Check for ext2/3/4: magic 0xEF53 at offset 1080 (0x438)
-    if file.seek(SeekFrom::Start(0x438)).is_ok() && file.read_exact(&mut buf[..2]).is_ok() {
-        if buf[0] == 0x53 && buf[1] == 0xEF {
+    if file.seek(SeekFrom::Start(0x438)).is_ok() && file.read_exact(&mut buf[..2]).is_ok()
+        && buf[0] == 0x53 && buf[1] == 0xEF {
             tracing::debug!("Detected ext2/3/4 filesystem on {}", device);
             return Some("ext4".to_string()); // ext4 is backward compatible
         }
-    }
 
     // Check for XFS: magic "XFSB" at offset 0
-    if file.seek(SeekFrom::Start(0)).is_ok() && file.read_exact(&mut buf[..4]).is_ok() {
-        if &buf[..4] == b"XFSB" {
+    if file.seek(SeekFrom::Start(0)).is_ok() && file.read_exact(&mut buf[..4]).is_ok()
+        && &buf[..4] == b"XFSB" {
             tracing::debug!("Detected XFS filesystem on {}", device);
             return Some("xfs".to_string());
         }
-    }
 
     // Check for btrfs: magic "_BHRfS_M" at offset 0x10040
-    if file.seek(SeekFrom::Start(0x10040)).is_ok() && file.read_exact(&mut buf).is_ok() {
-        if &buf == b"_BHRfS_M" {
+    if file.seek(SeekFrom::Start(0x10040)).is_ok() && file.read_exact(&mut buf).is_ok()
+        && &buf == b"_BHRfS_M" {
             tracing::debug!("Detected btrfs filesystem on {}", device);
             return Some("btrfs".to_string());
         }
-    }
 
     // Check for FAT32: Look for FAT signature
-    if file.seek(SeekFrom::Start(0x52)).is_ok() && file.read_exact(&mut buf).is_ok() {
-        if &buf[..5] == b"FAT32" {
+    if file.seek(SeekFrom::Start(0x52)).is_ok() && file.read_exact(&mut buf).is_ok()
+        && &buf[..5] == b"FAT32" {
             tracing::debug!("Detected FAT32 filesystem on {}", device);
             return Some("vfat".to_string());
         }
-    }
 
     // Check for FAT16/FAT12
-    if file.seek(SeekFrom::Start(0x36)).is_ok() && file.read_exact(&mut buf).is_ok() {
-        if &buf[..3] == b"FAT" {
+    if file.seek(SeekFrom::Start(0x36)).is_ok() && file.read_exact(&mut buf).is_ok()
+        && &buf[..3] == b"FAT" {
             tracing::debug!("Detected FAT filesystem on {}", device);
             return Some("vfat".to_string());
         }
-    }
 
     tracing::warn!("Could not detect filesystem type on {}", device);
     None

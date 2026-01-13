@@ -271,13 +271,12 @@ impl DhcpServer {
             }
             MessageType::Request => {
                 // Verify requested IP matches
-                if let Some(requested) = request.requested_ip {
-                    if requested != offered_ip {
+                if let Some(requested) = request.requested_ip
+                    && requested != offered_ip {
                         // Send NAK
                         let response = self.build_nak(request)?;
                         return Ok(Some((response, None, "NAK".to_string())));
                     }
-                }
                 let response = self.build_ack(request, offered_ip, hardware)?;
                 Ok(Some((response, Some(offered_ip), "ACK".to_string())))
             }
@@ -332,12 +331,11 @@ impl DhcpServer {
         }
 
         // If we have hardware, check if PXE is allowed
-        if let Some(hw) = hardware {
-            if !hw.allows_pxe() {
+        if let Some(hw) = hardware
+            && !hw.allows_pxe() {
                 debug!(mac = %request.mac_address, "PXE not allowed for hardware");
                 return Ok(None);
             }
-        }
 
         // In auto-proxy, we respond even without hardware record
         // (for discovery boot)
