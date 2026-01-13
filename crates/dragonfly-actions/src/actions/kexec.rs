@@ -148,7 +148,7 @@ impl Action for KexecAction {
         );
         let cmdline = ctx.env("CMDLINE").unwrap_or(&default_cmdline);
 
-        // Load the kernel with kexec
+        // Load the kernel with kexec (if available)
         reporter.report(Progress::new(self.name(), 60, "Loading kernel with kexec"));
 
         let mut kexec_args = vec![
@@ -161,20 +161,42 @@ impl Action for KexecAction {
             kexec_args.push(format!("--initrd={}", initrd));
         }
 
-        let kexec_load = Command::new("kexec")
+        // Try to load kernel with kexec, but don't fail if kexec isn't available
+        let kexec_available = match Command::new("kexec")
             .args(&kexec_args)
             .output()
             .await
-            .map_err(|e| ActionError::ExecutionFailed(format!("Failed to run kexec: {}", e)))?;
+        {
+            Ok(output) if output.status.success() => true,
+            Ok(_) => {
+                tracing::warn!("kexec load failed, will use regular reboot instead");
+                false
+            }
+            Err(e) => {
+                tracing::warn!("kexec command not available ({}), will use regular reboot", e);
+                false
+            }
+        };
 
-        if !kexec_load.status.success() {
-            let stderr = String::from_utf8_lossy(&kexec_load.stderr);
-            // Unmount before returning error
+        if !kexec_available {
+            // Unmount the filesystem since we're not using kexec
+            reporter.report(Progress::new(self.name(), 70, "Unmounting target filesystem"));
             let _ = Command::new("umount").arg(mount_point).output().await;
-            return Err(ActionError::ExecutionFailed(format!(
-                "kexec load failed: {}",
-                stderr
-            )));
+
+            reporter.report(Progress::new(
+                self.name(),
+                98,
+                "Kexec unavailable, using regular reboot",
+            ));
+
+            // Fall back to regular reboot
+            let _ = Command::new("reboot")
+                .spawn()
+                .map_err(|e| ActionError::ExecutionFailed(format!("Failed to execute reboot: {}", e)))?;
+
+            return Ok(ActionResult::success("Reboot initiated (kexec unavailable)")
+                .with_output("method", "reboot")
+                .with_output("reason", "kexec_failed"));
         }
 
         // Unmount the filesystem
@@ -186,16 +208,18 @@ impl Action for KexecAction {
         reporter.report(Progress::new(self.name(), 95, "Executing kexec - goodbye!"));
 
         // This is the point of no return - the system will reboot into the new kernel
-        // We fork this into the background and return success
         let _ = Command::new("kexec")
             .arg("-e")
             .spawn()
-            .map_err(|e| ActionError::ExecutionFailed(format!("Failed to execute kexec: {}", e)))?;
+            .map_err(|e| {
+                tracing::warn!("kexec -e failed: {}", e);
+                ActionError::ExecutionFailed(format!("Failed to execute kexec: {}", e))
+            })?;
 
         // Give kexec a moment to take over
         tokio::time::sleep(Duration::from_secs(2)).await;
 
-        // If we get here, kexec might have failed
+        // If we get here, kexec might have failed or not taken over
         Ok(ActionResult::success("Kexec initiated - system should be rebooting")
             .with_output("kernel", kernel_path)
             .with_output("initrd", initrd_path)

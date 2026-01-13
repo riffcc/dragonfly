@@ -12,7 +12,7 @@ spec:
 
     - action: writefile
       path: /etc/cloud/cloud.cfg.d/10_dragonfly.cfg
-      partition: 1
+      partition: 2
       content: |
         datasource:
           Ec2:
@@ -37,7 +37,7 @@ spec:
 
     - action: writefile
       path: /etc/cloud/ds-identify.cfg
-      partition: 1
+      partition: 2
       content: |
         datasource: Ec2
       mode: "0600"
@@ -45,7 +45,7 @@ spec:
 
     - action: writefile
       path: /etc/netplan/config.yaml
-      partition: 1
+      partition: 2
       content: |
         network:
           version: 2
@@ -59,6 +59,6 @@ spec:
       timeout: 90
 
     - action: kexec
-      partition: 1
+      partition: 2
       cmdline: "ro quiet"
       timeout: 90
