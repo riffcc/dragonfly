@@ -210,6 +210,7 @@ pub struct AppState {
     pub setup_mode: bool,  // Explicit CLI setup mode
     pub first_run: bool,   // First run based on settings
     pub shutdown_tx: watch::Sender<()>,  // Channel to signal shutdown
+    pub shutdown_rx: watch::Receiver<()>,  // Receiver for shutdown (clonable for services)
     // Use the new enum for the environment
     pub template_env: TemplateEnv,
     // Add flags for Scenario B
@@ -226,6 +227,66 @@ pub struct AppState {
     pub provisioning: Option<Arc<provisioning::ProvisioningService>>,
     // Native storage backend (ReDB by default)
     pub store: Arc<dyn store::DragonflyStore>,
+    // Track if network services (DHCP/TFTP) are running
+    pub network_services_started: Arc<AtomicBool>,
+}
+
+/// Start network services (DHCP/TFTP) for Flight mode
+/// This can be called at startup or dynamically when Flight mode is activated
+pub async fn start_network_services(app_state: &AppState, shutdown_rx: watch::Receiver<()>) {
+    // Check if services are already running
+    if app_state.network_services_started.swap(true, Ordering::SeqCst) {
+        info!("Network services already started, skipping");
+        return;
+    }
+
+    info!("Starting native network services for Flight mode");
+
+    // Create services configuration
+    let services_config = ServicesConfig {
+        dhcp: Some(DhcpServiceConfig {
+            mode: DhcpMode::AutoProxy, // Auto-discovery of unknown machines
+            boot_filename_bios: "undionly.kpxe".to_string(),
+            boot_filename_uefi: "ipxe.efi".to_string(),
+            http_boot_url: None,
+        }),
+        tftp: Some(TftpServiceConfig {
+            boot_dir: PathBuf::from("/var/lib/dragonfly/tftp"),
+        }),
+        server_ip: std::net::Ipv4Addr::new(0, 0, 0, 0), // Bind to all interfaces
+        http_port: read_port_from_config(), // Use same port as HTTP server
+    };
+
+    // Create service runner with native store for hardware lookup
+    let service_runner = ServiceRunner::new(services_config, app_state.store.clone());
+
+    // Create a bool-based shutdown channel for the services
+    // (ServiceRunner expects watch::Receiver<bool>)
+    let (services_shutdown_tx, services_shutdown_rx) = watch::channel(false);
+
+    // Forward the main shutdown signal to the services shutdown channel
+    let mut main_shutdown_rx = shutdown_rx;
+    tokio::spawn(async move {
+        let _ = main_shutdown_rx.changed().await;
+        let _ = services_shutdown_tx.send(true);
+    });
+
+    // Start services in a background task
+    tokio::spawn(async move {
+        match service_runner.start(services_shutdown_rx).await {
+            Ok(handles) => {
+                if handles.dhcp.is_some() {
+                    info!("DHCP server started in AutoProxy mode");
+                }
+                if handles.tftp.is_some() {
+                    info!("TFTP server started serving from /var/lib/dragonfly/tftp");
+                }
+            }
+            Err(e) => {
+                error!("Failed to start network services: {}", e);
+            }
+        }
+    });
 }
 
 // Clean up any existing processes
@@ -553,6 +614,7 @@ pub async fn run() -> anyhow::Result<()> {
         setup_mode,
         first_run,
         shutdown_tx: shutdown_tx.clone(),
+        shutdown_rx: shutdown_rx.clone(),
         template_env,
         // Add the new flags
         is_installed,
@@ -568,6 +630,8 @@ pub async fn run() -> anyhow::Result<()> {
         provisioning: provisioning_service.clone(),
         // Native storage backend
         store: native_store,
+        // Track if network services (DHCP/TFTP) are running
+        network_services_started: Arc::new(AtomicBool::new(false)),
     };
 
     // Load Proxmox API tokens from database to memory for immediate use
@@ -672,53 +736,7 @@ pub async fn run() -> anyhow::Result<()> {
     // --- Native Network Services (DHCP/TFTP) ---
     // Start DHCP and TFTP servers in Flight mode for bare metal provisioning
     if is_flight_mode && !is_installation_server {
-        info!("Starting native network services for Flight mode");
-
-        // Create services configuration
-        let services_config = ServicesConfig {
-            dhcp: Some(DhcpServiceConfig {
-                mode: DhcpMode::AutoProxy, // Auto-discovery of unknown machines
-                boot_filename_bios: "undionly.kpxe".to_string(),
-                boot_filename_uefi: "ipxe.efi".to_string(),
-                http_boot_url: None,
-            }),
-            tftp: Some(TftpServiceConfig {
-                boot_dir: PathBuf::from("/var/lib/dragonfly/tftp"),
-            }),
-            server_ip: std::net::Ipv4Addr::new(0, 0, 0, 0), // Bind to all interfaces
-            http_port: read_port_from_config(), // Use same port as HTTP server
-        };
-
-        // Create service runner with native store for hardware lookup
-        let service_runner = ServiceRunner::new(services_config, app_state.store.clone());
-
-        // Create a bool-based shutdown channel for the services
-        // (ServiceRunner expects watch::Receiver<bool>)
-        let (services_shutdown_tx, services_shutdown_rx) = watch::channel(false);
-
-        // Forward the main shutdown signal to the services shutdown channel
-        let mut main_shutdown_rx = shutdown_rx.clone();
-        tokio::spawn(async move {
-            let _ = main_shutdown_rx.changed().await;
-            let _ = services_shutdown_tx.send(true);
-        });
-
-        // Start services in a background task
-        tokio::spawn(async move {
-            match service_runner.start(services_shutdown_rx).await {
-                Ok(handles) => {
-                    if handles.dhcp.is_some() {
-                        info!("DHCP server started in AutoProxy mode");
-                    }
-                    if handles.tftp.is_some() {
-                        info!("TFTP server started serving from /var/lib/dragonfly/tftp");
-                    }
-                }
-                Err(e) => {
-                    error!("Failed to start network services: {}", e);
-                }
-            }
-        });
+        start_network_services(&app_state, shutdown_rx.clone()).await;
     }
     // --- End Native Network Services ---
 

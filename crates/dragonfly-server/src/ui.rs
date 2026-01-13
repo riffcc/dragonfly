@@ -1505,10 +1505,13 @@ pub async fn setup_flight(
     // Configure the system for Flight mode in the background
     let event_manager = app_state.event_manager.clone();
     let store_for_flight = app_state.store.clone();
+    let app_state_for_services = app_state.clone();
     tokio::spawn(async move {
         match mode::configure_flight_mode(store_for_flight).await {
             Ok(_) => {
                 info!("Flight mode configuration completed successfully in background");
+                // Start network services (DHCP/TFTP) now that Flight mode is configured
+                crate::start_network_services(&app_state_for_services, app_state_for_services.shutdown_rx.clone()).await;
                 // Send event for successful configuration
                 let _ = event_manager.send("mode_configured:flight".to_string());
             },
