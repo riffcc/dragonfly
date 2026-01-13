@@ -985,6 +985,12 @@ async fn run_native_provisioning_loop(
                                 }
                             }
 
+                            // If action filter was specified, exit after execution (debugging mode)
+                            if action_filter.is_some() {
+                                info!("Action filter specified - exiting after execution");
+                                return Ok(());
+                            }
+
                             // After workflow execution, continue check-in loop
                             // Server will decide next action based on workflow result
                             tokio::time::sleep(Duration::from_secs(5)).await;
