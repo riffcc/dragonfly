@@ -136,7 +136,11 @@ impl AgentWorkflowRunner {
 
         // Get raw JSON to debug deserialization
         let body = response.text().await?;
-        debug!(template_json = %body, "Raw template JSON from server");
+        info!(template_json_length = body.len(), "Raw template JSON from server (length)");
+
+        // Log a snippet of the JSON to see structure (first 500 chars)
+        let json_preview: String = body.chars().take(500).collect();
+        info!(json_preview = %json_preview, "Template JSON preview");
 
         let template: Template = serde_json::from_str(&body)?;
         info!(

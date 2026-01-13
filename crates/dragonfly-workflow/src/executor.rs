@@ -223,7 +223,16 @@ impl WorkflowExecutor {
         hardware: &Hardware,
     ) -> Result<()> {
         let total_actions = template.spec.actions.len();
-        info!(total_actions = total_actions, template = %template.metadata.name, "Starting workflow actions");
+        info!(
+            total_actions = total_actions,
+            template = %template.metadata.name,
+            action_names = ?template.action_names(),
+            "Starting workflow actions - will execute {} actions", total_actions
+        );
+
+        if total_actions == 0 {
+            error!(template = %template.metadata.name, "Template has NO ACTIONS - this is likely a deserialization bug!");
+        }
 
         // Get hardware disk paths for template variable substitution
         let hardware_disks: Vec<String> = hardware.spec.disks.iter()
