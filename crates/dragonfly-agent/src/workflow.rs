@@ -52,8 +52,9 @@ impl AgentWorkflowRunner {
         // Create action engine with available actions
         let action_engine = self.create_action_engine();
 
-        // Create executor
+        // Create executor with server URL for template variable substitution
         let executor = WorkflowExecutor::new(action_engine, store.clone())
+            .with_server_url(&self.server_url)
             .with_global_timeout(Duration::from_secs(3600)); // 1 hour default timeout
 
         // Subscribe to events for progress reporting
