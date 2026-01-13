@@ -92,7 +92,7 @@ base64 = "0.22"
 notify = "6.1"
 
 # Automation & Progress
-jetpack = { path = "../jetpack" }
+jetpack = { git = "https://github.com/riffcc/jetpack" }
 indicatif = "0.17"
 crossterm = "0.27"
 tempfile = "3.8"

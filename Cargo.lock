@@ -2676,6 +2676,7 @@ checksum = "92ecc6618181def0457392ccd0ee51198e065e016d1d527a7ac1b6dc7c1f09d2"
 [[package]]
 name = "jetpack"
 version = "0.1.2"
+source = "git+https://github.com/riffcc/jetpack#8f09dced1e43d66e22f899963121fbdda44320ff"
 dependencies = [
  "chrono",
  "expanduser",
