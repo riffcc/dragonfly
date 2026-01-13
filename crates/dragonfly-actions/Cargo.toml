@@ -16,6 +16,12 @@ tracing = { workspace = true }
 async-trait = "0.1"
 base64 = "0.22"
 
+# Native image streaming
+reqwest = { version = "0.12", features = ["stream"] }
+futures = "0.3"
+tokio-util = { version = "0.7", features = ["io"] }
+async-compression = { version = "0.4", features = ["tokio", "gzip", "xz", "zstd"] }
+
 [dev-dependencies]
 tokio-test = "0.4"
 tempfile = "3.14"

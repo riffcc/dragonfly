@@ -1,18 +1,20 @@
 //! Image to disk streaming action
 //!
-//! Streams OS images directly to disk without Docker. Supports:
-//! - QCOW2 images (via qemu-img)
-//! - Raw images (direct dd)
-//! - Compressed images (.gz, .xz, .zst)
-//! - Tar archives (.tar, .tar.gz, .tar.xz)
+//! Streams OS images directly to disk using native Rust. Supports:
+//! - QCOW2 images (via qemu-img - requires external tool)
+//! - Raw images (native streaming)
+//! - Compressed images (.gz, .xz, .zst) with native decompression
 
 use crate::context::{ActionContext, ActionResult};
 use crate::error::{ActionError, Result};
 use crate::progress::Progress;
 use crate::traits::Action;
+use async_compression::tokio::bufread::{GzipDecoder, XzDecoder, ZstdDecoder};
 use async_trait::async_trait;
+use futures::StreamExt;
 use std::time::Duration;
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::fs::OpenOptions;
+use tokio::io::{AsyncRead, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 
 /// Native image-to-disk streaming action
@@ -73,7 +75,6 @@ impl Action for Image2DiskAction {
     async fn execute(&self, ctx: &ActionContext) -> Result<ActionResult> {
         let img_url = ctx.env("IMG_URL").unwrap();
         let dest_disk = ctx.env("DEST_DISK").unwrap();
-        let block_size = ctx.env("BLOCK_SIZE").unwrap_or("4M");
 
         let reporter = ctx.progress_reporter();
         reporter.report(Progress::new(
@@ -104,35 +105,19 @@ impl Action for Image2DiskAction {
                 stream_qcow2(img_url, dest_disk, reporter.as_ref(), self.name()).await
             }
             ImageType::Raw => {
-                stream_raw(img_url, dest_disk, block_size, reporter.as_ref(), self.name()).await
+                stream_raw(img_url, dest_disk, reporter.as_ref(), self.name()).await
             }
             ImageType::RawGz => {
-                stream_raw_compressed(
-                    img_url,
-                    dest_disk,
-                    "gzip",
-                    reporter.as_ref(),
-                    self.name(),
-                )
-                .await
+                stream_compressed(img_url, dest_disk, Compression::Gzip, reporter.as_ref(), self.name()).await
             }
             ImageType::RawXz => {
-                stream_raw_compressed(img_url, dest_disk, "xz", reporter.as_ref(), self.name())
-                    .await
+                stream_compressed(img_url, dest_disk, Compression::Xz, reporter.as_ref(), self.name()).await
             }
             ImageType::RawZst => {
-                stream_raw_compressed(
-                    img_url,
-                    dest_disk,
-                    "zstd",
-                    reporter.as_ref(),
-                    self.name(),
-                )
-                .await
+                stream_compressed(img_url, dest_disk, Compression::Zstd, reporter.as_ref(), self.name()).await
             }
             ImageType::TarGz | ImageType::TarXz | ImageType::Tar => {
                 // For tar archives, we need a mounted filesystem
-                // This is typically used for rootfs extraction, not raw disk imaging
                 return Err(ActionError::ExecutionFailed(
                     "Tar archives require a mounted filesystem. Use writefile action instead."
                         .to_string(),
@@ -167,6 +152,13 @@ enum ImageType {
     Tar,
 }
 
+#[derive(Debug, Clone, Copy)]
+enum Compression {
+    Gzip,
+    Xz,
+    Zstd,
+}
+
 fn detect_image_type(path: &str) -> ImageType {
     let lower = path.to_lowercase();
 
@@ -178,11 +170,11 @@ fn detect_image_type(path: &str) -> ImageType {
         ImageType::TarXz
     } else if lower.ends_with(".tar") {
         ImageType::Tar
-    } else if lower.ends_with(".raw.gz") || lower.ends_with(".img.gz") {
+    } else if lower.ends_with(".raw.gz") || lower.ends_with(".img.gz") || lower.ends_with(".gz") {
         ImageType::RawGz
-    } else if lower.ends_with(".raw.xz") || lower.ends_with(".img.xz") {
+    } else if lower.ends_with(".raw.xz") || lower.ends_with(".img.xz") || lower.ends_with(".xz") {
         ImageType::RawXz
-    } else if lower.ends_with(".raw.zst") || lower.ends_with(".img.zst") {
+    } else if lower.ends_with(".raw.zst") || lower.ends_with(".img.zst") || lower.ends_with(".zst") {
         ImageType::RawZst
     } else {
         // Default to raw
@@ -190,7 +182,7 @@ fn detect_image_type(path: &str) -> ImageType {
     }
 }
 
-/// Stream a QCOW2 image using qemu-img convert
+/// Stream a QCOW2 image using qemu-img convert (requires external tool)
 async fn stream_qcow2(
     source: &str,
     dest: &str,
@@ -228,154 +220,265 @@ async fn stream_qcow2(
     Ok(metadata.len())
 }
 
-/// Stream a raw image with wget | dd pipeline
+/// Stream a raw image using native Rust
 async fn stream_raw(
     source: &str,
     dest: &str,
-    block_size: &str,
     reporter: &dyn crate::progress::ProgressReporter,
     action_name: &str,
 ) -> Result<u64> {
     reporter.report(Progress::new(
         action_name,
         15,
-        "Streaming raw image to disk",
+        "Streaming raw image to disk (native)",
     ));
 
-    // For local files, use dd directly
-    // For URLs, use wget | dd (wget -qO- outputs to stdout, works in busybox)
     let is_url = source.starts_with("http://") || source.starts_with("https://");
 
-    let mut child = if is_url {
-        Command::new("sh")
-            .args([
-                "-c",
-                &format!(
-                    "wget -qO - '{}' | dd of='{}' bs={} status=progress",
-                    source, dest, block_size
-                ),
-            ])
-            .stderr(std::process::Stdio::piped())
-            .spawn()
-            .map_err(|e| ActionError::ExecutionFailed(format!("Failed to spawn dd: {}", e)))?
+    if is_url {
+        stream_from_url(source, dest, None, reporter, action_name).await
     } else {
-        Command::new("dd")
-            .args([
-                &format!("if={}", source),
-                &format!("of={}", dest),
-                &format!("bs={}", block_size),
-                "status=progress",
-            ])
-            .stderr(std::process::Stdio::piped())
-            .spawn()
-            .map_err(|e| ActionError::ExecutionFailed(format!("Failed to spawn dd: {}", e)))?
-    };
-
-    // Read progress from stderr (dd outputs progress there)
-    let stderr = child.stderr.take().unwrap();
-    let mut reader = BufReader::new(stderr).lines();
-    let mut last_bytes: u64 = 0;
-
-    while let Ok(Some(line)) = reader.next_line().await {
-        // dd progress lines look like: "1234567890 bytes (1.2 GB, 1.1 GiB) copied"
-        if let Some(bytes_str) = line.split_whitespace().next() {
-            if let Ok(bytes) = bytes_str.parse::<u64>() {
-                last_bytes = bytes;
-                reporter.report(Progress::new(
-                    action_name,
-                    50, // Approximate
-                    format!("Streamed {} bytes", bytes),
-                ));
-            }
-        }
+        stream_from_file(source, dest, reporter, action_name).await
     }
-
-    let status = child.wait().await.map_err(|e| {
-        ActionError::ExecutionFailed(format!("Failed to wait for dd: {}", e))
-    })?;
-
-    if !status.success() {
-        return Err(ActionError::ExecutionFailed(
-            "dd command failed".to_string(),
-        ));
-    }
-
-    Ok(last_bytes)
 }
 
-/// Stream a compressed raw image
-async fn stream_raw_compressed(
+/// Stream a compressed raw image using native Rust decompression
+async fn stream_compressed(
     source: &str,
     dest: &str,
-    compression: &str,
+    compression: Compression,
     reporter: &dyn crate::progress::ProgressReporter,
     action_name: &str,
 ) -> Result<u64> {
     reporter.report(Progress::new(
         action_name,
         15,
-        format!("Streaming {} compressed image to disk", compression),
+        format!("Streaming {:?} compressed image to disk (native)", compression),
     ));
 
     let is_url = source.starts_with("http://") || source.starts_with("https://");
 
-    let decompress_cmd = match compression {
-        "gzip" => "gunzip -c",
-        "xz" => "xz -d -c",
-        "zstd" => "zstd -d -c",
-        _ => {
-            return Err(ActionError::ExecutionFailed(format!(
-                "Unknown compression: {}",
-                compression
-            )))
-        }
-    };
-
-    let cmd = if is_url {
-        format!(
-            "wget -qO - '{}' | {} | dd of='{}' bs=4M status=progress",
-            source, decompress_cmd, dest
-        )
+    if is_url {
+        stream_from_url(source, dest, Some(compression), reporter, action_name).await
     } else {
-        format!(
-            "{} '{}' | dd of='{}' bs=4M status=progress",
-            decompress_cmd, source, dest
-        )
-    };
+        stream_compressed_file(source, dest, compression, reporter, action_name).await
+    }
+}
 
-    let output = Command::new("sh")
-        .args(["-c", &cmd])
-        .output()
+/// Stream from HTTP URL to disk with optional decompression
+async fn stream_from_url(
+    url: &str,
+    dest: &str,
+    compression: Option<Compression>,
+    reporter: &dyn crate::progress::ProgressReporter,
+    action_name: &str,
+) -> Result<u64> {
+    // Create HTTP client and start download
+    let client = reqwest::Client::new();
+    let response = client
+        .get(url)
+        .send()
         .await
-        .map_err(|e| ActionError::ExecutionFailed(format!("Failed to run pipeline: {}", e)))?;
+        .map_err(|e| ActionError::ExecutionFailed(format!("HTTP request failed: {}", e)))?;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
+    if !response.status().is_success() {
         return Err(ActionError::ExecutionFailed(format!(
-            "Streaming failed: {}",
-            stderr
+            "HTTP error: {}",
+            response.status()
         )));
     }
 
-    // Parse bytes from dd output
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let bytes = parse_dd_bytes(&stderr).unwrap_or(0);
+    // Get content length for progress reporting
+    let total_size = response.content_length();
 
-    Ok(bytes)
+    reporter.report(Progress::new(
+        action_name,
+        20,
+        format!(
+            "Downloading {} ({})",
+            url,
+            total_size.map(|s| format_bytes(s)).unwrap_or_else(|| "unknown size".to_string())
+        ),
+    ));
+
+    // Open destination device for writing
+    let mut dest_file = OpenOptions::new()
+        .write(true)
+        .open(dest)
+        .await
+        .map_err(|e| ActionError::ExecutionFailed(format!("Failed to open {}: {}", dest, e)))?;
+
+    // Convert response body to async reader
+    let stream = response.bytes_stream();
+    let stream_reader = tokio_util::io::StreamReader::new(
+        stream.map(|result| result.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e)))
+    );
+    let buffered = BufReader::new(stream_reader);
+
+    // Apply decompression if needed and write to disk
+    let bytes_written = match compression {
+        Some(Compression::Gzip) => {
+            let decoder = GzipDecoder::new(buffered);
+            write_to_disk(decoder, &mut dest_file, total_size, reporter, action_name).await?
+        }
+        Some(Compression::Xz) => {
+            let decoder = XzDecoder::new(buffered);
+            write_to_disk(decoder, &mut dest_file, total_size, reporter, action_name).await?
+        }
+        Some(Compression::Zstd) => {
+            let decoder = ZstdDecoder::new(buffered);
+            write_to_disk(decoder, &mut dest_file, total_size, reporter, action_name).await?
+        }
+        None => {
+            write_to_disk(buffered, &mut dest_file, total_size, reporter, action_name).await?
+        }
+    };
+
+    // Sync to ensure all data is written
+    dest_file.sync_all().await.map_err(|e| {
+        ActionError::ExecutionFailed(format!("Failed to sync disk: {}", e))
+    })?;
+
+    Ok(bytes_written)
 }
 
-fn parse_dd_bytes(output: &str) -> Option<u64> {
-    // Parse "123456789 bytes" from dd output
-    for line in output.lines() {
-        if line.contains("bytes") {
-            if let Some(num) = line.split_whitespace().next() {
-                if let Ok(bytes) = num.parse::<u64>() {
-                    return Some(bytes);
-                }
-            }
+/// Stream from local file to disk
+async fn stream_from_file(
+    source: &str,
+    dest: &str,
+    reporter: &dyn crate::progress::ProgressReporter,
+    action_name: &str,
+) -> Result<u64> {
+    let source_file = tokio::fs::File::open(source)
+        .await
+        .map_err(|e| ActionError::ExecutionFailed(format!("Failed to open source: {}", e)))?;
+
+    let total_size = source_file.metadata().await.ok().map(|m| m.len());
+    let buffered = BufReader::new(source_file);
+
+    let mut dest_file = OpenOptions::new()
+        .write(true)
+        .open(dest)
+        .await
+        .map_err(|e| ActionError::ExecutionFailed(format!("Failed to open {}: {}", dest, e)))?;
+
+    let bytes_written = write_to_disk(buffered, &mut dest_file, total_size, reporter, action_name).await?;
+
+    dest_file.sync_all().await.map_err(|e| {
+        ActionError::ExecutionFailed(format!("Failed to sync disk: {}", e))
+    })?;
+
+    Ok(bytes_written)
+}
+
+/// Stream from compressed local file to disk
+async fn stream_compressed_file(
+    source: &str,
+    dest: &str,
+    compression: Compression,
+    reporter: &dyn crate::progress::ProgressReporter,
+    action_name: &str,
+) -> Result<u64> {
+    let source_file = tokio::fs::File::open(source)
+        .await
+        .map_err(|e| ActionError::ExecutionFailed(format!("Failed to open source: {}", e)))?;
+
+    let total_size = source_file.metadata().await.ok().map(|m| m.len());
+    let buffered = BufReader::new(source_file);
+
+    let mut dest_file = OpenOptions::new()
+        .write(true)
+        .open(dest)
+        .await
+        .map_err(|e| ActionError::ExecutionFailed(format!("Failed to open {}: {}", dest, e)))?;
+
+    let bytes_written = match compression {
+        Compression::Gzip => {
+            let decoder = GzipDecoder::new(buffered);
+            write_to_disk(decoder, &mut dest_file, total_size, reporter, action_name).await?
+        }
+        Compression::Xz => {
+            let decoder = XzDecoder::new(buffered);
+            write_to_disk(decoder, &mut dest_file, total_size, reporter, action_name).await?
+        }
+        Compression::Zstd => {
+            let decoder = ZstdDecoder::new(buffered);
+            write_to_disk(decoder, &mut dest_file, total_size, reporter, action_name).await?
+        }
+    };
+
+    dest_file.sync_all().await.map_err(|e| {
+        ActionError::ExecutionFailed(format!("Failed to sync disk: {}", e))
+    })?;
+
+    Ok(bytes_written)
+}
+
+/// Write from an async reader to disk with progress reporting
+async fn write_to_disk<R: AsyncRead + Unpin>(
+    mut reader: R,
+    dest: &mut tokio::fs::File,
+    _total_size: Option<u64>,
+    reporter: &dyn crate::progress::ProgressReporter,
+    action_name: &str,
+) -> Result<u64> {
+    use tokio::io::AsyncReadExt;
+
+    // Use 4MB buffer for efficient disk writes
+    let mut buffer = vec![0u8; 4 * 1024 * 1024];
+    let mut bytes_written: u64 = 0;
+    let mut last_report = std::time::Instant::now();
+
+    loop {
+        let n = reader.read(&mut buffer).await.map_err(|e| {
+            ActionError::ExecutionFailed(format!("Read error: {}", e))
+        })?;
+
+        if n == 0 {
+            break;
+        }
+
+        dest.write_all(&buffer[..n]).await.map_err(|e| {
+            ActionError::ExecutionFailed(format!("Write error: {}", e))
+        })?;
+
+        bytes_written += n as u64;
+
+        // Report progress every 500ms to avoid flooding
+        if last_report.elapsed() > Duration::from_millis(500) {
+            reporter.report(Progress::new(
+                action_name,
+                50, // We don't know exact progress without decompressed size
+                format!("Written {} to disk", format_bytes(bytes_written)),
+            ));
+            last_report = std::time::Instant::now();
         }
     }
-    None
+
+    reporter.report(Progress::new(
+        action_name,
+        95,
+        format!("Syncing {} to disk", format_bytes(bytes_written)),
+    ));
+
+    Ok(bytes_written)
+}
+
+/// Format bytes as human-readable string
+fn format_bytes(bytes: u64) -> String {
+    const KB: u64 = 1024;
+    const MB: u64 = KB * 1024;
+    const GB: u64 = MB * 1024;
+
+    if bytes >= GB {
+        format!("{:.2} GB", bytes as f64 / GB as f64)
+    } else if bytes >= MB {
+        format!("{:.2} MB", bytes as f64 / MB as f64)
+    } else if bytes >= KB {
+        format!("{:.2} KB", bytes as f64 / KB as f64)
+    } else {
+        format!("{} bytes", bytes)
+    }
 }
 
 #[cfg(test)]
@@ -417,6 +520,20 @@ mod tests {
             detect_image_type("rootfs.tar.xz"),
             ImageType::TarXz
         ));
+        // Test .gz alone (common cloud image format)
+        assert!(matches!(
+            detect_image_type("debian-12-generic-amd64.qcow2.gz"),
+            ImageType::RawGz
+        ));
+    }
+
+    #[test]
+    fn test_format_bytes() {
+        assert_eq!(format_bytes(500), "500 bytes");
+        assert_eq!(format_bytes(1024), "1.00 KB");
+        assert_eq!(format_bytes(1024 * 1024), "1.00 MB");
+        assert_eq!(format_bytes(1024 * 1024 * 1024), "1.00 GB");
+        assert_eq!(format_bytes(1536 * 1024 * 1024), "1.50 GB");
     }
 
     #[test]
