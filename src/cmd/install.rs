@@ -385,6 +385,15 @@ fn wipe_installation() -> Result<()> {
 }
 
 fn check_admin_access() -> Result<bool> {
+    // Check if we're already root by running `id -u`
+    if let Ok(output) = std::process::Command::new("id").arg("-u").output() {
+        if let Ok(uid_str) = String::from_utf8(output.stdout) {
+            if uid_str.trim() == "0" {
+                return Ok(true);
+            }
+        }
+    }
+
     let status = std::process::Command::new("sudo")
         .args(["-n", "true"])
         .output();
