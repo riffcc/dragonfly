@@ -18,7 +18,7 @@ use async_trait::async_trait;
 use futures::StreamExt;
 use std::time::Duration;
 use tokio::fs::OpenOptions;
-use tokio::io::{AsyncBufRead, AsyncRead, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncRead, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 
 /// Native image-to-disk streaming action

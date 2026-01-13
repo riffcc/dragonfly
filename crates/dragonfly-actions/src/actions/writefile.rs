@@ -5,6 +5,7 @@
 //! - Base64-encoded content
 //! - Directory creation
 //! - Permission setting
+//! - Automatic partition mounting when DEST_DISK is a block device
 
 use crate::context::{ActionContext, ActionResult};
 use crate::error::{ActionError, Result};
@@ -15,6 +16,7 @@ use base64::Engine;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use tokio::fs;
+use tokio::process::Command;
 
 /// Native file writing action
 ///
@@ -25,8 +27,18 @@ use tokio::fs;
 /// - `MODE` (optional): File permissions in octal (e.g., "0644")
 /// - `UID` (optional): Owner user ID
 /// - `GID` (optional): Owner group ID
+/// - `DEST_DISK` (optional): Block device to mount (e.g., /dev/sda2)
+/// - `FS_TYPE` (optional): Filesystem type (default: ext4)
 /// - `CREATE_DIRS` (optional): Create parent directories if missing ("true"/"false")
 pub struct WriteFileAction;
+
+/// Mount point for partition operations
+const MOUNT_POINT: &str = "/mnt/dragonfly";
+
+lazy_static::lazy_static! {
+    /// Track whether we've mounted a partition to avoid redundant mounts
+    static ref MOUNTED: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+}
 
 #[async_trait]
 impl Action for WriteFileAction {
@@ -43,7 +55,7 @@ impl Action for WriteFileAction {
     }
 
     fn optional_env_vars(&self) -> Vec<&str> {
-        vec!["CONTENTS", "CONTENTS_B64", "MODE", "UID", "GID", "CREATE_DIRS"]
+        vec!["CONTENTS", "CONTENTS_B64", "MODE", "UID", "GID", "CREATE_DIRS", "DEST_DISK", "FS_TYPE"]
     }
 
     fn validate(&self, ctx: &ActionContext) -> Result<()> {
@@ -75,6 +87,53 @@ impl Action for WriteFileAction {
         let dest_path = ctx.env("DEST_PATH").unwrap();
         let reporter = ctx.progress_reporter();
 
+        // Check if we need to mount a partition first
+        let needs_mount = ctx.env("DEST_DISK").is_some();
+        let mount_point = if needs_mount {
+            // Mount the partition and use mount point for file operations
+            let disk = ctx.env("DEST_DISK").unwrap();
+            reporter.report(Progress::new(
+                self.name(),
+                5,
+                format!("Mounting partition {}", disk),
+            ));
+
+            // Check if already mounted and determine what action to take
+            let mount_action = {
+                let mounted_guard = MOUNTED.lock().unwrap();
+                match mounted_guard.as_ref() {
+                    Some(current) if current == &disk => {
+                        drop(mounted_guard);
+                        None // Already mounted
+                    }
+                    Some(_) => {
+                        drop(mounted_guard);
+                        Some(true) // Need to unmount and remount
+                    }
+                    None => {
+                        drop(mounted_guard);
+                        Some(false) // Need to mount
+                    }
+                }
+            };
+
+            // Execute the mount action (if any)
+            if let Some(action) = mount_action {
+                if action {
+                    // Different disk mounted, unmount first
+                    do_unmount().await?;
+                }
+                do_mount(&disk).await?;
+                let mut guard = MOUNTED.lock().unwrap();
+                *guard = Some(disk.to_string());
+                drop(guard);
+            }
+
+            Some(MOUNT_POINT)
+        } else {
+            None
+        };
+
         reporter.report(Progress::new(
             self.name(),
             10,
@@ -104,9 +163,16 @@ impl Action for WriteFileAction {
             )));
         }
 
+        // Prepend mount point if we're writing to a mounted partition
+        let actual_path = if let Some(mnt) = mount_point {
+            Path::new(mnt).join(&dest_path.strip_prefix('/').unwrap_or(&dest_path))
+        } else {
+            Path::new(dest_path).to_path_buf()
+        };
+
         // Create parent directories if requested
         let create_dirs = ctx.env("CREATE_DIRS").map(|v| v == "true").unwrap_or(true);
-        let path = Path::new(dest_path);
+        let path = &actual_path;
 
         if create_dirs {
             if let Some(parent) = path.parent() {
@@ -134,8 +200,8 @@ impl Action for WriteFileAction {
             format!("Writing {} bytes", content.len()),
         ));
 
-        fs::write(dest_path, &content).await.map_err(|e| {
-            ActionError::ExecutionFailed(format!("Failed to write file {}: {}", dest_path, e))
+        fs::write(&actual_path, &content).await.map_err(|e| {
+            ActionError::ExecutionFailed(format!("Failed to write file {}: {}", actual_path.display(), e))
         })?;
 
         // Set permissions if specified
@@ -148,10 +214,10 @@ impl Action for WriteFileAction {
             ));
 
             let permissions = std::fs::Permissions::from_mode(mode);
-            fs::set_permissions(dest_path, permissions).await.map_err(|e| {
+            fs::set_permissions(&actual_path, permissions).await.map_err(|e| {
                 ActionError::ExecutionFailed(format!(
                     "Failed to set permissions on {}: {}",
-                    dest_path, e
+                    actual_path.display(), e
                 ))
             })?;
         }
@@ -171,10 +237,10 @@ impl Action for WriteFileAction {
                 format!("Setting ownership to {}:{}", uid, gid),
             ));
 
-            std::os::unix::fs::chown(dest_path, Some(uid), Some(gid)).map_err(|e| {
+            std::os::unix::fs::chown(&actual_path, Some(uid), Some(gid)).map_err(|e| {
                 ActionError::ExecutionFailed(format!(
                     "Failed to set ownership on {}: {}",
-                    dest_path, e
+                    actual_path.display(), e
                 ))
             })?;
         }
@@ -188,6 +254,74 @@ impl Action for WriteFileAction {
         ))
         .with_output("bytes_written", content.len())
         .with_output("path", dest_path))
+    }
+}
+
+/// Mount a partition to the dragonfly mount point
+async fn do_mount(disk: &str) -> Result<()> {
+    // Create mount point if it doesn't exist
+    if !Path::new(MOUNT_POINT).exists() {
+        fs::create_dir_all(MOUNT_POINT).await.map_err(|e| {
+            ActionError::ExecutionFailed(format!("Failed to create mount point {}: {}", MOUNT_POINT, e))
+        })?;
+    }
+
+    // Run mount command
+    let output = Command::new("mount")
+        .args([disk, MOUNT_POINT])
+        .output()
+        .await
+        .map_err(|e| ActionError::ExecutionFailed(format!("Failed to execute mount: {}", e)))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(ActionError::ExecutionFailed(format!(
+            "Failed to mount {} to {}: {}",
+            disk, MOUNT_POINT, stderr
+        )));
+    }
+
+    tracing::info!("Mounted {} to {}", disk, MOUNT_POINT);
+    Ok(())
+}
+
+/// Unmount the dragonfly mount point
+async fn do_unmount() -> Result<()> {
+    let output = Command::new("umount")
+        .arg(MOUNT_POINT)
+        .output()
+        .await
+        .map_err(|e| ActionError::ExecutionFailed(format!("Failed to execute umount: {}", e)))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(ActionError::ExecutionFailed(format!(
+            "Failed to unmount {}: {}",
+            MOUNT_POINT, stderr
+        )));
+    }
+
+    tracing::info!("Unmounted {}", MOUNT_POINT);
+    Ok(())
+}
+
+/// Clean up any mounted partitions
+///
+/// This function should be called after workflow completion to ensure
+/// partitions are properly unmounted. It's safe to call multiple times.
+pub async fn cleanup_mount() {
+    let needs_unmount = {
+        let mounted_guard = MOUNTED.lock().unwrap();
+        mounted_guard.is_some()
+    };
+
+    if needs_unmount {
+        if let Err(e) = do_unmount().await {
+            tracing::warn!("Failed to unmount during cleanup: {}", e);
+        } else {
+            let mut guard = MOUNTED.lock().unwrap();
+            *guard = None;
+        }
     }
 }
 

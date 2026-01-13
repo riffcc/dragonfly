@@ -3090,6 +3090,49 @@ pub async fn download_mage_artifacts(alpine_version: &str, arch: &str) -> anyhow
     Ok(())
 }
 
+/// Verify that all required Mage boot artifacts exist and are non-empty
+///
+/// Checks that vmlinuz, initramfs, and modloop exist for each architecture.
+/// Returns an error if any required file is missing or empty.
+///
+/// # Arguments
+/// * `architectures` - Slice of architecture names to verify (e.g., &["x86_64", "aarch64"])
+pub fn verify_mage_artifacts(architectures: &[&str]) -> anyhow::Result<()> {
+    let required_files = ["vmlinuz", "initramfs", "modloop"];
+    let mut missing = Vec::new();
+    let mut empty = Vec::new();
+
+    for arch in architectures {
+        let mage_dir = FilePath::new(MAGE_DIR).join(arch);
+
+        for file in &required_files {
+            let file_path = mage_dir.join(file);
+
+            if !file_path.exists() {
+                missing.push(format!("{}/{}", arch, file));
+            } else if let Ok(metadata) = std::fs::metadata(&file_path) {
+                if metadata.len() == 0 {
+                    empty.push(format!("{}/{}", arch, file));
+                }
+            }
+        }
+    }
+
+    if !missing.is_empty() || !empty.is_empty() {
+        let mut errors = Vec::new();
+        if !missing.is_empty() {
+            errors.push(format!("Missing Mage artifacts: {}", missing.join(", ")));
+        }
+        if !empty.is_empty() {
+            errors.push(format!("Empty Mage artifacts: {}", empty.join(", ")));
+        }
+        anyhow::bail!("{}", errors.join("; "));
+    }
+
+    info!("Verified all Mage artifacts exist for: {}", architectures.join(", "));
+    Ok(())
+}
+
 /// Generate Mage APK overlay with dragonfly-agent
 ///
 /// Creates a localhost.apkovl.tar.gz file containing the agent and startup configuration

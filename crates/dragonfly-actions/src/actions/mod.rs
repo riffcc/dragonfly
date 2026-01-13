@@ -19,7 +19,7 @@ mod writefile;
 pub use image2disk::Image2DiskAction;
 pub use kexec::KexecAction;
 pub use partition::PartitionAction;
-pub use writefile::WriteFileAction;
+pub use writefile::{WriteFileAction, cleanup_mount};
 
 use crate::ActionEngine;
 

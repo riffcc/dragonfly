@@ -7,6 +7,7 @@ use crate::context::{ActionContext, ActionResult};
 use crate::error::{ActionError, Result};
 use crate::progress::Progress;
 use crate::traits::Action;
+use super::writefile::cleanup_mount;
 use async_trait::async_trait;
 use std::time::Duration;
 use tokio::process::Command;
@@ -80,6 +81,14 @@ impl Action for KexecAction {
                 block_device
             )));
         }
+
+        // Unmount any writefile partitions before kexec
+        reporter.report(Progress::new(
+            self.name(),
+            10,
+            "Cleaning up mounted partitions",
+        ));
+        cleanup_mount().await;
 
         // Create mount point
         let mount_point = "/mnt/target";

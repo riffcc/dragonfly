@@ -439,6 +439,15 @@ pub async fn run() -> anyhow::Result<()> {
             // Send event after templates are initialized
             let _ = event_manager_clone.send("templates_ready".to_string());
         });
+
+        // Verify Mage boot artifacts exist - fail hard if they don't
+        info!("Verifying Mage boot artifacts for Flight mode...");
+        if let Err(e) = crate::api::verify_mage_artifacts(&["x86_64", "aarch64"]) {
+            error!("Flight mode requires Mage boot artifacts, but verification failed: {}", e);
+            error!("Please run Flight mode setup again to download missing artifacts");
+            return Err(anyhow!("Mage boot artifacts verification failed: {}. Run Flight mode setup to download artifacts.", e));
+        }
+        info!("Mage boot artifacts verified successfully");
     } else {
         debug!("Skipping OS templates initialization (not in Flight mode)");
     } // End conditional OS template init

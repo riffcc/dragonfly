@@ -5,7 +5,7 @@
 //! the agent will execute it using the dragonfly-workflow crate.
 
 use anyhow::Result;
-use dragonfly_actions::{ActionEngine, create_engine_with_actions};
+use dragonfly_actions::{ActionEngine, create_engine_with_actions, cleanup_mount};
 use dragonfly_crd::{Hardware, Template, Workflow};
 use dragonfly_workflow::{MemoryStateStore, WorkflowEvent, WorkflowExecutor, WorkflowStateStore};
 use reqwest::Client;
@@ -92,7 +92,7 @@ impl AgentWorkflowRunner {
         });
 
         // Execute workflow
-        match executor.execute(workflow_id).await {
+        let result = match executor.execute(workflow_id).await {
             Ok(()) => {
                 info!(workflow = %workflow_id, "Workflow completed successfully");
                 Ok(())
@@ -101,7 +101,12 @@ impl AgentWorkflowRunner {
                 error!(workflow = %workflow_id, error = %e, "Workflow failed");
                 Err(e.into())
             }
-        }
+        };
+
+        // Clean up any mounted partitions
+        cleanup_mount().await;
+
+        result
     }
 
     /// Fetch workflow from server

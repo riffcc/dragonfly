@@ -969,15 +969,18 @@ pub async fn configure_flight_mode(store: std::sync::Arc<dyn DragonflyStore>) ->
     // Download Mage (Alpine netboot) artifacts for both architectures
     let mage_download_fut = async {
         info!("Downloading Mage boot environment for x86_64...");
-        if let Err(e) = crate::api::download_mage_artifacts("3.23", "x86_64").await {
-            warn!("Failed to download x86_64 Mage artifacts: {}", e);
-        }
+        crate::api::download_mage_artifacts("3.23", "x86_64").await
+            .map_err(|e| anyhow::anyhow!("Failed to download x86_64 Mage artifacts: {}", e))?;
 
         info!("Downloading Mage boot environment for aarch64...");
-        if let Err(e) = crate::api::download_mage_artifacts("3.23", "aarch64").await {
-            warn!("Failed to download aarch64 Mage artifacts: {}", e);
-        }
+        crate::api::download_mage_artifacts("3.23", "aarch64").await
+            .map_err(|e| anyhow::anyhow!("Failed to download aarch64 Mage artifacts: {}", e))?;
 
+        // Verify files actually exist
+        crate::api::verify_mage_artifacts(&["x86_64", "aarch64"])
+            .map_err(|e| anyhow::anyhow!("Mage artifact verification failed: {}", e))?;
+
+        info!("All Mage artifacts downloaded and verified successfully");
         Ok::<(), anyhow::Error>(())
     };
 
