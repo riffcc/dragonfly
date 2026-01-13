@@ -329,51 +329,73 @@ fn parse_os_release(content: &str) -> Result<(String, String)> {
     Ok((name, version))
 }
 
-// Detect disks on the system using block-utils (native Rust, no shelling out)
-#[cfg(target_os = "linux")]
+// Detect disks on the system via /sys/block (pure Rust, no C deps)
 fn detect_disks() -> Vec<DiskInfo> {
     let mut disks = Vec::new();
 
-    // Use block-utils to get block devices
-    match block_utils::get_block_devices() {
-        Ok(devices) => {
-            for device_path in devices {
-                // Get device info
-                match block_utils::get_device_info(&device_path) {
-                    Ok(info) => {
-                        // Skip partitions (we only want whole disks)
-                        if info.partition.is_some() {
-                            continue;
-                        }
+    // Read /sys/block directly - kernel exposes all block devices here
+    let sys_block = std::path::Path::new("/sys/block");
+    if !sys_block.exists() {
+        tracing::warn!("/sys/block not found - not on Linux?");
+        return disks;
+    }
 
-                        let device: String = device_path.to_string_lossy().to_string();
-                        let size_bytes: u64 = info.capacity;
-                        let model: Option<String> = info.model.filter(|s: &String| !s.is_empty());
-
-                        tracing::debug!(
-                            "Found disk {} via block-utils: {} bytes, model: {:?}",
-                            device, size_bytes, model
-                        );
-
-                        disks.push(DiskInfo {
-                            device,
-                            size_bytes,
-                            model,
-                            calculated_size: None,
-                        });
-                    }
-                    Err(e) => {
-                        tracing::debug!(
-                            "Failed to get info for {:?}: {}",
-                            device_path, e
-                        );
-                    }
-                }
-            }
-        }
+    let entries = match fs::read_dir(sys_block) {
+        Ok(e) => e,
         Err(e) => {
-            tracing::error!("Failed to enumerate block devices: {}", e);
+            tracing::error!("Failed to read /sys/block: {}", e);
+            return disks;
         }
+    };
+
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+
+        // Skip virtual devices
+        if name.starts_with("loop")
+            || name.starts_with("ram")
+            || name.starts_with("dm-")
+            || name.starts_with("zram")
+        {
+            continue;
+        }
+
+        // Only include real disk devices
+        let is_disk = name.starts_with("sd")
+            || name.starts_with("nvme")
+            || name.starts_with("vd")
+            || name.starts_with("xvd")
+            || name.starts_with("hd");
+
+        if !is_disk {
+            continue;
+        }
+
+        let device = format!("/dev/{}", name);
+
+        // Read size from /sys/block/<dev>/size (in 512-byte sectors)
+        let size_path = entry.path().join("size");
+        let size_bytes = fs::read_to_string(&size_path)
+            .ok()
+            .and_then(|s| s.trim().parse::<u64>().ok())
+            .map(|sectors| sectors * 512)
+            .unwrap_or(0);
+
+        // Read model from /sys/block/<dev>/device/model
+        let model_path = entry.path().join("device/model");
+        let model = fs::read_to_string(&model_path)
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+
+        tracing::debug!("Found disk {} via sysfs: {} bytes", device, size_bytes);
+
+        disks.push(DiskInfo {
+            device,
+            size_bytes,
+            model,
+            calculated_size: None,
+        });
     }
 
     tracing::info!("Detected {} disks", disks.len());
@@ -387,13 +409,6 @@ fn detect_disks() -> Vec<DiskInfo> {
     }
 
     disks
-}
-
-// Stub for non-Linux platforms (development only)
-#[cfg(not(target_os = "linux"))]
-fn detect_disks() -> Vec<DiskInfo> {
-    tracing::warn!("Disk detection not available on this platform");
-    Vec::new()
 }
 
 // Detect nameservers from resolv.conf
