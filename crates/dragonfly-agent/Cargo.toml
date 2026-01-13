@@ -20,7 +20,7 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 # Use rustls for TLS to avoid OpenSSL dependency (needed for musl builds)
-reqwest = { version = "0.11", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 clap = { version = "4.5", features = ["derive"] }
 
 # OS information gathering

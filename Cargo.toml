@@ -26,7 +26,7 @@ anyhow = "1.0"
 thiserror = "1.0"
 tracing = "0.1"
 tracing-subscriber = "0.3"
-reqwest = { version = "0.11", features = ["json"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 
 [package]
 name = "dragonfly"
@@ -56,7 +56,7 @@ hyper = { version = "1.1", features = ["server"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = "0.9"
-reqwest = { version = "0.11", features = ["json"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 
 # Kubernetes
 k8s-openapi = { version = "0.20", features = ["v1_28"] }
