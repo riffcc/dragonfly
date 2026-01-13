@@ -1,16 +1,9 @@
 {% extends "base.html" %}
 
 {% block content %}
-{# Add styles for the custom border width at the top of the file #}
-<style>
-    .border-3 {
-        border-width: 3px !important;
-    }
-</style>
-{# Remove data attributes, embed JSON in script tags #}
-<div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8"
-     x-data="machineDetailsData()" 
-     x-init="initializeComponent()">
+
+<div x-data="machineDetailsData()" 
+    x-init="initializeComponent()">
 
     {# Embed JSON data using script tags #}
     <script id="machine-data-json" type="application/json">
@@ -21,425 +14,8 @@
     </script>
 
     <div class="flex justify-between items-center mb-8">
-        <h2 class="text-2xl font-bold leading-7 text-gray-900 dark:text-white" x-text="machine.hostname || machine.ip_address || 'Loading...'">Machine Details</h2> 
-        <a href="/machines" class="inline-flex items-center px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm text-sm font-medium text-gray-700 dark:text-gray-300 bg-white dark:bg-gray-700 hover:bg-gray-50 dark:hover:bg-gray-600 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500">
-            Back to Machines
-        </a>
-    </div>
-
-    <div class="bg-white dark:bg-[#1e293b] shadow overflow-hidden sm:rounded-lg mb-6 border border-transparent dark:border-white dark:border-opacity-5 dark:shadow-lg">
-        <div class="px-4 py-5 sm:px-6 flex justify-between items-center">
-            {# Use Alpine data #}
-            <h3 class="text-lg leading-6 font-medium text-gray-900 dark:text-white" x-text="machine.hostname || machine.ip_address">
-            </h3>
-            <div class="flex items-center">
-                <span class="font-bold text-gray-900 dark:text-white mr-2">Status:</span>
-                 {# Bind classes and text to Alpine data #}
-                <span id="machine-status-indicator" class="px-2 py-1 inline-flex text-xs leading-5 font-semibold rounded-full" 
-                      :class="{
-                          'bg-green-100 text-green-800 dark:bg-green-400/10 dark:text-green-300 dark:border dark:border-green-500/20': machine.status === 'Ready',
-                          'bg-yellow-100 text-yellow-800 dark:bg-yellow-400/10 dark:text-yellow-300 dark:border dark:border-yellow-500/20': machine.status === 'InstallingOS',
-                          'bg-sky-100 text-sky-800 dark:bg-sky-400/10 dark:text-sky-300 dark:border dark:border-sky-500/20': machine.status === 'ExistingOS',
-                          'bg-blue-100 text-blue-800 dark:bg-blue-400/10 dark:text-blue-300 dark:border dark:border-blue-500/20': machine.status === 'AwaitingAssignment',
-                          'bg-red-100 text-red-800 dark:bg-red-400/10 dark:text-red-300 dark:border dark:border-red-500/20': !['Ready', 'InstallingOS', 'ExistingOS', 'AwaitingAssignment'].includes(machine.status)
-                      }">
-                    <span x-text="
-                        machine.status === 'Ready' ? 'Provisioned' :
-                        machine.status === 'InstallingOS' ? 'Installing OS' :
-                        machine.status === 'AwaitingAssignment' ? 'Awaiting OS Selection' :
-                        machine.status"></span>
-                </span>
-            </div>
-        </div>
-
-        <!-- Deployment Progress Section - Use x-if based on Alpine data -->
-        <template x-if="machine.status === 'InstallingOS'">
-            <template x-if="workflow_info">
-                <div class="border-t border-gray-200 dark:border-gray-700 p-4 sm:p-6 bg-yellow-50 dark:bg-yellow-900/10"
-                     id="workflow-progress-container"> {# Keep ID for potential direct targeting? #}
-                    <div class="mb-4">
-                        <h3 class="text-lg font-medium leading-6 text-gray-900 dark:text-yellow-100">Deployment Progress</h3>
-                        <p class="mt-1 text-sm text-gray-500 dark:text-gray-300">
-                            Template: <span class="font-semibold" x-text="workflow_info.template_name"></span>
-                             <template x-if="workflow_info.current_action"> • Current action: <span x-text="workflow_info.current_action"></span></template>
-                             <template x-if="workflow_info.current_action == 'Completed via kexec detection'">
-                                <span class="ml-2 italic">(Auto-detected successful deployment)</span>
-                            </template>
-                        </p>
-                    </div>
-                    
-                    {# ... rest of the progress section, binding to workflow_info ... #}
-                    <div class="relative pt-1">
-                        <div class="flex mb-2 items-center justify-between">
-                             <div>
-                                <span id="workflow-state-badge" class="text-xs font-semibold inline-block py-1 px-2 uppercase rounded-full"
-                                     :class="{
-                                        'text-red-600 bg-red-200 dark:text-red-200 dark:bg-red-800/30': workflow_info.state === 'STATE_FAILED',
-                                        'text-yellow-600 bg-yellow-200 dark:text-yellow-200 dark:bg-yellow-800/30': workflow_info.state !== 'STATE_FAILED'
-                                     }">
-                                     <span x-text="workflow_info.state === 'STATE_FAILED' ? 'Failed' : 'In Progress'"></span>
-                                </span>
-                            </div>
-                             <div class="text-right">
-                                <span id="workflow-progress-percent-text" class="text-xs font-semibold inline-block text-yellow-600 dark:text-yellow-200 workflow-progress-percent"
-                                      x-text="workflow_info.progress + '% Complete'">
-                                </span>
-                            </div>
-                        </div>
-                        <div class="overflow-hidden h-2 mb-4 text-xs flex rounded bg-yellow-200 dark:bg-yellow-700/30">
-                            <div
-                                id="workflow-progress-bar"
-                                class="shadow-none flex flex-col text-center whitespace-nowrap text-white justify-center workflow-overall-progress"
-                                :class="workflow_info.state === 'STATE_FAILED' ? 'bg-red-500 dark:bg-red-600' : 'bg-yellow-500 dark:bg-yellow-600'"
-                                :style="'width: ' + (workflow_info.progress || 0) + '%;'"
-                                :data-progress="workflow_info.progress || 0">
-                            </div>
-                        </div>
-                    </div>
-
-                    <div class="mt-4">
-                        <h4 class="text-sm font-medium leading-6 text-gray-700 dark:text-gray-200 mb-2">Task Timeline</h4>
-                        <div id="tasks-table-container" class="overflow-x-auto">
-                            <table class="min-w-full divide-y divide-gray-200 dark:divide-gray-600">
-                                <thead class="bg-gray-50 dark:bg-gray-700">
-                                    <tr>
-                                        <th scope="col" class="px-3 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Action</th>
-                                        <th scope="col" class="px-3 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Started At</th>
-                                        <th scope="col" class="px-3 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Duration</th>
-                                        <th scope="col" class="px-3 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Est. Duration</th>
-                                        <th scope="col" class="px-3 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Status</th>
-                                    </tr>
-                                </thead>
-                                <tbody id="tasks-table-body" class="bg-white dark:bg-gray-800 divide-y divide-gray-200 dark:divide-gray-700">
-                                     {# Use x-for to loop through Alpine data #}
-                                     <template x-for="task in workflow_info.tasks" :key="task.name">
-                                         <tr :data-task-name="task.name"
-                                             :data-task-status="task.status"
-                                             :data-started-at="task.started_at"
-                                             :data-estimated-duration="task.estimated_duration">
-                                             <td class="px-3 py-2 whitespace-nowrap text-sm font-medium text-gray-900 dark:text-white" x-text="task.name"></td>
-                                             <td class="px-3 py-2 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400" x-text="task.started_at || 'N/A'"></td>
-                                             <td class="px-3 py-2 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">
-                                                 <template x-if="task.status === 'STATE_SUCCESS'">
-                                                     <span x-text="task.reported_duration + 's'"></span>
-                                                 </template>
-                                                 <template x-if="task.status === 'STATE_RUNNING'">
-                                                     <div class="relative w-32">
-                                                         <div class="overflow-hidden h-2 text-xs flex rounded bg-blue-200 dark:bg-blue-700/30">
-                                                             <div class="shadow-none flex flex-col text-center whitespace-nowrap text-white justify-center bg-blue-500 dark:bg-blue-600 task-progress-bar"
-                                                                  :style="'width: ' + (taskProgressState[task.name]?.percent || 0) + '%;'"
-                                                                  :data-progress="taskProgressState[task.name]?.percent || 0">
-                                                             </div>
-                                                         </div>
-                                                         <div class="text-xs mt-1 progress-text" x-text="generateProgressText(taskProgressState[task.name])"></div>
-                                                     </div>
-                                                 </template>
-                                                 <template x-if="task.status !== 'STATE_SUCCESS' && task.status !== 'STATE_RUNNING'">
-                                                     <span>Pending</span>
-                                                 </template>
-                                             </td>
-                                             <td class="px-3 py-2 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">
-                                                 {# Display estimated duration first - Use Alpine #}
-                                                 <template x-if="task.estimated_duration !== null && task.estimated_duration !== undefined">
-                                                     <span x-text="task.estimated_duration + 's'"></span>
-                                                 </template>
-                                                 <template x-if="task.estimated_duration === null || task.estimated_duration === undefined">
-                                                     <span>N/A</span>
-                                                 </template>
-    
-                                                 {# Separately check and display comparison if possible and relevant - Use Alpine #}
-                                                 <template x-if="task.status === 'STATE_SUCCESS' && 
-                                                            task.estimated_duration !== null && task.estimated_duration !== undefined && 
-                                                            task.reported_duration !== null && task.reported_duration !== undefined &&
-                                                            task.reported_duration !== task.estimated_duration">
-                                                     <template x-if="task.reported_duration > task.estimated_duration">
-                                                         <span class="text-red-500 ml-1" x-text="'(+' + (task.reported_duration - task.estimated_duration) + 's)'"></span>
-                                                     </template>
-                                                     <template x-if="task.reported_duration < task.estimated_duration">
-                                                         <span class="text-green-500 ml-1" x-text="'(-' + (task.estimated_duration - task.reported_duration) + 's)'"></span>
-                                                     </template>
-                                                 </template>
-                                             </td>
-                                            <td class="px-3 py-2 whitespace-nowrap text-sm">
-                                                {# Use Alpine :class for status styling #}
-                                                <span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full"
-                                                      :class="{
-                                                          'bg-green-100 text-green-800 dark:bg-green-400/10 dark:text-green-300': task.status === 'STATE_SUCCESS',
-                                                          'bg-red-100 text-red-800 dark:bg-red-400/10 dark:text-red-300': task.status === 'STATE_FAILED',
-                                                          'bg-yellow-100 text-yellow-800 dark:bg-yellow-400/10 dark:text-yellow-300': task.status === 'STATE_RUNNING',
-                                                          'bg-gray-100 text-gray-800 dark:bg-gray-400/10 dark:text-gray-300': !['STATE_SUCCESS', 'STATE_FAILED', 'STATE_RUNNING'].includes(task.status)
-                                                      }">
-                                                    <span x-text="task.status"></span> {# Use Alpine x-text #}
-                                                </span>
-                                            </td>
-                                        </tr>
-                                     </template>
-                                </tbody>
-                            </table>
-                        </div>
-
-                        {# Display estimated completion using Alpine #}
-                        <template x-if="workflow_info && workflow_info.estimated_completion !== null && workflow_info.estimated_completion !== undefined">
-                            <div class="mt-4 text-sm text-gray-600 dark:text-gray-300">
-                                <p>Estimated completion: <span x-text="workflow_info.estimated_completion"></span></p>
-                            </div>
-                        </template>
-                    </div>
-                </div>
-            </template>
-             <template x-if="!workflow_info">
-                <div class="border-t border-gray-200 dark:border-gray-700 p-4 sm:p-6 bg-gray-50 dark:bg-gray-800/30">
-                     <p class="text-sm text-gray-500 dark:text-gray-400 italic">Waiting for workflow information...</p>
-                 </div>
-            </template>
-        </template>
-
-        <div class="border-t border-gray-200 dark:border-gray-700">
-            <!-- Two-column layout for Basic Info and Network Config -->
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-6 p-4 sm:p-6">
-                 <!-- Basic Information -->
-                 <div class="bg-gray-50 dark:bg-gray-800/50 rounded-lg shadow-sm overflow-hidden border border-gray-100 dark:border-gray-700">
-                    <div class="px-4 py-3 bg-gray-100 dark:bg-gray-700">
-                        <h3 class="text-lg font-medium leading-6 text-gray-900 dark:text-white">Basic Information</h3>
-                    </div>
-                    <div class="px-4 py-4">
-                        <dl class="divide-y divide-gray-200 dark:divide-gray-700">
-                            {# MAC Address #}
-                            <div class="py-4 sm:py-5 sm:grid sm:grid-cols-3 sm:gap-4">
-                                <dt class="text-sm font-medium text-gray-500 dark:text-gray-300">MAC Address</dt>
-                                <dd class="mt-1 text-sm text-gray-900 dark:text-gray-100 sm:mt-0 sm:col-span-2 tech-mono" 
-                                    x-text="machine.mac_address" x-show="!isEditing"></dd>
-                                <template x-if="isEditing">
-                                    <input type="text" id="mac_address" x-model="editForm.mac_address" 
-                                           class="mt-1 block w-full border border-gray-400 dark:border-gray-600 rounded-md shadow-sm py-2 px-3 bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:outline-none focus:ring-purple-500 focus:border-purple-500 sm:text-sm sm:col-span-2 tech-mono">
-                                </template>
-                            </div>
-                            {# Hostname #}
-                            <div class="py-4 sm:py-5 sm:grid sm:grid-cols-3 sm:gap-4">
-                                <dt class="text-sm font-medium text-gray-500 dark:text-gray-300">Hostname</dt>
-                                <dd class="mt-1 text-sm text-gray-900 dark:text-gray-100 sm:mt-0 sm:col-span-2" 
-                                    x-text="machine.hostname || 'Not set'" x-show="!isEditing"></dd>
-                                <template x-if="isEditing">
-                                    <input type="text" id="hostname" x-model="editForm.hostname" 
-                                           class="mt-1 block w-full border border-gray-400 dark:border-gray-600 rounded-md shadow-sm py-2 px-3 bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:outline-none focus:ring-purple-500 focus:border-purple-500 sm:text-sm sm:col-span-2">
-                                </template>
-                            </div>
-                            {# Memorable Name #}
-                            <div class="py-4 sm:py-5 sm:grid sm:grid-cols-3 sm:gap-4">
-                                <dt class="text-sm font-medium text-gray-500 dark:text-gray-300">Machine Name</dt>
-                                <dd class="mt-1 text-sm text-gray-900 dark:text-gray-100 sm:mt-0 sm:col-span-2" x-show="!isEditing">
-                                    {{ machine.memorable_name | default('Not set') }}
-                                </dd>
-                                <template x-if="isEditing">
-                                    <input type="text" id="memorable_name" x-model="editForm.memorable_name" 
-                                           class="mt-1 block w-full border border-gray-400 dark:border-gray-600 rounded-md shadow-sm py-2 px-3 bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:outline-none focus:ring-purple-500 focus:border-purple-500 sm:text-sm sm:col-span-2">
-                                </template>
-                            </div>
-                            {# Created At #}
-                            <div class="py-4 sm:py-5 sm:grid sm:grid-cols-3 sm:gap-4">
-                                <dt class="text-sm font-medium text-gray-500 dark:text-gray-300">Created</dt>
-                                <dd class="mt-1 text-sm text-gray-900 dark:text-gray-100 sm:mt-0 sm:col-span-2">
-                                    {{ created_at_formatted }}
-                                </dd>
-                            </div>
-                            {# Last Updated #}
-                            <div class="py-4 sm:py-5 sm:grid sm:grid-cols-3 sm:gap-4">
-                                <dt class="text-sm font-medium text-gray-500 dark:text-gray-300">Last updated</dt>
-                                <dd class="mt-1 text-sm text-gray-900 dark:text-gray-100 sm:mt-0 sm:col-span-2">{{ updated_at_formatted }}</dd>
-                            </div>
-                            {# Last Deployment Duration (Read Only) #}
-                            {% if machine.last_deployment_duration is not none %}
-                            <div class="py-4 sm:py-5 sm:grid sm:grid-cols-3 sm:gap-4">
-                                <dt class="text-sm font-medium text-gray-500 dark:text-gray-300">Last deployment duration</dt>
-                                <dd class="mt-1 text-sm text-gray-900 dark:text-gray-100 sm:mt-0 sm:col-span-2">
-                                    {% set duration = machine.last_deployment_duration.unwrap() %}
-                                    {% if duration < 60 %}
-                                        {{ duration }} seconds
-                                    {% elif duration < 3600 %}
-                                        {{ duration / 60 }} minutes
-                                    {% else %}
-                                        {{ duration / 3600 }} hours {{ (duration % 3600) / 60 }} minutes
-                                    {% endif %}
-                                </dd>
-                            </div>
-                            {% endif %}
-                            {# OS #}
-                            <div class="py-4 sm:py-5 sm:grid sm:grid-cols-3 sm:gap-4">
-                                <dt class="text-sm font-medium text-gray-500 dark:text-gray-300">OS</dt>
-                                <dd class="mt-1 text-sm text-gray-900 dark:text-gray-100 sm:mt-0 sm:col-span-2 flex items-center" x-show="!isEditing">
-                                     <template x-if="machine.os_choice">
-                                        <span>
-                                            {# Need a way to format OS icon/name in Alpine #}
-                                            <i class="fab fa-ubuntu text-orange-500 mr-2" x-show="machine.os_choice.includes('ubuntu')"></i>
-                                            <span class="ml-2" x-text="machine.os_choice"></span>
-                                        </span>
-                                    </template>
-                                    <template x-if="!machine.os_choice">
-                                        <span>
-                                            <i class="fas fa-square-question text-gray-500 mr-2"></i>
-                                            <span>No OS Selected</span>
-                                        </span>
-                                    </template>
-                                </dd>
-                                <template x-if="isEditing">
-                                    <select id="os_choice" x-model="editForm.os_choice" 
-                                            class="mt-1 block w-full border border-gray-400 dark:border-gray-600 rounded-md shadow-sm py-2 px-3 bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:outline-none focus:ring-purple-500 focus:border-purple-500 sm:text-sm sm:col-span-2">
-                                        <option value="">Select OS</option>
-                                        <option value="ubuntu-2204">Ubuntu 22.04</option>
-                                        <option value="ubuntu-2404">Ubuntu 24.04</option>
-                                        <option value="debian-12">Debian 12</option>
-                                        <option value="proxmox">Proxmox</option>
-                                        <option value="talos">Talos</option>
-                                    </select>
-                                </template>
-                            </div>
-                        </dl>
-                    </div>
-                </div>
-
-                 <!-- Network Configuration -->
-                <div class="bg-blue-50 dark:bg-blue-900/10 rounded-lg shadow-sm overflow-hidden border border-blue-100 dark:border-blue-800/30">
-                    <div class="px-4 py-3 bg-blue-100 dark:bg-blue-800/30">
-                        <h3 class="text-lg font-medium leading-6 text-gray-900 dark:text-white">Network Configuration</h3>
-                    </div>
-                    <div class="px-4 py-4">
-                        <dl class="divide-y divide-gray-200 dark:divide-gray-700">
-                            {# IP Address #}
-                            <div class="py-4 sm:py-5 sm:grid sm:grid-cols-3 sm:gap-4">
-                                <dt class="text-sm font-medium text-gray-500 dark:text-gray-300">IP Address</dt>
-                                <dd class="mt-1 text-sm text-gray-900 dark:text-gray-100 sm:mt-0 sm:col-span-2 tech-mono" 
-                                    x-text="machine.ip_address" x-show="!isEditing"></dd>
-                                <template x-if="isEditing">
-                                    <input type="text" id="ip_address" x-model="editForm.ip_address" 
-                                           class="mt-1 block w-full border border-gray-400 dark:border-gray-600 rounded-md shadow-sm py-2 px-3 bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:outline-none focus:ring-purple-500 focus:border-purple-500 sm:text-sm sm:col-span-2 tech-mono">
-                                </template>
-                            </div>
-                            {# NEW: IP Address Type #}
-                            <div class="py-4 sm:py-5 sm:grid sm:grid-cols-3 sm:gap-4">
-                                <dt class="text-sm font-medium text-gray-500 dark:text-gray-300">IP Assignment</dt>
-                                <dd class="mt-1 text-sm text-gray-900 dark:text-gray-100 sm:mt-0 sm:col-span-2">
-                                    <span class="px-2 py-0.5 inline-flex text-xs leading-5 font-semibold rounded-full"
-                                          :class="{'bg-cyan-100 text-cyan-800 dark:bg-cyan-400/10 dark:text-cyan-300': ipAddressType === 'DHCP', 
-                                                   'bg-purple-100 text-purple-800 dark:bg-purple-400/10 dark:text-purple-300': ipAddressType !== 'DHCP'}">
-                                        <span x-text="ipAddressType"></span>
-                                    </span>
-                                </dd>
-                            </div>
-                            {# DNS Servers (Read Only) #}
-                            <div class="py-4 sm:py-5 sm:grid sm:grid-cols-3 sm:gap-4">
-                                <dt class="text-sm font-medium text-gray-500 dark:text-gray-300">DNS Servers</dt>
-                                <dd class="mt-1 text-sm text-gray-900 dark:text-gray-100 sm:mt-0 sm:col-span-2">
-                                    {% if machine.nameservers | length == 0 %}
-                                        No DNS servers configured
-                                    {% else %}
-                                        {% for dns in machine.nameservers %}
-                                        <span class="tech-mono">{{ dns }}</span><br>
-                                        {% endfor %}
-                                    {% endif %}
-                                </dd>
-                            </div>
-                            {# BMC Type (Read Only) #}
-                            <div class="py-4 sm:py-5 sm:grid sm:grid-cols-3 sm:gap-4">
-                                <dt class="text-sm font-medium text-gray-500 dark:text-gray-300">BMC Type</dt>
-                                <dd class="mt-1 text-sm text-gray-900 dark:text-gray-100 sm:mt-0 sm:col-span-2 flex items-center">
-                                    {% if machine.bmc_credentials %}
-                                        {{ machine.bmc_credentials.bmc_type }}
-                                    {% else %}
-                                        None
-                                        <button class="ml-3 inline-flex items-center px-3 py-1 border border-transparent text-sm leading-4 font-medium rounded-md text-white bg-green-100 text-green-800">
-                                            Add BMC Credentials
-                                        </button>
-                                    {% endif %}
-                                </dd>
-                            </div>
-                        </dl>
-                    </div>
-                </div>
-
-                 <!-- Hardware Information -->
-                 <div class="bg-green-50 dark:bg-green-900/10 rounded-lg shadow-sm overflow-hidden border border-green-100 dark:border-green-800/30 md:col-span-1">
-                    <div class="px-4 py-3 bg-green-100 dark:bg-green-800/30">
-                        <h3 class="text-lg font-medium leading-6 text-gray-900 dark:text-white">Hardware</h3>
-                    </div>
-                    <div class="px-4 py-4">
-                        <dl class="divide-y divide-gray-200 dark:divide-gray-700">
-                            <!-- CPU Model -->
-                            <div class="py-4 sm:py-5 sm:grid sm:grid-cols-3 sm:gap-4">
-                                <dt class="text-sm font-medium text-gray-500 dark:text-gray-300">CPU Model</dt>
-                                <dd class="mt-1 text-sm text-gray-900 dark:text-gray-100 sm:mt-0 sm:col-span-2" x-text="machine.cpu_model || 'Unknown'"></dd>
-                            </div>
-                            <!-- CPU Cores -->
-                            <div class="py-4 sm:py-5 sm:grid sm:grid-cols-3 sm:gap-4">
-                                <dt class="text-sm font-medium text-gray-500 dark:text-gray-300">CPU Cores</dt>
-                                <dd class="mt-1 text-sm text-gray-900 dark:text-gray-100 sm:mt-0 sm:col-span-2" x-text="machine.cpu_cores !== null ? machine.cpu_cores : 'Unknown'"></dd>
-                            </div>
-                            <!-- Total RAM -->
-                            <div class="py-4 sm:py-5 sm:grid sm:grid-cols-3 sm:gap-4">
-                                <dt class="text-sm font-medium text-gray-500 dark:text-gray-300">Total RAM</dt>
-                                <dd class="mt-1 text-sm text-gray-900 dark:text-gray-100 sm:mt-0 sm:col-span-2" 
-                                    x-text="machine.total_ram_bytes !== null ? (machine.total_ram_bytes / (1024**3)).toFixed(1) + ' GiB' : 'Unknown'">
-                                </dd>
-                            </div>
-                        </dl>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Storage Information (Half Width) -->
-            <div class="p-4 sm:p-4">
-                <div class="bg-purple-50 dark:bg-purple-900/10 rounded-lg shadow-sm overflow-hidden border border-purple-100 dark:border-purple-800/30">
-                    <div class="px-4 py-3 bg-purple-100 dark:bg-purple-800/30">
-                        <h3 class="text-lg font-medium leading-6 text-gray-900 dark:text-white">Storage</h3>
-                    </div>
-                    <div class="px-4 py-4">
-                        <div class="flex flex-col">
-                            <div class="-mx-4 overflow-x-auto sm:-mx-6 lg:-mx-8">
-                                <div class="inline-block min-w-full py-2 align-middle px-4 sm:px-6 lg:px-8">
-                                    <div class="overflow-hidden rounded-md shadow ring-1 ring-black ring-opacity-5">
-                                        <table class="min-w-full divide-y divide-gray-300 dark:divide-gray-600">
-                                            <thead class="bg-gray-50 dark:bg-gray-700">
-                                                <tr>
-                                                    <th scope="col" class="py-3.5 pl-4 pr-3 text-left text-sm font-semibold text-gray-900 dark:text-white sm:pl-6">DEVICE</th>
-                                                    <th scope="col" class="px-3 py-3.5 text-left text-sm font-semibold text-gray-900 dark:text-white">SIZE</th>
-                                                    <th scope="col" class="px-3 py-3.5 text-left text-sm font-semibold text-gray-900 dark:text-white">MODEL</th>
-                                                </tr>
-                                            </thead>
-                                            <tbody class="divide-y divide-gray-200 dark:divide-gray-600 bg-white dark:bg-gray-800">
-                                                <template x-for="disk in machine.disks" :key="disk.device">
-                                                    <tr>
-                                                        <td class="whitespace-nowrap py-4 pl-4 pr-3 text-sm font-medium text-gray-900 dark:text-white sm:pl-6" x-text="disk.device"></td>
-                                                        <td class="whitespace-nowrap px-3 py-4 text-sm text-gray-500 dark:text-gray-400">
-                                                            <template x-if="disk.calculated_size">
-                                                                <span x-text="disk.calculated_size"></span>
-                                                            </template>
-                                                            <template x-if="!disk.calculated_size && disk.size_bytes !== null && disk.size_bytes !== undefined">
-                                                                <span x-text="formatBytes(disk.size_bytes)"></span>
-                                                            </template>
-                                                            <template x-if="!disk.calculated_size && (disk.size_bytes === null || disk.size_bytes === undefined)">
-                                                                <span>Unknown Size</span>
-                                                            </template>
-                                                        </td>
-                                                        <td class="whitespace-nowrap px-3 py-4 text-sm text-gray-500 dark:text-gray-400">
-                                                            <template x-if="disk.model">
-                                                                <span x-text="disk.model"></span>
-                                                            </template>
-                                                            <template x-if="!disk.model">
-                                                                <span>Unknown</span>
-                                                            </template>
-                                                        </td>
-                                                    </tr>
-                                                </template>
-                                            </tbody>
-                                        </table>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-        <div class="px-4 py-4 sm:px-6 bg-gray-50 dark:bg-gray-700 flex justify-end space-x-3">
+        <h1 class="text-4xl font-bold text-black dark:text-white" x-text="machine.hostname || 'Loading...'"></h1>
+        <div class="flex space-x-3">
             {% if is_authenticated %}
             {# Show Edit button when not editing #}
             <button x-show="!isEditing" 
@@ -455,6 +31,12 @@
                     <!-- Error Message -->
                     <div x-show="editFormError" class="text-sm text-red-600 dark:text-red-400 mb-2 text-right" x-text="editFormError"></div>
                     <div class="flex justify-end space-x-3">
+                        <button @click="cancelEdit()" 
+                                :disabled="isSubmitting"
+                                class="px-4 py-2 bg-gray-600 hover:bg-gray-700 text-white text-sm font-medium rounded-md"
+                                :class="{'opacity-50 cursor-not-allowed': isSubmitting}">
+                            Cancel
+                        </button>
                         <button @click="saveChanges()" 
                                 :disabled="isSubmitting"
                                 class="px-4 py-2 bg-green-600 hover:bg-green-700 text-white text-sm font-medium rounded-md"
@@ -466,13 +48,7 @@
                                 </svg>
                                 Saving...
                             </span>
-                            <span x-show="!isSubmitting">Save Changes</span>
-                        </button>
-                        <button @click="cancelEdit()" 
-                                :disabled="isSubmitting"
-                                class="px-4 py-2 bg-gray-600 hover:bg-gray-700 text-white text-sm font-medium rounded-md"
-                                :class="{'opacity-50 cursor-not-allowed': isSubmitting}">
-                            Cancel
+                            <span x-show="!isSubmitting">Save</span>
                         </button>
                     </div>
                 </div>
@@ -485,8 +61,280 @@
             >
                 Delete
             </button>
+            <a href="/machines" class="inline-flex items-center px-1 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm text-sm font-medium text-gray-700 dark:text-gray-300 bg-white dark:bg-gray-700 hover:bg-gray-50 dark:hover:bg-gray-600 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500">
+                <div class="text-sm ml-1 mr-1"><- Machines</div>
+            </a>
             {% endif %}
         </div>
+    </div>
+
+    <!-- Deployment Progress Section - Use x-if based on Alpine data -->
+    <template x-if="machine.status === 'InstallingOS'">
+        <template x-if="workflow_info">
+            <div class="rounded rounded-xl border border-black dark:border-purple-600 border-2 p-4 sm:p-6 mb-4"
+                 id="workflow-progress-container"> {# Keep ID for potential direct targeting #}
+                <div class="mb-4">
+                    <h3 class="text-lg font-medium leading-6 text-gray-900 dark:text-yellow-100">Deployment Progress</h3>
+                    <p class="mt-1 text-sm text-gray-500 dark:text-gray-300">
+                        Template: <span class="font-semibold" x-text="workflow_info.template_name"></span>
+                            <template x-if="workflow_info.current_action"> • Current action: <span x-text="workflow_info.current_action"></span></template>
+                            <template x-if="workflow_info.current_action == 'Completed via kexec detection'">
+                            <span class="ml-2 italic">(Auto-detected successful deployment)</span>
+                        </template>
+                    </p>
+                </div>
+                
+                {# ... rest of the progress section, binding to workflow_info ... #}
+                <div class="relative pt-1">
+                    <div class="flex mb-2 items-center justify-between">
+                            <div>
+                            <span id="workflow-state-badge" class="text-xs font-semibold inline-block py-1 px-2 uppercase rounded-full"
+                                    :class="{
+                                    'text-red-600 bg-red-200 dark:text-red-200 dark:bg-red-800/30': workflow_info.state === 'STATE_FAILED',
+                                    'text-yellow-600 bg-yellow-200 dark:text-yellow-200 dark:bg-yellow-800/30': workflow_info.state !== 'STATE_FAILED'
+                                    }">
+                                    <span x-text="workflow_info.state === 'STATE_FAILED' ? 'Failed' : 'In Progress'"></span>
+                            </span>
+                        </div>
+                            <div class="text-right">
+                            <span id="workflow-progress-percent-text" class="text-xs font-semibold inline-block text-yellow-600 dark:text-yellow-200 workflow-progress-percent"
+                                    x-text="workflow_info.progress + '% Complete'">
+                            </span>
+                        </div>
+                    </div>
+                    <div class="overflow-hidden h-2 mb-4 text-xs flex rounded bg-yellow-200 dark:bg-yellow-700/30">
+                        <div
+                            id="workflow-progress-bar"
+                            class="shadow-none flex flex-col text-center whitespace-nowrap text-white justify-center workflow-overall-progress"
+                            :class="workflow_info.state === 'STATE_FAILED' ? 'bg-red-500 dark:bg-red-600' : 'bg-yellow-500 dark:bg-yellow-600'"
+                            :style="'width: ' + (workflow_info.progress || 0) + '%;'"
+                            :data-progress="workflow_info.progress || 0">
+                        </div>
+                    </div>
+                </div>
+
+                <div class="mt-4">
+                    <h4 class="text-sm font-medium leading-6 text-gray-700 dark:text-gray-200 mb-2">Task Timeline</h4>
+                    <div id="tasks-table-container" class="overflow-x-auto">
+                        <table class="min-w-full divide-y divide-gray-200 dark:divide-gray-600">
+                            <thead class="bg-gray-50 dark:bg-gray-700">
+                                <tr>
+                                    <th scope="col" class="px-3 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Action</th>
+                                    <th scope="col" class="px-3 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Started At</th>
+                                    <th scope="col" class="px-3 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Duration</th>
+                                    <th scope="col" class="px-3 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Est. Duration</th>
+                                    <th scope="col" class="px-3 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Status</th>
+                                </tr>
+                            </thead>
+                            <tbody id="tasks-table-body" class="bg-white dark:bg-gray-800 divide-y divide-gray-200 dark:divide-gray-700">
+                                    {# Use x-for to loop through Alpine data #}
+                                    <template x-for="task in workflow_info.tasks" :key="task.name">
+                                        <tr :data-task-name="task.name"
+                                            :data-task-status="task.status"
+                                            :data-started-at="task.started_at"
+                                            :data-estimated-duration="task.estimated_duration">
+                                            <td class="px-3 py-2 whitespace-nowrap text-sm font-medium text-gray-900 dark:text-white" x-text="task.name"></td>
+                                            <td class="px-3 py-2 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400" x-text="task.started_at || 'N/A'"></td>
+                                            <td class="px-3 py-2 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">
+                                                <template x-if="task.status === 'STATE_SUCCESS'">
+                                                    <span x-text="task.reported_duration + 's'"></span>
+                                                </template>
+                                                <template x-if="task.status === 'STATE_RUNNING'">
+                                                    <div class="relative w-32">
+                                                        <div class="overflow-hidden h-2 text-xs flex rounded bg-blue-200 dark:bg-blue-700/30">
+                                                            <div class="shadow-none flex flex-col text-center whitespace-nowrap text-white justify-center bg-blue-500 dark:bg-blue-600 task-progress-bar"
+                                                                :style="'width: ' + (taskProgressState[task.name]?.percent || 0) + '%;'"
+                                                                :data-progress="taskProgressState[task.name]?.percent || 0">
+                                                            </div>
+                                                        </div>
+                                                        <div class="text-xs mt-1 progress-text" x-text="generateProgressText(taskProgressState[task.name])"></div>
+                                                    </div>
+                                                </template>
+                                                <template x-if="task.status !== 'STATE_SUCCESS' && task.status !== 'STATE_RUNNING'">
+                                                    <span>Pending</span>
+                                                </template>
+                                            </td>
+                                            <td class="px-3 py-2 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">
+                                                {# Display estimated duration first - Use Alpine #}
+                                                <template x-if="task.estimated_duration !== null && task.estimated_duration !== undefined">
+                                                    <span x-text="task.estimated_duration + 's'"></span>
+                                                </template>
+                                                <template x-if="task.estimated_duration === null || task.estimated_duration === undefined">
+                                                    <span>N/A</span>
+                                                </template>
+
+                                                {# Separately check and display comparison if possible and relevant - Use Alpine #}
+                                                <template x-if="task.status === 'STATE_SUCCESS' && 
+                                                        task.estimated_duration !== null && task.estimated_duration !== undefined && 
+                                                        task.reported_duration !== null && task.reported_duration !== undefined &&
+                                                        task.reported_duration !== task.estimated_duration">
+                                                    <template x-if="task.reported_duration > task.estimated_duration">
+                                                        <span class="text-red-500 ml-1" x-text="'(+' + (task.reported_duration - task.estimated_duration) + 's)'"></span>
+                                                    </template>
+                                                    <template x-if="task.reported_duration < task.estimated_duration">
+                                                        <span class="text-green-500 ml-1" x-text="'(-' + (task.estimated_duration - task.reported_duration) + 's)'"></span>
+                                                    </template>
+                                                </template>
+                                            </td>
+                                        <td class="px-3 py-2 whitespace-nowrap text-sm">
+                                            {# Use Alpine :class for status styling #}
+                                            <span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full"
+                                                    :class="{
+                                                        'bg-green-100 text-green-800 dark:bg-green-400/10 dark:text-green-300': task.status === 'STATE_SUCCESS',
+                                                        'bg-red-100 text-red-800 dark:bg-red-400/10 dark:text-red-300': task.status === 'STATE_FAILED',
+                                                        'bg-yellow-100 text-yellow-800 dark:bg-yellow-400/10 dark:text-yellow-300': task.status === 'STATE_RUNNING',
+                                                        'bg-gray-100 text-gray-800 dark:bg-gray-400/10 dark:text-gray-300': !['STATE_SUCCESS', 'STATE_FAILED', 'STATE_RUNNING'].includes(task.status)
+                                                    }">
+                                                <span x-text="task.status"></span> {# Use Alpine x-text #}
+                                            </span>
+                                        </td>
+                                    </tr>
+                                    </template>
+                            </tbody>
+                        </table>
+                    </div>
+
+                    {# Display estimated completion using Alpine #}
+                    <template x-if="workflow_info && workflow_info.estimated_completion !== null && workflow_info.estimated_completion !== undefined">
+                        <div class="mt-4 text-sm text-gray-600 dark:text-gray-300">
+                            <p>Estimated completion: <span x-text="workflow_info.estimated_completion"></span></p>
+                        </div>
+                    </template>
+                </div>
+            </div>
+        </template>
+        <template x-if="!workflow_info">
+            <div class="border-t border-gray-200 dark:border-gray-700 p-4 sm:p-6 bg-gray-50 dark:bg-gray-800/30">
+                <p class="text-sm text-gray-500 dark:text-gray-400 italic">Waiting for workflow information...</p>
+            </div>
+        </template>
+    </template>
+
+    <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-6">
+        <div class="bg-blue-100/20 border border-purple-500 rounded-xl shadow-lg p-4 space-y-2">
+            <h3 class="text-center text-lg font-semibold text-black dark:text-white">🧬 Details</h3>
+            <div class="text-xl mt-8 text-gray-900 dark:text-gray-400">
+                <div><span class="font-bold text-purple-900 dark:text-purple-100">Operating System:</span> Ubuntu 24.04</div>
+                <div><span class="font-bold text-purple-900 dark:text-purple-100">CPU:</span> AMD Ryzen 7 7800X3D (8 cores, 16 threads)</div>
+                <div><span class="font-bold text-purple-900 dark:text-purple-100">GPU:</span> NVIDIA RTX 4070 Ti</div>
+                <div><span class="font-bold text-purple-900 dark:text-purple-100">RAM:</span> 64 GiB</div>
+                <div><span class="font-bold text-purple-900 dark:text-purple-100">Created:</span> 2025-04-03 23:34:42 UTC</div>
+                <div><span class="font-bold text-purple-900 dark:text-purple-100">Updated:</span> 2025-04-04 00:21:25 UTC</div>
+            </div>
+        </div>
+        
+        <div class="bg-blue-100/20 border border-indigo-500 rounded-xl shadow-lg p-4 space-y-2">
+            <h3 class="text-center text-lg font-semibold text-black dark:text-white">⚙️ Actions</h3> 
+            <div class="grid grid-cols-3 grid-rows-2 gap-2 mt-8 min-h-[120px]"> {# Explicit grid with rows #}
+                <div class="flex items-center justify-center">
+                    <button class="w-full h-16 border border-indigo-500 hover:bg-indigo-600 text-black dark:text-white rounded-md">Reboot</button>
+                </div>
+                <div class="flex items-center justify-center">
+                    <button class="w-full h-16 border border-red-700 hover:bg-red-600 text-black dark:text-white rounded-md">Power on</button>
+                </div>
+                <div class="flex items-center justify-center">
+                    <button class="w-full h-16 border border-green-700 hover:bg-green-600 text-black dark:text-white rounded-md">Shutdown</button>
+                </div>
+                <div class="flex items-center justify-center">
+                    <button class="w-full h-16 border border-green-700 hover:bg-green-600 text-black dark:text-white rounded-md">Power off</button>
+                </div>
+                <div class="flex items-center justify-center">
+                    <button class="w-full h-16 border border-red-700 hover:bg-red-600 text-black dark:text-white rounded-md">Evacuate</button>
+                </div>
+                <div class="flex items-center justify-center">
+                    <button class="w-full h-16 border border-yellow-700 hover:bg-yellow-600 text-black dark:text-white rounded-md">Reimage</button>
+                </div>
+            </div>
+        </div>
+        <div class="bg-[#e6e6ff] dark:bg-[#112240] border border-cyan-500 rounded-xl shadow-lg p-4 space-y-2">
+            <h3 class="text-center text-lg font-semibold text-black dark:text-cyan-300">🖧 <span class="dark:text-white">Network</span></h3>
+            <div class="text-xl mt-8 text-gray-900 dark:text-gray-300 ml-4">
+            <div><span class="font-bold dark:text-cyan-100">Hostname:</span> blackberry</div>
+            <div><span class="font-bold dark:text-cyan-100">Domain:</span> lon.riff.cc</div>
+            <div><span class="font-bold dark:text-cyan-100">Memorable Name:</span> </div>
+            <div><span class="font-bold dark:text-cyan-100">IP:</span> 10.1.0.5</div>
+            <div><span class="font-bold dark:text-cyan-100">Network:</span> 10.1.0.0/24</div>
+            <div><span class="font-bold dark:text-cyan-100">MAC:</span> bc:24:11:b9:54:89</div>
+            <div><span class="font-bold dark:text-cyan-100">Mode:</span> DHCP</div>
+            </div>
+        </div>
+
+        <!-- Tags -->
+        <div class="bg-[#fff5e6] dark:bg-[#281e36] border border-pink-500 rounded-xl shadow-lg p-4 space-y-2">
+            <h3 class="text-center text-lg font-semibold">🏷 Tags</h3>
+            <div class="flex flex-wrap gap-2 justify-center text-lg text-black dark:text-pink-100">
+                <div class="flex items-center gap-0 rounded-md px-1 py-1 border border-green-500">
+                    <span class="rounded px-1">🌉 gpu</span>
+                    <a href="/machines?machine_id={{ machine.id }}&tag=gpu&action=delete">
+                        <span class="text-xs text-gray-400 px-1">x</span>
+                    </a>
+                </div>
+                <div class="flex items-center gap-0 rounded-md px-1 py-1 border border-red-500">
+                    <span class="rounded px-1">🧑‍🔬 ai</span>
+                    <span class="text-xs text-gray-400 px-1">x</span>
+                </div>
+                <div class="flex items-center gap-0 rounded-md px-1 py-1 border border-purple-500">
+                    <span class="rounded px-1">🔒 2fa</span>
+                    <span class="text-xs text-gray-400 px-1">x</span>
+                </div>
+                <div class="flex items-center gap-0 rounded-md px-1 py-1 border border-pink-500">
+                    <span class="rounded px-1">🐉 dragonfly-server</span>
+                    <span class="text-xs text-gray-400 px-1">x</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Storage Card - Double width on physical hosts -->
+        <div class="bg-green-100/20 dark:bg-[#221c2c] border border-yellow-500 rounded-xl shadow-lg p-1 space-y-1">
+            <h3 class="text-center text-lg font-semibold text-black dark:text-white p-4">💾 Storage</h3>
+            <div class="overflow-x-auto">
+            <table class="w-full text-sm text-black dark:text-yellow-100">
+                <thead class="text-xs uppercase bg-blue-100 dark:bg-red-900/10 border-b border-yellow-800/30">
+                <tr>
+                    <th class="px-4 py-2 text-left">Device</th>
+                    <th class="px-4 py-2 text-left">Size</th>
+                    <th class="px-4 py-2 text-left">Model name</th>
+                </tr>
+                </thead>
+                <tbody>
+                <tr class="border-b border-yellow-800/20">
+                    <td class="px-4 py-2 font-medium">/dev/nvme0n1</td>
+                    <td class="px-4 py-2">3.64 TB</td>
+                    <td class="px-4 py-2">WD_BLACK SN850X</td>
+                </tr>
+                <tr>
+                    <td class="px-4 py-2 font-medium">/dev/nvme1n1</td>
+                    <td class="px-4 py-2">1.82 TB</td>
+                    <td class="px-4 py-2">Samsung 990 Pro</td>
+                </tr>
+                </tbody>
+            </table>
+            </div>
+        </div>
+
+        <!-- Cluster Details Card -->
+        <div class="bg-white dark:bg-[#1e293b] shadow overflow-hidden sm:rounded-lg border border-transparent dark:border-white dark:border-opacity-5">
+            <h3 class="text-center text-lg font-semibold text-black dark:text-white p-4">🫀 Status</h3>
+            <div class="text-lg text-grey-900 dark:text-gray-300 ml-4 mb-8">
+                <div>
+                    <span class="font-bold text-cyan-900 dark:text-cyan-100">State:</span>
+                    <span class="font-semibold rounded rounded-xl border border-green-500 px-1 py-0 text-md">Ready</span>
+                </div>
+                <div>
+                    <span class="font-bold text-cyan-900 dark:text-cyan-100">BMC State:</span>
+                    <span class="font-semibold rounded rounded-xl border border-green-500 px-1 py-0 text-md">Ready</span>
+                </div>
+                <div><span class="font-bold text-cyan-900 dark:text-cyan-100">Uptime:</span> 4 days, 12 hours, 34 minutes</div>
+                <div><span class="font-bold text-cyan-900 dark:text-cyan-100">Cluster:</span> SpaceTempAgency</div>
+                <div><span class="font-bold text-cyan-900 dark:text-cyan-100">Cluster type:</span> Proxmox</div>
+            </div>
+        </div>
+        {# Add styles for the custom border width at the top of the file #}
+        <style>
+            .border-3 {
+                border-width: 3px !important;
+            }
+        </style>
     </div>
     
     <!-- Delete Machine Modal (Moved INSIDE x-data scope) -->
@@ -773,7 +621,7 @@
                 this.evtSource.close();
             }
 
-            console.log(`Attempting SSE connection to /api/events`);
+            console.log(`Attempting SSE connection to /api/events for machine ${this.machineId}`);
             this.evtSource = new EventSource('/api/events');
             window.globalEvtSource = this.evtSource; // Keep global reference if needed elsewhere
 
@@ -924,16 +772,16 @@
                 try {
                     this.machine = JSON.parse(machineDataElement.textContent);
                     console.log("Machine data loaded from JSON:", this.machine);
-
+                    
                     // Explicitly set the machineId from the machine data
                     this.machineId = this.machine.id;
                     this.machineIp = this.machine.ip_address;
                     console.log("Machine ID set to:", this.machineId);
-
+                    
                     // Set IP Address Type from template variable
                     this.ipAddressType = '{{ ip_address_type | safe }}';
                     console.log("IP Address Type:", this.ipAddressType);
-
+                    
                     this.editForm = { ...this.machine }; // Initialize edit form
                 } catch (e) {
                     console.error("Failed to parse machine JSON:", e);

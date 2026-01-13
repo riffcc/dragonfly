@@ -1661,6 +1661,7 @@ kernel {base_url}/boot/${{arch}}/kernel \
   initrd=initramfs \
   modloop={base_url}/boot/${{arch}}/modloop \
   apkovl={base_url}/boot/${{arch}}/apkovl.tar.gz \
+  kexec_load_disabled=0 \
   rw
 initrd {base_url}/boot/${{arch}}/initramfs
 boot
