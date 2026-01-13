@@ -875,7 +875,7 @@ pub async fn start_handoff_listener(mut shutdown_rx: watch::Receiver<()>) -> Res
 }
 
 // Configure the system for Flight mode
-pub async fn configure_flight_mode(_store: std::sync::Arc<dyn DragonflyStore>) -> Result<()> {
+pub async fn configure_flight_mode(store: std::sync::Arc<dyn DragonflyStore>) -> Result<()> {
     info!("Configuring system for Flight mode");
 
     // Always attempt the configuration steps for Flight mode
