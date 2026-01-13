@@ -1,6 +1,8 @@
 # secrets
 values.yaml
 
+.playwright-mcp
+
 # node modules
 node_modules/**
 # design
