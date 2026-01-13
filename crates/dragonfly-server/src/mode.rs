@@ -875,9 +875,9 @@ pub async fn start_handoff_listener(mut shutdown_rx: watch::Receiver<()>) -> Res
 }
 
 // Configure the system for Flight mode
-pub async fn configure_flight_mode(store: std::sync::Arc<dyn DragonflyStore>) -> Result<()> {
+pub async fn configure_flight_mode(_store: std::sync::Arc<dyn DragonflyStore>) -> Result<()> {
     info!("Configuring system for Flight mode");
-    
+
     // Always attempt the configuration steps for Flight mode
     // The checks inside these functions (like artifact download) will handle idempotency.
     
@@ -1078,8 +1078,8 @@ pub async fn configure_flight_mode(store: std::sync::Arc<dyn DragonflyStore>) ->
 
     // Generate Mage APK overlays for both architectures (uses locally-built agents)
     let mage_apkovl_fut = async {
-        let base_url = std::env::var("DRAGONFLY_BASE_URL")
-            .unwrap_or_else(|_| "http://localhost:3000".to_string());
+        // Get base_url from: env var > config.toml > auto-detect > localhost
+        let base_url = get_base_url(None).await;
 
         let mut got_x86_64 = false;
         let mut got_aarch64 = false;
@@ -1992,22 +1992,20 @@ pub fn detect_server_ip() -> Option<String> {
 ///
 /// Priority:
 /// 1. DRAGONFLY_BASE_URL environment variable
-/// 2. Stored setting in ReDB (base_url)
+/// 2. Config file (/var/lib/dragonfly/config.toml)
 /// 3. Auto-detected IP with port 3000
 /// 4. Fallback to localhost:3000
-pub async fn get_base_url(store: Option<&dyn DragonflyStore>) -> String {
+pub async fn get_base_url(_store: Option<&dyn DragonflyStore>) -> String {
     // 1. Check environment variable first
     if let Ok(url) = std::env::var("DRAGONFLY_BASE_URL") {
         debug!("Using DRAGONFLY_BASE_URL from environment: {}", url);
         return url;
     }
 
-    // 2. Check stored setting in ReDB
-    if let Some(store) = store {
-        if let Ok(Some(url)) = store.get_setting("base_url").await {
-            debug!("Using base_url from ReDB: {}", url);
-            return url;
-        }
+    // 2. Check config file
+    if let Some(url) = crate::read_base_url_from_config() {
+        info!("Using base_url from config.toml: {}", url);
+        return url;
     }
 
     // 3. Auto-detect IP

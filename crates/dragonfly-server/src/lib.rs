@@ -82,7 +82,7 @@ fn read_port_from_config() -> u16 {
     // Simple TOML parsing - look for "port = NNNN"
     for line in content.lines() {
         let line = line.trim();
-        if line.starts_with("port") {
+        if line.starts_with("port") && !line.starts_with("port =") || line.starts_with("port =") {
             if let Some(val) = line.split('=').nth(1) {
                 if let Ok(port) = val.trim().parse::<u16>() {
                     return port;
@@ -91,6 +91,25 @@ fn read_port_from_config() -> u16 {
         }
     }
     3000
+}
+
+/// Read base_url from config file, returns None if not found
+pub fn read_base_url_from_config() -> Option<String> {
+    let content = std::fs::read_to_string(CONFIG_PATH).ok()?;
+
+    // Simple TOML parsing - look for 'base_url = "..."'
+    for line in content.lines() {
+        let line = line.trim();
+        if line.starts_with("base_url") {
+            if let Some(val) = line.split('=').nth(1) {
+                let val = val.trim().trim_matches('"');
+                if !val.is_empty() {
+                    return Some(val.to_string());
+                }
+            }
+        }
+    }
+    None
 }
 
 // Stub function to check installation status (Replace with real check later)
