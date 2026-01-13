@@ -245,6 +245,8 @@ pub async fn generate_agent_apkovl(
         .map_err(|e| dragonfly_common::Error::Internal(format!("Failed to create dir etc/runlevels/default: {}", e)))?;
     fs::create_dir_all(temp_path.join("usr/local/bin")).await
         .map_err(|e| dragonfly_common::Error::Internal(format!("Failed to create dir usr/local/bin: {}", e)))?;
+    fs::create_dir_all(temp_path.join("var/log/dragonfly")).await
+        .map_err(|e| dragonfly_common::Error::Internal(format!("Failed to create dir var/log/dragonfly: {}", e)))?;
     
     // 3. Write static files
     fs::write(temp_path.join("etc/hosts"), HOSTS_CONTENT).await
@@ -275,7 +277,9 @@ pub async fn generate_agent_apkovl(
     // The agent auto-detects native mode from kernel parameters (dragonfly.*)
     let script_content = format!(r#"#!/bin/sh
 # Dragonfly Agent startup script
-exec 2>&1
+# Log all output to /var/log/dragonfly/agent.log
+exec >>/var/log/dragonfly/agent.log 2>&1
+
 echo "=== Dragonfly Agent starting ==="
 echo "Date: $(date)"
 echo "Kernel params: $(cat /proc/cmdline)"
@@ -290,14 +294,14 @@ fi
 
 # Run agent - it will detect native mode from kernel params
 echo "Starting dragonfly-agent..."
-/usr/local/bin/dragonfly-agent --server {} 2>&1 &
+/usr/local/bin/dragonfly-agent --server {} &
 AGENT_PID=$!
 echo "Agent started with PID: $AGENT_PID"
 exit 0
 "#,
         base_url, base_url
     );
-    
+
     // Write the file
     fs::write(&start_script_path, script_content).await
         .map_err(|e| dragonfly_common::Error::Internal(format!("Failed to write start script: {}", e)))?;
@@ -3188,6 +3192,8 @@ async fn generate_agent_apkovl_local(
         .map_err(|e| dragonfly_common::Error::Internal(format!("Failed to create dir: {}", e)))?;
     fs::create_dir_all(temp_path.join("usr/local/bin")).await
         .map_err(|e| dragonfly_common::Error::Internal(format!("Failed to create dir: {}", e)))?;
+    fs::create_dir_all(temp_path.join("var/log/dragonfly")).await
+        .map_err(|e| dragonfly_common::Error::Internal(format!("Failed to create dir: {}", e)))?;
 
     // 3. Write static files
     fs::write(temp_path.join("etc/hosts"), HOSTS_CONTENT).await
@@ -3212,7 +3218,9 @@ async fn generate_agent_apkovl_local(
     let start_script_path = temp_path.join("etc/local.d/dragonfly-agent.start");
     let script_content = format!(r#"#!/bin/sh
 # Dragonfly Agent startup script
-exec 2>&1
+# Log all output to /var/log/dragonfly/agent.log
+exec >>/var/log/dragonfly/agent.log 2>&1
+
 echo "=== Dragonfly Agent starting ==="
 echo "Date: $(date)"
 echo "Kernel params: $(cat /proc/cmdline)"
@@ -3227,7 +3235,7 @@ fi
 
 # Run agent - it will detect native mode from kernel params
 echo "Starting dragonfly-agent..."
-/usr/local/bin/dragonfly-agent --server {} 2>&1 &
+/usr/local/bin/dragonfly-agent --server {} &
 AGENT_PID=$!
 echo "Agent started with PID: $AGENT_PID"
 exit 0
