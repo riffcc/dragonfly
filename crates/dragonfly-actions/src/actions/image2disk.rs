@@ -228,7 +228,7 @@ async fn stream_qcow2(
     Ok(metadata.len())
 }
 
-/// Stream a raw image with curl | dd pipeline
+/// Stream a raw image with wget | dd pipeline
 async fn stream_raw(
     source: &str,
     dest: &str,
@@ -243,7 +243,7 @@ async fn stream_raw(
     ));
 
     // For local files, use dd directly
-    // For URLs, use curl | dd
+    // For URLs, use wget | dd (wget -qO- outputs to stdout, works in busybox)
     let is_url = source.starts_with("http://") || source.starts_with("https://");
 
     let mut child = if is_url {
@@ -251,7 +251,7 @@ async fn stream_raw(
             .args([
                 "-c",
                 &format!(
-                    "curl -sSL '{}' | dd of='{}' bs={} status=progress",
+                    "wget -qO - '{}' | dd of='{}' bs={} status=progress",
                     source, dest, block_size
                 ),
             ])
@@ -333,7 +333,7 @@ async fn stream_raw_compressed(
 
     let cmd = if is_url {
         format!(
-            "curl -sSL '{}' | {} | dd of='{}' bs=4M status=progress",
+            "wget -qO - '{}' | {} | dd of='{}' bs=4M status=progress",
             source, decompress_cmd, dest
         )
     } else {
