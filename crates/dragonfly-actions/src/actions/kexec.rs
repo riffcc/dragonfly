@@ -90,6 +90,32 @@ impl Action for KexecAction {
         ));
         cleanup_mount().await;
 
+        // Enable kexec - Alpine kernels harden it by default
+        reporter.report(Progress::new(
+            self.name(),
+            20,
+            "Enabling kexec syscall",
+        ));
+
+        // Poke sysctl to enable kexec (kernel param alone may not be enough)
+        let sysctl_result = Command::new("sysctl")
+            .args(["-w", "kernel.kexec_load_disabled=0"])
+            .output()
+            .await;
+
+        match &sysctl_result {
+            Ok(output) if !output.status.success() => {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                tracing::warn!("sysctl failed: {}", stderr);
+            }
+            Ok(_) => {
+                tracing::debug!("kexec syscall enabled via sysctl");
+            }
+            Err(e) => {
+                tracing::warn!("Failed to run sysctl: {}", e);
+            }
+        }
+
         // Create mount point
         let mount_point = "/mnt/target";
         tokio::fs::create_dir_all(mount_point).await.map_err(|e| {
