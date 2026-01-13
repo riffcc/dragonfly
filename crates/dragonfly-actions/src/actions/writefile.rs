@@ -257,6 +257,67 @@ impl Action for WriteFileAction {
     }
 }
 
+/// Detect filesystem type by reading magic bytes from block device
+///
+/// Returns the filesystem type string (e.g., "ext4", "xfs", "btrfs")
+/// or None if unknown/unreadable.
+fn detect_filesystem(device: &str) -> Option<String> {
+    use std::io::{Read, Seek, SeekFrom};
+
+    let mut file = match std::fs::File::open(device) {
+        Ok(f) => f,
+        Err(e) => {
+            tracing::warn!("Failed to open {} for fs detection: {}", device, e);
+            return None;
+        }
+    };
+
+    let mut buf = [0u8; 8];
+
+    // Check for ext2/3/4: magic 0xEF53 at offset 1080 (0x438)
+    if file.seek(SeekFrom::Start(0x438)).is_ok() && file.read_exact(&mut buf[..2]).is_ok() {
+        if buf[0] == 0x53 && buf[1] == 0xEF {
+            tracing::debug!("Detected ext2/3/4 filesystem on {}", device);
+            return Some("ext4".to_string()); // ext4 is backward compatible
+        }
+    }
+
+    // Check for XFS: magic "XFSB" at offset 0
+    if file.seek(SeekFrom::Start(0)).is_ok() && file.read_exact(&mut buf[..4]).is_ok() {
+        if &buf[..4] == b"XFSB" {
+            tracing::debug!("Detected XFS filesystem on {}", device);
+            return Some("xfs".to_string());
+        }
+    }
+
+    // Check for btrfs: magic "_BHRfS_M" at offset 0x10040
+    if file.seek(SeekFrom::Start(0x10040)).is_ok() && file.read_exact(&mut buf).is_ok() {
+        if &buf == b"_BHRfS_M" {
+            tracing::debug!("Detected btrfs filesystem on {}", device);
+            return Some("btrfs".to_string());
+        }
+    }
+
+    // Check for FAT32: Look for FAT signature
+    if file.seek(SeekFrom::Start(0x52)).is_ok() && file.read_exact(&mut buf).is_ok() {
+        if &buf[..5] == b"FAT32" {
+            tracing::debug!("Detected FAT32 filesystem on {}", device);
+            return Some("vfat".to_string());
+        }
+    }
+
+    // Check for FAT16/FAT12
+    if file.seek(SeekFrom::Start(0x36)).is_ok() && file.read_exact(&mut buf).is_ok() {
+        if &buf[..3] == b"FAT" {
+            tracing::debug!("Detected FAT filesystem on {}", device);
+            return Some("vfat".to_string());
+        }
+    }
+
+    tracing::warn!("Could not detect filesystem type on {}", device);
+    None
+}
+
 /// Mount a partition to the dragonfly mount point
 async fn do_mount(disk: &str) -> Result<()> {
     // Create mount point if it doesn't exist
@@ -266,12 +327,25 @@ async fn do_mount(disk: &str) -> Result<()> {
         })?;
     }
 
-    // Run mount command
-    let output = Command::new("mount")
-        .args([disk, MOUNT_POINT])
-        .output()
-        .await
-        .map_err(|e| ActionError::ExecutionFailed(format!("Failed to execute mount: {}", e)))?;
+    // Detect filesystem type
+    let fs_type = detect_filesystem(disk);
+
+    // Build mount command with filesystem type if detected
+    let output = if let Some(ref fstype) = fs_type {
+        tracing::info!("Mounting {} as {} to {}", disk, fstype, MOUNT_POINT);
+        Command::new("mount")
+            .args(["-t", fstype, disk, MOUNT_POINT])
+            .output()
+            .await
+            .map_err(|e| ActionError::ExecutionFailed(format!("Failed to execute mount: {}", e)))?
+    } else {
+        tracing::info!("Mounting {} to {} (auto-detect fs)", disk, MOUNT_POINT);
+        Command::new("mount")
+            .args([disk, MOUNT_POINT])
+            .output()
+            .await
+            .map_err(|e| ActionError::ExecutionFailed(format!("Failed to execute mount: {}", e)))?
+    };
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
