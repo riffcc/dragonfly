@@ -21,6 +21,7 @@ reqwest = { version = "0.12", default-features = false, features = ["stream", "r
 futures = "0.3"
 tokio-util = { version = "0.7", features = ["io"] }
 async-compression = { version = "0.4", features = ["tokio", "gzip", "xz", "zstd"] }
+tokio-tar = "0.3"
 
 [dev-dependencies]
 tokio-test = "0.4"

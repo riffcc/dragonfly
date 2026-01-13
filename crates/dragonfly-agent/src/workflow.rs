@@ -41,13 +41,32 @@ impl AgentWorkflowRunner {
 
         // Fetch workflow from server
         let workflow = self.fetch_workflow(workflow_id).await?;
+        info!(
+            workflow = %workflow_id,
+            template_ref = %workflow.spec.template_ref,
+            hardware_ref = %workflow.spec.hardware_ref,
+            "Fetched workflow from server"
+        );
+
         let template = self.fetch_template(&workflow.spec.template_ref).await?;
+        info!(
+            template = %template.metadata.name,
+            actions = template.spec.actions.len(),
+            "About to execute template with actions"
+        );
 
         // Setup local state store with the fetched data
         let store = Arc::new(MemoryStateStore::new());
         store.put_workflow(&workflow).await?;
         store.put_template(&template).await?;
         store.put_hardware(&self.hardware).await?;
+
+        info!(
+            workflow = %workflow_id,
+            hardware = %self.hardware.metadata.name,
+            disks = ?self.hardware.spec.disks.iter().map(|d| &d.device).collect::<Vec<_>>(),
+            "Setup local state store"
+        );
 
         // Create action engine with available actions
         let action_engine = self.create_action_engine();
@@ -115,7 +134,17 @@ impl AgentWorkflowRunner {
             anyhow::bail!("Failed to fetch template: {} - {}", status, body);
         }
 
-        let template: Template = response.json().await?;
+        // Get raw JSON to debug deserialization
+        let body = response.text().await?;
+        debug!(template_json = %body, "Raw template JSON from server");
+
+        let template: Template = serde_json::from_str(&body)?;
+        info!(
+            template = %template.metadata.name,
+            actions_count = template.spec.actions.len(),
+            action_types = ?template.action_names(),
+            "Fetched template"
+        );
         Ok(template)
     }
 

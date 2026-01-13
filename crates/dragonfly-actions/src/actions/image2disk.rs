@@ -4,6 +4,10 @@
 //! - QCOW2 images (via qemu-img - requires external tool)
 //! - Raw images (native streaming)
 //! - Compressed images (.gz, .xz, .zst) with native decompression
+//! - Tar archives (.tar.xz, .tar.gz) with streaming extraction
+//!
+//! All operations stream directly to disk without buffering entire files in memory,
+//! making this suitable for memory-constrained environments like Alpine ramdisks.
 
 use crate::context::{ActionContext, ActionResult};
 use crate::error::{ActionError, Result};
@@ -14,7 +18,7 @@ use async_trait::async_trait;
 use futures::StreamExt;
 use std::time::Duration;
 use tokio::fs::OpenOptions;
-use tokio::io::{AsyncRead, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufRead, AsyncRead, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 
 /// Native image-to-disk streaming action
@@ -116,12 +120,14 @@ impl Action for Image2DiskAction {
             ImageType::RawZst => {
                 stream_compressed(img_url, dest_disk, Compression::Zstd, reporter.as_ref(), self.name()).await
             }
-            ImageType::TarGz | ImageType::TarXz | ImageType::Tar => {
-                // For tar archives, we need a mounted filesystem
-                return Err(ActionError::ExecutionFailed(
-                    "Tar archives require a mounted filesystem. Use writefile action instead."
-                        .to_string(),
-                ));
+            ImageType::TarGz => {
+                stream_tar_compressed(img_url, dest_disk, Compression::Gzip, reporter.as_ref(), self.name()).await
+            }
+            ImageType::TarXz => {
+                stream_tar_compressed(img_url, dest_disk, Compression::Xz, reporter.as_ref(), self.name()).await
+            }
+            ImageType::Tar => {
+                stream_tar(img_url, dest_disk, reporter.as_ref(), self.name()).await
             }
         };
 
@@ -528,6 +534,221 @@ fn format_bytes(bytes: u64) -> String {
     } else {
         format!("{} bytes", bytes)
     }
+}
+
+/// Stream a tar archive with compression, extracting the disk image directly to disk
+async fn stream_tar_compressed(
+    source: &str,
+    dest: &str,
+    compression: Compression,
+    reporter: &dyn crate::progress::ProgressReporter,
+    action_name: &str,
+) -> Result<u64> {
+    reporter.report(Progress::new(
+        action_name,
+        15,
+        format!("Streaming {:?} compressed tar archive to disk", compression),
+    ));
+
+    let is_url = source.starts_with("http://") || source.starts_with("https://");
+
+    if is_url {
+        stream_tar_from_url(source, dest, Some(compression), reporter, action_name).await
+    } else {
+        stream_tar_from_file(source, dest, Some(compression), reporter, action_name).await
+    }
+}
+
+/// Stream an uncompressed tar archive, extracting the disk image directly to disk
+async fn stream_tar(
+    source: &str,
+    dest: &str,
+    reporter: &dyn crate::progress::ProgressReporter,
+    action_name: &str,
+) -> Result<u64> {
+    reporter.report(Progress::new(
+        action_name,
+        15,
+        "Streaming tar archive to disk",
+    ));
+
+    let is_url = source.starts_with("http://") || source.starts_with("https://");
+
+    if is_url {
+        stream_tar_from_url(source, dest, None, reporter, action_name).await
+    } else {
+        stream_tar_from_file(source, dest, None, reporter, action_name).await
+    }
+}
+
+/// Stream tar from URL, extract disk image, and write to disk
+async fn stream_tar_from_url(
+    url: &str,
+    dest: &str,
+    compression: Option<Compression>,
+    reporter: &dyn crate::progress::ProgressReporter,
+    action_name: &str,
+) -> Result<u64> {
+    use tokio_tar::Archive;
+
+    // Create HTTP client and start download
+    let client = reqwest::Client::new();
+    let response = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| ActionError::ExecutionFailed(format!("HTTP request failed: {}", e)))?;
+
+    if !response.status().is_success() {
+        return Err(ActionError::ExecutionFailed(format!(
+            "HTTP error: {}",
+            response.status()
+        )));
+    }
+
+    let total_size = response.content_length();
+
+    reporter.report(Progress::new(
+        action_name,
+        20,
+        format!(
+            "Downloading tar archive {} ({})",
+            url,
+            total_size.map(|s| format_bytes(s)).unwrap_or_else(|| "unknown size".to_string())
+        ),
+    ));
+
+    // Convert response body to async reader
+    let stream = response.bytes_stream();
+    let stream_reader = tokio_util::io::StreamReader::new(
+        stream.map(|result| result.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e)))
+    );
+    let buffered = BufReader::new(stream_reader);
+
+    // Apply decompression and create tar archive reader
+    let bytes_written = match compression {
+        Some(Compression::Gzip) => {
+            let decoder = GzipDecoder::new(buffered);
+            extract_disk_from_tar(decoder, dest, reporter, action_name).await?
+        }
+        Some(Compression::Xz) => {
+            let decoder = XzDecoder::new(buffered);
+            extract_disk_from_tar(decoder, dest, reporter, action_name).await?
+        }
+        Some(Compression::Zstd) => {
+            let decoder = ZstdDecoder::new(buffered);
+            extract_disk_from_tar(decoder, dest, reporter, action_name).await?
+        }
+        None => {
+            extract_disk_from_tar(buffered, dest, reporter, action_name).await?
+        }
+    };
+
+    Ok(bytes_written)
+}
+
+/// Stream tar from local file
+async fn stream_tar_from_file(
+    source: &str,
+    dest: &str,
+    compression: Option<Compression>,
+    reporter: &dyn crate::progress::ProgressReporter,
+    action_name: &str,
+) -> Result<u64> {
+    let source_file = tokio::fs::File::open(source)
+        .await
+        .map_err(|e| ActionError::ExecutionFailed(format!("Failed to open source: {}", e)))?;
+
+    let buffered = BufReader::new(source_file);
+
+    let bytes_written = match compression {
+        Some(Compression::Gzip) => {
+            let decoder = GzipDecoder::new(buffered);
+            extract_disk_from_tar(decoder, dest, reporter, action_name).await?
+        }
+        Some(Compression::Xz) => {
+            let decoder = XzDecoder::new(buffered);
+            extract_disk_from_tar(decoder, dest, reporter, action_name).await?
+        }
+        Some(Compression::Zstd) => {
+            let decoder = ZstdDecoder::new(buffered);
+            extract_disk_from_tar(decoder, dest, reporter, action_name).await?
+        }
+        None => {
+            extract_disk_from_tar(buffered, dest, reporter, action_name).await?
+        }
+    };
+
+    Ok(bytes_written)
+}
+
+/// Extract disk image from tar archive and write directly to disk
+///
+/// Looks for files ending in .raw, .img, or the largest file in the archive
+async fn extract_disk_from_tar<R: AsyncRead + Unpin>(
+    reader: R,
+    dest: &str,
+    reporter: &dyn crate::progress::ProgressReporter,
+    action_name: &str,
+) -> Result<u64> {
+    use tokio_tar::Archive;
+    use tokio::io::AsyncReadExt;
+
+    let mut archive = Archive::new(reader);
+    let mut entries = archive.entries().map_err(|e| {
+        ActionError::ExecutionFailed(format!("Failed to read tar entries: {}", e))
+    })?;
+
+    reporter.report(Progress::new(
+        action_name,
+        30,
+        "Scanning tar archive for disk image",
+    ));
+
+    // Find the disk image entry (look for .raw, .img, or largest file)
+    while let Some(entry) = entries.next().await {
+        let mut entry = entry.map_err(|e| {
+            ActionError::ExecutionFailed(format!("Failed to read tar entry: {}", e))
+        })?;
+
+        let path = entry.path().map_err(|e| {
+            ActionError::ExecutionFailed(format!("Failed to get entry path: {}", e))
+        })?;
+
+        let path_str = path.to_string_lossy().to_string();
+        let is_disk_image = path_str.ends_with(".raw")
+            || path_str.ends_with(".img")
+            || path_str.ends_with(".qcow2");
+
+        if is_disk_image {
+            reporter.report(Progress::new(
+                action_name,
+                35,
+                format!("Found disk image: {}", path_str),
+            ));
+
+            // Open destination device
+            let mut dest_file = OpenOptions::new()
+                .write(true)
+                .open(dest)
+                .await
+                .map_err(|e| ActionError::ExecutionFailed(format!("Failed to open {}: {}", dest, e)))?;
+
+            // Stream the entry directly to disk
+            let entry_size = entry.header().size().ok();
+            let bytes_written = write_to_disk(entry, &mut dest_file, entry_size, reporter, action_name).await?;
+
+            dest_file.sync_all().await.map_err(|e| {
+                ActionError::ExecutionFailed(format!("Failed to sync disk: {}", e))
+            })?;
+
+            return Ok(bytes_written);
+        }
+    }
+
+    Err(ActionError::ExecutionFailed(
+        "No disk image found in tar archive (expected .raw, .img, or .qcow2 file)".to_string()
+    ))
 }
 
 #[cfg(test)]

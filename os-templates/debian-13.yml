@@ -6,7 +6,7 @@ spec:
   timeout: 9800
   actions:
     - action: image2disk
-      url: "https://cloud.debian.org/images/cloud/trixie/daily/latest/debian-13-genericcloud-amd64-daily.raw"
+      url: "https://cloud.debian.org/images/cloud/trixie/daily/latest/debian-13-genericcloud-amd64-daily.tar.xz"
       disk: auto
       timeout: 9600
 

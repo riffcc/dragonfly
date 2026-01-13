@@ -2695,7 +2695,16 @@ pub async fn get_template_handler(
     // Fetch template from store
     match state.store.get_template(&template_name).await {
         Ok(Some(template)) => {
-            info!(template_name = %template_name, "Returning template to agent");
+            info!(
+                template_name = %template_name,
+                actions_count = template.spec.actions.len(),
+                action_names = ?template.action_names(),
+                "Returning template to agent"
+            );
+            // Debug: log raw JSON being sent
+            if let Ok(json) = serde_json::to_string(&template) {
+                debug!(json_length = json.len(), "Template JSON payload");
+            }
             Json(template).into_response()
         }
         Ok(None) => {
