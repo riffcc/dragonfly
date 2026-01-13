@@ -178,6 +178,7 @@ impl Action for KexecAction {
         reporter.report(Progress::new(self.name(), 60, "Loading kernel with kexec"));
 
         let mut kexec_args = vec![
+            "-s".to_string(), // Use kexec_file_load instead of kexec_load (works on hardened kernels)
             "-l".to_string(),
             kernel_path.clone(),
             format!("--command-line={}", cmdline),
@@ -235,7 +236,7 @@ impl Action for KexecAction {
 
         // This is the point of no return - the system will reboot into the new kernel
         let _ = Command::new("kexec")
-            .arg("-e")
+            .args(["-s", "-e"]) // Use kexec_file_load
             .spawn()
             .map_err(|e| {
                 tracing::warn!("kexec -e failed: {}", e);
