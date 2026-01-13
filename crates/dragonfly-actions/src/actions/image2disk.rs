@@ -151,6 +151,15 @@ impl Action for Image2DiskAction {
                     tracing::warn!("partprobe failed (non-critical): {}", e);
                 }
 
+                // On Alpine/mdev systems, refresh device nodes after partition table change
+                if let Err(e) = Command::new("mdev")
+                    .arg("-s")
+                    .output()
+                    .await
+                {
+                    tracing::debug!("mdev -s not available (not Alpine?): {}", e);
+                }
+
                 reporter.report(Progress::completed(self.name()));
                 Ok(ActionResult::success(format!(
                     "Successfully streamed image to {} ({} bytes written)",

@@ -58,7 +58,7 @@ Flight and Swarm are equally capable for datacenter management. Swarm adds multi
 - **Follow Language Style Guides** - Adhere to the style guide of your primary language
 - **Use Palace Tools** - Use `pal test`, `pal build`, `pal run` for development workflows
 - **NEVER REVERT FILES** - Do NOT use `git checkout` or `git restore` to revert files unless explicitly asked
-- **NEVER SHELL OUT** - Do NOT use `Command::new()` to call external binaries. Use native Rust crates for EVERYTHING. No lsblk, no fdisk, no tar commands, no exceptions.
+- **PREFER NATIVE CRATES** - Strongly prefer native Rust crates over shelling out to external binaries. Do NOT shell out for data parsing (no lsblk, fdisk, tar for reading data). Shelling out is acceptable ONLY for system actions with no native alternative (e.g., `mdev -s` for device node refresh, `kexec` for kernel loading).
 
 ## Quality Standards
 - Write comprehensive tests for all new features
