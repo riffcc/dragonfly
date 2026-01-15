@@ -21,12 +21,12 @@ fn device_minor(dev: u64) -> u32 {
 
 #[cfg(not(target_os = "macos"))]
 fn device_major(dev: u64) -> u32 {
-    libc::major(dev)
+    device_major(dev)
 }
 
 #[cfg(not(target_os = "macos"))]
 fn device_minor(dev: u64) -> u32 {
-    libc::minor(dev)
+    device_minor(dev)
 }
 
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
