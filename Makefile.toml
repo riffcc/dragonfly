@@ -1,0 +1,16 @@
+[tasks.check-dist]
+command = "cargo"
+args = ["check", "-p", "dragonfly-agent", "--target", "x86_64-unknown-linux-musl"]
+workspace = false
+
+[tasks.build-dist]
+command = "cargo"
+args = ["build", "--release", "-p", "dragonfly-agent", "--target", "x86_64-unknown-linux-musl"]
+workspace = false
+
+[tasks.build-all]
+command = "cargo"
+args = ["build", "${@}"]
+dependencies = [ "build-dist" ]
+workspace = false
+

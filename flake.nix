@@ -23,12 +23,20 @@
       with pkgs;
       {
         devShells.default = mkShell {
+          SQLITE3_STATIC = "1";
+          LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
           buildInputs = [
             rustToolchain
             openssl
             pkg-config
             pkgsStatic.stdenv.cc
             pkgsStatic.openssl
+            pkgsStatic.sqlite
+            pkgsStatic.aws-lc
+            pkgsStatic.libssh2
+            pkgsStatic.zlib
+            nodejs
+            cargo-make
           ];
           
           # For target compilation
@@ -47,6 +55,15 @@
           PKG_CONFIG_ALL_STATIC = "1";
           
           shellHook = ''
+            echo "Setting up Node.js environment..."
+            export PATH="${pkgs.nodejs}/bin:$PATH"
+
+            # Only install Tailwind if node_modules doesn't exist
+            if [ ! -d "node_modules" ]; then
+              echo "Installing Tailwind CSS..."
+              npm install -D tailwindcss postcss autoprefixer
+              npx tailwindcss init
+            fi
             echo "Rust musl target added"
             echo "Target linker: $CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER"
           '';
