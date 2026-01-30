@@ -20,11 +20,10 @@ use crate::store::DragonflyStore;
 use dragonfly_crd::Template;
 
 /// Primary template directory (installed by `dragonfly install`)
-const TEMPLATE_DIR: &str = "/opt/dragonfly/templates";
+const TEMPLATE_DIR: &str = "/var/lib/dragonfly/os-templates";
 
-/// Fallback template directories for development
+/// Fallback template directory for development
 const FALLBACK_TEMPLATE_DIRS: &[&str] = &[
-    "/var/lib/dragonfly/os-templates",
     "os-templates",
 ];
 
@@ -239,13 +238,12 @@ mod tests {
     #[test]
     fn test_template_dir_constant() {
         // Verify primary template directory is set correctly
-        assert_eq!(TEMPLATE_DIR, "/opt/dragonfly/templates");
+        assert_eq!(TEMPLATE_DIR, "/var/lib/dragonfly/os-templates");
     }
 
     #[test]
     fn test_fallback_dirs() {
-        // Verify fallback directories are configured
-        assert!(FALLBACK_TEMPLATE_DIRS.contains(&"/var/lib/dragonfly/os-templates"));
+        // Verify fallback directory for development is configured
         assert!(FALLBACK_TEMPLATE_DIRS.contains(&"os-templates"));
     }
 }
