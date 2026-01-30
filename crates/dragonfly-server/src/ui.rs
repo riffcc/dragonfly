@@ -6,7 +6,7 @@ use axum::{
     Form, Router,
 };
 use dragonfly_common::models::{Machine, MachineStatus, DiskInfo};
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 use std::collections::HashMap;
 use chrono::{DateTime, Utc, TimeZone};
 use cookie::{Cookie, SameSite};
@@ -14,7 +14,6 @@ use std::fs;
 use serde::Serialize;
 use crate::db::{self, get_app_settings, save_app_settings, mark_setup_completed};
 use crate::auth::{self, AuthSession, Settings, Credentials};
-use crate::mode;
 use minijinja::{Error as MiniJinjaError, ErrorKind as MiniJinjaErrorKind};
 use std::sync::Arc;
 use std::net::{IpAddr, Ipv4Addr};
@@ -113,14 +112,6 @@ pub struct SettingsTemplate {
 }
 
 #[derive(Serialize)]
-pub struct WelcomeTemplate {
-    pub theme: String,
-    pub is_authenticated: bool,
-    pub hide_footer: bool,
-    pub current_path: String,
-}
-
-#[derive(Serialize)]
 pub struct ErrorTemplate {
     pub theme: String,
     pub is_authenticated: bool,
@@ -203,11 +194,6 @@ pub fn ui_router() -> Router<crate::AppState> {
         .route("/theme/toggle", get(toggle_theme))
         .route("/settings", get(settings_page))
         .route("/settings", post(update_settings))
-        .route("/welcome", get(welcome_page))
-        .route("/setup", get(welcome_page)) // Alias for welcome
-        .route("/setup/simple", get(setup_simple))
-        .route("/setup/flight", get(setup_flight))
-        .route("/setup/swarm", get(setup_swarm))
 }
 
 // Count machines by status and return a HashMap
@@ -427,24 +413,8 @@ pub async fn index(
         // The rest of this function will now handle rendering the demo dashboard
         // Ensure is_demo_mode is passed to the template
     } else if app_state.is_installed {
-        // Case B.1 & B.2: Installed
-        // Use the already-open store to check mode (avoids ReDB lock conflict)
-        let current_mode = app_state.store.get_setting("deployment_mode").await.ok().flatten();
-        if current_mode.is_none() {
-            // Case B.2: Installed, no mode selected -> Show Welcome Screen
-            // BUT ONLY if not in installation server mode
-            if !app_state.is_installation_server {
-                info!("Installed, no mode selected, redirecting to /welcome");
-                return Redirect::to("/welcome").into_response();
-            } else {
-                // We're in installation server mode, so we want to show the installation UI
-                info!("Rendering installation UI");
-            }
-        } else {
-            // Case B.1: Installed, mode selected -> Proceed to normal UI (Dashboard)
-            info!("Installed, mode selected, rendering normal dashboard");
-            // Login check happens *after* this block if needed
-        }
+        // Installed - proceed to normal UI (Dashboard)
+        debug!("Rendering dashboard");
     } else {
         // This case means it's *not* demo, *not* installed.
         // Check if it's the installation server running.
@@ -562,20 +532,6 @@ pub async fn machine_list(
     let current_path = uri.path().to_string();
 
     let require_login = app_state.settings.lock().await.require_login;
-
-    // --- Scenario B: Mode/Install Check ---
-    // Redirect to welcome if installed but no mode selected
-    if app_state.is_installed && !app_state.is_demo_mode { // Don't check mode if in demo
-        let current_mode = app_state.store.get_setting("deployment_mode").await.ok().flatten();
-        if current_mode.is_none() {
-            info!("/machines accessed before mode selection, redirecting to /welcome");
-            // Need to return a response that HTMX can use to redirect
-            let mut response = Redirect::to("/welcome").into_response();
-            response.headers_mut().insert("HX-Redirect", "/welcome".parse().unwrap());
-            return response;
-        }
-    }
-    // --- End Scenario B Check ---
 
     // Login check (applies to both normal and demo mode if require_login is true)
     if require_login && !is_authenticated {
@@ -1352,250 +1308,6 @@ pub async fn update_settings(
         [(header::SET_COOKIE, cookie.to_string())],
         Redirect::to("/settings")
     ).into_response()
-}
-
-// New handler for welcome page
-pub async fn welcome_page(
-    State(app_state): State<crate::AppState>,
-    headers: HeaderMap,
-    auth_session: AuthSession,
-    uri: OriginalUri,
-) -> Response {
-    // Get theme preference from cookie
-    let theme = get_theme_from_cookie(&headers);
-    let is_authenticated = auth_session.user.is_some();
-    let current_path = uri.path().to_string();
-
-    // Welcome page allows changing installation mode - always require authentication
-    if !is_authenticated {
-        info!("Login required for /welcome (mode selection), redirecting to /login");
-        return Redirect::to("/login").into_response();
-    }
-
-    // Replace Askama render with placeholder
-    let context = WelcomeTemplate {
-        theme,
-        is_authenticated,
-        hide_footer: true,
-        current_path,
-    };
-    // Pass AppState to render_minijinja
-    render_minijinja(&app_state, "welcome.html", context)
-}
-
-// Handlers for the different setup modes
-pub async fn setup_simple(
-    State(app_state): State<crate::AppState>,
-    headers: HeaderMap,
-    auth_session: AuthSession,
-    uri: OriginalUri,
-) -> Response {
-    // Get theme preference from cookie
-    let theme = get_theme_from_cookie(&headers);
-    let is_authenticated = auth_session.user.is_some();
-    let current_path = uri.path().to_string();
-
-    // Setup endpoints change the installation mode - require authentication
-    if !is_authenticated {
-        info!("Login required for /setup/simple, redirecting to /login");
-        return Redirect::to("/login").into_response();
-    }
-
-    // Save mode to ReDB using the already-open store (avoids lock conflict)
-    if let Err(e) = app_state.store.put_setting("deployment_mode", "simple").await {
-        error!("Failed to save Simple mode to database: {}", e);
-
-        // Return error template
-        let context = ErrorTemplate {
-            theme,
-            is_authenticated,
-            title: "Setup Failed".to_string(),
-            message: "There was a problem setting up Simple mode.".to_string(),
-            error_details: format!("Failed to save mode: {}", e),
-            back_url: "/".to_string(),
-            back_text: "Back to Dashboard".to_string(),
-            show_retry: true,
-            retry_url: "/setup/simple".to_string(),
-            current_path,
-        };
-        return render_minijinja(&app_state, "error.html", context);
-    }
-    
-    // Mark setup as completed immediately
-    if let Err(e) = mark_setup_completed(true).await {
-        error!("Failed to mark setup as completed: {}", e);
-    } else {
-        info!("Setup marked as completed");
-        
-        // Also update the in-memory settings
-        let mut settings = app_state.settings.lock().await;
-        settings.setup_completed = true;
-    }
-    
-    // Configure the system for Simple mode in the background
-    let event_manager = app_state.event_manager.clone();
-    tokio::spawn(async move {
-        match mode::configure_simple_mode().await {
-            Ok(_) => {
-                info!("Simple mode configuration completed successfully in background");
-                // Send event for successful configuration
-                let _ = event_manager.send("mode_configured:simple".to_string());
-            },
-            Err(e) => {
-                error!("Background Simple mode configuration failed: {}", e);
-                // Send event for failed configuration
-                let _ = event_manager.send(format!("mode_configuration_failed:simple:{}", e));
-            }
-        }
-    });
-    
-    // Immediately redirect to home page
-    info!("Saved Simple mode and initiated background configuration, redirecting to home");
-    Redirect::to("/").into_response()
-}
-
-pub async fn setup_flight(
-    State(app_state): State<crate::AppState>,
-    headers: HeaderMap,
-    auth_session: AuthSession,
-    uri: OriginalUri,
-) -> Response {
-    // Get theme preference from cookie
-    let theme = get_theme_from_cookie(&headers);
-    let is_authenticated = auth_session.user.is_some();
-    let current_path = uri.path().to_string();
-
-    // Setup endpoints change the installation mode - require authentication
-    if !is_authenticated {
-        info!("Login required for /setup/flight, redirecting to /login");
-        return Redirect::to("/login").into_response();
-    }
-
-    // Save mode to ReDB using the already-open store (avoids lock conflict)
-    if let Err(e) = app_state.store.put_setting("deployment_mode", "flight").await {
-        error!("Failed to save Flight mode to database: {}", e);
-
-        // Return error template
-        let context = ErrorTemplate {
-            theme,
-            is_authenticated,
-            title: "Setup Failed".to_string(),
-            message: "There was a problem setting up Flight mode.".to_string(),
-            error_details: format!("Failed to save mode: {}", e),
-            back_url: "/".to_string(),
-            back_text: "Back to Dashboard".to_string(),
-            show_retry: true,
-            retry_url: "/setup/flight".to_string(),
-            current_path,
-        };
-        return render_minijinja(&app_state, "error.html", context);
-    }
-    
-    // Mark setup as completed immediately
-    if let Err(e) = mark_setup_completed(true).await {
-        error!("Failed to mark setup as completed: {}", e);
-    } else {
-        info!("Setup marked as completed");
-        
-        // Also update the in-memory settings
-        let mut settings = app_state.settings.lock().await;
-        settings.setup_completed = true;
-    }
-    
-    // Configure the system for Flight mode in the background
-    let event_manager = app_state.event_manager.clone();
-    let store_for_flight = app_state.store.clone();
-    let app_state_for_services = app_state.clone();
-    tokio::spawn(async move {
-        match mode::configure_flight_mode(store_for_flight).await {
-            Ok(_) => {
-                info!("Flight mode configuration completed successfully in background");
-                // Start network services (DHCP/TFTP) now that Flight mode is configured
-                crate::start_network_services(&app_state_for_services, app_state_for_services.shutdown_rx.clone()).await;
-                // Send event for successful configuration
-                let _ = event_manager.send("mode_configured:flight".to_string());
-            },
-            Err(e) => {
-                error!("Background Flight mode configuration failed: {}", e);
-                // Send event for failed configuration
-                let _ = event_manager.send(format!("mode_configuration_failed:flight:{}", e));
-            }
-        }
-    });
-    
-    // Immediately redirect to home page
-    info!("Saved Flight mode and initiated background configuration, redirecting to home");
-    Redirect::to("/").into_response()
-}
-
-pub async fn setup_swarm(
-    State(app_state): State<crate::AppState>,
-    headers: HeaderMap,
-    auth_session: AuthSession,
-    uri: OriginalUri,
-) -> Response {
-    // Get theme preference from cookie
-    let theme = get_theme_from_cookie(&headers);
-    let is_authenticated = auth_session.user.is_some();
-    let current_path = uri.path().to_string();
-
-    // Setup endpoints change the installation mode - require authentication
-    if !is_authenticated {
-        info!("Login required for /setup/swarm, redirecting to /login");
-        return Redirect::to("/login").into_response();
-    }
-
-    // Save mode to ReDB using the already-open store (avoids lock conflict)
-    if let Err(e) = app_state.store.put_setting("deployment_mode", "swarm").await {
-        error!("Failed to save Swarm mode to database: {}", e);
-
-        // Return error template
-        let context = ErrorTemplate {
-            theme,
-            is_authenticated,
-            title: "Setup Failed".to_string(),
-            message: "There was a problem setting up Swarm mode.".to_string(),
-            error_details: format!("Failed to save mode: {}", e),
-            back_url: "/".to_string(),
-            back_text: "Back to Dashboard".to_string(),
-            show_retry: true,
-            retry_url: "/setup/swarm".to_string(),
-            current_path,
-        };
-        return render_minijinja(&app_state, "error.html", context);
-    }
-    
-    // Mark setup as completed immediately
-    if let Err(e) = mark_setup_completed(true).await {
-        error!("Failed to mark setup as completed: {}", e);
-    } else {
-        info!("Setup marked as completed");
-        
-        // Also update the in-memory settings
-        let mut settings = app_state.settings.lock().await;
-        settings.setup_completed = true;
-    }
-    
-    // Configure the system for Swarm mode in the background
-    let event_manager = app_state.event_manager.clone();
-    tokio::spawn(async move {
-        match mode::configure_swarm_mode().await {
-            Ok(_) => {
-                info!("Swarm mode configuration completed successfully in background");
-                // Send event for successful configuration
-                let _ = event_manager.send("mode_configured:swarm".to_string());
-            },
-            Err(e) => {
-                error!("Background Swarm mode configuration failed: {}", e);
-                // Send event for failed configuration
-                let _ = event_manager.send(format!("mode_configuration_failed:swarm:{}", e));
-            }
-        }
-    });
-    
-    // Immediately redirect to home page
-    info!("Saved Swarm mode and initiated background configuration, redirecting to home");
-    Redirect::to("/").into_response()
 }
 
 // Environment setup for MiniJinja
