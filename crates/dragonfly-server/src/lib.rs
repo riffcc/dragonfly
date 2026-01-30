@@ -131,7 +131,7 @@ pub async fn is_dragonfly_installed() -> bool {
 
     if dir_exists {
         debug!("Installation check: Directory '{}' found.", dir_path);
-        info!("Installation check: Detected installed state (local directory exists).");
+        debug!("Detected installed state");
         return true;
     }
 
@@ -144,7 +144,7 @@ pub async fn is_dragonfly_installed() -> bool {
 
         let namespaces: Api<Namespace> = Api::all(client);
         if let Ok(_) = namespaces.get("tink-system").await {
-            info!("Installation check: Detected remote Kubernetes with Tinkerbell (tink-system namespace found).");
+            debug!("Detected Kubernetes with Tinkerbell");
             return true;
         } else {
             debug!("Installation check: Connected to Kubernetes but tink-system namespace not found.");
@@ -255,11 +255,8 @@ pub struct AppState {
 pub async fn start_network_services(app_state: &AppState, shutdown_rx: watch::Receiver<()>) {
     // Check if services are already running
     if app_state.network_services_started.swap(true, Ordering::SeqCst) {
-        info!("Network services already started, skipping");
         return;
     }
-
-    info!("Starting native network services for Flight mode");
 
     // Create services configuration
     let services_config = ServicesConfig {
@@ -295,10 +292,10 @@ pub async fn start_network_services(app_state: &AppState, shutdown_rx: watch::Re
         match service_runner.start(services_shutdown_rx).await {
             Ok(handles) => {
                 if handles.dhcp.is_some() {
-                    info!("DHCP server started in AutoProxy mode");
+                    println!("  DHCP: 0.0.0.0:67 (AutoProxy)");
                 }
                 if handles.tftp.is_some() {
-                    info!("TFTP server started serving from /var/lib/dragonfly/tftp");
+                    println!("  TFTP: 0.0.0.0:69");
                 }
             }
             Err(e) => {
@@ -371,39 +368,17 @@ pub async fn run() -> anyhow::Result<()> {
 
     let _is_install_mode = is_installation_server;
 
-    if is_demo_mode {
-        if is_explicit_demo_mode {
-            // This info message will now respect RUST_LOG level
-            info!("Starting server explicitly in DEMO MODE - no hardware will be touched");
-        } else if !is_installed && !is_installation_server {
-            info!("Dragonfly not installed - starting server in DEMO MODE - no hardware will be touched");
-        }
-    } else if !is_installed && is_installation_server {
-        info!("Starting server in INSTALLATION MODE");
-    } else if is_installed {
-        info!("Dragonfly installed - starting server in normal mode");
-    }
+    // Initialize databases
+    let db_pool = init_db().await?;
+    db::init_timing_tables().await?;
+    tinkerbell::load_historical_timings().await?;
 
-    // Initialize the database 
-    let db_pool = init_db().await?; // DB init is essential
-
-    // Initialize timing database tables
-    db::init_timing_tables().await?; // Essential
-
-    // Load historical timing data
-    tinkerbell::load_historical_timings().await?; // Essential
-
-    // --- Storage Backend Setup (EARLY - needed for mode check and settings) ---
-    // Initialize ReDB as the default storage backend BEFORE anything else
+    // Initialize ReDB storage
     const REDB_PATH: &str = "/var/lib/dragonfly/dragonfly.redb";
     let native_store: Arc<dyn store::DragonflyStore> = match store::RedbStore::open(REDB_PATH) {
-        Ok(s) => {
-            info!("Initialized ReDB storage at {}", REDB_PATH);
-            Arc::new(s)
-        }
+        Ok(s) => Arc::new(s),
         Err(e) => {
-            // Fall back to memory store if ReDB fails (e.g., during demo mode)
-            warn!("Failed to open ReDB at {}: {}. Using in-memory store.", REDB_PATH, e);
+            warn!("ReDB failed, using in-memory store: {}", e);
             Arc::new(store::MemoryStore::new())
         }
     };
@@ -454,39 +429,25 @@ pub async fn run() -> anyhow::Result<()> {
 
     // Load or generate admin credentials
     let _credentials = match auth::load_credentials().await {
-        Ok(cred) => {
-            info!("Loaded admin credentials successfully");
-            cred
-        }
+        Ok(cred) => cred,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            info!("No existing admin credentials found, generating default");
             match auth::generate_default_credentials().await {
                 Ok(creds) => creds,
-                Err(e) => {
-                    error!("Failed to generate default admin credentials: {}", e);
-                    return Err(anyhow!("Failed to initialize admin credentials: {}", e));
-                }
+                Err(e) => return Err(anyhow!("Failed to initialize admin credentials: {}", e)),
             }
         }
-        Err(e) => {
-            error!("Error loading admin credentials: {}", e);
-            return Err(anyhow!("Failed to load admin credentials: {}", e));
-        }
+        Err(e) => return Err(anyhow!("Failed to load admin credentials: {}", e)),
     };
 
     // Load settings from ReDB or use defaults
     let settings = match native_store.get_setting("require_login").await {
         Ok(Some(val)) => {
-            let require_login = val == "true";
-            info!("Loaded require_login={} from ReDB", require_login);
             let mut s = auth::Settings::default();
-            s.require_login = require_login;
+            s.require_login = val == "true";
             s
         }
         _ => {
-            info!("No settings in ReDB, using defaults (require_login=true)");
             let s = auth::Settings::default();
-            // Save defaults to ReDB
             let _ = native_store.put_setting("require_login", &s.require_login.to_string()).await;
             s
         }
@@ -494,7 +455,6 @@ pub async fn run() -> anyhow::Result<()> {
 
     // Reset setup flag if in setup mode
     if setup_mode {
-        if !is_installation_server { info!("Setup mode enabled, resetting setup completion status"); }
         let _ = native_store.put_setting("setup_completed", "false").await;
     }
 
@@ -510,23 +470,18 @@ pub async fn run() -> anyhow::Result<()> {
         fallback_template_path
     }.to_string();
 
-    let template_env = { // Logs inside handled by tracing setup
+    let template_env = {
         #[cfg(debug_assertions)]
         {
-            info!("Setting up MiniJinja with auto-reload for development");
             let templates_reloaded_flag = Arc::new(AtomicBool::new(false));
             let flag_clone_for_closure = templates_reloaded_flag.clone();
             let reloader = AutoReloader::new(move |notifier| {
-                info!("MiniJinja environment is being (re)created...");
                 let mut env = Environment::new();
                 let path_for_closure = template_path.clone();
                 env.set_loader(path_loader(&path_for_closure));
-                
-                // Set up filters and globals
                 if let Err(e) = ui::setup_minijinja_environment(&mut env) {
                     error!("Failed to set up MiniJinja environment: {}", e);
                 }
-                
                 flag_clone_for_closure.store(true, Ordering::SeqCst);
                 notifier.watch_path(path_for_closure.as_str(), true);
                 Ok(env)
@@ -536,25 +491,12 @@ pub async fn run() -> anyhow::Result<()> {
             let flag_clone_for_loop = templates_reloaded_flag.clone();
             let event_manager_weak = Arc::downgrade(&event_manager);
             tokio::spawn(async move {
-                info!("Starting MiniJinja watcher loop...");
                 loop {
-                    match reloader_clone.acquire_env() {
-                        Ok(_) => {
-                            if flag_clone_for_loop.swap(false, Ordering::SeqCst) {
-                                info!("Templates reloaded - sending refresh event");
-                                if let Some(event_manager) = event_manager_weak.upgrade() {
-                                    if let Err(e) = event_manager.send("template_changed:refresh".to_string()) {
-                                        warn!("Failed to send template refresh event: {}", e);
-                                    } else {
-                                        info!("Reload event sent successfully.");
-                                    }
-                                } else {
-                                    warn!("EventManager dropped, cannot send reload event.");
-                                }
+                    if let Ok(_) = reloader_clone.acquire_env() {
+                        if flag_clone_for_loop.swap(false, Ordering::SeqCst) {
+                            if let Some(event_manager) = event_manager_weak.upgrade() {
+                                let _ = event_manager.send("template_changed:refresh".to_string());
                             }
-                        },
-                        Err(e) => {
-                            error!("MiniJinja watcher refresh failed: {}", e);
                         }
                     }
                     tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
@@ -565,15 +507,11 @@ pub async fn run() -> anyhow::Result<()> {
         #[cfg(not(debug_assertions))]
         {
             let release_template_path = "/opt/dragonfly/templates";
-            info!("Using templates from {}", release_template_path);
             let mut env = Environment::new();
             env.set_loader(path_loader(release_template_path));
-
-            // Set up filters and globals
             if let Err(e) = ui::setup_minijinja_environment(&mut env) {
                 error!("Failed to set up MiniJinja environment: {}", e);
             }
-
             TemplateEnv::Static(Arc::new(env))
         }
     };
@@ -644,17 +582,12 @@ pub async fn run() -> anyhow::Result<()> {
         network_services_started: Arc::new(AtomicBool::new(false)),
     };
 
-    // Load Proxmox API tokens from database to memory for immediate use
+    // Load Proxmox API tokens from database to memory
     if !app_state.is_installation_server {
-        info!("Loading Proxmox tokens from database to memory...");
-        if let Err(e) = handlers::proxmox::load_proxmox_tokens_to_memory(&app_state).await {
-            warn!("Failed to load Proxmox tokens from database: {}", e);
-        }
+        let _ = handlers::proxmox::load_proxmox_tokens_to_memory(&app_state).await;
     }
 
-    // Start the Proxmox sync task (regardless of deployment mode)
-    // This will check if machines removed from Proxmox should be removed from Dragonfly
-    info!("Starting Proxmox synchronization task with interval of 90s");
+    // Start the Proxmox sync task
     handlers::proxmox::start_proxmox_sync_task(std::sync::Arc::new(app_state.clone()), shutdown_rx.clone()).await;
 
     // Session store setup
@@ -745,13 +678,9 @@ pub async fn run() -> anyhow::Result<()> {
     let default_port: u16 = read_port_from_config();
     let mut listenfd = ListenFd::from_env();
     let socket_activation = std::env::var("LISTEN_FDS").is_ok();
-    if socket_activation && !is_installation_server {
-        info!("Socket activation detected via LISTEN_FDS={}", std::env::var("LISTEN_FDS").unwrap_or_else(|_| "?".to_string()));
-    }
 
     let listener = match listenfd.take_tcp_listener(0).context("Failed to take TCP listener from env") {
         Ok(Some(listener)) => {
-            if !is_installation_server { info!("Acquired socket via socket activation"); }
             tokio::net::TcpListener::from_std(listener).context("Failed to convert TCP listener")?
         },
         Ok(None) | Err(_) => {
@@ -759,14 +688,8 @@ pub async fn run() -> anyhow::Result<()> {
             loop {
                 let addr = SocketAddr::from(([0, 0, 0, 0], port));
                 match tokio::net::TcpListener::bind(addr).await {
-                    Ok(listener) => {
-                        if !is_installation_server {
-                            info!("Binding to port {}", port);
-                        }
-                        break listener;
-                    }
+                    Ok(listener) => break listener,
                     Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
-                        // Find next available port to suggest
                         let mut suggested = port + 1;
                         while suggested < 65535 {
                             if std::net::TcpListener::bind(("0.0.0.0", suggested)).is_ok() {
@@ -774,86 +697,66 @@ pub async fn run() -> anyhow::Result<()> {
                             }
                             suggested += 1;
                         }
-
-                        eprintln!("\nPort {} is already in use.", port);
-                        eprint!("Enter a different port (or press Enter for {}): ", suggested);
-                        std::io::Write::flush(&mut std::io::stderr()).ok();
-
+                        eprintln!("Port {} in use. Enter port (or Enter for {}): ", port, suggested);
                         let mut input = String::new();
                         if std::io::stdin().read_line(&mut input).is_ok() {
                             let input = input.trim();
-                            if input.is_empty() {
-                                port = suggested;
-                            } else if let Ok(p) = input.parse::<u16>() {
-                                port = p;
+                            port = if input.is_empty() {
+                                suggested
                             } else {
-                                eprintln!("Invalid port number, using {}", suggested);
-                                port = suggested;
-                            }
+                                input.parse().unwrap_or(suggested)
+                            };
                         } else {
                             return Err(anyhow::anyhow!("Port {} is already in use", port));
                         }
                     }
-                    Err(e) => {
-                        return Err(anyhow::anyhow!("Failed to bind to port {}: {}", port, e));
-                    }
+                    Err(e) => return Err(anyhow::anyhow!("Failed to bind to port {}: {}", port, e)),
                 }
             }
         }
     };
-    if !is_installation_server { // Conditional Log
-        info!("Dragonfly server listening on http://{}", listener.local_addr().context("Failed to get local address")?);
+
+    // Main startup message
+    if !is_installation_server {
+        println!("🐉 Dragonfly listening on http://{}", listener.local_addr().context("Failed to get local address")?);
     }
 
-    // --- Shutdown Signal Handling --- 
+    // Shutdown signal handling
     let shutdown_signal = async move {
-        // Set up a simple future for Ctrl+C
-        let ctrl_c = async { 
-            tokio::signal::ctrl_c().await.unwrap_or_else(|e| {
-                error!("Failed to listen for Ctrl+C: {}", e);
-            });
-            info!("Received Ctrl+C");
+        let ctrl_c = async {
+            let _ = tokio::signal::ctrl_c().await;
             println!("\nShutting down...");
         };
-        
+
         #[cfg(unix)]
-        let terminate = async { 
+        let terminate = async {
             if let Ok(mut signal) = signal(SignalKind::terminate()) {
                 signal.recv().await;
-                info!("Received SIGTERM");
-                println!("\nReceived SIGTERM, shutting down...");
+                println!("\nShutting down...");
             }
         };
-        
-        #[cfg(not(unix))] 
+
+        #[cfg(not(unix))]
         let terminate = std::future::pending::<()>();
-        
-        // Wait for any signal
+
         tokio::select! {
             _ = ctrl_c => {},
             _ = terminate => {},
         }
-        
-        // Send the shutdown signal
+
         let _ = shutdown_tx.send(());
-        info!("Sending shutdown signal to all components");
-        
-        // Force exit after 5 seconds if graceful shutdown hasn't completed
+
+        // Force exit after 5 seconds
         tokio::spawn(async {
             tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-            println!("Forcing exit after timeout");
             std::process::exit(0);
         });
     };
 
-    // Start serving with graceful shutdown
-    println!("Server started, press Ctrl+C to stop");
-    axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()) // Explicitly add ConnectInfo
+    axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
         .with_graceful_shutdown(shutdown_signal)
         .await
         .context("Server error")?;
-
-    if !is_installation_server { info!("Shutdown complete"); } // Cond Log
 
     Ok(())
 }

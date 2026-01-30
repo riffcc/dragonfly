@@ -5,7 +5,7 @@
 use anyhow::{bail, Context, Result};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use tracing::info;
+use tracing::debug;
 
 const DATA_DIR: &str = "/var/lib/dragonfly";
 
@@ -82,7 +82,7 @@ fn setup_dev_environment(project_root: &Path) -> Result<()> {
     let opt_dragonfly = Path::new("/opt/dragonfly");
     ensure_dir(opt_dragonfly)?;
     let opt_templates = opt_dragonfly.join("templates");
-    info!("Symlinking {} -> {}", templates_src.display(), opt_templates.display());
+    debug!("Symlinking {} -> {}", templates_src.display(), opt_templates.display());
     symlink(&templates_src, &opt_templates)?;
 
     // Set up relative paths for debug mode (relative to DATA_DIR working directory)
@@ -90,11 +90,11 @@ fn setup_dev_environment(project_root: &Path) -> Result<()> {
     ensure_dir(&data_crates)?;
 
     let data_templates = data_crates.join("templates");
-    info!("Symlinking {} -> {}", templates_src.display(), data_templates.display());
+    debug!("Symlinking {} -> {}", templates_src.display(), data_templates.display());
     symlink(&templates_src, &data_templates)?;
 
     let data_static = data_crates.join("static");
-    info!("Symlinking {} -> {}", static_src.display(), data_static.display());
+    debug!("Symlinking {} -> {}", static_src.display(), data_static.display());
     symlink(&static_src, &data_static)?;
 
     Ok(())
@@ -102,27 +102,16 @@ fn setup_dev_environment(project_root: &Path) -> Result<()> {
 
 /// Run the development server
 pub async fn run_dev() -> Result<()> {
-    println!("🐉 Dragonfly Development Mode");
-    println!();
+    println!("🐉 Dragonfly [Developer Mode]");
 
-    // Find project root
+    // Find project root and set up symlinks
     let project_root = find_project_root()?;
-    println!("  Project root: {}", project_root.display());
+    setup_dev_environment(&project_root)?;
 
     // Check if we're running from a debug build
-    let is_debug = cfg!(debug_assertions);
-    if !is_debug {
-        println!();
-        println!("⚠️  Warning: Running a release build. Hot reload is only available in debug builds.");
-        println!("   Build with 'cargo build' (not --release) for hot reload.");
-        println!();
+    if !cfg!(debug_assertions) {
+        eprintln!("Warning: Release build - template hot reload disabled");
     }
-
-    // Set up symlinks
-    println!("  Setting up development environment...");
-    setup_dev_environment(&project_root)?;
-    println!("  ✓ Symlinks configured for hot reload");
-    println!();
 
     // Check for existing dragonfly processes
     let port_check = Command::new("lsof")
@@ -131,19 +120,9 @@ pub async fn run_dev() -> Result<()> {
 
     if let Ok(output) = port_check {
         if output.status.success() && !output.stdout.is_empty() {
-            println!("⚠️  Port 3000 is already in use. Stop the existing server first:");
-            println!("   systemctl stop dragonfly  # if running as service");
-            println!("   pkill dragonfly           # if running manually");
             bail!("Port 3000 already in use");
         }
     }
-
-    println!("  Starting server with hot reload...");
-    println!("  Templates: {}/crates/dragonfly-server/templates", project_root.display());
-    println!("  Static:    {}/crates/dragonfly-server/static", project_root.display());
-    println!();
-    println!("  Edit templates and refresh browser - changes apply immediately!");
-    println!();
 
     // Change to data directory (for database paths)
     std::env::set_current_dir(DATA_DIR)
