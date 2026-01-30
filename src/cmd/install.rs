@@ -486,7 +486,7 @@ fn install_binary() -> Result<()> {
 
 fn install_os_templates(dev_mode: bool) -> Result<()> {
     let os_templates_src = Path::new("os-templates");
-    let os_templates_dest = format!("{}/templates", OPT_DIR);
+    let os_templates_dest = format!("{}/os-templates", DRAGONFLY_DIR);
 
     if !os_templates_src.exists() {
         // Not in project directory, skip OS template copy
