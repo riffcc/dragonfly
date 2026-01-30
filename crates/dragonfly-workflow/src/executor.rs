@@ -7,10 +7,9 @@ use crate::error::{Result, WorkflowError};
 use crate::store::WorkflowStateStore;
 use dragonfly_actions::{ActionContext, ActionEngine, Progress, ProgressReporter};
 use dragonfly_crd::{
-    ActionStatus, Hardware, TaskStatus, Template, Workflow, WorkflowState,
+    ActionStatus, Hardware, Template, Workflow, WorkflowState,
     WorkflowStatus,
 };
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::broadcast;
@@ -58,6 +57,12 @@ pub struct WorkflowExecutor {
 
     /// Global timeout for workflows
     global_timeout: Option<Duration>,
+
+    /// Server URL for template variable substitution
+    server_url: String,
+
+    /// Optional filter to only run specific actions (1-indexed)
+    action_filter: Option<Vec<usize>>,
 }
 
 impl WorkflowExecutor {
@@ -72,12 +77,29 @@ impl WorkflowExecutor {
             state_store,
             event_sender,
             global_timeout: None,
+            server_url: "127.0.0.1".to_string(),
+            action_filter: None,
         }
+    }
+
+    /// Set the server URL for template variable substitution
+    pub fn with_server_url(mut self, url: impl Into<String>) -> Self {
+        self.server_url = url.into();
+        self
     }
 
     /// Set the global workflow timeout
     pub fn with_global_timeout(mut self, timeout: Duration) -> Self {
         self.global_timeout = Some(timeout);
+        self
+    }
+
+    /// Set the action filter (1-indexed action numbers to run)
+    ///
+    /// Only actions whose 1-indexed position is in the filter will be executed.
+    /// Example: `vec![1, 3]` runs only the 1st and 3rd actions.
+    pub fn with_action_filter(mut self, filter: Vec<usize>) -> Self {
+        self.action_filter = Some(filter);
         self
     }
 
@@ -130,13 +152,13 @@ impl WorkflowExecutor {
             .await?
             .ok_or_else(|| WorkflowError::HardwareNotFound(workflow.spec.hardware_ref.clone()))?;
 
-        // Initialize workflow status
+        // Initialize workflow status with action statuses
         workflow.status = Some(WorkflowStatus {
             state: WorkflowState::StateRunning,
             current_action: None,
             progress: 0,
             global_timeout: self.global_timeout.map(|d| d.as_secs()),
-            tasks: self.initialize_task_statuses(&template),
+            actions: self.initialize_action_statuses(&template),
             started_at: Some(chrono::Utc::now()),
             completed_at: None,
             error: None,
@@ -154,7 +176,7 @@ impl WorkflowExecutor {
         let result = if let Some(timeout) = self.global_timeout {
             match tokio::time::timeout(
                 timeout,
-                self.run_workflow_tasks(&mut workflow, &template, &hardware),
+                self.run_workflow_actions(&mut workflow, &template, &hardware),
             )
             .await
             {
@@ -162,7 +184,7 @@ impl WorkflowExecutor {
                 Err(_) => Err(WorkflowError::Timeout(timeout)),
             }
         } else {
-            self.run_workflow_tasks(&mut workflow, &template, &hardware)
+            self.run_workflow_actions(&mut workflow, &template, &hardware)
                 .await
         };
 
@@ -196,157 +218,149 @@ impl WorkflowExecutor {
         result
     }
 
-    /// Initialize task statuses from template
-    fn initialize_task_statuses(&self, template: &Template) -> Vec<TaskStatus> {
+    /// Initialize action statuses from template
+    fn initialize_action_statuses(&self, template: &Template) -> Vec<ActionStatus> {
         template
             .spec
-            .tasks
+            .actions
             .iter()
-            .map(|task| TaskStatus {
-                name: task.name.clone(),
-                worker: task.worker.clone(),
-                actions: task
-                    .actions
-                    .iter()
-                    .map(|action| ActionStatus::pending(&action.name))
-                    .collect(),
-            })
+            .map(|action| ActionStatus::pending(action.action_type()))
             .collect()
     }
 
-    /// Run all tasks in the workflow
-    async fn run_workflow_tasks(
+    /// Run all actions in the workflow
+    async fn run_workflow_actions(
         &self,
         workflow: &mut Workflow,
         template: &Template,
         hardware: &Hardware,
     ) -> Result<()> {
-        let total_actions: usize = template
-            .spec
-            .tasks
-            .iter()
-            .map(|t| t.actions.len())
-            .sum();
-        let mut completed_actions = 0;
+        let total_actions = template.spec.actions.len();
+        info!(
+            total_actions = total_actions,
+            template = %template.metadata.name,
+            action_names = ?template.action_names(),
+            "Starting workflow actions - will execute {} actions", total_actions
+        );
 
-        for (task_idx, task) in template.spec.tasks.iter().enumerate() {
-            debug!(task = %task.name, "Starting task");
+        if total_actions == 0 {
+            error!(template = %template.metadata.name, "Template has NO ACTIONS - this is likely a deserialization bug!");
+        }
 
-            for (action_idx, template_action) in task.actions.iter().enumerate() {
-                let action_name = &template_action.name;
+        // Get hardware disk paths for template variable substitution
+        let hardware_disks: Vec<String> = hardware.spec.disks.iter()
+            .map(|d| d.device.clone())
+            .collect();
 
-                // Update current action
-                if let Some(status) = &mut workflow.status {
-                    status.current_action = Some(action_name.clone());
+        debug!(disks = ?hardware_disks, server = %self.server_url, "Action context setup");
+
+        for (action_idx, action_step) in template.spec.actions.iter().enumerate() {
+            let action_type = action_step.action_type();
+            let action_number = action_idx + 1; // 1-indexed for user-facing
+
+            // Check if action should be skipped due to filter
+            if let Some(ref filter) = self.action_filter {
+                if !filter.contains(&action_number) {
+                    info!(
+                        action = %action_type,
+                        number = action_number,
+                        "Skipping action (not in filter: {:?})", filter
+                    );
+                    continue;
                 }
-
-                // Mark action as running
-                self.update_action_status(
-                    workflow,
-                    task_idx,
-                    action_idx,
-                    |status| status.start(),
-                );
-
-                // Emit action started event
-                let _ = self.event_sender.send(WorkflowEvent::ActionStarted {
-                    workflow: workflow.metadata.name.clone(),
-                    action: action_name.clone(),
-                });
-
-                // Build action context
-                let env = self.build_environment(template_action, workflow);
-                let reporter = Arc::new(EventProgressReporter {
-                    workflow_name: workflow.metadata.name.clone(),
-                    action_name: action_name.clone(),
-                    sender: self.event_sender.clone(),
-                });
-
-                let ctx = ActionContext::new(hardware.clone(), workflow.clone())
-                    .with_environment(env)
-                    .with_progress_reporter(reporter);
-
-                // Add timeout if specified
-                let ctx = if let Some(timeout) = template_action.timeout {
-                    ctx.with_timeout(Duration::from_secs(timeout))
-                } else {
-                    ctx
-                };
-
-                // Execute action
-                let result = self.action_engine.execute(&template_action.action_type, &ctx).await;
-
-                let success = result.is_ok();
-
-                // Update action status
-                self.update_action_status(workflow, task_idx, action_idx, |status| {
-                    if success {
-                        status.complete();
-                    } else {
-                        status.fail(result.as_ref().err().map(|e| e.to_string()).unwrap_or_default());
-                    }
-                });
-
-                // Emit action completed event
-                let _ = self.event_sender.send(WorkflowEvent::ActionCompleted {
-                    workflow: workflow.metadata.name.clone(),
-                    action: action_name.clone(),
-                    success,
-                });
-
-                // Handle failure
-                if let Err(e) = result {
-                    error!(action = %action_name, error = %e, "Action failed");
-                    return Err(WorkflowError::ActionFailed {
-                        action: action_name.clone(),
-                        source: e,
-                    });
-                }
-
-                // Update progress
-                completed_actions += 1;
-                if let Some(status) = &mut workflow.status {
-                    status.progress = ((completed_actions as f64 / total_actions as f64) * 100.0) as u8;
-                }
-
-                // Save intermediate status
-                self.state_store.put_workflow(workflow).await?;
-
-                info!(action = %action_name, "Action completed successfully");
             }
+
+            debug!(action = %action_type, index = action_idx, "Starting action");
+
+            // Update current action
+            if let Some(status) = &mut workflow.status {
+                status.current_action = Some(action_type.to_string());
+            }
+
+            // Mark action as running
+            self.update_action_status(workflow, action_idx, |status| status.start());
+
+            // Emit action started event
+            let _ = self.event_sender.send(WorkflowEvent::ActionStarted {
+                workflow: workflow.metadata.name.clone(),
+                action: action_type.to_string(),
+            });
+
+            // Build action context with environment from template
+            // Get MAC address for template variable substitution (instance_id, friendly_name)
+            let mac = hardware.primary_mac().unwrap_or("00:00:00:00:00:00");
+            let env = action_step.to_environment(&hardware_disks, &self.server_url, mac);
+            let reporter = Arc::new(EventProgressReporter {
+                workflow_name: workflow.metadata.name.clone(),
+                action_name: action_type.to_string(),
+                sender: self.event_sender.clone(),
+            });
+
+            let ctx = ActionContext::new(hardware.clone(), workflow.clone())
+                .with_environment(env)
+                .with_progress_reporter(reporter);
+
+            // Add timeout if specified
+            let ctx = if let Some(timeout) = action_step.timeout() {
+                ctx.with_timeout(Duration::from_secs(timeout))
+            } else {
+                ctx
+            };
+
+            // Execute action
+            let result = self.action_engine.execute(action_type, &ctx).await;
+
+            let success = result.is_ok();
+
+            // Update action status
+            self.update_action_status(workflow, action_idx, |status| {
+                if success {
+                    status.complete();
+                } else {
+                    status.fail(result.as_ref().err().map(|e| e.to_string()).unwrap_or_default());
+                }
+            });
+
+            // Emit action completed event
+            let _ = self.event_sender.send(WorkflowEvent::ActionCompleted {
+                workflow: workflow.metadata.name.clone(),
+                action: action_type.to_string(),
+                success,
+            });
+
+            // Handle failure
+            if let Err(e) = result {
+                error!(action = %action_type, error = %e, "Action failed");
+                return Err(WorkflowError::ActionFailed {
+                    action: action_type.to_string(),
+                    source: e,
+                });
+            }
+
+            // Update progress
+            if let Some(status) = &mut workflow.status {
+                status.progress = (((action_idx + 1) as f64 / total_actions as f64) * 100.0) as u8;
+            }
+
+            // Save intermediate status
+            self.state_store.put_workflow(workflow).await?;
+
+            info!(action = %action_type, "Action completed successfully");
         }
 
         Ok(())
     }
 
     /// Update an action's status within the workflow
-    fn update_action_status<F>(&self, workflow: &mut Workflow, task_idx: usize, action_idx: usize, f: F)
+    fn update_action_status<F>(&self, workflow: &mut Workflow, action_idx: usize, f: F)
     where
         F: FnOnce(&mut ActionStatus),
     {
         if let Some(status) = &mut workflow.status {
-            if let Some(task) = status.tasks.get_mut(task_idx) {
-                if let Some(action) = task.actions.get_mut(action_idx) {
-                    f(action);
-                }
+            if let Some(action) = status.actions.get_mut(action_idx) {
+                f(action);
             }
         }
-    }
-
-    /// Build environment variables for an action
-    fn build_environment(
-        &self,
-        action: &dragonfly_crd::Action,
-        workflow: &Workflow,
-    ) -> HashMap<String, String> {
-        let mut env = action.environment.clone();
-
-        // Add workflow hardware map entries
-        for (key, value) in &workflow.spec.hardware_map {
-            env.insert(key.clone(), value.clone());
-        }
-
-        env
     }
 }
 
@@ -372,6 +386,7 @@ impl std::fmt::Debug for WorkflowExecutor {
         f.debug_struct("WorkflowExecutor")
             .field("action_engine", &self.action_engine)
             .field("global_timeout", &self.global_timeout)
+            .field("server_url", &self.server_url)
             .finish_non_exhaustive()
     }
 }
@@ -381,23 +396,37 @@ mod tests {
     use super::*;
     use crate::store::MemoryStateStore;
     use dragonfly_actions::NoopAction;
-    use dragonfly_crd::{DhcpSpec, HardwareSpec, InterfaceSpec, ObjectMeta, Task, TemplateSpec, TypeMeta};
+    use dragonfly_crd::{
+        ActionStep, DhcpSpec, DiskSpec, HardwareSpec, Image2DiskConfig, InterfaceSpec,
+        ObjectMeta, TemplateSpec, TypeMeta, WritefileConfig,
+    };
 
     fn test_template() -> Template {
         Template {
             type_meta: TypeMeta::template(),
             metadata: ObjectMeta::new("test-template"),
             spec: TemplateSpec {
-                tasks: vec![Task {
-                    name: "provision".to_string(),
-                    worker: "{{.device_1}}".to_string(),
-                    volumes: Vec::new(),
-                    actions: vec![
-                        dragonfly_crd::Action::new("step1", "noop").with_timeout(60),
-                        dragonfly_crd::Action::new("step2", "noop"),
-                    ],
-                }],
-                ..Default::default()
+                actions: vec![
+                    ActionStep::Image2disk(Image2DiskConfig {
+                        url: "http://{{ server }}/image.raw".to_string(),
+                        disk: "auto".to_string(),
+                        checksum: None,
+                        timeout: Some(60),
+                    }),
+                    ActionStep::Writefile(WritefileConfig {
+                        path: "/etc/test.cfg".to_string(),
+                        partition: Some(1),
+                        fs_type: None,
+                        content: Some("test".to_string()),
+                        content_b64: None,
+                        mode: Some("0644".to_string()),
+                        uid: None,
+                        gid: None,
+                        timeout: None,
+                    }),
+                ],
+                timeout: Some(300),
+                version: None,
             },
         }
     }
@@ -411,6 +440,7 @@ mod tests {
                     dhcp: Some(DhcpSpec::new("00:11:22:33:44:55")),
                     netboot: None,
                 }],
+                disks: vec![DiskSpec::new("/dev/sda")],
                 ..Default::default()
             },
             status: None,
@@ -424,11 +454,14 @@ mod tests {
         store.put_template(&test_template()).await.unwrap();
         store.put_hardware(&test_hardware()).await.unwrap();
 
-        // Create action engine with noop action
+        // Create action engine with noop actions for all action types
         let mut action_engine = ActionEngine::new();
-        action_engine.register(NoopAction::new("noop"));
+        action_engine.register(NoopAction::new("image2disk"));
+        action_engine.register(NoopAction::new("writefile"));
+        action_engine.register(NoopAction::new("kexec"));
 
-        let executor = WorkflowExecutor::new(action_engine, store.clone());
+        let executor = WorkflowExecutor::new(action_engine, store.clone())
+            .with_server_url("10.0.0.1");
 
         (executor, store)
     }
@@ -481,6 +514,10 @@ mod tests {
         let completed = store.get_workflow("test-workflow").await.unwrap().unwrap();
         assert!(completed.is_completed());
         assert_eq!(completed.progress(), 100);
+
+        // Check action statuses
+        let status = completed.status.as_ref().unwrap();
+        assert_eq!(status.actions.len(), 2);
     }
 
     #[tokio::test]
@@ -510,8 +547,9 @@ mod tests {
 
         // Check events
         assert!(events.iter().any(|e| matches!(e, WorkflowEvent::Started { .. })));
-        assert!(events.iter().any(|e| matches!(e, WorkflowEvent::ActionStarted { action, .. } if action == "step1")));
-        assert!(events.iter().any(|e| matches!(e, WorkflowEvent::ActionCompleted { action, success, .. } if action == "step1" && *success)));
+        assert!(events.iter().any(|e| matches!(e, WorkflowEvent::ActionStarted { action, .. } if action == "image2disk")));
+        assert!(events.iter().any(|e| matches!(e, WorkflowEvent::ActionCompleted { action, success, .. } if action == "image2disk" && *success)));
+        assert!(events.iter().any(|e| matches!(e, WorkflowEvent::ActionStarted { action, .. } if action == "writefile")));
         assert!(events.iter().any(|e| matches!(e, WorkflowEvent::Completed { success, .. } if *success)));
     }
 
@@ -553,7 +591,8 @@ mod tests {
 
         // Create action engine with slow action
         let mut action_engine = ActionEngine::new();
-        action_engine.register(dragonfly_actions::SleepAction::new("noop", Duration::from_secs(10)));
+        action_engine.register(dragonfly_actions::SleepAction::new("image2disk", Duration::from_secs(10)));
+        action_engine.register(dragonfly_actions::SleepAction::new("writefile", Duration::from_secs(10)));
 
         let executor = WorkflowExecutor::new(action_engine, store.clone())
             .with_global_timeout(Duration::from_millis(50));
@@ -570,5 +609,17 @@ mod tests {
             completed.status.as_ref().unwrap().state,
             WorkflowState::StateTimeout
         ));
+    }
+
+    #[tokio::test]
+    async fn test_initialize_action_statuses() {
+        let (executor, _) = setup_executor().await;
+        let template = test_template();
+
+        let statuses = executor.initialize_action_statuses(&template);
+
+        assert_eq!(statuses.len(), 2);
+        assert_eq!(statuses[0].name, "image2disk");
+        assert_eq!(statuses[1].name, "writefile");
     }
 }

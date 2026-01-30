@@ -1,0 +1,26 @@
+[package]
+name = "proxmox-compression"
+description = "compression utilities (such as an Zip Encoder for async rust) - patched for macOS"
+version = "1.0.1"
+edition = "2024"
+license = "AGPL-3.0-or-later"
+
+[dependencies]
+anyhow = "1"
+bytes = "1"
+crc32fast = "1"
+endian_trait = { version = "0.6", features = ["arrays"] }
+flate2 = "1"
+futures = "0.3"
+libc = "0.2"
+tar = "0.4"
+tokio = { version = "1", features = ["fs", "io-util"] }
+walkdir = "2"
+zstd = "0.13"
+
+proxmox-time = { path = "../proxmox-time" }
+proxmox-io = { git = "https://github.com/proxmox/proxmox-rs", features = ["tokio"] }
+proxmox-lang = { git = "https://github.com/proxmox/proxmox-rs" }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

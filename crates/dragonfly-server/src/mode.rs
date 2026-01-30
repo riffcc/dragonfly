@@ -11,11 +11,10 @@ use std::os::unix::fs::PermissionsExt;
 use nix::libc;
 use std::str;
 use tokio::fs;
-use sqlx::sqlite::SqlitePoolOptions;
-use sqlx::Row;
 use serde_yaml;
 use std::path::Path as StdPath;
 use crate::status::{check_kubernetes_connectivity, get_webui_address};
+use crate::store::DragonflyStore;
 
 // The different deployment modes
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,58 +53,45 @@ const HANDOFF_READY_FILE: &str = "/var/lib/dragonfly/handoff_ready";
 
 // Get the current mode (or None if not set)
 pub async fn get_current_mode() -> Result<Option<DeploymentMode>> {
-    // First, try to get the mode from the database
-    const DB_PATH: &str = "/var/lib/dragonfly/sqlite.db";
-    
-    // Check if DB exists before attempting to connect
-    if Path::new(DB_PATH).exists() {
-        // Connect to the database
-        match SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect_with(
-                sqlx::sqlite::SqliteConnectOptions::new()
-                    .filename(DB_PATH)
-                    .create_if_missing(false),
-            )
-            .await {
-                Ok(pool) => {
-                    // Query the database for the deployment mode
-                    let mode_row = sqlx::query("SELECT value FROM settings WHERE key = 'deployment_mode'")
-                        .fetch_optional(&pool)
-                        .await;
-                    
-                    // Clean up pool connection
-                    pool.close().await;
-                    
-                    // Process query result
-                    if let Ok(Some(row)) = mode_row {
-                        let mode_str: String = row.try_get(0).unwrap_or_default();
+    // Try to get the mode from ReDB
+    const REDB_PATH: &str = "/var/lib/dragonfly/dragonfly.redb";
+
+    if Path::new(REDB_PATH).exists() {
+        match crate::store::RedbStore::open(REDB_PATH) {
+            Ok(store) => {
+                match store.get_setting("deployment_mode").await {
+                    Ok(Some(mode_str)) => {
                         let mode = DeploymentMode::from_str(&mode_str);
                         if mode.is_some() {
-                            debug!("Found deployment mode '{}' in database", mode_str);
+                            debug!("Found deployment mode '{}' in ReDB", mode_str);
                             return Ok(mode);
                         }
                     }
-                    
-                    debug!("No deployment mode found in database");
-                },
-                Err(e) => {
-                    warn!("Failed to connect to SQLite database for mode check: {}", e);
+                    Ok(None) => {
+                        debug!("No deployment mode found in ReDB");
+                    }
+                    Err(e) => {
+                        warn!("Failed to read deployment mode from ReDB: {}", e);
+                    }
                 }
             }
+            Err(e) => {
+                warn!("Failed to open ReDB for mode check: {}", e);
+            }
+        }
     }
-    
+
     // Fall back to checking the mode file if database check failed
     if Path::new(MODE_FILE).exists() {
         debug!("Checking mode file for deployment mode");
-    let content = tokio::fs::read_to_string(MODE_FILE)
-        .await
-        .context("Failed to read mode file")?;
-    
-    let mode = DeploymentMode::from_str(content.trim());
+        let content = tokio::fs::read_to_string(MODE_FILE)
+            .await
+            .context("Failed to read mode file")?;
+
+        let mode = DeploymentMode::from_str(content.trim());
         return Ok(mode);
     }
-    
+
     // No mode found in database or file
     debug!("No deployment mode found in database or file");
     Ok(None)
@@ -113,94 +99,31 @@ pub async fn get_current_mode() -> Result<Option<DeploymentMode>> {
 
 // Save the current mode
 pub async fn save_mode(mode: DeploymentMode, already_elevated: bool) -> Result<()> {
-    // Save the mode to the database using SQLx
-    // Define the database path
     const DB_DIR: &str = "/var/lib/dragonfly";
-    const DB_PATH: &str = "/var/lib/dragonfly/sqlite.db";
+    const REDB_PATH: &str = "/var/lib/dragonfly/dragonfly.redb";
 
-    // Ensure the directory exists. This might require elevated privileges.
+    // Ensure the directory exists
     let db_dir_path = Path::new(DB_DIR);
     if !db_dir_path.exists() {
-        // If the directory doesn't exist and we aren't already elevated,
-        // we probably can't create it. Return an error suggesting elevation.
-        // Note: This check isn't foolproof, file permissions matter too.
-        if !already_elevated && nix::unistd::geteuid().is_root() == false {
-             bail!("Database directory {} does not exist. Please run with sudo or as root to create it.", DB_DIR);
+        if !already_elevated && !nix::unistd::geteuid().is_root() {
+            bail!("Database directory {} does not exist. Please run with sudo or as root to create it.", DB_DIR);
         }
-        // Attempt to create the directory
         tokio::fs::create_dir_all(db_dir_path)
             .await
             .with_context(|| format!("Failed to create database directory: {}", DB_DIR))?;
         info!("Created database directory: {}", DB_DIR);
-        // Consider setting appropriate permissions if needed, e.g., chown
     }
 
-    // Create a connection pool
-    // The pool is automatically managed and connections are returned when dropped.
-    let pool = SqlitePoolOptions::new()
-        .max_connections(1) // Keep it simple for this config task
-        .connect_with(
-            sqlx::sqlite::SqliteConnectOptions::new()
-                .filename(DB_PATH)
-                .create_if_missing(true),
-        )
-        .await
-        .with_context(|| format!("Failed to connect to SQLite database at {}", DB_PATH))?;
+    // Open ReDB and save the mode
+    let store = crate::store::RedbStore::open(REDB_PATH)
+        .map_err(|e| anyhow!("Failed to open ReDB at {}: {}", REDB_PATH, e))?;
 
-    // First check if the table exists to avoid errors
-    let table_exists = sqlx::query("SELECT name FROM sqlite_master WHERE type='table' AND name='settings'")
-        .fetch_optional(&pool)
-        .await
-        .map(|row| row.is_some())
-        .unwrap_or(false);
-
-    // Create the table only if it doesn't exist
-    if !table_exists {
-        debug!("Creating settings table in SQLite database");
-        match sqlx::query(
-            r#"
-            CREATE TABLE IF NOT EXISTS settings (
-                key TEXT PRIMARY KEY NOT NULL,
-                value TEXT NOT NULL
-            )
-            "#,
-        )
-        .execute(&pool)
-        .await {
-            Ok(_) => debug!("Settings table created successfully"),
-            Err(e) => {
-                // If table already exists (error code 1), just log and continue
-                // For all other errors, return the error
-                warn!("Error creating settings table (may already exist): {}", e);
-                // Continue execution - the insert will fail if there's a real problem
-            }
-        }
-    } else {
-        debug!("Settings table already exists in SQLite database");
-    }
-
-    // Insert or replace the deployment mode setting
     let mode_str = mode.as_str();
-    match sqlx::query(
-        r#"
-        INSERT OR REPLACE INTO settings (key, value)
-        VALUES (?, ?)
-        "#,
-    )
-    .bind("deployment_mode")
-    .bind(mode_str)
-    .execute(&pool)
-    .await {
-        Ok(_) => info!("Successfully saved deployment mode '{}' to database: {}", mode_str, DB_PATH),
-        Err(e) => {
-            error!("Failed to save deployment mode to SQLite database: {}", e);
-            return Err(anyhow!("Failed to save deployment mode: {}", e));
-        }
-    }
+    store.put_setting("deployment_mode", mode_str)
+        .await
+        .map_err(|e| anyhow!("Failed to save deployment mode: {}", e))?;
 
-    // Pool is closed when it goes out of scope
-    pool.close().await;
-    
+    info!("Successfully saved deployment mode '{}' to ReDB: {}", mode_str, REDB_PATH);
     Ok(())
 }
 
@@ -585,15 +508,7 @@ fn has_root_privileges() -> bool {
 // Configure the system for Simple mode
 pub async fn configure_simple_mode() -> Result<()> {
     info!("Configuring system for Simple mode");
-    
-    // First, check if we're already in Simple mode to avoid unnecessary work
-    if let Ok(Some(current_mode)) = get_current_mode().await {
-        if current_mode == DeploymentMode::Simple {
-            info!("System is already configured for Simple mode");
-            return Ok(());
-        }
-    }
-    
+
     // Get the path to the current executable
     let current_exec_path = std::env::current_exe()
         .context("Failed to get current executable path")?;
@@ -877,9 +792,9 @@ pub async fn configure_simple_mode() -> Result<()> {
         let data_dir = PathBuf::from("/var/lib/dragonfly");
         tokio::fs::create_dir_all(&data_dir).await.ok();
     }
-    
-    // Save the mode if we haven't already done it with elevated privileges
-        save_mode(DeploymentMode::Simple, false).await?;
+
+    // NOTE: Mode is saved by the UI handler via app_state.store BEFORE calling this function
+    // Do NOT call save_mode() here as it would try to open ReDB separately and cause a lock conflict
     
     let is_macos = std::env::consts::OS == "macos" || std::env::consts::OS == "darwin";
     
@@ -960,38 +875,25 @@ pub async fn start_handoff_listener(mut shutdown_rx: watch::Receiver<()>) -> Res
 }
 
 // Configure the system for Flight mode
-pub async fn configure_flight_mode() -> Result<()> {
+pub async fn configure_flight_mode(store: std::sync::Arc<dyn DragonflyStore>) -> Result<()> {
     info!("Configuring system for Flight mode");
-    
+
     // Always attempt the configuration steps for Flight mode
     // The checks inside these functions (like artifact download) will handle idempotency.
     
     // Execute multiple prerequisite tasks in parallel
-    let hooks_download_fut = async {
-        info!("Checking/Downloading HookOS artifacts...");
-        // The download function itself should be idempotent or check existence
-        match crate::api::download_hookos_artifacts("v0.10.0").await {
-            Ok(_) => info!("HookOS artifacts check/download complete."),
-            Err(e) => {
-                warn!("Failed to download/verify HookOS artifacts: {}", e);
-                // Non-fatal for configuration, might affect PXE booting later
-            }
-        }
-        Ok::<(), anyhow::Error>(()) // Return Result for try_join
-    };
-    
     let k8s_check_fut = async {
         info!("Checking Kubernetes connectivity...");
         match check_kubernetes_connectivity().await {
             Ok(()) => {
-                info!("Kubernetes connectivity confirmed.");
-                Ok(())
+                info!("Kubernetes connectivity confirmed. Will use K8s/etcd for storage if configured.");
             },
             Err(e) => {
-                error!("Error checking Kubernetes connectivity: {}. Cannot properly configure Flight mode.", e);
-                Err(anyhow!("Error checking Kubernetes connectivity: {}", e))
+                // K8s is OPTIONAL - Flight mode works fine with ReDB as storage backend
+                info!("Kubernetes not available ({}). Using ReDB for storage.", e);
             }
         }
+        Ok::<(), anyhow::Error>(()) // Always succeed - K8s is optional
     };
     
     // Add WebUI check future
@@ -1051,41 +953,225 @@ pub async fn configure_flight_mode() -> Result<()> {
         }
     };
     
-    // Add a future for updating the Tinkerbell stack itself
-    let tinkerbell_update_fut = async {
-        info!("Starting Tinkerbell stack update concurrently...");
-        enter_flight_mode().await.map_err(|e| {
-            error!("Failed during Tinkerbell stack update: {}", e);
-            e // Propagate the error
-        })
+    // Add iPXE binaries download future
+    let ipxe_download_fut = async {
+        info!("Checking/Downloading iPXE binaries...");
+        match crate::api::download_ipxe_binaries().await {
+            Ok(_) => info!("iPXE binaries check/download complete."),
+            Err(e) => {
+                warn!("Failed to download/verify iPXE binaries: {}", e);
+                // Non-fatal for configuration, might affect PXE booting later
+            }
+        }
+        Ok::<(), anyhow::Error>(())
     };
 
-    // Run all prerequisite tasks AND the Tinkerbell stack update in parallel
+    // Download Mage (Alpine netboot) artifacts for both architectures
+    let mage_download_fut = async {
+        info!("Downloading Mage boot environment for x86_64...");
+        crate::api::download_mage_artifacts("3.23", "x86_64").await
+            .map_err(|e| anyhow::anyhow!("Failed to download x86_64 Mage artifacts: {}", e))?;
+
+        info!("Downloading Mage boot environment for aarch64...");
+        crate::api::download_mage_artifacts("3.23", "aarch64").await
+            .map_err(|e| anyhow::anyhow!("Failed to download aarch64 Mage artifacts: {}", e))?;
+
+        // Verify files actually exist
+        crate::api::verify_mage_artifacts(&["x86_64", "aarch64"])
+            .map_err(|e| anyhow::anyhow!("Mage artifact verification failed: {}", e))?;
+
+        info!("All Mage artifacts downloaded and verified successfully");
+        Ok::<(), anyhow::Error>(())
+    };
+
+    // Download or build dragonfly-agent binaries for both architectures
+    let agent_build_fut = async {
+        // Create mage directories for each arch
+        let _ = std::fs::create_dir_all("/var/lib/dragonfly/mage/x86_64");
+        let _ = std::fs::create_dir_all("/var/lib/dragonfly/mage/aarch64");
+
+        // Track which architectures we successfully got
+        let mut got_x86_64 = false;
+        let mut got_aarch64 = false;
+
+        // Try to download pre-built binaries first, fall back to local build
+        for (arch, target) in [("x86_64", "x86_64-unknown-linux-musl"), ("aarch64", "aarch64-unknown-linux-musl")] {
+            let dest = format!("/var/lib/dragonfly/mage/{}/dragonfly-agent", arch);
+            let dest_path = std::path::Path::new(&dest);
+
+            // Check if already exists
+            if dest_path.exists() {
+                info!("{} agent binary already exists", arch);
+                if arch == "x86_64" { got_x86_64 = true; }
+                if arch == "aarch64" { got_aarch64 = true; }
+                continue;
+            }
+
+            // Try downloading from GitHub releases first
+            let download_url = format!(
+                "https://github.com/Zorlin/dragonfly/releases/download/latest/dragonfly-agent-{}",
+                arch
+            );
+            info!("Trying to download {} agent from {}", arch, download_url);
+
+            let download_result = async {
+                let client = reqwest::Client::new();
+                let response = client.get(&download_url).send().await?;
+                if response.status().is_success() {
+                    let bytes = response.bytes().await?;
+                    tokio::fs::write(&dest, &bytes).await?;
+                    // Make executable
+                    let mut perms = tokio::fs::metadata(&dest).await?.permissions();
+                    perms.set_mode(0o755);
+                    tokio::fs::set_permissions(&dest, perms).await?;
+                    Ok::<(), anyhow::Error>(())
+                } else {
+                    Err(anyhow!("HTTP {}", response.status()))
+                }
+            }.await;
+
+            if download_result.is_ok() {
+                info!("{} agent binary downloaded successfully", arch);
+                if arch == "x86_64" { got_x86_64 = true; }
+                if arch == "aarch64" { got_aarch64 = true; }
+                continue;
+            }
+
+            // Fall back to local build if download failed
+            warn!("Failed to download {} agent, trying local build...", arch);
+            info!("Building dragonfly-agent for {}...", target);
+            let output = tokio::process::Command::new("cargo")
+                .args(["build", "--release", "--package", "dragonfly-agent", "--target", target])
+                .output()
+                .await;
+
+            if let Ok(output) = output {
+                if output.status.success() {
+                    let src = format!("target/{}/release/dragonfly-agent", target);
+                    if let Err(e) = std::fs::copy(&src, &dest) {
+                        warn!("Failed to copy {} agent: {}", arch, e);
+                    } else {
+                        info!("{} agent binary ready (built locally)", arch);
+                        if arch == "x86_64" { got_x86_64 = true; }
+                        if arch == "aarch64" { got_aarch64 = true; }
+                    }
+                } else {
+                    warn!("{} agent build failed: {}", arch, String::from_utf8_lossy(&output.stderr));
+                }
+            } else {
+                warn!("{} agent build command failed to execute", arch);
+            }
+        }
+
+        // We need at least one architecture to work
+        if !got_x86_64 && !got_aarch64 {
+            return Err(anyhow!("Failed to obtain dragonfly-agent binary for any architecture. \
+                Either publish release artifacts to GitHub or ensure Rust toolchain is available for local build."));
+        }
+
+        if !got_x86_64 {
+            warn!("x86_64 agent not available - x86_64 machines won't be able to provision");
+        }
+        if !got_aarch64 {
+            warn!("aarch64 agent not available - ARM64 machines won't be able to provision");
+        }
+
+        Ok::<(), anyhow::Error>(())
+    };
+
+    // Generate Mage APK overlays for both architectures (uses locally-built agents)
+    let mage_apkovl_fut = async {
+        // Get base_url from: env var > config.toml > auto-detect > localhost
+        let base_url = get_base_url(None).await;
+
+        let mut got_x86_64 = false;
+        let mut got_aarch64 = false;
+
+        // Generate for x86_64
+        info!("Generating Mage APK overlay for x86_64...");
+        match crate::api::generate_mage_apkovl_arch(&base_url, "x86_64").await {
+            Ok(()) => {
+                info!("x86_64 APK overlay generated successfully");
+                got_x86_64 = true;
+            }
+            Err(e) => warn!("Failed to generate x86_64 APK overlay: {}", e),
+        }
+
+        // Generate for aarch64
+        info!("Generating Mage APK overlay for aarch64...");
+        match crate::api::generate_mage_apkovl_arch(&base_url, "aarch64").await {
+            Ok(()) => {
+                info!("aarch64 APK overlay generated successfully");
+                got_aarch64 = true;
+            }
+            Err(e) => warn!("Failed to generate aarch64 APK overlay: {}", e),
+        }
+
+        // We need at least one architecture's overlay to work
+        if !got_x86_64 && !got_aarch64 {
+            return Err(anyhow!("Failed to generate APK overlay for any architecture. \
+                Ensure dragonfly-agent binaries are available."));
+        }
+
+        Ok::<(), anyhow::Error>(())
+    };
+
+    // Add a future for updating the Tinkerbell stack (ONLY if K8s is available)
+    let tinkerbell_update_fut = async {
+        // Check if K8s is available before trying Tinkerbell update
+        match check_kubernetes_connectivity().await {
+            Ok(()) => {
+                info!("K8s available - starting Tinkerbell stack update...");
+                match enter_flight_mode().await {
+                    Ok(_) => info!("Tinkerbell stack update completed"),
+                    Err(e) => {
+                        warn!("Tinkerbell stack update failed: {}. Continuing with native provisioning.", e);
+                    }
+                }
+            }
+            Err(_) => {
+                // K8s not available - skip Tinkerbell update, use native provisioning
+                info!("K8s not available - skipping Tinkerbell stack update, using native ReDB provisioning");
+            }
+        }
+        Ok::<(), anyhow::Error>(())
+    };
+
+    // Run prerequisite tasks - some in parallel, some sequential
+    // Phase 1: Downloads and builds (parallel)
     match tokio::try_join!(
-        hooks_download_fut,
         k8s_check_fut,
         webui_check_fut,
         agent_builder_fut,
-        tinkerbell_update_fut // Add the new future here
+        ipxe_download_fut,
+        mage_download_fut,
+        agent_build_fut,
+        tinkerbell_update_fut
     ) {
-        Ok(_) => {
-            // All prerequisite checks and the Tinkerbell update completed successfully (or were non-fatal)
-            info!("Successfully configured Flight mode (all prerequisite tasks and Tinkerbell stack update complete).");
-            // Any further actions after successful configuration can go here
-        },
+        Ok(_) => info!("Phase 1 complete: downloads and builds."),
         Err(e) => {
-            error!("Failed during Flight mode configuration: {}", e);
-            // Return the specific error that caused the failure
+            error!("Failed during Flight mode phase 1: {}", e);
             return Err(e);
         }
     }
 
-    // Save the mode *after* successful configuration
-    save_mode(DeploymentMode::Flight, false).await?; // Assuming not already elevated
+    // Phase 2: APK overlay generation (needs agent binary from phase 1)
+    match tokio::try_join!(mage_apkovl_fut) {
+        Ok(_) => {
+            info!("Successfully configured Flight mode.");
+        },
+        Err(e) => {
+            error!("Failed during Flight mode configuration: {}", e);
+            return Err(e);
+        }
+    }
+
+    // NOTE: Mode is saved by the UI handler via app_state.store BEFORE calling this function
+    // Do NOT call save_mode() here as it would try to open ReDB separately and cause a lock conflict
 
     // Initialize OS templates now that Flight mode is configured
     info!("Initializing OS templates for Flight mode...");
-    match crate::os_templates::init_os_templates().await {
+    match crate::os_templates::init_os_templates(store).await {
         Ok(_) => info!("OS templates initialized successfully"),
         Err(e) => warn!("Failed to initialize OS templates: {}", e),
     }
@@ -1397,7 +1483,8 @@ pub async fn deploy_k3s_and_handoff() -> Result<()> {
         
         // Set KUBECONFIG environment variable for kubectl and helm
         let kubeconfig_path = format!("{}/.kube/config", home);
-        std::env::set_var("KUBECONFIG", &kubeconfig_path);
+        // SAFETY: Single-threaded initialization before spawning async tasks
+        unsafe { std::env::set_var("KUBECONFIG", &kubeconfig_path); }
         info!("Set KUBECONFIG environment variable to: {}", kubeconfig_path);
 
         // Add kubernetes.docker.internal to /etc/hosts if not already there
@@ -1753,52 +1840,16 @@ async fn install_helm() -> Result<()> {
 pub async fn configure_swarm_mode() -> Result<()> {
     info!("Configuring system for Swarm mode");
     
-    // First, check if we're already in Swarm mode to avoid unnecessary work
-    if let Ok(Some(current_mode)) = get_current_mode().await {
-        if current_mode == DeploymentMode::Swarm {
-            info!("System is already configured for Swarm mode");
-            return Ok(());
-        }
-    }
-    
-    // Track if we've used elevated privileges
-    let _used_elevation = false;
-    
+    // NOTE: Mode is saved by the UI handler via app_state.store BEFORE calling this function
+
     // Ensure /var/lib/dragonfly exists and is owned by the current user on macOS
     if let Err(e) = ensure_var_lib_ownership().await {
         warn!("Failed to ensure /var/lib/dragonfly ownership: {}", e);
         // Non-critical, continue anyway
     }
     
-    // TODO: Implement swarm mode configuration
-    
-    // Save the mode if it hasn't been done with elevated privileges
-    if !_used_elevation {
-        if is_macos() {
-            info!("Saving mode directly using admin privileges on macOS");
-            let script = format!(
-                r#"do shell script "mkdir -p {0} && echo '{1}' > {2} && chmod 755 {0}" with administrator privileges with prompt "Dragonfly needs permission to save your deployment mode""#,
-                MODE_DIR, DeploymentMode::Swarm.as_str(), MODE_FILE
-            );
-            
-            let osa_output = Command::new("osascript")
-                .arg("-e")
-                .arg(&script)
-                .output()
-                .context("Failed to execute osascript for sudo prompt")?;
-                
-            if !osa_output.status.success() {
-                let stderr_str = String::from_utf8_lossy(&osa_output.stderr);
-                return Err(anyhow::anyhow!("Failed to create mode directory with admin privileges: {}", stderr_str));
-            }
-            
-            info!("Mode set to swarm");
-        } else {
-            // Use the regular save_mode function for Linux
-            save_mode(DeploymentMode::Swarm, false).await?;
-        }
-    }
-    
+    // TODO: Implement Citadel integration for Swarm mode
+
     info!("System configured for Swarm mode.");
     
     let is_macos = std::env::consts::OS == "macos" || std::env::consts::OS == "darwin";
@@ -1891,9 +1942,95 @@ async fn check_webui_service_status() -> anyhow::Result<bool> {
     }
 }
 
+/// Detect the server's primary IP address from network interfaces
+///
+/// Uses `ip route get 1` to find the interface used for outbound traffic,
+/// which gives us the most likely correct IP for clients to connect to.
+pub fn detect_server_ip() -> Option<String> {
+    // Method 1: Use ip route to find the source IP for outbound traffic
+    // This is the most reliable method as it shows which IP would be used
+    // to reach external hosts
+    if let Ok(output) = Command::new("ip")
+        .args(["route", "get", "1"])
+        .output()
+    {
+        if output.status.success() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            // Output looks like: "1.0.0.0 via 10.7.1.1 dev eth0 src 10.7.1.125 uid 0"
+            // We want the IP after "src"
+            if let Some(src_idx) = stdout.find(" src ") {
+                let after_src = &stdout[src_idx + 5..];
+                if let Some(ip) = after_src.split_whitespace().next() {
+                    if !ip.starts_with("127.") {
+                        info!("Detected server IP from route: {}", ip);
+                        return Some(ip.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    // Method 2: Parse hostname -I for the first non-localhost IP
+    if let Ok(output) = Command::new("hostname")
+        .args(["-I"])
+        .output()
+    {
+        if output.status.success() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            for ip in stdout.split_whitespace() {
+                // Skip localhost and IPv6 link-local
+                if !ip.starts_with("127.") && !ip.starts_with("::1") && !ip.contains(':') {
+                    info!("Detected server IP from hostname: {}", ip);
+                    return Some(ip.to_string());
+                }
+            }
+        }
+    }
+
+    warn!("Could not auto-detect server IP address");
+    None
+}
+
+/// Get the base URL for the Dragonfly server
+///
+/// Priority:
+/// 1. DRAGONFLY_BASE_URL environment variable
+/// 2. Config file (/var/lib/dragonfly/config.toml)
+/// 3. Auto-detected IP with port 3000
+/// 4. Fallback to localhost:3000
+pub async fn get_base_url(_store: Option<&dyn DragonflyStore>) -> String {
+    // 1. Check environment variable first
+    if let Ok(url) = std::env::var("DRAGONFLY_BASE_URL") {
+        debug!("Using DRAGONFLY_BASE_URL from environment: {}", url);
+        return url;
+    }
+
+    // 2. Check config file
+    if let Some(url) = crate::read_base_url_from_config() {
+        info!("Using base_url from config.toml: {}", url);
+        return url;
+    }
+
+    // 3. Auto-detect IP
+    if let Some(ip) = detect_server_ip() {
+        let url = format!("http://{}:3000", ip);
+        info!("Auto-detected base URL: {}", url);
+        return url;
+    }
+
+    // 4. Fallback
+    warn!("Using localhost as base URL - PXE clients won't be able to reach this!");
+    "http://localhost:3000".to_string()
+}
+
 // Helper function to get the load balancer IP for connections
 async fn get_loadbalancer_ip() -> Result<String> {
-    // Try to get the load balancer IP from the service
+    // First try auto-detection from network interfaces
+    if let Some(ip) = detect_server_ip() {
+        return Ok(ip);
+    }
+
+    // Try to get the load balancer IP from K8s service (if available)
     match get_webui_address().await {
         Ok(Some(url)) => {
             // Extract host from URL (remove http:// prefix and port)
@@ -1908,26 +2045,7 @@ async fn get_loadbalancer_ip() -> Result<String> {
             debug!("Could not determine load balancer IP from web UI service");
         }
     }
-    
-    // If we can't get the load balancer IP, try to get the node IP
-    let kubectl_output = Command::new("kubectl")
-        .args(["get", "nodes", "-o", "jsonpath='{.items[0].status.addresses[?(@.type==\"InternalIP\")].address}'"])
-        .output();
-        
-    if let Ok(output) = kubectl_output {
-        if output.status.success() {
-            let node_ip = String::from_utf8_lossy(&output.stdout)
-                .trim()
-                .trim_matches('\'')
-                .to_string();
-                
-            if !node_ip.is_empty() {
-                debug!("Using node IP as load balancer address: {}", node_ip);
-                return Ok(node_ip);
-            }
-        }
-    }
-    
+
     // Fallback to localhost
     debug!("Using localhost as load balancer address");
     Ok("localhost".to_string())

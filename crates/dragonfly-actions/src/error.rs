@@ -29,6 +29,10 @@ pub enum ActionError {
     #[error("missing environment variable: {0}")]
     MissingEnvVar(String),
 
+    /// Validation failed
+    #[error("validation failed: {0}")]
+    ValidationFailed(String),
+
     /// I/O error during action execution
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),

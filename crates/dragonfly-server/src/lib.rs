@@ -18,6 +18,9 @@ use axum::extract::MatchedPath;
 use crate::auth::{AdminBackend, auth_router, Settings};
 use crate::db::init_db;
 use crate::event_manager::EventManager;
+use crate::services::{ServiceRunner, ServicesConfig, DhcpServiceConfig, TftpServiceConfig};
+use dragonfly_dhcp::DhcpMode;
+use std::path::PathBuf;
 
 // Add MiniJinja imports
 use minijinja::path_loader;
@@ -41,10 +44,13 @@ mod db;
 mod filters; // Uncomment unused module
 pub mod handlers;
 pub mod ui;
-pub mod tinkerbell;
 pub mod event_manager;
 pub mod os_templates;
 pub mod mode;
+pub mod store;
+pub mod provisioning;
+pub mod services;
+pub mod tinkerbell;
 
 // Expose status module for integration tests
 pub mod status;
@@ -64,17 +70,53 @@ pub static INSTALL_STATE_REF: Lazy<RwLock<Option<Arc<Mutex<InstallationState>>>>
     RwLock::new(None)
 });
 
+const CONFIG_PATH: &str = "/var/lib/dragonfly/config.toml";
+
+/// Read server port from config file, default to 3000 if not found
+fn read_port_from_config() -> u16 {
+    let content = match std::fs::read_to_string(CONFIG_PATH) {
+        Ok(c) => c,
+        Err(_) => return 3000,
+    };
+
+    // Simple TOML parsing - look for "port = NNNN"
+    for line in content.lines() {
+        let line = line.trim();
+        if line.starts_with("port") && !line.starts_with("port =") || line.starts_with("port =") {
+            if let Some(val) = line.split('=').nth(1) {
+                if let Ok(port) = val.trim().parse::<u16>() {
+                    return port;
+                }
+            }
+        }
+    }
+    3000
+}
+
+/// Read base_url from config file, returns None if not found
+pub fn read_base_url_from_config() -> Option<String> {
+    let content = std::fs::read_to_string(CONFIG_PATH).ok()?;
+
+    // Simple TOML parsing - look for 'base_url = "..."'
+    for line in content.lines() {
+        let line = line.trim();
+        if line.starts_with("base_url") {
+            if let Some(val) = line.split('=').nth(1) {
+                let val = val.trim().trim_matches('"');
+                if !val.is_empty() {
+                    return Some(val.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
 // Stub function to check installation status (Replace with real check later)
 // Checks environment variable DRAGONFLY_FORCE_INSTALLED=true for testing
 // Also checks for /var/lib/dragonfly and dragonfly StatefulSet status
 pub async fn is_dragonfly_installed() -> bool {
-    // 1. Check environment variable override first (for Kubernetes deployments)
-    if std::env::var("DRAGONFLY_INSTALLED").is_ok() {
-        debug!("Installation status set via DRAGONFLY_INSTALLED");
-        return true;
-    }
-
-    // 2. Check for the existence of the local directory (local installation)
+    // Check for the existence of the local directory (local installation)
     let dir_path = "/var/lib/dragonfly";
     let dir_exists = match async_fs::metadata(dir_path).await {
         Ok(metadata) => metadata.is_dir(),
@@ -187,6 +229,7 @@ pub struct AppState {
     pub setup_mode: bool,  // Explicit CLI setup mode
     pub first_run: bool,   // First run based on settings
     pub shutdown_tx: watch::Sender<()>,  // Channel to signal shutdown
+    pub shutdown_rx: watch::Receiver<()>,  // Receiver for shutdown (clonable for services)
     // Use the new enum for the environment
     pub template_env: TemplateEnv,
     // Add flags for Scenario B
@@ -199,6 +242,70 @@ pub struct AppState {
     pub dbpool: sqlx::Pool<sqlx::Sqlite>,
     // Store API tokens in memory for immediate use after creation
     pub tokens: Arc<Mutex<std::collections::HashMap<String, String>>>,
+    // Native provisioning service (optional - None uses legacy behavior)
+    pub provisioning: Option<Arc<provisioning::ProvisioningService>>,
+    // Native storage backend (ReDB by default)
+    pub store: Arc<dyn store::DragonflyStore>,
+    // Track if network services (DHCP/TFTP) are running
+    pub network_services_started: Arc<AtomicBool>,
+}
+
+/// Start network services (DHCP/TFTP) for Flight mode
+/// This can be called at startup or dynamically when Flight mode is activated
+pub async fn start_network_services(app_state: &AppState, shutdown_rx: watch::Receiver<()>) {
+    // Check if services are already running
+    if app_state.network_services_started.swap(true, Ordering::SeqCst) {
+        info!("Network services already started, skipping");
+        return;
+    }
+
+    info!("Starting native network services for Flight mode");
+
+    // Create services configuration
+    let services_config = ServicesConfig {
+        dhcp: Some(DhcpServiceConfig {
+            mode: DhcpMode::AutoProxy, // Auto-discovery of unknown machines
+            boot_filename_bios: "undionly.kpxe".to_string(),
+            boot_filename_uefi: "ipxe.efi".to_string(),
+            http_boot_url: None,
+        }),
+        tftp: Some(TftpServiceConfig {
+            boot_dir: PathBuf::from("/var/lib/dragonfly/tftp"),
+        }),
+        server_ip: std::net::Ipv4Addr::new(0, 0, 0, 0), // Bind to all interfaces
+        http_port: read_port_from_config(), // Use same port as HTTP server
+    };
+
+    // Create service runner with native store for hardware lookup
+    let service_runner = ServiceRunner::new(services_config, app_state.store.clone());
+
+    // Create a bool-based shutdown channel for the services
+    // (ServiceRunner expects watch::Receiver<bool>)
+    let (services_shutdown_tx, services_shutdown_rx) = watch::channel(false);
+
+    // Forward the main shutdown signal to the services shutdown channel
+    let mut main_shutdown_rx = shutdown_rx;
+    tokio::spawn(async move {
+        let _ = main_shutdown_rx.changed().await;
+        let _ = services_shutdown_tx.send(true);
+    });
+
+    // Start services in a background task
+    tokio::spawn(async move {
+        match service_runner.start(services_shutdown_rx).await {
+            Ok(handles) => {
+                if handles.dhcp.is_some() {
+                    info!("DHCP server started in AutoProxy mode");
+                }
+                if handles.tftp.is_some() {
+                    info!("TFTP server started serving from /var/lib/dragonfly/tftp");
+                }
+            }
+            Err(e) => {
+                error!("Failed to start network services: {}", e);
+            }
+        }
+    });
 }
 
 // Clean up any existing processes
@@ -286,31 +393,83 @@ pub async fn run() -> anyhow::Result<()> {
     // Load historical timing data
     tinkerbell::load_historical_timings().await?; // Essential
 
-    // --- Start OS Templates Initialization --- 
-    // Get current deployment mode from database
-    let current_mode = mode::get_current_mode().await?;
-    
+    // --- Storage Backend Setup (EARLY - needed for mode check and settings) ---
+    // Initialize ReDB as the default storage backend BEFORE anything else
+    const REDB_PATH: &str = "/var/lib/dragonfly/dragonfly.redb";
+    let native_store: Arc<dyn store::DragonflyStore> = match store::RedbStore::open(REDB_PATH) {
+        Ok(s) => {
+            info!("Initialized ReDB storage at {}", REDB_PATH);
+            Arc::new(s)
+        }
+        Err(e) => {
+            // Fall back to memory store if ReDB fails (e.g., during demo mode)
+            warn!("Failed to open ReDB at {}: {}. Using in-memory store.", REDB_PATH, e);
+            Arc::new(store::MemoryStore::new())
+        }
+    };
+
+    // --- Get Deployment Mode from ReDB ---
+    let current_mode_str = native_store.get_setting("deployment_mode").await.ok().flatten();
+    let current_mode = current_mode_str.as_deref().and_then(|s| match s {
+        "flight" => Some(mode::DeploymentMode::Flight),
+        "simple" => Some(mode::DeploymentMode::Simple),
+        "swarm" => Some(mode::DeploymentMode::Swarm),
+        _ => None,
+    });
+
     // Log the current deployment mode
     match &current_mode {
         Some(mode::DeploymentMode::Flight) => info!("Starting server in Flight mode"),
         Some(mode::DeploymentMode::Simple) => info!("Starting server in Simple mode"),
         Some(mode::DeploymentMode::Swarm) => info!("Starting server in Swarm mode"),
-        None => info!("No deployment mode set in database"),
+        None => info!("No deployment mode set"),
     }
-    
+
     let is_flight_mode = matches!(current_mode, Some(mode::DeploymentMode::Flight));
     
     if is_flight_mode && !is_installation_server {
         info!("Starting OS templates initialization for Flight mode...");
         let event_manager_clone = event_manager.clone(); // Clone for the task
-        tokio::spawn(async move { 
-            match os_templates::init_os_templates().await {
+        let store_for_templates = native_store.clone();
+        tokio::spawn(async move {
+            match os_templates::init_os_templates(store_for_templates).await {
                 Ok(_) => { info!("OS templates initialized successfully"); },
                 Err(e) => { warn!("Failed to initialize OS templates: {}", e); }
             }
             // Send event after templates are initialized
             let _ = event_manager_clone.send("templates_ready".to_string());
         });
+
+        // Verify Mage boot artifacts exist - auto-download if missing
+        info!("Verifying Mage boot artifacts for Flight mode...");
+        if let Err(e) = crate::api::verify_mage_artifacts(&["x86_64", "aarch64"]) {
+            warn!("Mage boot artifacts verification failed: {}", e);
+            info!("Auto-downloading missing Mage boot artifacts...");
+
+
+            // Download x86_64 artifacts
+            if let Err(download_err) = crate::api::download_mage_artifacts("3.23", "x86_64").await {
+                error!("Failed to download x86_64 Mage artifacts: {}", download_err);
+                error!("Flight mode requires Mage artifacts - cannot continue");
+                return Err(anyhow!("Failed to download required Mage artifacts: {}", download_err));
+            }
+            info!("Downloaded x86_64 Mage artifacts");
+
+            // Download aarch64 artifacts
+            if let Err(download_err) = crate::api::download_mage_artifacts("3.23", "aarch64").await {
+                error!("Failed to download aarch64 Mage artifacts: {}", download_err);
+                error!("Flight mode requires Mage artifacts - cannot continue");
+                return Err(anyhow!("Failed to download required Mage artifacts: {}", download_err));
+            }
+            info!("Downloaded aarch64 Mage artifacts");
+
+            // Verify download succeeded
+            crate::api::verify_mage_artifacts(&["x86_64", "aarch64"])
+                .map_err(|e| anyhow!("Mage artifact verification failed after download: {}", e))?;
+            info!("Mage boot artifacts downloaded and verified successfully");
+        } else {
+            info!("Mage boot artifacts verified successfully");
+        }
     } else {
         debug!("Skipping OS templates initialization (not in Flight mode)");
     } // End conditional OS template init
@@ -353,23 +512,28 @@ pub async fn run() -> anyhow::Result<()> {
         }
     };
 
-    // Load settings from database or use defaults
-    let settings = match auth::load_settings().await {
-        Ok(s) => s,
-        Err(_) => {
-            info!("Using default app settings");
-            auth::Settings::default() // Use default settings if loading fails
+    // Load settings from ReDB or use defaults
+    let settings = match native_store.get_setting("require_login").await {
+        Ok(Some(val)) => {
+            let require_login = val == "true";
+            info!("Loaded require_login={} from ReDB", require_login);
+            let mut s = auth::Settings::default();
+            s.require_login = require_login;
+            s
+        }
+        _ => {
+            info!("No settings in ReDB, using defaults (require_login=true)");
+            let s = auth::Settings::default();
+            // Save defaults to ReDB
+            let _ = native_store.put_setting("require_login", &s.require_login.to_string()).await;
+            s
         }
     };
 
     // Reset setup flag if in setup mode
     if setup_mode {
-        if !is_installation_server { info!("Setup mode enabled, resetting setup completion status"); } // Cond Log
-        let mut settings_copy = settings.clone();
-        settings_copy.setup_completed = false;
-        if let Err(e) = auth::save_settings(&settings_copy).await { // Essential
-             if !is_installation_server { warn!("Failed to reset setup status: {}", e); } // Cond Log
-        }
+        if !is_installation_server { info!("Setup mode enabled, resetting setup completion status"); }
+        let _ = native_store.put_setting("setup_completed", "false").await;
     }
 
     // Determine first run status
@@ -438,19 +602,60 @@ pub async fn run() -> anyhow::Result<()> {
         }
         #[cfg(not(debug_assertions))]
         {
-            info!("Using static MiniJinja environment for release build");
+            let release_template_path = "/opt/dragonfly/templates";
+            info!("Using templates from {}", release_template_path);
             let mut env = Environment::new();
-            env.set_loader(path_loader(&template_path));
-            
+            env.set_loader(path_loader(release_template_path));
+
             // Set up filters and globals
             if let Err(e) = ui::setup_minijinja_environment(&mut env) {
                 error!("Failed to set up MiniJinja environment: {}", e);
             }
-            
+
             TemplateEnv::Static(Arc::new(env))
         }
     };
-    // --- End MiniJinja Setup --- 
+    // --- End MiniJinja Setup ---
+
+    // --- Native Provisioning Setup ---
+    // Native provisioning is always enabled by default (disable with DRAGONFLY_DISABLE_PROVISIONING=1)
+    let native_provisioning_disabled = std::env::var("DRAGONFLY_DISABLE_PROVISIONING").is_ok();
+    let provisioning_service = if !native_provisioning_disabled && !is_installation_server {
+        info!("Native provisioning enabled - initializing ProvisioningService");
+
+        // Get boot server URL with auto-detection (env var > ReDB > auto-detect > localhost)
+        let boot_server_url = mode::get_base_url(Some(native_store.as_ref())).await;
+        info!("Using boot server URL: {}", boot_server_url);
+
+        // Build iPXE configuration
+        let ipxe_config = dragonfly_ipxe::IpxeConfig {
+            base_url: boot_server_url,
+            mage_kernel_url: std::env::var("DRAGONFLY_MAGE_KERNEL_URL").ok(),
+            mage_initramfs_url: std::env::var("DRAGONFLY_MAGE_INITRAMFS_URL").ok(),
+            kernel_params: vec![],
+            console: std::env::var("DRAGONFLY_CONSOLE").ok(),
+            verbose: false,
+        };
+
+        // Use the deployment mode from ReDB (already read earlier), default to Simple
+        let provisioning_mode = current_mode.clone().unwrap_or(mode::DeploymentMode::Simple);
+
+        info!("Native provisioning mode: {:?}", provisioning_mode);
+
+        let service = provisioning::ProvisioningService::new(
+            native_store.clone(),
+            ipxe_config,
+            provisioning_mode,
+        );
+
+        Some(Arc::new(service))
+    } else {
+        if !native_provisioning_disabled && is_installation_server {
+            debug!("Skipping native provisioning during installation");
+        }
+        None
+    };
+    // --- End Native Provisioning Setup ---
 
     // Create application state
     let app_state = AppState {
@@ -459,6 +664,7 @@ pub async fn run() -> anyhow::Result<()> {
         setup_mode,
         first_run,
         shutdown_tx: shutdown_tx.clone(),
+        shutdown_rx: shutdown_rx.clone(),
         template_env,
         // Add the new flags
         is_installed,
@@ -470,6 +676,12 @@ pub async fn run() -> anyhow::Result<()> {
         dbpool: db_pool.clone(),
         // Store API tokens in memory for immediate use after creation
         tokens: Arc::new(Mutex::new(std::collections::HashMap::new())),
+        // Native provisioning service (if enabled)
+        provisioning: provisioning_service.clone(),
+        // Native storage backend
+        store: native_store,
+        // Track if network services (DHCP/TFTP) are running
+        network_services_started: Arc::new(AtomicBool::new(false)),
     };
 
     // Load Proxmox API tokens from database to memory for immediate use
@@ -508,17 +720,22 @@ pub async fn run() -> anyhow::Result<()> {
         .merge(auth_router())
         .merge(ui::ui_router())
         .route("/favicon.ico", get(handle_favicon))
+        // Boot endpoints - /boot/{mac} for iPXE scripts, /boot/{arch}/{asset} for kernel/initramfs
+        .route("/boot/{mac}", get(api::ipxe_script))
+        // Dynamic boot assets - supports x86_64, aarch64, and arm64 (iPXE uses arm64)
+        .route("/boot/{arch}/{asset}", get(api::serve_boot_asset_handler))
+        // OS images (served during provisioning)
+        .route("/os/debian-13/amd64", get(|| async { api::serve_os_image("debian-13", "amd64").await }))
+        .route("/os/debian-13/arm64", get(|| async { api::serve_os_image("debian-13", "arm64").await }))
+        // Legacy route for backwards compatibility
         .route("/{mac}", get(api::ipxe_script))
         .route("/ipxe/{*path}", get(api::serve_ipxe_artifact))
         .nest("/api", api::api_router())
         .nest_service("/static", {
-            let preferred_path = "/opt/dragonfly/static";
-            let fallback_path = "crates/dragonfly-server/static";
-            let static_path = if std::path::Path::new(preferred_path).exists() {
-                preferred_path
-            } else {
-                fallback_path
-            };
+            #[cfg(debug_assertions)]
+            let static_path = "crates/dragonfly-server/static";
+            #[cfg(not(debug_assertions))]
+            let static_path = "/opt/dragonfly/static";
             ServeDir::new(static_path)
         })
         .layer(CookieManagerLayer::new())
@@ -553,52 +770,82 @@ pub async fn run() -> anyhow::Result<()> {
         )
         .with_state(app_state.clone()); // State applied here
 
-    // Handoff listener setup 
+    // Handoff listener setup
     if let Some(mode) = &current_mode {
         if *mode == mode::DeploymentMode::Flight {
             if !is_installation_server { info!("Running in Flight mode - starting handoff listener"); }
+            let handoff_shutdown_rx = shutdown_rx.clone();
             tokio::spawn(async move {
-                if let Err(e) = mode::start_handoff_listener(shutdown_rx.clone()).await {
+                if let Err(e) = mode::start_handoff_listener(handoff_shutdown_rx).await {
                     error!("Handoff listener failed: {}", e);
                 }
             });
         }
     }
 
-    // --- Start Server --- 
-    let server_port = 3000;
-    let addr = SocketAddr::from(([0, 0, 0, 0], server_port));
+    // --- Native Network Services (DHCP/TFTP) ---
+    // Start DHCP and TFTP servers in Flight mode for bare metal provisioning
+    if is_flight_mode && !is_installation_server {
+        start_network_services(&app_state, shutdown_rx.clone()).await;
+    }
+    // --- End Native Network Services ---
+
+    // --- Start Server ---
+    let default_port: u16 = read_port_from_config();
     let mut listenfd = ListenFd::from_env();
     let socket_activation = std::env::var("LISTEN_FDS").is_ok();
-    if socket_activation && !is_installation_server { // Conditional Log
+    if socket_activation && !is_installation_server {
         info!("Socket activation detected via LISTEN_FDS={}", std::env::var("LISTEN_FDS").unwrap_or_else(|_| "?".to_string()));
     }
+
     let listener = match listenfd.take_tcp_listener(0).context("Failed to take TCP listener from env") {
         Ok(Some(listener)) => {
             if !is_installation_server { info!("Acquired socket via socket activation"); }
             tokio::net::TcpListener::from_std(listener).context("Failed to convert TCP listener")?
         },
-        Ok(None) => {
-            if socket_activation && !is_installation_server { warn!("Socket activation detected but no socket found"); }
-            if !is_installation_server { info!("Binding to port {} directly", server_port); }
-            match tokio::net::TcpListener::bind(addr).await {
-                Ok(listener) => listener,
-                Err(e) => {
-                    if e.kind() == std::io::ErrorKind::AddrInUse {
-                        error!("Failed to start server: Port {} is already in use", server_port);
-                        error!("Another instance of Dragonfly may be running...");
-                        return Err(anyhow::anyhow!("Port {} is already in use...", server_port));
+        Ok(None) | Err(_) => {
+            let mut port = default_port;
+            loop {
+                let addr = SocketAddr::from(([0, 0, 0, 0], port));
+                match tokio::net::TcpListener::bind(addr).await {
+                    Ok(listener) => {
+                        if !is_installation_server {
+                            info!("Binding to port {}", port);
+                        }
+                        break listener;
                     }
-                    return Err(anyhow::anyhow!("Failed to bind to address: {}", e));
-                }
-            }
-        },
-        Err(e) => {
-            if !is_installation_server { warn!("Failed to check for socket activation: {}", e); }
-            match tokio::net::TcpListener::bind(addr).await {
-                Ok(listener) => listener,
-                Err(e) => {
-                    return Err(anyhow::anyhow!("Failed to bind to address: {}", e));
+                    Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
+                        // Find next available port to suggest
+                        let mut suggested = port + 1;
+                        while suggested < 65535 {
+                            if std::net::TcpListener::bind(("0.0.0.0", suggested)).is_ok() {
+                                break;
+                            }
+                            suggested += 1;
+                        }
+
+                        eprintln!("\nPort {} is already in use.", port);
+                        eprint!("Enter a different port (or press Enter for {}): ", suggested);
+                        std::io::Write::flush(&mut std::io::stderr()).ok();
+
+                        let mut input = String::new();
+                        if std::io::stdin().read_line(&mut input).is_ok() {
+                            let input = input.trim();
+                            if input.is_empty() {
+                                port = suggested;
+                            } else if let Ok(p) = input.parse::<u16>() {
+                                port = p;
+                            } else {
+                                eprintln!("Invalid port number, using {}", suggested);
+                                port = suggested;
+                            }
+                        } else {
+                            return Err(anyhow::anyhow!("Port {} is already in use", port));
+                        }
+                    }
+                    Err(e) => {
+                        return Err(anyhow::anyhow!("Failed to bind to port {}: {}", port, e));
+                    }
                 }
             }
         }
@@ -661,11 +908,11 @@ pub async fn run() -> anyhow::Result<()> {
 }
 
 async fn handle_favicon() -> impl IntoResponse {
-    let path = if std::path::Path::new("/opt/dragonfly/static/favicon/favicon.ico").exists() {
-        "/opt/dragonfly/static/favicon/favicon.ico"
-    } else {
-        "crates/dragonfly-server/static/favicon/favicon.ico"
-    };
+    #[cfg(debug_assertions)]
+    let path = "crates/dragonfly-server/static/favicon/favicon.ico";
+    #[cfg(not(debug_assertions))]
+    let path = "/opt/dragonfly/static/favicon/favicon.ico";
+
     match tokio::fs::read(path).await {
         Ok(contents) => (StatusCode::OK, [(axum::http::header::CONTENT_TYPE, "image/x-icon")], contents).into_response(),
         Err(_) => (StatusCode::NOT_FOUND, "Favicon not found").into_response()

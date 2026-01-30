@@ -5,6 +5,47 @@ Dragonfly is a bare metal management tool,
 for everything from building machines to
 reinstalling an entire datacentre.
 
+## Architecture - READ THIS FIRST
+
+### Storage Backends (CRITICAL)
+**USE REDB OR K8S/ETCD. REMOVE SQLITE.**
+
+Dragonfly supports TWO storage backends via `DragonflyStore` trait:
+
+1. **ReDB (DEFAULT)** - Embedded Rust database at `/var/lib/dragonfly/dragonfly.redb`
+   - Used by default when no env var is set
+   - No external dependencies required
+   - Perfect for single-server or small deployments
+
+2. **Kubernetes/etcd (OPTIONAL)** - Store everything in etcd via K8s CRDs
+   - Enabled via env var (e.g., `DRAGONFLY_BACKEND=kubernetes`)
+   - Uses whatever KUBECONFIG points to
+   - For running inside K8s where you want data in etcd
+
+**SQLite (`db.rs`) is DEPRECATED and being removed - DO NOT USE IT.**
+
+**K8s IS NOT REQUIRED. EVER.** The storage backend choice is independent of features.
+
+### Deployment Modes
+These control WHAT Dragonfly does, not WHERE it stores data:
+
+- **Simple** - Single server, basic provisioning
+- **Flight** - Single server, full datacenter management (does NOT require K8s!)
+- **Swarm** - Multi-region, multi-cluster coordination (requires Citadel, does NOT require K8s!)
+
+Flight and Swarm are equally capable for datacenter management. Swarm adds multi-region/multi-cluster coordination via Citadel. Simple and Flight run entirely on ReDB.
+
+### Authentication
+- `require_login` defaults to `true` (internal tool)
+- Fresh install: login page → welcome/mode selection → dashboard
+- All settings stored in the configured storage backend (ReDB or K8s)
+
+### Key Files
+- `crates/dragonfly-server/src/store/` - Storage abstraction (DragonflyStore trait)
+- `crates/dragonfly-server/src/store/redb_store.rs` - ReDB implementation
+- `crates/dragonfly-server/src/store/memory.rs` - In-memory fallback
+- `crates/dragonfly-server/src/lib.rs` - Server initialization, backend selection
+
 ## Rules
 - **Consult README.md** for context whenever needed
 - **Keep README.md Updated** - When adding new commands, features, or changing functionality, ALWAYS update the README.md Usage section. Palace uses the README to understand what exists, so outdated docs lead to duplicate suggestions!
@@ -16,6 +57,8 @@ reinstalling an entire datacentre.
 - **Commit Regularly** - Test after every change and commit very regularly with tiny atomic chunks
 - **Follow Language Style Guides** - Adhere to the style guide of your primary language
 - **Use Palace Tools** - Use `pal test`, `pal build`, `pal run` for development workflows
+- **NEVER REVERT FILES** - Do NOT use `git checkout` or `git restore` to revert files unless explicitly asked
+- **PREFER NATIVE CRATES** - Strongly prefer native Rust crates over shelling out to external binaries. Do NOT shell out for data parsing (no lsblk, fdisk, tar for reading data). Shelling out is acceptable ONLY for system actions with no native alternative (e.g., `mdev -s` for device node refresh, `kexec` for kernel loading).
 
 ## Quality Standards
 - Write comprehensive tests for all new features

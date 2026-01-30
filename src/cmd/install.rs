@@ -1,483 +1,739 @@
 use clap::Args;
 use color_eyre::eyre::Result;
-use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use std::io::Write;
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
-use super::network;
-use crossterm::{execute, cursor, terminal, style::{Print, SetForegroundColor, Color, ResetColor}};
-use jetpack::{run_playbook, OutputHandler, LogLevel, RecapData};
-use jetpack::inventory::hosts::Host;
-use jetpack::tasks::request::TaskRequest;
-use jetpack::tasks::response::TaskResponse;
+use std::path::{Path, PathBuf};
+use std::fs;
 
-// Embed playbooks at compile time
-const K3S_PLAYBOOK: &str = include_str!("../../playbooks/k3s.yml");
-const HELM_PLAYBOOK: &str = include_str!("../../playbooks/helm.yml");
-const TINKERBELL_PLAYBOOK: &str = include_str!("../../playbooks/tinkerbell.yml");
-const DRAGONFLY_PLAYBOOK: &str = include_str!("../../playbooks/dragonfly.yml");
+const DRAGONFLY_DIR: &str = "/var/lib/dragonfly";
+const DRAGONFLY_CONFIG: &str = "/var/lib/dragonfly/config.toml";
+const PROD_BINARY: &str = "/usr/local/bin/dragonfly";
+const OPT_DIR: &str = "/opt/dragonfly";
+
+// Platform-specific service paths
+#[cfg(target_os = "macos")]
+const LAUNCHD_PLIST: &str = "/Library/LaunchDaemons/com.dragonfly.daemon.plist";
+
+#[cfg(target_os = "linux")]
+const SYSTEMD_SERVICE: &str = "/etc/systemd/system/dragonfly.service";
 
 #[derive(Args, Debug)]
 pub struct InstallArgs {
-    /// Optional: Specify the bootstrap IP address explicitly
+    /// Optional: Specify the server IP address explicitly
     #[arg(long)]
     pub ip: Option<String>,
+
+    /// Dev mode: service watches target/release/dragonfly for hot reload
+    #[arg(long)]
+    pub dev: bool,
+
+    /// Skip service installation (systemd/launchd)
+    #[arg(long)]
+    pub no_service: bool,
+
+    /// Skip downloading Mage assets
+    #[arg(long)]
+    pub no_assets: bool,
+
+    /// Wipe all data and reinstall fresh (prompts for confirmation, or use --force)
+    #[arg(long)]
+    pub fresh: bool,
+
+    /// Skip confirmation prompts for destructive operations
+    #[arg(long)]
+    pub force: bool,
 }
 
 /// Track what's already installed
 #[derive(Debug, Default)]
 struct InstallationState {
-    k3s_installed: bool,
-    helm_installed: bool,
-    dragonfly_installed: bool,
-    tinkerbell_installed: bool,
+    directory_exists: bool,
+    config_exists: bool,
+    service_exists: bool,
+    assets_exist: bool,
 }
 
 impl InstallationState {
     fn detect() -> Self {
-        let k3s_installed = std::process::Command::new("systemctl")
-            .arg("is-active")
-            .arg("k3s")
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false);
-
-        let helm_installed = std::process::Command::new("sh")
-            .arg("-c")
-            .arg("command -v helm")
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false);
-
-        // Check if Dragonfly is deployed in k8s (check for actual deployment, not just namespace)
-        let dragonfly_installed = if k3s_installed {
-            std::process::Command::new("sudo")
-                .args(["/usr/local/bin/k3s", "kubectl", "get", "deployment", "-n", "dragonfly", "dragonfly"])
-                .output()
-                .map(|o| o.status.success())
-                .unwrap_or(false)
-        } else {
-            false
-        };
-
-        // Check if Tinkerbell is deployed in k8s (check for actual deployment, not just namespace)
-        let tinkerbell_installed = if k3s_installed {
-            std::process::Command::new("sudo")
-                .args(["/usr/local/bin/k3s", "kubectl", "get", "deployment", "-n", "tinkerbell", "tinkerbell"])
-                .output()
-                .map(|o| o.status.success())
-                .unwrap_or(false)
-        } else {
-            false
-        };
+        let directory_exists = Path::new(DRAGONFLY_DIR).exists();
+        let config_exists = Path::new(DRAGONFLY_CONFIG).exists();
+        let service_exists = service_file_exists();
+        let assets_exist = Path::new("/var/lib/dragonfly/tftp/mage/vmlinuz").exists()
+            && Path::new("/var/lib/dragonfly/tftp/mage/initramfs").exists();
 
         Self {
-            k3s_installed,
-            helm_installed,
-            dragonfly_installed,
-            tinkerbell_installed,
-        }
-    }
-
-    fn is_fully_installed(&self) -> bool {
-        self.k3s_installed && self.helm_installed && self.dragonfly_installed && self.tinkerbell_installed
-    }
-
-    fn needs_k3s_or_helm(&self) -> bool {
-        !self.k3s_installed || !self.helm_installed
-    }
-}
-
-/// Simple output handler that updates a single progress bar
-struct SingleProgressBarHandler {
-    pb: Arc<Mutex<ProgressBar>>,
-    completed: Arc<Mutex<u64>>,
-}
-
-impl SingleProgressBarHandler {
-    fn new(pb: ProgressBar, total: u64) -> Self {
-        pb.set_length(total);
-        Self {
-            pb: Arc::new(Mutex::new(pb)),
-            completed: Arc::new(Mutex::new(0)),
+            directory_exists,
+            config_exists,
+            service_exists,
+            assets_exist,
         }
     }
 }
 
-impl OutputHandler for SingleProgressBarHandler {
-    fn on_playbook_start(&self, _playbook_path: &str) {}
-    fn on_playbook_end(&self, _playbook_path: &str, _success: bool) {}
-    fn on_play_start(&self, _play_name: &str, _hosts: Vec<String>) {}
-    fn on_play_end(&self, _play_name: &str) {}
+fn service_file_exists() -> bool {
+    #[cfg(target_os = "macos")]
+    { Path::new(LAUNCHD_PLIST).exists() }
 
-    fn on_task_start(&self, task_name: &str, _host_count: usize) {
-        if let Ok(pb) = self.pb.lock() {
-            let short_name = task_name.split(':').last().unwrap_or(task_name).trim();
-            pb.set_message(short_name.to_string());
-        }
-    }
+    #[cfg(target_os = "linux")]
+    { Path::new(SYSTEMD_SERVICE).exists() }
 
-    fn on_task_host_result(&self, _host: &Host, _task: &TaskRequest, _response: &TaskResponse) {}
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    { false }
+}
 
-    fn on_task_end(&self, _task_name: &str) {
-        if let Ok(mut count) = self.completed.lock() {
-            *count += 1;
-            if let Ok(pb) = self.pb.lock() {
-                pb.set_position(*count);
+fn is_macos() -> bool {
+    cfg!(target_os = "macos")
+}
+
+/// Get this machine's local IP address (first non-loopback IPv4)
+fn get_local_ip() -> Option<String> {
+    use std::net::UdpSocket;
+    // Connect to a public IP (doesn't actually send anything) to find our outbound IP
+    let socket = UdpSocket::bind("0.0.0.0:0").ok()?;
+    socket.connect("8.8.8.8:80").ok()?;
+    let addr = socket.local_addr().ok()?;
+    Some(addr.ip().to_string())
+}
+
+/// Check if a port is available
+fn is_port_available(port: u16) -> bool {
+    std::net::TcpListener::bind(("0.0.0.0", port)).is_ok()
+}
+
+/// Get an available port, prompting user if default is taken
+fn read_configured_port() -> Option<u16> {
+    let content = std::fs::read_to_string(DRAGONFLY_CONFIG).ok()?;
+    for line in content.lines() {
+        let line = line.trim();
+        if line.starts_with("port") {
+            if let Some(val) = line.split('=').nth(1) {
+                return val.trim().parse().ok();
             }
         }
     }
+    None
+}
 
-    fn on_handler_start(&self, _handler_name: &str) {}
-    fn on_handler_end(&self, _handler_name: &str) {}
-    fn on_recap(&self, _recap_data: RecapData) {}
-    fn log(&self, _level: LogLevel, _message: &str) {}
+fn find_next_available_port(start: u16) -> u16 {
+    let mut port = start;
+    while !is_port_available(port) && port < 65535 {
+        port += 1;
+    }
+    port
+}
+
+fn get_available_port() -> Result<u16> {
+    // Check if there's already a configured port
+    if let Some(configured_port) = read_configured_port() {
+        // If configured port is available, use it
+        if is_port_available(configured_port) {
+            return Ok(configured_port);
+        }
+        // Port is in use - likely dragonfly is already running, that's fine
+        // We'll just reuse the same port config
+        return Ok(configured_port);
+    }
+
+    // No existing config, use default
+    let default_port: u16 = 3000;
+
+    if is_port_available(default_port) {
+        return Ok(default_port);
+    }
+
+    // Find next available port to suggest
+    let suggested = find_next_available_port(default_port + 1);
+
+    println!("Port {} is already in use.", default_port);
+    print!("Enter a different port (or press Enter for {}): ", suggested);
+    std::io::stdout().flush()?;
+
+    let mut input = String::new();
+    std::io::stdin().read_line(&mut input)?;
+    let input = input.trim();
+
+    if input.is_empty() {
+        Ok(suggested)
+    } else if let Ok(p) = input.parse::<u16>() {
+        if is_port_available(p) {
+            Ok(p)
+        } else {
+            println!("Port {} is also in use, using {}", p, suggested);
+            Ok(suggested)
+        }
+    } else {
+        println!("Invalid port, using {}", suggested);
+        Ok(suggested)
+    }
+}
+
+/// Get the binary path to use in the service
+fn get_binary_path(dev_mode: bool) -> Result<PathBuf> {
+    if dev_mode {
+        // Dev mode: use target/release/dragonfly relative to current dir
+        let cwd = std::env::current_dir()?;
+        let dev_binary = cwd.join("target/release/dragonfly");
+        if !dev_binary.exists() {
+            return Err(color_eyre::eyre::eyre!(
+                "Dev binary not found at {}. Run 'cargo build --release' first.",
+                dev_binary.display()
+            ));
+        }
+        Ok(dev_binary)
+    } else {
+        // Production mode: will copy to /usr/local/bin
+        Ok(PathBuf::from(PROD_BINARY))
+    }
 }
 
 pub async fn run_install(args: InstallArgs, _shutdown_rx: tokio::sync::watch::Receiver<()>) -> Result<()> {
-    println!("🐉 Welcome to Dragonfly.\n");
+    println!("🐉 Dragonfly Installer");
 
-    // Detect what's already installed
+    // Handle --fresh: wipe everything first
+    if args.fresh {
+        if !args.force {
+            println!("WARNING: This will delete all Dragonfly data including:");
+            println!("  - Database (machines, settings, history)");
+            println!("  - Configuration");
+            println!("  - Web assets");
+            println!();
+            print!("Type 'I understand' to continue: ");
+            std::io::stdout().flush()?;
+
+            let mut input = String::new();
+            std::io::stdin().read_line(&mut input)?;
+
+            if input.trim() != "I understand" {
+                return Err(color_eyre::eyre::eyre!("Aborted."));
+            }
+        }
+        println!("Wiping existing installation...");
+        wipe_installation()?;
+    }
+
+    // Detect current state
     let state = InstallationState::detect();
+    let is_reinstall = state.directory_exists || state.config_exists || state.service_exists;
 
-    // If everything is already installed, show status and exit
-    if state.is_fully_installed() {
-        println!("✅ Dragonfly is already fully installed!");
-        println!("\nInstalled components:");
-        println!("  • K3s");
-        println!("  • Helm");
-        println!("  • Dragonfly");
-        println!("  • Tinkerbell");
-        println!("\nTo reinstall, uninstall k3s first:");
-        println!("  /usr/local/bin/k3s-uninstall.sh");
-        std::process::exit(0);
+    if is_reinstall && !args.fresh {
+        println!("Found existing installation, preserving existing data.");
     }
 
-    // Show what needs to be installed
-    if state.k3s_installed || state.helm_installed {
-        println!("Found existing components:");
-        if state.k3s_installed {
-            println!("  ✓ K3s");
-        }
-        if state.helm_installed {
-            println!("  ✓ Helm");
-        }
-        if state.dragonfly_installed {
-            println!("  ✓ Dragonfly");
-        }
-        if state.tinkerbell_installed {
-            println!("  ✓ Tinkerbell");
-        }
-        println!();
+    // Get local IP for display purposes (server binds to 0.0.0.0)
+    let display_ip = args.ip.clone().unwrap_or_else(|| {
+        get_local_ip().unwrap_or_else(|| "localhost".to_string())
+    });
+
+    // Check sudo/admin access
+    if !check_admin_access()? {
+        return Err(color_eyre::eyre::eyre!("Administrator access required for installation"));
     }
 
-    // IP Detection
-    let bootstrap_ip = if let Some(ip) = args.ip {
-        // Use the provided IP directly
-        network::validate_ipv4(&ip)?.to_string()
-    } else {
-        // Detect and prompt for IP selection
-        println!("Looking for available addresses...");
-        let ip_pb = ProgressBar::new(100);
-        ip_pb.set_style(
-            ProgressStyle::default_bar()
-                .template("[{bar:20}]")?
-                .progress_chars("█░░"),
-        );
+    // Get available port (prompts user if default is in use)
+    let port = get_available_port()?;
 
-        // Detect available IP
-        for i in 0..=100 {
-            ip_pb.set_position(i);
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-        ip_pb.finish_and_clear();
+    // Do the work silently
+    if !state.directory_exists {
+        create_directories()?;
+    }
+    write_config(port)?;
+    if !args.dev {
+        install_binary()?;
+    }
+    install_web_assets(args.dev)?;
+    install_os_templates(args.dev)?;
+    if !args.no_service {
+        let binary_path = get_binary_path(args.dev)?;
+        install_service(&binary_path, args.dev)?;
+    }
 
-        let detected_ip = network::detect_first_available_ip()?;
+    // Success
+    println!("\n🚀 Dragonfly installed! http://{}:{}", display_ip, port);
 
-        // Interactive prompt for IP selection
-        let final_ip = network::prompt_for_ip(detected_ip)?;
+    // On fresh install, wait for the password file and show credentials
+    if args.fresh || !is_reinstall {
+        let password_file = PathBuf::from(format!("{}/initial_password.txt", DRAGONFLY_DIR));
 
-        if final_ip != detected_ip {
-            println!("Using custom IP: {}", final_ip);
-            println!();
+        // Check if file already exists
+        if password_file.exists() {
+            show_admin_credentials(&password_file);
         } else {
-            // Just print newline for default acceptance
+            println!("\nWaiting for server to generate admin credentials...");
+            wait_for_password_file(&password_file)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn show_admin_credentials(password_file: &Path) {
+    if let Ok(password) = fs::read_to_string(password_file) {
+        let password = password.trim();
+        if !password.is_empty() {
             println!();
+            println!("  Admin Login:");
+            println!("    Username: admin");
+            println!("    Password: {}", password);
             println!();
+            println!("Run 'dragonfly status' to see this information again.");
+        }
+    }
+}
+
+fn wait_for_password_file(password_file: &Path) -> Result<()> {
+    use notify::{Watcher, RecursiveMode};
+    use std::sync::mpsc;
+
+    let (tx, rx) = mpsc::channel();
+
+    let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+        if let Ok(event) = res {
+            // Check for file creation or modification
+            if matches!(event.kind,
+                notify::EventKind::Create(_) |
+                notify::EventKind::Modify(_)
+            ) {
+                let _ = tx.send(());
+            }
+        }
+    }).map_err(|e| color_eyre::eyre::eyre!("Failed to create file watcher: {}", e))?;
+
+    // Watch the parent directory for the password file to appear
+    let watch_dir = password_file.parent().unwrap_or(Path::new(DRAGONFLY_DIR));
+    watcher.watch(watch_dir, RecursiveMode::NonRecursive)
+        .map_err(|e| color_eyre::eyre::eyre!("Failed to watch directory: {}", e))?;
+
+    // Wait for notification
+    loop {
+        // Check if file exists now (may have been created between our check and watch setup)
+        if password_file.exists() {
+            show_admin_credentials(password_file);
+            break;
         }
 
-        final_ip.to_string()
-    };
+        // Wait for file system event
+        match rx.recv() {
+            Ok(()) => {
+                if password_file.exists() {
+                    // Small delay to ensure file is fully written
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                    show_admin_credentials(password_file);
+                    break;
+                }
+            }
+            Err(_) => break, // Channel closed, watcher dropped
+        }
+    }
 
-    // Check sudo access early (before progress bars)
-    let sudo_check = std::process::Command::new("sudo")
-        .arg("-n")
-        .arg("true")
+    Ok(())
+}
+
+fn wipe_installation() -> Result<()> {
+    // Stop service first
+    #[cfg(target_os = "macos")]
+    {
+        let _ = std::process::Command::new("sudo")
+            .args(["launchctl", "unload", LAUNCHD_PLIST])
+            .output();
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let _ = std::process::Command::new("sudo")
+            .args(["systemctl", "stop", "dragonfly"])
+            .output();
+    }
+
+    // Remove the ENTIRE dragonfly directory (database, data, config, everything)
+    // This is critical because is_dragonfly_installed() checks for this directory
+    // and the database stores deployment_mode setting
+    let _ = std::process::Command::new("sudo")
+        .args(["rm", "-rf", DRAGONFLY_DIR])
+        .status();
+
+    // Remove the mode file and config directory
+    // This is critical because get_current_mode() falls back to /etc/dragonfly/mode
+    let _ = std::process::Command::new("sudo")
+        .args(["rm", "-rf", "/etc/dragonfly"])
+        .status();
+
+    // Remove web assets
+    let _ = std::process::Command::new("sudo")
+        .args(["rm", "-rf", OPT_DIR])
+        .status();
+
+    // Remove production binary
+    let _ = std::process::Command::new("sudo")
+        .args(["rm", "-f", PROD_BINARY])
+        .status();
+
+    // Remove service file
+    #[cfg(target_os = "macos")]
+    {
+        let _ = std::process::Command::new("sudo")
+            .args(["rm", "-f", LAUNCHD_PLIST])
+            .output();
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let _ = std::process::Command::new("sudo")
+            .args(["systemctl", "disable", "dragonfly"])
+            .output();
+        let _ = std::process::Command::new("sudo")
+            .args(["rm", "-f", SYSTEMD_SERVICE])
+            .output();
+    }
+
+    Ok(())
+}
+
+fn check_admin_access() -> Result<bool> {
+    // Check if we're already root by running `id -u`
+    if let Ok(output) = std::process::Command::new("id").arg("-u").output() {
+        if let Ok(uid_str) = String::from_utf8(output.stdout) {
+            if uid_str.trim() == "0" {
+                return Ok(true);
+            }
+        }
+    }
+
+    let status = std::process::Command::new("sudo")
+        .args(["-n", "true"])
         .output();
 
-    if sudo_check.is_err() || !sudo_check.unwrap().status.success() {
-        // Prompt for sudo password (silently - user will see the sudo prompt)
-        let sudo_prompt = std::process::Command::new("sudo")
-            .arg("echo")
-            .arg("-n")
-            .arg("")
+    if status.is_ok() && status.unwrap().status.success() {
+        return Ok(true);
+    }
+
+    // Prompt for sudo
+    let status = std::process::Command::new("sudo")
+        .args(["echo", "-n", ""])
+        .status()?;
+
+    Ok(status.success())
+}
+
+fn create_directories() -> Result<()> {
+    let dirs = [
+        DRAGONFLY_DIR,
+        &format!("{}/tftp", DRAGONFLY_DIR),
+        &format!("{}/tftp/mage", DRAGONFLY_DIR),
+        &format!("{}/data", DRAGONFLY_DIR),
+        &format!("{}/templates", DRAGONFLY_DIR),
+    ];
+
+    for dir in &dirs {
+        std::process::Command::new("sudo")
+            .args(["mkdir", "-p", dir])
+            .status()
+            .map_err(|e| color_eyre::eyre::eyre!("Failed to create {}: {}", dir, e))?;
+    }
+
+    std::process::Command::new("sudo")
+        .args(["chmod", "-R", "755", DRAGONFLY_DIR])
+        .status()
+        .map_err(|e| color_eyre::eyre::eyre!("Failed to set permissions: {}", e))?;
+
+    Ok(())
+}
+
+fn write_config(port: u16) -> Result<()> {
+    // Detect local IP for base_url
+    let local_ip = get_local_ip().unwrap_or_else(|| "127.0.0.1".to_string());
+    let base_url = format!("http://{}:{}", local_ip, port);
+
+    let config_content = format!(r#"# Dragonfly Configuration
+# Generated by dragonfly install
+
+[server]
+# Server binds to 0.0.0.0 (all interfaces)
+port = {}
+# Base URL for agents to connect back to this server
+base_url = "{}"
+
+[paths]
+data_dir = "{}/data"
+tftp_dir = "{}/tftp"
+"#, port, base_url, DRAGONFLY_DIR, DRAGONFLY_DIR);
+
+    let temp_config = "/tmp/dragonfly-config.toml";
+    fs::write(temp_config, &config_content)?;
+
+    std::process::Command::new("sudo")
+        .args(["mv", temp_config, DRAGONFLY_CONFIG])
+        .status()
+        .map_err(|e| color_eyre::eyre::eyre!("Failed to install config: {}", e))?;
+
+    Ok(())
+}
+
+fn install_binary() -> Result<()> {
+    let current_exe = std::env::current_exe()?;
+
+    std::process::Command::new("sudo")
+        .args(["cp", &current_exe.to_string_lossy(), PROD_BINARY])
+        .status()
+        .map_err(|e| color_eyre::eyre::eyre!("Failed to copy binary: {}", e))?;
+
+    std::process::Command::new("sudo")
+        .args(["chmod", "+x", PROD_BINARY])
+        .status()
+        .map_err(|e| color_eyre::eyre::eyre!("Failed to set binary permissions: {}", e))?;
+
+    Ok(())
+}
+
+// TODO: Enable when releases are available
+// const GITHUB_WEB_ASSETS_URL: &str = "https://github.com/zorlin/dragonfly/releases/latest/download/dragonfly-web.zip";
+
+fn install_os_templates(dev_mode: bool) -> Result<()> {
+    let os_templates_src = Path::new("os-templates");
+    let os_templates_dest = format!("{}/templates", OPT_DIR);
+
+    if !os_templates_src.exists() {
+        // Not in project directory, skip OS template copy
+        // Templates will be downloaded on demand if not present
+        return Ok(());
+    }
+
+    std::process::Command::new("sudo")
+        .args(["mkdir", "-p", &os_templates_dest])
+        .status()?;
+
+    if dev_mode {
+        // In dev mode, symlink for easy updates
+        let os_templates_abs = std::fs::canonicalize(os_templates_src)?;
+
+        let _ = std::process::Command::new("sudo")
+            .args(["rm", "-rf", &os_templates_dest])
             .status();
 
-        if sudo_prompt.is_err() || !sudo_prompt.unwrap().success() {
-            return Err(color_eyre::eyre::eyre!("Sudo access required for installation"));
-        }
-    }
-
-    // Only run k3s/helm playbooks for components that need installation
-    let skip_k3s_helm = !state.needs_k3s_or_helm();
-
-    // Run Jetpack playbook with progress tracking
-    println!("Installing:");
-    let m = MultiProgress::new();
-
-    let k3s_pb = m.add(ProgressBar::new(0));
-    k3s_pb.set_style(
-        ProgressStyle::default_bar()
-            .template("[{bar:20}] k3s")?
-            .progress_chars("█░░"),
-    );
-
-    let helm_pb = m.add(ProgressBar::new(0));
-    helm_pb.set_style(
-        ProgressStyle::default_bar()
-            .template("[{bar:20}] Helm")?
-            .progress_chars("█░░"),
-    );
-
-    let dragonfly_pb = m.add(ProgressBar::new(0));
-    dragonfly_pb.set_style(
-        ProgressStyle::default_bar()
-            .template("[{bar:20}] Dragonfly")?
-            .progress_chars("█░░"),
-    );
-
-    let tink_pb = m.add(ProgressBar::new(0));
-    tink_pb.set_style(
-        ProgressStyle::default_bar()
-            .template("[{bar:20}] Tinkerbell")?
-            .progress_chars("█░░"),
-    );
-
-    // Mark already-installed components as complete
-    if state.k3s_installed {
-        k3s_pb.set_length(1);
-        k3s_pb.set_position(1);
-        k3s_pb.set_message("already installed");
-        k3s_pb.finish();
-    }
-    if state.helm_installed {
-        helm_pb.set_length(1);
-        helm_pb.set_position(1);
-        helm_pb.set_message("already installed");
-        helm_pb.finish();
-    }
-
-    // Create handlers for each playbook (only for components that need installation)
-    let k3s_handler = Arc::new(SingleProgressBarHandler::new(k3s_pb.clone(), 11));
-    let helm_handler = Arc::new(SingleProgressBarHandler::new(helm_pb.clone(), 7));
-
-    let bootstrap_ip_k3s = bootstrap_ip.clone();
-    let bootstrap_ip_helm = bootstrap_ip.clone();
-
-    // Suppress Jetpack's own logging unless user explicitly set RUST_LOG
-    if std::env::var("RUST_LOG").is_err() {
-        std::env::set_var("RUST_LOG", "error");
-    }
-
-    // Only run k3s/helm if needed
-    if !skip_k3s_helm {
-        // Write embedded playbooks to temp files
-        let mut k3s_temp = tempfile::NamedTempFile::new()
-            .map_err(|e| color_eyre::eyre::eyre!("Failed to create temp file: {}", e))?;
-        k3s_temp.write_all(K3S_PLAYBOOK.as_bytes())
-            .map_err(|e| color_eyre::eyre::eyre!("Failed to write k3s playbook: {}", e))?;
-        k3s_temp.flush()
-            .map_err(|e| color_eyre::eyre::eyre!("Failed to flush k3s playbook: {}", e))?;
-        let k3s_path = k3s_temp.path().to_str().unwrap().to_string();
-
-        let mut helm_temp = tempfile::NamedTempFile::new()
-            .map_err(|e| color_eyre::eyre::eyre!("Failed to create temp file: {}", e))?;
-        helm_temp.write_all(HELM_PLAYBOOK.as_bytes())
-            .map_err(|e| color_eyre::eyre::eyre!("Failed to write helm playbook: {}", e))?;
-        helm_temp.flush()
-            .map_err(|e| color_eyre::eyre::eyre!("Failed to flush helm playbook: {}", e))?;
-        let helm_path = helm_temp.path().to_str().unwrap().to_string();
-
-        // Run both playbooks in parallel
-        let k3s_task = tokio::task::spawn_blocking(move || {
-            let _temp = k3s_temp; // Keep temp file alive
-            run_playbook(&k3s_path)
-                .local()
-                .extra_vars(serde_yaml::to_value(serde_yaml::Mapping::from_iter(vec![
-                    (
-                        serde_yaml::Value::String("bootstrap_ip".to_string()),
-                        serde_yaml::Value::String(bootstrap_ip_k3s)
-                    )
-                ])).unwrap())
-                .run_with_output(k3s_handler)
-        });
-
-        let helm_task = tokio::task::spawn_blocking(move || {
-            let _temp = helm_temp; // Keep temp file alive
-            run_playbook(&helm_path)
-                .local()
-                .extra_vars(serde_yaml::to_value(serde_yaml::Mapping::from_iter(vec![
-                    (
-                        serde_yaml::Value::String("bootstrap_ip".to_string()),
-                        serde_yaml::Value::String(bootstrap_ip_helm)
-                    )
-                ])).unwrap())
-                .run_with_output(helm_handler)
-        });
-
-        // Wait for both to complete
-        let (k3s_result, helm_result) = match tokio::try_join!(k3s_task, helm_task) {
-            Ok(results) => results,
-            Err(e) => {
-                drop(m);
-                return Err(color_eyre::eyre::eyre!("Task execution failed: {}", e));
-            }
-        };
-
-        // Check both results
-        match (k3s_result, helm_result) {
-            (Ok(k3s), Ok(helm)) if k3s.success && helm.success => {
-                // Both succeeded, continue to Dragonfly
-            }
-            (Err(e), _) | (_, Err(e)) => {
-                drop(m);
-                eprintln!("\nInstallation failed: {}", e);
-                return Err(color_eyre::eyre::eyre!("Installation failed"));
-            }
-            _ => {
-                drop(m);
-                eprintln!("\nPlaybook execution completed with errors");
-                return Err(color_eyre::eyre::eyre!("Installation failed"));
-            }
-        }
-    }
-
-    // Deploy Dragonfly and Tinkerbell in parallel
-    // Dragonfly is required for "Ready", Tinkerbell can finish in background
-
-    let dragonfly_task = if !state.dragonfly_installed {
-        let dragonfly_handler = Arc::new(SingleProgressBarHandler::new(dragonfly_pb.clone(), 7));
-        let bootstrap_ip_df = bootstrap_ip.clone();
-
-        // Write Dragonfly playbook to temp file
-        let mut df_temp = tempfile::NamedTempFile::new()
-            .map_err(|e| color_eyre::eyre::eyre!("Failed to create temp file: {}", e))?;
-        df_temp.write_all(DRAGONFLY_PLAYBOOK.as_bytes())
-            .map_err(|e| color_eyre::eyre::eyre!("Failed to write dragonfly playbook: {}", e))?;
-        df_temp.flush()
-            .map_err(|e| color_eyre::eyre::eyre!("Failed to flush dragonfly playbook: {}", e))?;
-        let df_path = df_temp.path().to_str().unwrap().to_string();
-
-        Some(tokio::task::spawn_blocking(move || {
-            let _temp = df_temp;
-            run_playbook(&df_path)
-                .local()
-                .extra_vars(serde_yaml::to_value(serde_yaml::Mapping::from_iter(vec![
-                    (
-                        serde_yaml::Value::String("bootstrap_ip".to_string()),
-                        serde_yaml::Value::String(bootstrap_ip_df)
-                    )
-                ])).unwrap())
-                .run_with_output(dragonfly_handler)
-        }))
+        std::process::Command::new("sudo")
+            .args(["ln", "-s", &os_templates_abs.to_string_lossy(), &os_templates_dest])
+            .status()?;
     } else {
-        dragonfly_pb.set_length(1);
-        dragonfly_pb.set_position(1);
-        dragonfly_pb.set_message("already installed");
-        dragonfly_pb.finish();
-        None
+        // Production: copy all .yml files
+        let _ = std::process::Command::new("sudo")
+            .args(["rm", "-rf", &os_templates_dest])
+            .status();
+
+        std::process::Command::new("sudo")
+            .args(["mkdir", "-p", &os_templates_dest])
+            .status()?;
+
+        // Copy all .yml files from os-templates/
+        for entry in std::fs::read_dir(os_templates_src)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) == Some("yml") {
+                std::process::Command::new("sudo")
+                    .args(["cp", &path.to_string_lossy(), &os_templates_dest])
+                    .status()?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn install_web_assets(dev_mode: bool) -> Result<()> {
+    let templates_src = Path::new("crates/dragonfly-server/templates");
+    let static_src = Path::new("crates/dragonfly-server/static");
+
+    // Check if we're running from project directory
+    if templates_src.exists() && static_src.exists() {
+        // Copy from local project
+        std::process::Command::new("sudo")
+            .args(["mkdir", "-p", OPT_DIR])
+            .status()?;
+
+        // In dev mode, symlink instead of copy for hot reload
+        if dev_mode {
+            let templates_abs = std::fs::canonicalize(templates_src)?;
+            let static_abs = std::fs::canonicalize(static_src)?;
+
+            // Remove existing and create symlinks
+            let _ = std::process::Command::new("sudo")
+                .args(["rm", "-rf", &format!("{}/templates", OPT_DIR)])
+                .status();
+            let _ = std::process::Command::new("sudo")
+                .args(["rm", "-rf", &format!("{}/static", OPT_DIR)])
+                .status();
+
+            std::process::Command::new("sudo")
+                .args(["ln", "-s", &templates_abs.to_string_lossy(), &format!("{}/templates", OPT_DIR)])
+                .status()?;
+            std::process::Command::new("sudo")
+                .args(["ln", "-s", &static_abs.to_string_lossy(), &format!("{}/static", OPT_DIR)])
+                .status()?;
+        } else {
+            // Production: copy files
+            let _ = std::process::Command::new("sudo")
+                .args(["rm", "-rf", &format!("{}/templates", OPT_DIR)])
+                .status();
+            let _ = std::process::Command::new("sudo")
+                .args(["rm", "-rf", &format!("{}/static", OPT_DIR)])
+                .status();
+
+            std::process::Command::new("sudo")
+                .args(["cp", "-r", &templates_src.to_string_lossy(), &format!("{}/templates", OPT_DIR)])
+                .status()?;
+            std::process::Command::new("sudo")
+                .args(["cp", "-r", &static_src.to_string_lossy(), &format!("{}/static", OPT_DIR)])
+                .status()?;
+        }
+    } else {
+        // Not in project directory - check if assets already exist
+        let opt_templates = Path::new(OPT_DIR).join("templates");
+        let opt_static = Path::new(OPT_DIR).join("static");
+
+        if !opt_templates.exists() || !opt_static.exists() {
+            return Err(color_eyre::eyre::eyre!(
+                "Web assets not found. Run installer from the project directory."
+            ));
+        }
+        // TODO: Download from GitHub when releases are available
+        // let temp_zip = "/tmp/dragonfly-web.zip";
+        // curl -fsSL -o temp_zip GITHUB_WEB_ASSETS_URL
+        // sudo unzip -o -q temp_zip -d OPT_DIR
+    }
+
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn install_service(binary_path: &Path, dev_mode: bool) -> Result<()> {
+    let watch_paths = if dev_mode {
+        format!(r#"
+    <key>WatchPaths</key>
+    <array>
+        <string>{}</string>
+    </array>"#, binary_path.display())
+    } else {
+        String::new()
     };
 
-    // Tinkerbell task - runs in parallel with Dragonfly
-    let tinkerbell_task = if !state.tinkerbell_installed {
-        let tinkerbell_handler = Arc::new(SingleProgressBarHandler::new(tink_pb.clone(), 16));
-        let bootstrap_ip_tk = bootstrap_ip.clone();
+    let plist_content = format!(r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.dragonfly.daemon</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>{}</string>
+        <string>serve</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>{}</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/var/log/dragonfly.log</string>
+    <key>StandardErrorPath</key>
+    <string>/var/log/dragonfly.error.log</string>{}
+</dict>
+</plist>
+"#, binary_path.display(), DRAGONFLY_DIR, watch_paths);
 
-        // Write Tinkerbell playbook to temp file
-        let mut tk_temp = tempfile::NamedTempFile::new()
-            .map_err(|e| color_eyre::eyre::eyre!("Failed to create temp file: {}", e))?;
-        tk_temp.write_all(TINKERBELL_PLAYBOOK.as_bytes())
-            .map_err(|e| color_eyre::eyre::eyre!("Failed to write tinkerbell playbook: {}", e))?;
-        tk_temp.flush()
-            .map_err(|e| color_eyre::eyre::eyre!("Failed to flush tinkerbell playbook: {}", e))?;
-        let tk_path = tk_temp.path().to_str().unwrap().to_string();
+    let temp_plist = "/tmp/com.dragonfly.daemon.plist";
+    fs::write(temp_plist, &plist_content)?;
 
-        Some(tokio::task::spawn_blocking(move || {
-            let _temp = tk_temp;
-            run_playbook(&tk_path)
-                .local()
-                .extra_vars(serde_yaml::to_value(serde_yaml::Mapping::from_iter(vec![
-                    (
-                        serde_yaml::Value::String("bootstrap_ip".to_string()),
-                        serde_yaml::Value::String(bootstrap_ip_tk)
-                    )
-                ])).unwrap())
-                .run_with_output(tinkerbell_handler)
-        }))
-    } else {
-        tink_pb.set_length(1);
-        tink_pb.set_position(1);
-        tink_pb.set_message("already installed");
-        tink_pb.finish();
-        None
-    };
+    // Unload existing service if present
+    let _ = std::process::Command::new("sudo")
+        .args(["launchctl", "unload", LAUNCHD_PLIST])
+        .output();
 
-    // Wait for Dragonfly only (blocking, Tinkerbell continues in background)
-    if let Some(task) = dragonfly_task {
-        match task.await {
-            Ok(Ok(result)) if result.success => {
-                // Dragonfly deployed successfully
-            }
-            Ok(Err(e)) => {
-                drop(m);
-                eprintln!("\n{}", e);
-                std::process::exit(1);
-            }
-            Err(e) => {
-                drop(m);
-                eprintln!("\nTask execution failed: {}", e);
-                std::process::exit(1);
-            }
-            _ => {
-                drop(m);
-                eprintln!("\nDragonfly deployment failed (check logs with RUST_LOG=debug)");
-                std::process::exit(1);
-            }
-        }
+    std::process::Command::new("sudo")
+        .args(["mv", temp_plist, LAUNCHD_PLIST])
+        .status()
+        .map_err(|e| color_eyre::eyre::eyre!("Failed to install plist: {}", e))?;
+
+    std::process::Command::new("sudo")
+        .args(["chown", "root:wheel", LAUNCHD_PLIST])
+        .status()?;
+
+    std::process::Command::new("sudo")
+        .args(["chmod", "644", LAUNCHD_PLIST])
+        .status()?;
+
+    // Load the service
+    std::process::Command::new("sudo")
+        .args(["launchctl", "load", LAUNCHD_PLIST])
+        .status()?;
+
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn install_service(binary_path: &Path, dev_mode: bool) -> Result<()> {
+    let service_content = format!(r#"[Unit]
+Description=Dragonfly Bare Metal Management
+After=network.target
+
+[Service]
+Type=simple
+ExecStart={} serve
+Restart=always
+RestartSec=5
+WorkingDirectory={}
+
+[Install]
+WantedBy=multi-user.target
+"#, binary_path.display(), DRAGONFLY_DIR);
+
+    let temp_service = "/tmp/dragonfly.service";
+    fs::write(temp_service, &service_content)?;
+
+    std::process::Command::new("sudo")
+        .args(["mv", temp_service, SYSTEMD_SERVICE])
+        .status()
+        .map_err(|e| color_eyre::eyre::eyre!("Failed to install service: {}", e))?;
+
+    // If dev mode, create a path unit to watch the binary
+    if dev_mode {
+        let path_content = format!(r#"[Unit]
+Description=Watch Dragonfly binary for changes
+
+[Path]
+PathChanged={}
+Unit=dragonfly.service
+
+[Install]
+WantedBy=multi-user.target
+"#, binary_path.display());
+
+        let temp_path = "/tmp/dragonfly.path";
+        fs::write(temp_path, &path_content)?;
+
+        std::process::Command::new("sudo")
+            .args(["mv", temp_path, "/etc/systemd/system/dragonfly.path"])
+            .status()?;
     }
 
-    drop(m);
+    std::process::Command::new("sudo")
+        .args(["systemctl", "daemon-reload"])
+        .status()
+        .map_err(|e| color_eyre::eyre::eyre!("Failed to reload systemd: {}", e))?;
 
-    // Clear the "Installing:" line and show ready message
-    // Dragonfly is up, so we're ready - Tinkerbell can finish in background
-    let mut stdout = std::io::stdout();
-    execute!(
-        stdout,
-        cursor::MoveUp(1),
-        cursor::MoveToColumn(0),
-        terminal::Clear(terminal::ClearType::CurrentLine),
-        SetForegroundColor(Color::Green),
-        Print(format!("🚀 Ready at http://{}:3000\n", bootstrap_ip)),
-        ResetColor
-    )?;
-    stdout.flush()?;
+    // Enable and start the service
+    std::process::Command::new("sudo")
+        .args(["systemctl", "enable", "--now", "dragonfly"])
+        .status()?;
 
-    // Silently wait for Tinkerbell to complete in background
-    // User can start using Dragonfly immediately, Tinkerbell installs async
-    if let Some(task) = tinkerbell_task {
-        let _ = task.await;
+    // If dev mode, also enable the path watcher
+    if dev_mode {
+        std::process::Command::new("sudo")
+            .args(["systemctl", "enable", "--now", "dragonfly.path"])
+            .status()?;
     }
 
+    Ok(())
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn install_service(_binary_path: &Path, _dev_mode: bool) -> Result<()> {
+    println!("Service installation not supported on this platform");
     Ok(())
 }
 
@@ -488,101 +744,15 @@ mod tests {
     #[test]
     fn test_installation_state_default() {
         let state = InstallationState::default();
-        assert!(!state.k3s_installed);
-        assert!(!state.helm_installed);
-        assert!(!state.dragonfly_installed);
-        assert!(!state.tinkerbell_installed);
+        assert!(!state.directory_exists);
+        assert!(!state.config_exists);
+        assert!(!state.service_exists);
+        assert!(!state.assets_exist);
     }
 
     #[test]
-    fn test_is_fully_installed_all_components() {
-        let state = InstallationState {
-            k3s_installed: true,
-            helm_installed: true,
-            dragonfly_installed: true,
-            tinkerbell_installed: true,
-        };
-        assert!(state.is_fully_installed());
-    }
-
-    #[test]
-    fn test_is_fully_installed_missing_components() {
-        let state = InstallationState {
-            k3s_installed: true,
-            helm_installed: true,
-            dragonfly_installed: false,
-            tinkerbell_installed: true,
-        };
-        assert!(!state.is_fully_installed());
-    }
-
-    #[test]
-    fn test_needs_k3s_or_helm_both_missing() {
-        let state = InstallationState {
-            k3s_installed: false,
-            helm_installed: false,
-            dragonfly_installed: false,
-            tinkerbell_installed: false,
-        };
-        assert!(state.needs_k3s_or_helm());
-    }
-
-    #[test]
-    fn test_needs_k3s_or_helm_k3s_missing() {
-        let state = InstallationState {
-            k3s_installed: false,
-            helm_installed: true,
-            dragonfly_installed: false,
-            tinkerbell_installed: false,
-        };
-        assert!(state.needs_k3s_or_helm());
-    }
-
-    #[test]
-    fn test_needs_k3s_or_helm_helm_missing() {
-        let state = InstallationState {
-            k3s_installed: true,
-            helm_installed: false,
-            dragonfly_installed: false,
-            tinkerbell_installed: false,
-        };
-        assert!(state.needs_k3s_or_helm());
-    }
-
-    #[test]
-    fn test_needs_k3s_or_helm_both_present() {
-        let state = InstallationState {
-            k3s_installed: true,
-            helm_installed: true,
-            dragonfly_installed: false,
-            tinkerbell_installed: false,
-        };
-        assert!(!state.needs_k3s_or_helm());
-    }
-
-    #[test]
-    fn test_partial_installation_k3s_only() {
-        let state = InstallationState {
-            k3s_installed: true,
-            helm_installed: false,
-            dragonfly_installed: false,
-            tinkerbell_installed: false,
-        };
-
-        assert!(!state.is_fully_installed());
-        assert!(state.needs_k3s_or_helm());
-    }
-
-    #[test]
-    fn test_partial_installation_k3s_and_helm() {
-        let state = InstallationState {
-            k3s_installed: true,
-            helm_installed: true,
-            dragonfly_installed: false,
-            tinkerbell_installed: false,
-        };
-
-        assert!(!state.is_fully_installed());
-        assert!(!state.needs_k3s_or_helm());
+    fn test_is_macos() {
+        // Just verify the function compiles and returns a bool
+        let _ = is_macos();
     }
 }

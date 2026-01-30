@@ -1,0 +1,100 @@
+[package]
+name = "proxmox-http"
+description = "Proxmox HTTP library - patched for dual macOS/Linux"
+version = "1.0.5"
+edition = "2024"
+license = "AGPL-3.0-or-later"
+
+[dependencies]
+anyhow = "1"
+bytes = { version = "1", optional = true }
+futures = { version = "0.3", optional = true }
+http = { version = "1", optional = true }
+http-body = { version = "1", optional = true }
+http-body-util = { version = "0.1", optional = true }
+hyper = { version = "1", optional = true }
+hyper-util = { version = "0.1", optional = true, features = ["http2"] }
+native-tls = { version = "0.2", optional = true }
+nix = { version = "0.28", features = ["net"] }
+openssl = { version = "0.10", optional = true }
+serde_json = { version = "1", optional = true }
+sync_wrapper = { version = "1", optional = true }
+tokio = { version = "1", features = [], optional = true }
+tokio-openssl = { version = "0.6", optional = true }
+tower-service = { version = "0.3", optional = true }
+ureq = { version = "3.0", features = ["native-tls"], optional = true, default-features = false }
+url = { version = "2", optional = true }
+
+proxmox-async = { git = "https://github.com/proxmox/proxmox-rs", optional = true }
+proxmox-base64 = { git = "https://github.com/proxmox/proxmox-rs", optional = true }
+proxmox-rate-limiter = { git = "https://github.com/proxmox/proxmox-rs", optional = true, features = ["rate-limiter"] }
+proxmox-sys = { path = "../proxmox-sys", optional = true }
+proxmox-io = { git = "https://github.com/proxmox/proxmox-rs", optional = true }
+proxmox-lang = { git = "https://github.com/proxmox/proxmox-rs", optional = true }
+proxmox-compression = { path = "../proxmox-compression", optional = true }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros"] }
+flate2 = "1"
+
+[features]
+default = []
+
+body = [
+    "dep:bytes",
+    "dep:futures",
+    "dep:http-body",
+    "dep:http-body-util",
+    "dep:hyper",
+    "dep:sync_wrapper",
+    "sync_wrapper?/futures",
+]
+rate-limited-stream = [
+    "dep:tokio",
+    "dep:hyper-util",
+    "hyper-util?/client",
+    "hyper-util?/client-legacy",
+    "hyper-util?/http1",
+    "tokio?/time",
+    "dep:proxmox-rate-limiter",
+]
+client = [
+    "dep:bytes",
+    "dep:futures",
+    "dep:http-body",
+    "dep:http-body-util",
+    "dep:hyper-util",
+    "dep:openssl",
+    "dep:proxmox-compression",
+    "dep:tokio",
+    "dep:tokio-openssl",
+    "dep:tower-service",
+    "hyper?/client",
+    "hyper?/http1",
+    "hyper?/http2",
+    "hyper-util?/client",
+    "hyper-util?/client-legacy",
+    "hyper-util?/http1",
+    "hyper-util?/tokio",
+    "tokio?/io-util",
+    "body",
+    "http-helpers",
+    "rate-limited-stream",
+]
+client-sync = ["client-trait", "http-helpers", "dep:ureq", "dep:native-tls"]
+client-trait = ["dep:http"]
+http-helpers = ["dep:http", "dep:proxmox-base64", "dep:proxmox-sys", "dep:serde_json", "dep:url"]
+websocket = [
+    "dep:futures",
+    "dep:http",
+    "dep:openssl",
+    "dep:proxmox-base64",
+    "dep:proxmox-io",
+    "dep:proxmox-lang",
+    "dep:proxmox-sys",
+    "dep:tokio",
+    "proxmox-io?/tokio",
+    "tokio?/io-util",
+    "tokio?/sync",
+    "body",
+]

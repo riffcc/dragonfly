@@ -1,17 +1,23 @@
+mod workflow;
+
 use reqwest::Client;
 use anyhow::{Result, Context};
 use dragonfly_common::models::{MachineStatus, DiskInfo, Machine, RegisterRequest, RegisterResponse, StatusUpdateRequest, OsInstalledUpdateRequest};
+use dragonfly_crd::Hardware;
 use std::env;
 use std::fs;
 use std::path::Path;
 use std::process::Command;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+use std::time::Duration;
 use clap::Parser;
-use tracing::{info, error, warn};
+use tracing::{info, error, warn, debug};
 // Use wildcard import for sysinfo to bring traits into scope
 use sysinfo::*;
 use serde_json;
+
+use workflow::{AgentWorkflowRunner, AgentAction, checkin_native};
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -24,6 +30,10 @@ struct Args {
     #[arg(long, requires = "setup")]
     kexec: bool,
 
+    /// Run in native provisioning mode (uses Dragonfly workflows instead of Tinkerbell)
+    #[arg(long)]
+    native: bool,
+
     /// Server URL (default: http://localhost:3000)
     #[arg(long)]
     server: Option<String>,
@@ -31,6 +41,78 @@ struct Args {
     /// Tinkerbell IPXE URL (default: http://10.7.1.30:8080/hookos.ipxe)
     #[arg(long, default_value = "http://10.7.1.30:8080/hookos.ipxe")]
     ipxe_url: String,
+
+    /// Check-in interval in seconds (for native mode)
+    #[arg(long, default_value = "30")]
+    checkin_interval: u64,
+
+    /// Only run specific actions (1-indexed, comma-separated)
+    /// Example: --action 1 (first action only)
+    /// Example: --action 1,2,3 (first three actions)
+    /// Example: --action 5 (fifth action only)
+    #[arg(long, value_delimiter = ',')]
+    action: Option<Vec<usize>>,
+}
+
+/// Parameters parsed from kernel command line (for Mage boot environment)
+#[derive(Debug, Default)]
+struct KernelParams {
+    /// Dragonfly server URL (dragonfly.url=)
+    url: Option<String>,
+    /// Boot mode: discovery or imaging (dragonfly.mode=)
+    mode: Option<String>,
+    /// MAC address (dragonfly.mac=)
+    mac: Option<String>,
+    /// Hardware ID if known (dragonfly.hardware=)
+    hardware_id: Option<String>,
+    /// Workflow ID for imaging mode (dragonfly.workflow=)
+    workflow_id: Option<String>,
+}
+
+impl KernelParams {
+    /// Parse Dragonfly parameters from /proc/cmdline
+    fn from_cmdline() -> Self {
+        let mut params = KernelParams::default();
+
+        let cmdline = match fs::read_to_string("/proc/cmdline") {
+            Ok(content) => content,
+            Err(e) => {
+                warn!("Failed to read /proc/cmdline: {}", e);
+                return params;
+            }
+        };
+
+        for param in cmdline.split_whitespace() {
+            if let Some(value) = param.strip_prefix("dragonfly.url=") {
+                params.url = Some(value.to_string());
+            } else if let Some(value) = param.strip_prefix("dragonfly.mode=") {
+                params.mode = Some(value.to_string());
+            } else if let Some(value) = param.strip_prefix("dragonfly.mac=") {
+                params.mac = Some(value.to_string());
+            } else if let Some(value) = param.strip_prefix("dragonfly.hardware=") {
+                params.hardware_id = Some(value.to_string());
+            } else if let Some(value) = param.strip_prefix("dragonfly.workflow=") {
+                params.workflow_id = Some(value.to_string());
+            }
+        }
+
+        if params.url.is_some() || params.mode.is_some() {
+            info!("Parsed kernel parameters: url={:?}, mode={:?}, mac={:?}, hardware={:?}, workflow={:?}",
+                params.url, params.mode, params.mac, params.hardware_id, params.workflow_id);
+        }
+
+        params
+    }
+
+    /// Check if we have Dragonfly kernel parameters (indicates Mage boot)
+    fn has_dragonfly_params(&self) -> bool {
+        self.url.is_some() || self.mode.is_some()
+    }
+
+    /// Is this imaging mode?
+    fn is_imaging_mode(&self) -> bool {
+        self.mode.as_deref() == Some("imaging")
+    }
 }
 
 // Enhanced OS detection with support for more distributions
@@ -247,100 +329,85 @@ fn parse_os_release(content: &str) -> Result<(String, String)> {
     Ok((name, version))
 }
 
-// Detect disks on the system
+// Detect disks on the system via /sys/block (pure Rust, no C deps)
 fn detect_disks() -> Vec<DiskInfo> {
     let mut disks = Vec::new();
-    
-    // Use lsblk to get disk information
-    if let Ok(output) = Command::new("lsblk")
-        .args(["-b", "-d", "-n", "-o", "NAME,SIZE,MODEL"])
-        .output()
-    {
-        if output.status.success() {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            
-            for line in stdout.lines() {
-                let parts: Vec<&str> = line.split_whitespace().collect();
-                if parts.len() >= 2 {
-                    let device_name = parts[0].trim();
-                    
-                    // Skip loop, ram devices, etc.
-                    if device_name.starts_with("loop") || device_name.starts_with("ram") {
-                        continue;
-                    }
-                    
-                    let device = format!("/dev/{}", device_name);
-                    
-                    // Parse size - defaults to 0 if parsing fails
-                    let size_bytes = parts[1].parse::<u64>().unwrap_or(0);
-                    
-                    // Get model if available (parts 2 onwards joined)
-                    let model = if parts.len() > 2 {
-                        Some(parts[2..].join(" "))
-                    } else {
-                        None
-                    };
-                    
-                    disks.push(DiskInfo {
-                        device,
-                        size_bytes,
-                        model,
-                        calculated_size: None,
-                    });
-                }
-            }
-        }
+
+    // Read /sys/block directly - kernel exposes all block devices here
+    let sys_block = std::path::Path::new("/sys/block");
+    if !sys_block.exists() {
+        tracing::warn!("/sys/block not found - not on Linux?");
+        return disks;
     }
-    
-    // If lsblk failed, try with fdisk as a fallback
-    if disks.is_empty() {
-        if let Ok(output) = Command::new("fdisk")
-            .args(["-l"])
-            .output()
+
+    let entries = match fs::read_dir(sys_block) {
+        Ok(e) => e,
+        Err(e) => {
+            tracing::error!("Failed to read /sys/block: {}", e);
+            return disks;
+        }
+    };
+
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+
+        // Skip virtual devices
+        if name.starts_with("loop")
+            || name.starts_with("ram")
+            || name.starts_with("dm-")
+            || name.starts_with("zram")
         {
-            if output.status.success() {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                
-                for line in stdout.lines() {
-                    if line.contains("Disk /dev/") && !line.contains("loop") && !line.contains("ram") {
-                        // Example: "Disk /dev/sda: 20 GiB, 21474836480 bytes, 41943040 sectors"
-                        let parts: Vec<&str> = line.split(": ").collect();
-                        if parts.len() >= 2 {
-                            let device = parts[0].trim_start_matches("Disk ").trim().to_string();
-                            
-                            // Extract size in bytes if available
-                            let size_info = parts[1];
-                            let size_bytes = if let Some(start) = size_info.find(", ") {
-                                if let Some(end) = size_info[start + 2..].find(" bytes") {
-                                    size_info[start + 2..start + 2 + end].replace(",", "").parse::<u64>().unwrap_or(0)
-                                } else {
-                                    0
-                                }
-                            } else {
-                                0
-                            };
-                            
-                            disks.push(DiskInfo {
-                                device,
-                                size_bytes,
-                                model: None, // fdisk doesn't provide model info
-                                calculated_size: None,
-                            });
-                        }
-                    }
-                }
-            }
+            continue;
         }
+
+        // Only include real disk devices
+        let is_disk = name.starts_with("sd")
+            || name.starts_with("nvme")
+            || name.starts_with("vd")
+            || name.starts_with("xvd")
+            || name.starts_with("hd");
+
+        if !is_disk {
+            continue;
+        }
+
+        let device = format!("/dev/{}", name);
+
+        // Read size from /sys/block/<dev>/size (in 512-byte sectors)
+        let size_path = entry.path().join("size");
+        let size_bytes = fs::read_to_string(&size_path)
+            .ok()
+            .and_then(|s| s.trim().parse::<u64>().ok())
+            .map(|sectors| sectors * 512)
+            .unwrap_or(0);
+
+        // Read model from /sys/block/<dev>/device/model
+        let model_path = entry.path().join("device/model");
+        let model = fs::read_to_string(&model_path)
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+
+        tracing::debug!("Found disk {} via sysfs: {} bytes", device, size_bytes);
+
+        disks.push(DiskInfo {
+            device,
+            size_bytes,
+            model,
+            calculated_size: None,
+        });
     }
-    
+
     tracing::info!("Detected {} disks", disks.len());
     for disk in &disks {
-        tracing::info!("  Disk: {} ({} bytes){}", 
-            disk.device, 
+        tracing::info!(
+            "  Disk: {} ({} bytes){}",
+            disk.device,
             disk.size_bytes,
-            disk.model.as_ref().map_or("".to_string(), |m| format!(", Model: {}", m)));
+            disk.model.as_ref().map_or("".to_string(), |m| format!(", Model: {}", m))
+        );
     }
-    
+
     disks
 }
 
@@ -377,12 +444,29 @@ fn detect_nameservers() -> Vec<String> {
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
-    
+
     // Initialize logger
     tracing_subscriber::fmt::init();
-    
-    // Get API URL from environment, command line, or use default
-    let api_url = args.server
+
+    // Parse kernel command line parameters (for Mage boot environment)
+    let kernel_params = KernelParams::from_cmdline();
+
+    // Determine if we should run in native mode:
+    // 1. Explicitly requested via --native flag
+    // 2. Detected Dragonfly kernel parameters (Mage boot)
+    let run_native = args.native || kernel_params.has_dragonfly_params();
+
+    if kernel_params.has_dragonfly_params() {
+        info!("Detected Mage boot environment (dragonfly.* kernel parameters present)");
+    }
+
+    // Get API URL from (in order of priority):
+    // 1. Kernel command line (dragonfly.url=)
+    // 2. Command line argument (--server)
+    // 3. Environment variable (DRAGONFLY_API_URL)
+    // 4. Default
+    let api_url = kernel_params.url.clone()
+        .or(args.server.clone())
         .or_else(|| env::var("DRAGONFLY_API_URL").ok())
         .unwrap_or_else(|| "http://localhost:3000".to_string());
 
@@ -446,7 +530,37 @@ async fn main() -> Result<()> {
     // Detect disks and nameservers
     let disks = detect_disks();
     let nameservers = detect_nameservers();
-    
+
+    // If in native provisioning mode, run the check-in loop instead of legacy flow
+    if run_native {
+        info!("Running in native provisioning mode (Mage boot: {})", kernel_params.has_dragonfly_params());
+
+        // Build Hardware CRD from detected info for workflow execution context
+        let hardware = build_hardware_from_detected_info(
+            &mac_address,
+            &ip_address_str,
+            &hostname,
+            cpu_model.as_deref(),
+            cpu_cores,
+            total_ram_bytes,
+            &disks,
+        );
+
+        // Run the native provisioning check-in loop
+        run_native_provisioning_loop(
+            &client,
+            &api_url,
+            &mac_address,
+            Some(&hostname),
+            Some(&ip_address_str),
+            hardware,
+            Duration::from_secs(args.checkin_interval),
+            args.action.clone(),
+        ).await?;
+
+        return Ok(());
+    }
+
     // Detect OS - even in setup mode we want to check for existing OS
     let (os_name, os_version) = detect_os()?;
     tracing::info!("Detected OS: {} {}", os_name, os_version);
@@ -608,9 +722,13 @@ async fn main() -> Result<()> {
                 disks,
                 nameservers,
                 // Add the detected hardware info (cloning cpu_model Option)
-                cpu_model: cpu_model.clone(), 
+                cpu_model: cpu_model.clone(),
                 cpu_cores,
                 total_ram_bytes: Some(total_ram_bytes),
+                // Proxmox fields (not used in bare metal agent)
+                proxmox_vmid: None,
+                proxmox_node: None,
+                proxmox_cluster: None,
             };
             
             // Register the machine
@@ -713,7 +831,7 @@ async fn main() -> Result<()> {
             register_response.machine_id
         }
     };
-    
+
     // If in setup mode, handle boot decision
     if args.setup {
         if has_bootable_os {
@@ -724,9 +842,9 @@ async fn main() -> Result<()> {
                 // If chainload succeeds, the process is replaced. If it fails, we fall through.
                 // Add a log here in case kexec load/exec fails but doesn't return Err?
                 tracing::error!("kexec command sequence completed but did not transfer control. This is unexpected.");
-                // Still exit cleanly even if kexec didn't work as expected, 
+                // Still exit cleanly even if kexec didn't work as expected,
                 // as the user explicitly asked for it.
-                return Ok(()); 
+                return Ok(());
             } else {
                 tracing::info!("Bootable OS detected, but --kexec not specified. Exiting agent cleanly.");
                 // Exit cleanly without attempting kexec or reboot
@@ -743,8 +861,144 @@ async fn main() -> Result<()> {
     } else {
         tracing::info!("Agent finished running in non-setup mode.");
     }
-    
+
     Ok(())
+}
+
+/// Build a Hardware CRD from detected system information
+fn build_hardware_from_detected_info(
+    mac: &str,
+    ip: &str,
+    hostname: &str,
+    _cpu_model: Option<&str>,
+    _cpu_cores: Option<u32>,
+    _total_ram_bytes: u64,
+    disks: &[DiskInfo],
+) -> Hardware {
+    use dragonfly_crd::{HardwareSpec, InterfaceSpec, DhcpSpec, IpSpec, DiskSpec, InstanceMetadata, Instance};
+
+    // Build primary interface with DHCP
+    let mut primary_dhcp = DhcpSpec::new(mac);
+    primary_dhcp.hostname = Some(hostname.to_string());
+    primary_dhcp.ip = Some(IpSpec {
+        address: ip.to_string(),
+        netmask: None,
+        gateway: None,
+    });
+
+    let primary_interface = InterfaceSpec {
+        dhcp: Some(primary_dhcp),
+        netboot: None,
+    };
+
+    // Build disk specs from detected disks
+    let disk_specs: Vec<DiskSpec> = disks.iter().map(|d| {
+        DiskSpec {
+            device: d.device.clone(),
+        }
+    }).collect();
+
+    // Build instance metadata
+    let hardware_id = format!("hw-{}", mac.replace(':', ""));
+    let instance_metadata = InstanceMetadata {
+        instance: Instance {
+            id: hardware_id.clone(),
+            hostname: hostname.to_string(),
+        },
+    };
+
+    // Build hardware spec
+    let spec = HardwareSpec {
+        interfaces: vec![primary_interface],
+        disks: disk_specs,
+        metadata: Some(instance_metadata),
+        bmc: None,
+        user_data: None,
+        os_choice: None,
+    };
+
+    // Create hardware with generated ID based on MAC
+    Hardware::new(&hardware_id, spec)
+}
+
+/// Run the native provisioning check-in loop
+async fn run_native_provisioning_loop(
+    client: &Client,
+    server_url: &str,
+    mac: &str,
+    hostname: Option<&str>,
+    ip_address: Option<&str>,
+    hardware: Hardware,
+    checkin_interval: Duration,
+    action_filter: Option<Vec<usize>>,
+) -> Result<()> {
+    info!("Starting native provisioning check-in loop");
+
+    loop {
+        // Check in with the server
+        match checkin_native(client, server_url, mac, hostname, ip_address).await {
+            Ok(response) => {
+                info!(
+                    hardware_id = %response.hardware_id,
+                    is_new = %response.is_new,
+                    action = ?response.action,
+                    "Check-in successful"
+                );
+
+                match response.action {
+                    AgentAction::Wait => {
+                        debug!("Server says wait, will check in again in {:?}", checkin_interval);
+                        tokio::time::sleep(checkin_interval).await;
+                    }
+                    AgentAction::Execute => {
+                        if let Some(workflow_id) = response.workflow_id {
+                            info!(workflow_id = %workflow_id, "Server assigned workflow, executing...");
+
+                            // Create workflow runner and execute
+                            let runner = AgentWorkflowRunner::new(
+                                client.clone(),
+                                server_url.to_string(),
+                                hardware.clone(),
+                            ).with_action_filter(action_filter.clone());
+
+                            match runner.execute(&workflow_id).await {
+                                Ok(()) => {
+                                    info!(workflow_id = %workflow_id, "Workflow completed successfully");
+                                }
+                                Err(e) => {
+                                    error!(workflow_id = %workflow_id, error = %e, "Workflow execution failed");
+                                }
+                            }
+
+                            // If action filter was specified, exit after execution (debugging mode)
+                            if action_filter.is_some() {
+                                info!("Action filter specified - exiting after execution");
+                                return Ok(());
+                            }
+
+                            // After workflow execution, continue check-in loop
+                            // Server will decide next action based on workflow result
+                            tokio::time::sleep(Duration::from_secs(5)).await;
+                        } else {
+                            warn!("Server said Execute but no workflow_id provided");
+                            tokio::time::sleep(checkin_interval).await;
+                        }
+                    }
+                    AgentAction::Reboot => {
+                        info!("Server requested reboot");
+                        let mut cmd = Command::new("reboot");
+                        cmd.status().context("Failed to reboot")?;
+                        // Won't reach here normally
+                        return Ok(());
+                    }
+                }
+            }
+            Err(e) => {
+                error!(error = %e, "Check-in failed, will retry in {:?}", checkin_interval);
+                tokio::time::sleep(checkin_interval).await;
+            }
+        }
+    }
 }
 
 /// Check if there's a bootable OS on the system

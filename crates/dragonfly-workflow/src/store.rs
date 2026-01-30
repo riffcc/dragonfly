@@ -181,7 +181,8 @@ impl WorkflowStateStore for MemoryStateStore {
 mod tests {
     use super::*;
     use dragonfly_crd::{
-        DhcpSpec, HardwareSpec, InterfaceSpec, ObjectMeta, Task, TemplateSpec, TypeMeta,
+        ActionStep, DhcpSpec, HardwareSpec, Image2DiskConfig, InterfaceSpec, ObjectMeta,
+        TemplateSpec, TypeMeta,
     };
 
     fn test_workflow() -> Workflow {
@@ -193,12 +194,12 @@ mod tests {
             type_meta: TypeMeta::template(),
             metadata: ObjectMeta::new("test-template"),
             spec: TemplateSpec {
-                tasks: vec![Task {
-                    name: "provision".to_string(),
-                    worker: "{{.device_1}}".to_string(),
-                    volumes: Vec::new(),
-                    actions: Vec::new(),
-                }],
+                actions: vec![ActionStep::Image2disk(Image2DiskConfig {
+                    url: "http://example.com/image.raw".to_string(),
+                    disk: "auto".to_string(),
+                    checksum: None,
+                    timeout: Some(60),
+                })],
                 ..Default::default()
             },
         }

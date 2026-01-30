@@ -11,8 +11,10 @@ use axum::{
 use std::convert::Infallible;
 use serde_json::json;
 use uuid::Uuid;
-use dragonfly_common::models::{MachineStatus, HostnameUpdateRequest, HostnameUpdateResponse, OsInstalledUpdateRequest, OsInstalledUpdateResponse, BmcType, BmcCredentials, StatusUpdateRequest, BmcCredentialsUpdateRequest, InstallationProgressUpdateRequest, RegisterRequest, Machine};
+use dragonfly_common::models::{MachineStatus, HostnameUpdateRequest, HostnameUpdateResponse, OsInstalledUpdateRequest, OsInstalledUpdateResponse, BmcType, BmcCredentials, StatusUpdateRequest, BmcCredentialsUpdateRequest, InstallationProgressUpdateRequest, RegisterRequest, Machine, DiskInfo as CommonDiskInfo};
 use crate::db::{self, RegisterResponse, ErrorResponse, OsAssignmentRequest, get_machine_tags, update_machine_tags as db_update_machine_tags};
+use crate::provisioning::HardwareCheckIn;
+use dragonfly_crd::{Hardware, HardwareState};
 use crate::AppState;
 use crate::auth::AuthSession;
 use std::collections::HashMap;
@@ -52,6 +54,108 @@ use chrono::Utc;
 use axum::extract::DefaultBodyLimit;
 use serde::Deserialize;
 
+/// Get UUID for a hardware entry (deterministic from name)
+pub fn hardware_uuid(hw: &Hardware) -> Uuid {
+    let namespace = uuid::Uuid::NAMESPACE_DNS;
+    uuid::Uuid::new_v5(&namespace, hw.metadata.name.as_bytes())
+}
+
+/// Find machine by UUID from the store
+pub async fn get_machine_by_uuid(store: &dyn crate::store::DragonflyStore, id: &Uuid) -> Result<Option<Machine>, anyhow::Error> {
+    let hardware_list = store.list_hardware().await?;
+    for hw in &hardware_list {
+        if hardware_uuid(hw) == *id {
+            return Ok(Some(hardware_to_machine(hw)));
+        }
+    }
+    Ok(None)
+}
+
+/// Convert Hardware (from DragonflyStore/ReDB) to Machine (for UI)
+pub fn hardware_to_machine(hw: &Hardware) -> Machine {
+    // Generate deterministic UUID from hardware name
+    let namespace = uuid::Uuid::NAMESPACE_DNS;
+    let id = uuid::Uuid::new_v5(&namespace, hw.metadata.name.as_bytes());
+
+    // Get MAC address from first interface
+    let mac_address = hw.spec.interfaces.first()
+        .and_then(|i| i.dhcp.as_ref())
+        .map(|d| d.mac.clone())
+        .unwrap_or_default();
+
+    // Get IP address from first interface
+    let ip_address = hw.spec.interfaces.first()
+        .and_then(|i| i.dhcp.as_ref())
+        .and_then(|d| d.ip.as_ref())
+        .map(|ip| ip.address.clone())
+        .unwrap_or_default();
+
+    // Get hostname from instance metadata or DHCP
+    let hostname = hw.spec.metadata.as_ref()
+        .map(|m| m.instance.hostname.clone())
+        .or_else(|| {
+            hw.spec.interfaces.first()
+                .and_then(|i| i.dhcp.as_ref())
+                .and_then(|d| d.hostname.clone())
+        });
+
+    // Convert disks
+    let disks: Vec<CommonDiskInfo> = hw.spec.disks.iter().map(|d| CommonDiskInfo {
+        device: d.device.clone(),
+        size_bytes: 0, // Not stored in HardwareSpec
+        model: None,
+        calculated_size: None,
+    }).collect();
+
+    // Convert hardware state to machine status
+    let status = match hw.status.as_ref().map(|s| &s.state) {
+        Some(HardwareState::Ready) => MachineStatus::AwaitingAssignment,
+        Some(HardwareState::Provisioning) => MachineStatus::InstallingOS,
+        Some(HardwareState::Provisioned) => MachineStatus::Ready,
+        Some(HardwareState::Error) => MachineStatus::Error("Hardware error".to_string()),
+        _ => MachineStatus::AwaitingAssignment,
+    };
+
+    // Get timestamps
+    let now = Utc::now();
+    let last_seen = hw.status.as_ref()
+        .and_then(|s| s.last_seen)
+        .unwrap_or(now);
+
+    // Generate memorable name from MAC
+    let memorable_name = if !mac_address.is_empty() {
+        Some(dragonfly_common::mac_to_words::mac_to_words_safe(&mac_address))
+    } else {
+        None
+    };
+
+    Machine {
+        id,
+        mac_address,
+        ip_address,
+        hostname,
+        os_choice: hw.spec.os_choice.clone(),
+        os_installed: Some("".to_string()), // Empty string instead of None to avoid template errors
+        status,
+        disks,
+        nameservers: vec![],
+        created_at: last_seen,
+        updated_at: last_seen,
+        memorable_name,
+        bmc_credentials: None, // TODO: convert from hw.spec.bmc
+        installation_progress: 0,
+        installation_step: None,
+        last_deployment_duration: None,
+        cpu_model: None,
+        cpu_cores: None,
+        total_ram_bytes: None,
+        proxmox_vmid: None,
+        proxmox_node: None,
+        proxmox_cluster: None,
+        is_proxmox_host: false,
+    }
+}
+
 pub fn api_router() -> Router<crate::AppState> {
     // Core API routes
     Router::new()
@@ -82,6 +186,12 @@ pub fn api_router() -> Router<crate::AppState> {
         .route("/tags", get(api_get_tags).post(api_create_tag))
         .route("/tags/{tag_name}", delete(api_delete_tag))
         .route("/tags/{tag_name}/machines", get(api_get_machines_by_tag))
+        // --- Agent Routes ---
+        .route("/agent/checkin", post(agent_checkin_handler))
+        // --- Workflow Routes (for agent) ---
+        .route("/workflows/{id}", get(get_workflow_handler))
+        .route("/workflows/{id}/events", post(workflow_events_handler))
+        .route("/templates/{name}", get(get_template_handler))
         .layer(DefaultBodyLimit::max(1024 * 1024 * 50)) // 50 MB
 }
 
@@ -97,8 +207,8 @@ ff02::2 ip6-allrouters
 const HOSTNAME_CONTENT: &str = "localhost";
 const APK_ARCH_CONTENT: &str = "x86_64"; // Assuming amd64/x86_64 for now
 const LBU_LIST_CONTENT: &str = "+usr/local";
-const REPOSITORIES_CONTENT: &str = r#"https://dl-cdn.alpinelinux.org/alpine/v3.21/main
-https://dl-cdn.alpinelinux.org/alpine/v3.21/community
+const REPOSITORIES_CONTENT: &str = r#"https://dl-cdn.alpinelinux.org/alpine/v3.23/main
+https://dl-cdn.alpinelinux.org/alpine/v3.23/community
 "#;
 const WORLD_CONTENT: &str = r#"alpine-baselayout
 alpine-conf
@@ -135,6 +245,8 @@ pub async fn generate_agent_apkovl(
         .map_err(|e| dragonfly_common::Error::Internal(format!("Failed to create dir etc/runlevels/default: {}", e)))?;
     fs::create_dir_all(temp_path.join("usr/local/bin")).await
         .map_err(|e| dragonfly_common::Error::Internal(format!("Failed to create dir usr/local/bin: {}", e)))?;
+    fs::create_dir_all(temp_path.join("var/log/dragonfly")).await
+        .map_err(|e| dragonfly_common::Error::Internal(format!("Failed to create dir var/log/dragonfly: {}", e)))?;
     
     // 3. Write static files
     fs::write(temp_path.join("etc/hosts"), HOSTS_CONTENT).await
@@ -160,16 +272,36 @@ pub async fn generate_agent_apkovl(
     
     // 4. Write dynamic dragonfly-agent.start script
     let start_script_path = temp_path.join("etc/local.d/dragonfly-agent.start");
-    
-    // Create script content with explicit newline characters
-    let script_content = format!(
-        "#!/bin/sh\n\
-        # Start dragonfly-agent\n\
-        /usr/local/bin/dragonfly-agent --server {} --setup\n\
-        exit 0\n", 
-        base_url
+
+    // Create script content - runs agent in background with logging
+    // The agent auto-detects native mode from kernel parameters (dragonfly.*)
+    let script_content = format!(r#"#!/bin/sh
+# Dragonfly Agent startup script
+# Log all output to /var/log/dragonfly/agent.log
+exec >>/var/log/dragonfly/agent.log 2>&1
+
+echo "=== Dragonfly Agent starting ==="
+echo "Date: $(date)"
+echo "Kernel params: $(cat /proc/cmdline)"
+echo "Server URL: {}"
+
+# Verify agent binary exists
+if [ ! -x /usr/local/bin/dragonfly-agent ]; then
+    echo "ERROR: Agent binary not found or not executable"
+    ls -la /usr/local/bin/
+    exit 1
+fi
+
+# Run agent - it will detect native mode from kernel params
+echo "Starting dragonfly-agent..."
+/usr/local/bin/dragonfly-agent --server {} &
+AGENT_PID=$!
+echo "Agent started with PID: $AGENT_PID"
+exit 0
+"#,
+        base_url, base_url
     );
-    
+
     // Write the file
     fs::write(&start_script_path, script_content).await
         .map_err(|e| dragonfly_common::Error::Internal(format!("Failed to write start script: {}", e)))?;
@@ -311,6 +443,7 @@ async fn register_machine(
 
 #[axum::debug_handler]
 async fn get_all_machines(
+    State(state): State<crate::AppState>,
     auth_session: AuthSession,
     req: axum::http::Request<axum::body::Body>
 ) -> Response {
@@ -318,23 +451,35 @@ async fn get_all_machines(
     let is_htmx = req.headers()
         .get("HX-Request")
         .is_some();
-    
+
     // Check if user is authenticated as admin
     let is_admin = auth_session.user.is_some();
 
-    match db::get_all_machines().await {
-        Ok(machines) => {
-            // Get workflow info for machines that are installing OS
-            let mut workflow_infos = HashMap::new();
-            for machine in &machines {
-                if machine.status == MachineStatus::InstallingOS {
-                    if let Ok(Some(info)) = crate::tinkerbell::get_workflow_info(machine).await {
-                        workflow_infos.insert(machine.id, info);
-                    }
-                }
+    // Query DragonflyStore (ReDB) for hardware, convert to machines
+    let machines: Vec<Machine> = if let Some(ref provisioning) = state.provisioning {
+        match provisioning.store().list_hardware().await {
+            Ok(hardware_list) => hardware_list.iter().map(hardware_to_machine).collect(),
+            Err(e) => {
+                error!("Failed to list hardware from store: {}", e);
+                vec![]
             }
+        }
+    } else {
+        error!("Provisioning service not initialized");
+        vec![]
+    };
 
-            if is_htmx {
+    // Get workflow info for machines that are installing OS
+    let mut workflow_infos = HashMap::new();
+    for machine in &machines {
+        if machine.status == MachineStatus::InstallingOS {
+            if let Ok(Some(info)) = crate::tinkerbell::get_workflow_info(machine).await {
+                workflow_infos.insert(machine.id, info);
+            }
+        }
+    }
+
+    if is_htmx {
                 // For HTMX requests, return HTML table rows
                 if machines.is_empty() {
                     Html(r#"<tr>
@@ -472,19 +617,9 @@ async fn get_all_machines(
                     }
                     Html(html).into_response()
                 }
-            } else {
-                // For non-HTMX requests, return JSON (already includes new fields via db query)
-                (StatusCode::OK, Json(machines)).into_response()
-            }
-        },
-        Err(e) => {
-            error!("Failed to retrieve machines: {}", e);
-            let error_response = ErrorResponse {
-                error: "Database Error".to_string(),
-                message: e.to_string(),
-            };
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response)).into_response()
-        }
+    } else {
+        // For non-HTMX requests, return JSON
+        (StatusCode::OK, Json(machines)).into_response()
     }
 }
 
@@ -536,6 +671,7 @@ async fn get_machine(
 // Combined OS assignment handler
 #[axum::debug_handler]
 async fn assign_os(
+    State(app_state): State<AppState>,
     auth_session: AuthSession,
     Path(id): Path<Uuid>,
     req: axum::http::Request<axum::body::Body>,
@@ -553,9 +689,9 @@ async fn assign_os(
         .get(axum::http::header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
-    
+
     info!("Content-Type received: {}", content_type);
-    
+
     let os_choice = if content_type.starts_with("application/json") {
         // Extract JSON
         match axum::Json::<OsAssignmentRequest>::from_request(req, &()).await {
@@ -578,9 +714,9 @@ async fn assign_os(
         error!("Unsupported content type: {}", content_type);
         None
     };
-    
+
     match os_choice {
-        Some(os_choice) => assign_os_internal(id, os_choice).await,
+        Some(os_choice) => assign_os_internal(&app_state, id, os_choice).await,
         None => {
             let error_response = ErrorResponse {
                 error: "Bad Request".to_string(),
@@ -591,32 +727,78 @@ async fn assign_os(
     }
 }
 
-// Shared implementation
-async fn assign_os_internal(id: Uuid, os_choice: String) -> Response {
+// Shared implementation - uses DragonflyStore (ReDB)
+async fn assign_os_internal(app_state: &AppState, id: Uuid, os_choice: String) -> Response {
     info!("Assigning OS {} to machine {}", os_choice, id);
-    
-    match db::assign_os(&id, &os_choice).await {
-        Ok(true) => {
-            // Return a success response, but don't create a workflow anymore
-            let html = format!(r###"
-                <div class="p-4 mb-4 text-sm text-green-700 bg-green-100 rounded-lg" role="alert">
-                    <span class="font-medium">Success!</span> OS choice set to {} for machine {}. 
-                    <p>To apply this change, click the "Reimage" button.</p>
+
+    // Get the provisioning service
+    let provisioning = match &app_state.provisioning {
+        Some(p) => p,
+        None => {
+            error!("Provisioning service not available");
+            let error_html = r###"
+                <div class="p-4 mb-4 text-sm text-red-700 bg-red-100 rounded-lg" role="alert">
+                    <span class="font-medium">Error!</span> Provisioning service not available.
                 </div>
-            "###, os_choice, id);
-            
-            (StatusCode::OK, [(axum::http::header::CONTENT_TYPE, "text/html")], html).into_response()
-        },
-        Ok(false) => {
+            "###;
+            return (StatusCode::INTERNAL_SERVER_ERROR, [(axum::http::header::CONTENT_TYPE, "text/html")], error_html).into_response();
+        }
+    };
+
+    let store = provisioning.store();
+
+    // Find hardware by UUID
+    let hardware_list = match store.list_hardware().await {
+        Ok(list) => list,
+        Err(e) => {
+            error!("Failed to list hardware: {}", e);
+            let error_html = format!(r###"
+                <div class="p-4 mb-4 text-sm text-red-700 bg-red-100 rounded-lg" role="alert">
+                    <span class="font-medium">Error!</span> Database error: {}.
+                </div>
+            "###, e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, [(axum::http::header::CONTENT_TYPE, "text/html")], error_html).into_response();
+        }
+    };
+
+    // Find the hardware with matching UUID
+    let mut found_hw: Option<dragonfly_crd::Hardware> = None;
+    for hw in hardware_list {
+        if hardware_uuid(&hw) == id {
+            found_hw = Some(hw);
+            break;
+        }
+    }
+
+    let mut hw = match found_hw {
+        Some(hw) => hw,
+        None => {
             let error_html = format!(r###"
                 <div class="p-4 mb-4 text-sm text-red-700 bg-red-100 rounded-lg" role="alert">
                     <span class="font-medium">Error!</span> Machine with ID {} not found.
                 </div>
             "###, id);
-            (StatusCode::NOT_FOUND, [(axum::http::header::CONTENT_TYPE, "text/html")], error_html).into_response()
+            return (StatusCode::NOT_FOUND, [(axum::http::header::CONTENT_TYPE, "text/html")], error_html).into_response();
+        }
+    };
+
+    // Update os_choice
+    hw.spec.os_choice = Some(os_choice.clone());
+
+    // Save back to store
+    match store.put_hardware(&hw).await {
+        Ok(()) => {
+            let html = format!(r###"
+                <div class="p-4 mb-4 text-sm text-green-700 bg-green-100 rounded-lg" role="alert">
+                    <span class="font-medium">Success!</span> OS choice set to {} for machine {}.
+                    <p>To apply this change, click the "Reimage" button.</p>
+                </div>
+            "###, os_choice, id);
+
+            (StatusCode::OK, [(axum::http::header::CONTENT_TYPE, "text/html")], html).into_response()
         },
         Err(e) => {
-            error!("Failed to assign OS to machine {}: {}", id, e);
+            error!("Failed to save hardware: {}", e);
             let error_html = format!(r###"
                 <div class="p-4 mb-4 text-sm text-red-700 bg-red-100 rounded-lg" role="alert">
                     <span class="font-medium">Error!</span> Database error: {}.
@@ -963,7 +1145,18 @@ async fn get_hostname_form(
 
 // Handler for initial iPXE script generation (DHCP points here)
 // Determines whether to chain to HookOS or the Dragonfly Agent
-pub async fn ipxe_script(Path(mac): Path<String>) -> Response {
+//
+// When native provisioning is enabled, uses ProvisioningService for boot decisions.
+// Otherwise, falls back to legacy db-based approach.
+pub async fn ipxe_script(
+    State(state): State<AppState>,
+    Path(mac): Path<String>,
+) -> Response {
+    // URL-decode the MAC address (iPXE URL-encodes colons as %3A)
+    let mac = urlencoding::decode(&mac)
+        .map(|s| s.into_owned())
+        .unwrap_or(mac);
+
     if !mac.contains(':') || mac.split(':').count() != 6 {
         warn!("Received invalid MAC format in iPXE request: {}", mac);
         return (StatusCode::BAD_REQUEST, "Invalid MAC Address Format").into_response();
@@ -971,7 +1164,31 @@ pub async fn ipxe_script(Path(mac): Path<String>) -> Response {
 
     info!("Generating initial iPXE script for MAC: {}", mac);
 
-    // Read required base URL from environment variable
+    // Use native provisioning if enabled
+    if let Some(ref provisioning) = state.provisioning {
+        match provisioning.get_boot_script(&mac).await {
+            Ok(script) => {
+                // Log the first 3 lines of the script for debugging
+                let preview: String = script.lines().take(5).collect::<Vec<_>>().join(" | ");
+                info!("Returning iPXE script for MAC {}: {}", mac, preview);
+                return (
+                    StatusCode::OK,
+                    [(axum::http::header::CONTENT_TYPE, "text/plain")],
+                    script,
+                ).into_response();
+            }
+            Err(e) => {
+                error!("Provisioning error for MAC {}: {}", mac, e);
+                let error_response = ErrorResponse {
+                    error: "Provisioning Error".to_string(),
+                    message: e.to_string(),
+                };
+                return (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response)).into_response();
+            }
+        }
+    }
+
+    // Legacy fallback: Read required base URL from environment variable
     let base_url = match env::var("DRAGONFLY_BASE_URL") {
         Ok(url) => url,
         Err(_) => {
@@ -1434,25 +1651,25 @@ exit
                     error!("CRITICAL: DRAGONFLY_BASE_URL environment variable is not set. Agent iPXE script requires this.");
                     Error::Internal("Server is missing required DRAGONFLY_BASE_URL configuration.".to_string())
                 })?;
-                
-            // Format the Dragonfly Agent iPXE script
+
+            // Detect architecture from iPXE buildarch variable
+            // Default to x86_64, script will detect at runtime
             Ok(format!(r#"#!ipxe
-kernel {}/ipxe/dragonfly-agent/vmlinuz \
+# Detect architecture
+iseq ${{buildarch}} arm64 && set arch aarch64 || set arch x86_64
+
+kernel {base_url}/boot/${{arch}}/kernel \
   ip=dhcp \
-  alpine_repo=http://dl-cdn.alpinelinux.org/alpine/v3.21/main \
+  alpine_repo=http://dl-cdn.alpinelinux.org/alpine/v3.23/main \
   modules=loop,squashfs,sd-mod,usb-storage \
-  initrd=initramfs-lts \
-  modloop={}/ipxe/dragonfly-agent/modloop \
-  apkovl={}/ipxe/dragonfly-agent/localhost.apkovl.tar.gz \
+  initrd=initramfs \
+  modloop={base_url}/boot/${{arch}}/modloop \
+  apkovl={base_url}/boot/${{arch}}/apkovl.tar.gz \
+  kexec_load_disabled=0 \
   rw
-initrd {}/ipxe/dragonfly-agent/initramfs-lts
+initrd {base_url}/boot/${{arch}}/initramfs
 boot
-"#, 
-            base_url, // for kernel path
-            base_url, // for modloop path
-            base_url, // for apkovl path
-            base_url  // for initrd path
-            ))
+"#))
         },
         _ => {
             warn!("Cannot generate unknown IPXE script: {}", script_name); // Log the specific script name
@@ -1803,21 +2020,46 @@ pub async fn serve_ipxe_artifact(
             let generation_target_path = PathBuf::from(AGENT_APKOVL_PATH);
             info!("Generating {} on demand...", generation_target_path.display());
 
-            let base_url = match env::var("DRAGONFLY_BASE_URL") {
-                Ok(url) => url,
-                Err(_) => {
-                    error!("Cannot generate apkovl: DRAGONFLY_BASE_URL environment variable is not set.");
-                    return (StatusCode::INTERNAL_SERVER_ERROR, "Server configuration error for apkovl generation").into_response();
+            // Get base URL with auto-detection fallback
+            let base_url = crate::mode::get_base_url(Some(state.store.as_ref())).await;
+
+            // Check if we need to regenerate (base_url changed or file doesn't exist)
+            let url_marker_path = generation_target_path.with_extension("url");
+            let needs_regeneration = if generation_target_path.exists() {
+                // Check if base_url changed
+                match tokio::fs::read_to_string(&url_marker_path).await {
+                    Ok(stored_url) => stored_url.trim() != base_url,
+                    Err(_) => true, // No marker file, regenerate
                 }
+            } else {
+                true // File doesn't exist
             };
+
+            if !needs_regeneration {
+                info!("Serving cached apkovl (base_url unchanged: {})", base_url);
+                match read_file_as_stream(&generation_target_path, None, None, None).await {
+                    Ok((stream, file_size, _)) => {
+                        return create_streaming_response(stream, "application/gzip", file_size, None);
+                    },
+                    Err(e) => {
+                        warn!("Failed to read cached apkovl, will regenerate: {}", e);
+                    }
+                }
+            }
+
+            info!("Generating apkovl with base_url: {}", base_url);
 
             match generate_agent_apkovl(&generation_target_path, &base_url, AGENT_BINARY_URL).await {
                 Ok(()) => {
                     info!("Successfully generated {}, now serving...", generation_target_path.display());
+                    // Save the base_url marker for cache invalidation
+                    if let Err(e) = tokio::fs::write(&url_marker_path, &base_url).await {
+                        warn!("Failed to write URL marker file: {}", e);
+                    }
                     // Serve the newly generated file (no range needed here as it was just created)
-                    match read_file_as_stream(&generation_target_path, None, None, None).await { 
+                    match read_file_as_stream(&generation_target_path, None, None, None).await {
                         Ok((stream, file_size, _)) => {
-                            return create_streaming_response(stream, "application/gzip", file_size, None); 
+                            return create_streaming_response(stream, "application/gzip", file_size, None);
                         },
                         Err(e) => {
                             error!("Failed to stream newly generated apkovl {}: {}", generation_target_path.display(), e);
@@ -2365,6 +2607,215 @@ pub async fn heartbeat() -> Response {
     (StatusCode::OK, "OK").into_response()
 }
 
+/// Handle agent check-in from Mage environment
+///
+/// Called when the dragonfly-agent boots and registers with the server.
+/// Returns instructions for what the agent should do next.
+pub async fn agent_checkin_handler(
+    State(state): State<crate::AppState>,
+    Json(checkin): Json<HardwareCheckIn>,
+) -> Response {
+    info!(mac = %checkin.mac, hostname = ?checkin.hostname, "Agent check-in received");
+
+    let provisioning = match &state.provisioning {
+        Some(p) => p,
+        None => {
+            error!("Provisioning service not initialized");
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({ "error": "Provisioning service not available" })),
+            ).into_response();
+        }
+    };
+
+    match provisioning.handle_checkin(&checkin).await {
+        Ok(response) => {
+            info!(
+                hardware_id = %response.hardware_id,
+                is_new = response.is_new,
+                action = ?response.action,
+                "Agent check-in successful"
+            );
+            Json(response).into_response()
+        }
+        Err(e) => {
+            error!(error = %e, mac = %checkin.mac, "Agent check-in failed");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": e.to_string() })),
+            ).into_response()
+        }
+    }
+}
+
+/// Get workflow by ID for agent execution
+pub async fn get_workflow_handler(
+    State(state): State<crate::AppState>,
+    Path(workflow_id): Path<String>,
+) -> Response {
+    debug!(workflow_id = %workflow_id, "Fetching workflow for agent");
+
+    let provisioning = match &state.provisioning {
+        Some(p) => p,
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({ "error": "Provisioning service not available" })),
+            ).into_response();
+        }
+    };
+
+    match provisioning.store().get_workflow(&workflow_id).await {
+        Ok(Some(workflow)) => {
+            info!(workflow_id = %workflow_id, "Returning workflow to agent");
+            Json(workflow).into_response()
+        }
+        Ok(None) => {
+            warn!(workflow_id = %workflow_id, "Workflow not found");
+            (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({ "error": "Workflow not found" })),
+            ).into_response()
+        }
+        Err(e) => {
+            error!(error = %e, workflow_id = %workflow_id, "Failed to fetch workflow");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": e.to_string() })),
+            ).into_response()
+        }
+    }
+}
+
+/// Get template by name for agent execution
+///
+/// Templates define the actions to execute for OS installation.
+/// Templates are stored in the database and loaded from YAML files on startup.
+pub async fn get_template_handler(
+    State(state): State<crate::AppState>,
+    Path(template_name): Path<String>,
+) -> Response {
+    debug!(template_name = %template_name, "Fetching template for agent");
+
+    // Fetch template from store
+    match state.store.get_template(&template_name).await {
+        Ok(Some(template)) => {
+            info!(
+                template_name = %template_name,
+                actions_count = template.spec.actions.len(),
+                action_names = ?template.action_names(),
+                "Returning template to agent"
+            );
+            // Debug: log raw JSON being sent
+            if let Ok(json) = serde_json::to_string(&template) {
+                debug!(json_length = json.len(), "Template JSON payload");
+            }
+            Json(template).into_response()
+        }
+        Ok(None) => {
+            warn!(template_name = %template_name, "Template not found");
+            (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({ "error": format!("Template not found: {}", template_name) })),
+            ).into_response()
+        }
+        Err(e) => {
+            error!(template_name = %template_name, error = %e, "Failed to fetch template");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": "Failed to fetch template" })),
+            ).into_response()
+        }
+    }
+}
+
+/// Workflow event data from agent
+#[derive(Debug, serde::Deserialize)]
+pub struct WorkflowEventPayload {
+    #[serde(rename = "type")]
+    pub event_type: String,
+    pub workflow: Option<String>,
+    pub action: Option<String>,
+    pub progress: Option<WorkflowProgress>,
+    pub success: Option<bool>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct WorkflowProgress {
+    pub percent: u8,
+    pub message: String,
+    pub bytes_transferred: Option<u64>,
+    pub bytes_total: Option<u64>,
+    pub eta_secs: Option<u64>,
+    pub phase: Option<String>,
+    pub phase_number: Option<u32>,
+    pub total_phases: Option<u32>,
+}
+
+/// Receive workflow events from agent for real-time UI updates
+///
+/// The agent POSTs progress events here as it executes workflow actions.
+/// We broadcast them via SSE so the UI can show real-time progress.
+pub async fn workflow_events_handler(
+    State(state): State<crate::AppState>,
+    Path(workflow_id): Path<String>,
+    Json(event): Json<WorkflowEventPayload>,
+) -> Response {
+    debug!(
+        workflow_id = %workflow_id,
+        event_type = %event.event_type,
+        "Received workflow event from agent"
+    );
+
+    // Build event message for SSE broadcast
+    let event_message = match event.event_type.as_str() {
+        "action_progress" => {
+            if let Some(progress) = &event.progress {
+                // Include full progress data for UI
+                format!(
+                    "workflow_progress:{}:{}:{}:{}:{}:{}",
+                    workflow_id,
+                    event.action.as_deref().unwrap_or("unknown"),
+                    progress.percent,
+                    progress.message,
+                    progress.bytes_transferred.unwrap_or(0),
+                    progress.bytes_total.unwrap_or(0)
+                )
+            } else {
+                format!("workflow_progress:{}:unknown:0:No progress data:0:0", workflow_id)
+            }
+        }
+        "started" => format!("workflow_started:{}", workflow_id),
+        "action_started" => format!(
+            "action_started:{}:{}",
+            workflow_id,
+            event.action.as_deref().unwrap_or("unknown")
+        ),
+        "action_completed" => format!(
+            "action_completed:{}:{}:{}",
+            workflow_id,
+            event.action.as_deref().unwrap_or("unknown"),
+            event.success.unwrap_or(false)
+        ),
+        "completed" => {
+            let success = event.success.unwrap_or(false);
+            info!(
+                workflow_id = %workflow_id,
+                success = success,
+                "Workflow completed"
+            );
+            format!("workflow_completed:{}:{}", workflow_id, success)
+        }
+        _ => format!("workflow_event:{}:{}", workflow_id, event.event_type),
+    };
+
+    // Broadcast to SSE subscribers
+    let _ = state.event_manager.send(event_message);
+
+    // Return success
+    (StatusCode::OK, Json(serde_json::json!({ "status": "ok" }))).into_response()
+}
+
 // Add stubs for functions called from mode.rs
 pub async fn check_hookos_artifacts() -> bool {
     // Check for the following four files
@@ -2515,6 +2966,622 @@ pub async fn download_hookos_artifacts(version: &str) -> anyhow::Result<()> {
     
     info!("HookOS artifacts downloaded, extracted, and cleaned up successfully to {:?}", hookos_dir);
     Ok(())
+}
+
+// ============================================================================
+// Mage Boot Environment
+// ============================================================================
+
+/// Mage artifacts directory
+const MAGE_DIR: &str = "/var/lib/dragonfly/mage";
+
+/// Alpine mirror for netboot artifacts
+const ALPINE_MIRROR: &str = "https://dl-cdn.alpinelinux.org/alpine";
+
+/// Check if Mage artifacts exist
+pub async fn check_mage_artifacts() -> bool {
+    let mage_dir = FilePath::new(MAGE_DIR);
+
+    // Required files for Mage boot
+    let files = vec!["vmlinuz", "initramfs", "modloop"];
+
+    for file in files {
+        let path = mage_dir.join(file);
+        if !path.exists() {
+            debug!("Mage artifact missing: {:?}", path);
+            return false;
+        }
+    }
+
+    info!("All Mage artifacts found");
+    true
+}
+
+/// Download Mage (Alpine netboot) artifacts
+///
+/// Downloads Alpine Linux netboot files for use as Dragonfly's boot environment:
+/// - vmlinuz (kernel)
+/// - initramfs (initial RAM filesystem)
+/// - modloop (kernel modules squashfs)
+///
+/// # Arguments
+/// * `alpine_version` - Alpine version (e.g., "3.21")
+/// * `arch` - Architecture: "x86_64" or "aarch64"
+pub async fn download_mage_artifacts(alpine_version: &str, arch: &str) -> anyhow::Result<()> {
+    // Store in arch-specific subdirectory
+    let mage_dir = FilePath::new(MAGE_DIR).join(arch);
+
+    // Create directory if it doesn't exist
+    if !mage_dir.exists() {
+        info!("Creating Mage directory: {:?}", mage_dir);
+        std::fs::create_dir_all(&mage_dir)?;
+    }
+
+    // Construct base URL for Alpine netboot
+    let netboot_base = format!("{}/v{}/releases/{}/netboot", ALPINE_MIRROR, alpine_version, arch);
+
+    // Alpine netboot files (use -lts variants for LTS kernel)
+    let files = vec![
+        ("vmlinuz", "vmlinuz-lts"),
+        ("initramfs", "initramfs-lts"),
+        ("modloop", "modloop-lts"),
+    ];
+
+    info!("Downloading Mage (Alpine {}) artifacts from {}", alpine_version, netboot_base);
+
+    // Create download futures for parallel execution
+    let download_futures = files.iter().map(|(local_name, remote_name)| {
+        let local_name = local_name.to_string();
+        let remote_name = remote_name.to_string();
+        let netboot_base = netboot_base.clone();
+        let mage_dir = mage_dir.to_path_buf();
+
+        async move {
+            let dest_path = mage_dir.join(&local_name);
+
+            // Skip if file already exists and has content
+            if dest_path.exists() {
+                if let Ok(metadata) = std::fs::metadata(&dest_path) {
+                    if metadata.len() > 0 {
+                        info!("Mage artifact {} already exists, skipping download", local_name);
+                        return Ok::<_, anyhow::Error>(());
+                    }
+                }
+            }
+
+            // Try primary name first
+            let url = format!("{}/{}", netboot_base, remote_name);
+            info!("Downloading Mage artifact: {} -> {}", url, local_name);
+
+            let response = reqwest::get(&url).await;
+
+            match response {
+                Ok(resp) if resp.status().is_success() => {
+                    let content = resp.bytes().await?;
+                    if content.is_empty() {
+                        anyhow::bail!("Downloaded {} is empty", local_name);
+                    }
+                    std::fs::write(&dest_path, &content)?;
+                    info!("Downloaded {} ({} bytes)", local_name, content.len());
+                }
+                _ => {
+                    // Try fallback name (vmlinuz-virt instead of vmlinuz-lts)
+                    let fallback_name = remote_name.replace("-lts", "-virt");
+                    let fallback_url = format!("{}/{}", netboot_base, fallback_name);
+                    info!("Primary download failed, trying fallback: {}", fallback_url);
+
+                    let fallback_resp = reqwest::get(&fallback_url).await?;
+                    if !fallback_resp.status().is_success() {
+                        anyhow::bail!("Failed to download {}: HTTP {}", local_name, fallback_resp.status());
+                    }
+
+                    let content = fallback_resp.bytes().await?;
+                    if content.is_empty() {
+                        anyhow::bail!("Downloaded {} is empty", local_name);
+                    }
+                    std::fs::write(&dest_path, &content)?;
+                    info!("Downloaded {} from fallback ({} bytes)", local_name, content.len());
+                }
+            }
+
+            Ok(())
+        }
+    }).collect::<Vec<_>>();
+
+    // Execute all downloads in parallel
+    futures::future::try_join_all(download_futures).await?;
+
+    info!("Mage artifacts downloaded successfully to {:?}", mage_dir);
+    Ok(())
+}
+
+/// Verify that all required Mage boot artifacts exist and are non-empty
+///
+/// Checks that vmlinuz, initramfs, and modloop exist for each architecture.
+/// Returns an error if any required file is missing or empty.
+///
+/// # Arguments
+/// * `architectures` - Slice of architecture names to verify (e.g., &["x86_64", "aarch64"])
+pub fn verify_mage_artifacts(architectures: &[&str]) -> anyhow::Result<()> {
+    let required_files = ["vmlinuz", "initramfs", "modloop"];
+    let mut missing = Vec::new();
+    let mut empty = Vec::new();
+
+    for arch in architectures {
+        let mage_dir = FilePath::new(MAGE_DIR).join(arch);
+
+        for file in &required_files {
+            let file_path = mage_dir.join(file);
+
+            if !file_path.exists() {
+                missing.push(format!("{}/{}", arch, file));
+            } else if let Ok(metadata) = std::fs::metadata(&file_path) {
+                if metadata.len() == 0 {
+                    empty.push(format!("{}/{}", arch, file));
+                }
+            }
+        }
+    }
+
+    if !missing.is_empty() || !empty.is_empty() {
+        let mut errors = Vec::new();
+        if !missing.is_empty() {
+            errors.push(format!("Missing Mage artifacts: {}", missing.join(", ")));
+        }
+        if !empty.is_empty() {
+            errors.push(format!("Empty Mage artifacts: {}", empty.join(", ")));
+        }
+        anyhow::bail!("{}", errors.join("; "));
+    }
+
+    info!("Verified all Mage artifacts exist for: {}", architectures.join(", "));
+    Ok(())
+}
+
+/// Generate Mage APK overlay with dragonfly-agent
+///
+/// Creates a localhost.apkovl.tar.gz file containing the agent and startup configuration
+/// for the Mage boot environment.
+///
+/// # Arguments
+/// * `base_url` - Dragonfly server URL for agent to connect to
+/// * `arch` - Architecture: "x86_64" or "aarch64"
+///
+/// Uses the locally-built agent binary (no network download - supports airgapped environments)
+pub async fn generate_mage_apkovl_arch(base_url: &str, arch: &str) -> Result<(), dragonfly_common::Error> {
+    let mage_dir = FilePath::new(MAGE_DIR).join(arch);
+    let target_path = mage_dir.join("localhost.apkovl.tar.gz");
+    let agent_binary_path = mage_dir.join("dragonfly-agent");
+
+    // Ensure Mage directory exists
+    if !mage_dir.exists() {
+        std::fs::create_dir_all(&mage_dir)
+            .map_err(|e| dragonfly_common::Error::Internal(format!("Failed to create Mage directory: {}", e)))?;
+    }
+
+    // Check that agent binary exists (should be built by agent_build_fut)
+    if !agent_binary_path.exists() {
+        return Err(dragonfly_common::Error::Internal(
+            format!("Agent binary not found at {:?} - build failed?", agent_binary_path)
+        ));
+    }
+
+    // Generate APK overlay using local agent binary
+    generate_agent_apkovl_local(&target_path, base_url, &agent_binary_path).await
+}
+
+/// Generate APK overlay using a local agent binary (no network download)
+async fn generate_agent_apkovl_local(
+    target_apkovl_path: &StdPath,
+    base_url: &str,
+    agent_binary_path: &StdPath,
+) -> Result<(), dragonfly_common::Error> {
+    info!("Generating agent APK overlay at: {:?} (using local binary)", target_apkovl_path);
+
+    // 1. Create a temporary directory
+    let temp_dir = tempdir()
+        .map_err(|e| dragonfly_common::Error::Internal(format!("Failed to create temp directory: {}", e)))?;
+    let temp_path = temp_dir.path();
+
+    // 2. Create directory structure
+    fs::create_dir_all(temp_path.join("etc/local.d")).await
+        .map_err(|e| dragonfly_common::Error::Internal(format!("Failed to create dir: {}", e)))?;
+    fs::create_dir_all(temp_path.join("etc/apk/protected_paths.d")).await
+        .map_err(|e| dragonfly_common::Error::Internal(format!("Failed to create dir: {}", e)))?;
+    fs::create_dir_all(temp_path.join("etc/runlevels/default")).await
+        .map_err(|e| dragonfly_common::Error::Internal(format!("Failed to create dir: {}", e)))?;
+    fs::create_dir_all(temp_path.join("usr/local/bin")).await
+        .map_err(|e| dragonfly_common::Error::Internal(format!("Failed to create dir: {}", e)))?;
+    fs::create_dir_all(temp_path.join("var/log/dragonfly")).await
+        .map_err(|e| dragonfly_common::Error::Internal(format!("Failed to create dir: {}", e)))?;
+
+    // 3. Write static files
+    fs::write(temp_path.join("etc/hosts"), HOSTS_CONTENT).await
+        .map_err(|e| dragonfly_common::Error::Internal(format!("Failed to write: {}", e)))?;
+    fs::write(temp_path.join("etc/hostname"), HOSTNAME_CONTENT).await
+        .map_err(|e| dragonfly_common::Error::Internal(format!("Failed to write: {}", e)))?;
+    fs::write(temp_path.join("etc/apk/arch"), APK_ARCH_CONTENT).await
+        .map_err(|e| dragonfly_common::Error::Internal(format!("Failed to write: {}", e)))?;
+    fs::write(temp_path.join("etc/apk/protected_paths.d/lbu.list"), LBU_LIST_CONTENT).await
+        .map_err(|e| dragonfly_common::Error::Internal(format!("Failed to write: {}", e)))?;
+    fs::write(temp_path.join("etc/apk/repositories"), REPOSITORIES_CONTENT).await
+        .map_err(|e| dragonfly_common::Error::Internal(format!("Failed to write: {}", e)))?;
+    fs::write(temp_path.join("etc/apk/world"), WORLD_CONTENT).await
+        .map_err(|e| dragonfly_common::Error::Internal(format!("Failed to write: {}", e)))?;
+    fs::write(temp_path.join("etc/mtab"), "").await
+        .map_err(|e| dragonfly_common::Error::Internal(format!("Failed to write: {}", e)))?;
+    fs::write(temp_path.join("etc/.default_boot_services"), "").await
+        .map_err(|e| dragonfly_common::Error::Internal(format!("Failed to write: {}", e)))?;
+
+    // 4. Write start script - runs agent in background with logging
+    // The agent auto-detects native mode from kernel parameters (dragonfly.*)
+    let start_script_path = temp_path.join("etc/local.d/dragonfly-agent.start");
+    let script_content = format!(r#"#!/bin/sh
+# Dragonfly Agent startup script
+# Log all output to /var/log/dragonfly/agent.log
+exec >>/var/log/dragonfly/agent.log 2>&1
+
+echo "=== Dragonfly Agent starting ==="
+echo "Date: $(date)"
+echo "Kernel params: $(cat /proc/cmdline)"
+echo "Server URL: {}"
+
+# Verify agent binary exists
+if [ ! -x /usr/local/bin/dragonfly-agent ]; then
+    echo "ERROR: Agent binary not found or not executable"
+    ls -la /usr/local/bin/
+    exit 1
+fi
+
+# Run agent - it will detect native mode from kernel params
+echo "Starting dragonfly-agent..."
+/usr/local/bin/dragonfly-agent --server {} &
+AGENT_PID=$!
+echo "Agent started with PID: $AGENT_PID"
+exit 0
+"#,
+        base_url, base_url
+    );
+    fs::write(&start_script_path, script_content).await
+        .map_err(|e| dragonfly_common::Error::Internal(format!("Failed to write: {}", e)))?;
+    set_executable_permission(&start_script_path).await?;
+
+    // 5. Create symlink for local service
+    let link_target = "/etc/init.d/local";
+    let link_path = temp_path.join("etc/runlevels/default/local");
+    unix_symlink(link_target, &link_path)
+        .map_err(|e| dragonfly_common::Error::Internal(format!("Failed to create symlink: {}", e)))?;
+
+    // 6. Copy the local agent binary (no download!)
+    let dest_agent_path = temp_path.join("usr/local/bin/dragonfly-agent");
+    fs::copy(agent_binary_path, &dest_agent_path).await
+        .map_err(|e| dragonfly_common::Error::Internal(format!("Failed to copy agent binary: {}", e)))?;
+    set_executable_permission(&dest_agent_path).await?;
+
+    // 7. Create tar.gz archive
+    info!("Creating tarball: {:?}", target_apkovl_path);
+    let output = Command::new("tar")
+        .arg("-czf")
+        .arg(target_apkovl_path)
+        .arg("-C")
+        .arg(temp_path)
+        .arg(".")
+        .output()
+        .await
+        .map_err(|e| dragonfly_common::Error::Internal(format!("Failed to execute tar: {}", e)))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(dragonfly_common::Error::Internal(format!("tar failed: {}", stderr)));
+    }
+
+    info!("APK overlay generated at: {:?}", target_apkovl_path);
+    Ok(())
+}
+
+/// Handler for /boot/{arch}/{asset} routes - extracts path parameters
+pub async fn serve_boot_asset_handler(
+    State(state): State<AppState>,
+    axum::extract::Path((arch, asset)): axum::extract::Path<(String, String)>,
+) -> Response {
+    serve_boot_asset(&arch, &asset, &state).await
+}
+
+/// Serve boot assets (kernel, initramfs, modloop, apkovl) for a specific architecture
+///
+/// Maps URL paths to internal Mage files:
+/// - /boot/{arch}/kernel -> vmlinuz
+/// - /boot/{arch}/initramfs -> initramfs
+/// - /boot/{arch}/modloop -> modloop
+/// - /boot/{arch}/apkovl.tar.gz -> localhost.apkovl.tar.gz (dynamically generated)
+pub async fn serve_boot_asset(arch: &str, asset: &str, state: &AppState) -> Response {
+    // Normalize architecture names
+    // - iPXE BIOS uses i386 (32-bit) but can boot x86_64 kernels
+    // - iPXE EFI uses x86_64
+    // - iPXE ARM uses arm64, we use aarch64 internally
+    let normalized_arch = match arch {
+        "x86_64" | "i386" => "x86_64",  // BIOS iPXE reports i386, but boots x86_64 fine
+        "aarch64" | "arm64" => "aarch64",
+        _ => {
+            warn!("404 /boot/{}/{}: Unknown architecture", arch, asset);
+            return (
+                StatusCode::NOT_FOUND,
+                format!("Unknown architecture: {} (supported: x86_64, i386, aarch64, arm64)", arch),
+            ).into_response();
+        }
+    };
+
+    // Map URL names to internal file names
+    let filename = match asset {
+        "kernel" => "vmlinuz",
+        "initramfs" => "initramfs",
+        "modloop" => "modloop",
+        "apkovl.tar.gz" => "localhost.apkovl.tar.gz",
+        _ => {
+            warn!("404 /boot/{}/{}: Unknown asset type", arch, asset);
+            return (
+                StatusCode::NOT_FOUND,
+                format!("Unknown boot asset: {}", asset),
+            ).into_response();
+        }
+    };
+
+    let file_path = FilePath::new(MAGE_DIR).join(normalized_arch).join(filename);
+
+    // Special handling for apkovl - generate dynamically if needed
+    if asset == "apkovl.tar.gz" {
+        let base_url = crate::mode::get_base_url(Some(state.store.as_ref())).await;
+        let url_marker_path = file_path.with_extension("url");
+
+        // Check if we need to regenerate
+        let needs_regeneration = if file_path.exists() {
+            match tokio::fs::read_to_string(&url_marker_path).await {
+                Ok(stored_url) => stored_url.trim() != base_url,
+                Err(_) => true,
+            }
+        } else {
+            true
+        };
+
+        if needs_regeneration {
+            info!("Generating apkovl for {} with base_url: {}", normalized_arch, base_url);
+            match generate_mage_apkovl_arch(&base_url, normalized_arch).await {
+                Ok(()) => {
+                    // Save URL marker
+                    if let Err(e) = tokio::fs::write(&url_marker_path, &base_url).await {
+                        warn!("Failed to write URL marker: {}", e);
+                    }
+                }
+                Err(e) => {
+                    error!("Failed to generate apkovl: {}", e);
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("Failed to generate apkovl: {}", e),
+                    ).into_response();
+                }
+            }
+        }
+    }
+
+    if !file_path.exists() {
+        warn!("404 /boot/{}/{}: File not found at {:?}", arch, asset, file_path);
+        return (
+            StatusCode::NOT_FOUND,
+            format!("Boot asset not found: {}/{} (run Flight mode setup first)", normalized_arch, asset),
+        ).into_response();
+    }
+
+    // Read file and serve
+    match tokio::fs::read(&file_path).await {
+        Ok(content) => {
+            info!("200 /boot/{}/{}: Serving {} bytes from {:?}", arch, asset, content.len(), file_path);
+            let content_type = match asset {
+                "apkovl.tar.gz" => "application/gzip",
+                _ => "application/octet-stream",
+            };
+            (
+                StatusCode::OK,
+                [(axum::http::header::CONTENT_TYPE, content_type)],
+                content,
+            ).into_response()
+        }
+        Err(e) => {
+            error!("500 /boot/{}/{}: Failed to read {:?}: {}", arch, asset, file_path, e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to read boot asset: {}", e),
+            ).into_response()
+        }
+    }
+}
+
+/// Check if iPXE binaries exist
+pub fn ipxe_binaries_exist() -> bool {
+    let tftp_dir = FilePath::new("/var/lib/dragonfly/tftp");
+
+    let files = vec!["ipxe.efi", "undionly.kpxe"];
+
+    for file in files {
+        let path = tftp_dir.join(file);
+        if !path.exists() {
+            return false;
+        }
+    }
+
+    info!("All iPXE binaries found");
+    true
+}
+
+/// Download iPXE binaries for PXE boot
+///
+/// Downloads:
+/// - ipxe.efi (UEFI boot)
+/// - undionly.kpxe (BIOS legacy boot)
+///
+/// Binaries are placed in /var/lib/dragonfly/tftp/ for the TFTP server.
+pub async fn download_ipxe_binaries() -> anyhow::Result<()> {
+    let tftp_dir = FilePath::new("/var/lib/dragonfly/tftp");
+
+    // Create directory structure if it doesn't exist
+    if !tftp_dir.exists() {
+        info!("Creating TFTP directory: {:?}", tftp_dir);
+        std::fs::create_dir_all(&tftp_dir)?;
+    }
+
+    // iPXE binaries to download from boot.ipxe.org
+    let binaries = vec![
+        ("ipxe.efi", "https://boot.ipxe.org/ipxe.efi"),
+        ("undionly.kpxe", "https://boot.ipxe.org/undionly.kpxe"),
+    ];
+
+    // Create download futures for parallel execution
+    let download_futures = binaries.iter().map(|(filename, url)| {
+        let filename = filename.to_string();
+        let url = url.to_string();
+        let tftp_dir = tftp_dir.to_path_buf();
+
+        async move {
+            let dest_path = tftp_dir.join(&filename);
+
+            // Skip if file already exists and has content
+            if dest_path.exists() {
+                if let Ok(metadata) = std::fs::metadata(&dest_path) {
+                    if metadata.len() > 0 {
+                        info!("iPXE binary {} already exists, skipping download", filename);
+                        return Ok::<_, anyhow::Error>(());
+                    }
+                }
+            }
+
+            info!("Downloading {} from {}", filename, url);
+            let response = reqwest::get(&url).await?;
+
+            if !response.status().is_success() {
+                anyhow::bail!(
+                    "Failed to download {}: HTTP {}",
+                    filename,
+                    response.status()
+                );
+            }
+
+            let content = response.bytes().await?;
+
+            if content.is_empty() {
+                anyhow::bail!("Downloaded {} is empty", filename);
+            }
+
+            std::fs::write(&dest_path, &content)?;
+            info!("Downloaded {} ({} bytes) to {:?}", filename, content.len(), dest_path);
+
+            Ok(())
+        }
+    }).collect::<Vec<_>>();
+
+    // Execute all downloads in parallel
+    futures::future::try_join_all(download_futures).await?;
+
+    info!("iPXE binaries downloaded successfully to {:?}", tftp_dir);
+    Ok(())
+}
+
+// ============================================================================
+// OS Image Downloads (JIT)
+// ============================================================================
+
+/// OS images directory
+const OS_IMAGES_DIR: &str = "/var/lib/dragonfly/os-images";
+
+/// Download Debian 13 cloud image (tar.xz format - smaller, faster)
+///
+/// Downloads to /var/lib/dragonfly/os-images/debian/debian-13-generic-{arch}.tar.xz
+pub async fn download_debian_13_image(arch: &str) -> anyhow::Result<()> {
+    let os_dir = FilePath::new(OS_IMAGES_DIR).join("debian");
+
+    // Create directory if needed
+    if !os_dir.exists() {
+        std::fs::create_dir_all(&os_dir)?;
+    }
+
+    let filename = format!("debian-13-generic-{}.tar.xz", arch);
+    let dest_path = os_dir.join(&filename);
+
+    // Skip if already downloaded
+    if dest_path.exists() {
+        if let Ok(metadata) = std::fs::metadata(&dest_path) {
+            if metadata.len() > 0 {
+                info!("Debian 13 {} image already exists, skipping download", arch);
+                return Ok(());
+            }
+        }
+    }
+
+    // Debian cloud image URL
+    let url = format!(
+        "https://cloud.debian.org/images/cloud/trixie/20251117-2299/debian-13-generic-{}-20251117-2299.tar.xz",
+        arch
+    );
+
+    info!("Downloading Debian 13 {} from {}", arch, url);
+
+    let client = reqwest::Client::new();
+    let response = client.get(&url).send().await?;
+
+    if !response.status().is_success() {
+        anyhow::bail!("Failed to download Debian 13: HTTP {}", response.status());
+    }
+
+    // Stream to file (large image)
+    let bytes = response.bytes().await?;
+    std::fs::write(&dest_path, &bytes)?;
+
+    info!("Downloaded Debian 13 {} image ({} bytes)", arch, bytes.len());
+    Ok(())
+}
+
+/// Check if an OS image exists
+pub fn os_image_exists(os: &str, arch: &str) -> bool {
+    let path = match os {
+        "debian-13" => {
+            let filename = format!("debian-13-generic-{}.tar.xz", arch);
+            FilePath::new(OS_IMAGES_DIR).join("debian").join(filename)
+        }
+        _ => return false,
+    };
+
+    path.exists()
+}
+
+/// Serve OS image file
+pub async fn serve_os_image(os: &str, arch: &str) -> Response {
+    let path = match os {
+        "debian-13" => {
+            let filename = format!("debian-13-generic-{}.tar.xz", arch);
+            FilePath::new(OS_IMAGES_DIR).join("debian").join(filename)
+        }
+        _ => {
+            return (StatusCode::NOT_FOUND, "Unknown OS".to_string()).into_response();
+        }
+    };
+
+    if !path.exists() {
+        return (
+            StatusCode::NOT_FOUND,
+            format!("OS image not downloaded. Use API to download first."),
+        ).into_response();
+    }
+
+    match tokio::fs::read(&path).await {
+        Ok(content) => {
+            (
+                StatusCode::OK,
+                [(axum::http::header::CONTENT_TYPE, "application/x-xz")],
+                content,
+            ).into_response()
+        }
+        Err(e) => {
+            (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to read: {}", e)).into_response()
+        }
+    }
 }
 
 // OS information struct

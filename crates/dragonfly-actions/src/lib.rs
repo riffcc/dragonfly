@@ -34,12 +34,14 @@
 //! let result = engine.execute("image", &ctx).await?;
 //! ```
 
+pub mod actions;
 pub mod context;
 pub mod engine;
 pub mod error;
 pub mod progress;
 pub mod traits;
 
+pub use actions::*;
 pub use context::*;
 pub use engine::*;
 pub use error::*;

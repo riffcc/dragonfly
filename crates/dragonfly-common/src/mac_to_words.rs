@@ -1,7 +1,24 @@
 use std::num::ParseIntError;
+use uuid::Uuid;
 
 // Full BIP39 wordlist (2048 words)
 include!("bip39_wordlist.rs");
+
+/// Generates a deterministic UUID v5 from a MAC address
+///
+/// Uses the DNS namespace and MAC address bytes to create a consistent
+/// UUID that will be the same for the same MAC address across all systems.
+///
+/// # Arguments
+///
+/// * `mac` - MAC address in the format "xx:xx:xx:xx:xx:xx"
+///
+/// # Returns
+///
+/// A UUID v5 derived from the MAC address
+pub fn mac_to_uuid(mac: &str) -> Uuid {
+    Uuid::new_v5(&Uuid::NAMESPACE_DNS, mac.as_bytes())
+}
 
 /// Converts a MAC address to a memorable name using BIP39 words
 /// 
@@ -117,15 +134,33 @@ mod tests {
     fn test_mac_to_words_safe() {
         let mac = "04:7c:16:eb:74:ed";
         let result = mac_to_words_safe(mac);
-        
+
         // Check if we got a name
         assert!(result.len() > 0);
-        
+
         println!("MAC {} safely converted to: {}", mac, result);
-        
+
         // Test with invalid MAC
         let invalid_mac = "invalid";
         let fallback = mac_to_words_safe(invalid_mac);
         assert!(fallback.starts_with("Machine-"));
+    }
+
+    #[test]
+    fn test_mac_to_uuid() {
+        let mac = "04:7c:16:eb:74:ed";
+        let uuid1 = mac_to_uuid(mac);
+
+        // UUID should be deterministic - same MAC = same UUID
+        let uuid2 = mac_to_uuid(mac);
+        assert_eq!(uuid1, uuid2);
+
+        // Different MACs should produce different UUIDs
+        let mac2 = "04:7c:16:eb:74:ee";
+        let uuid3 = mac_to_uuid(mac2);
+        assert_ne!(uuid1, uuid3);
+
+        println!("MAC {} -> UUID {}", mac, uuid1);
+        println!("MAC {} -> UUID {}", mac2, uuid3);
     }
 } 

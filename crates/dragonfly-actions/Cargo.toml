@@ -1,7 +1,7 @@
 [package]
 name = "dragonfly-actions"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 authors = ["Sparx"]
 description = "Native action engine for Dragonfly bare metal provisioning"
 license = "AGPL-3.0"
@@ -14,6 +14,16 @@ tokio = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 async-trait = "0.1"
+base64 = "0.22"
+lazy_static = "1.5"
+
+# Native image streaming
+reqwest = { version = "0.12", default-features = false, features = ["stream", "rustls-tls"] }
+futures = "0.3"
+tokio-util = { version = "0.7", features = ["io"] }
+async-compression = { version = "0.4", features = ["tokio", "gzip", "xz", "zstd"] }
+tokio-tar = "0.3"
 
 [dev-dependencies]
 tokio-test = "0.4"
+tempfile = "3.14"

@@ -1,6 +1,8 @@
 # secrets
 values.yaml
 
+.playwright-mcp
+
 # node modules
 node_modules/**
 # design
@@ -194,6 +196,12 @@ cython_debug/
 # Ruff stuff:
 .ruff_cache/
 
+# AI cruft
+synthesis/
+.mcp.json
+CLAUDE.md
+.claude
+
 # PyPI configuration file
 .pypirc
 
@@ -206,3 +214,5 @@ settings.json
 
 # Machine database file
 config/dragonfly.db
+
+

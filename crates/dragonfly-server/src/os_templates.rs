@@ -1,122 +1,139 @@
+//! OS Template Management
+//!
+//! This module handles loading and managing OS templates for provisioning.
+//! Templates are loaded from YAML files in /opt/dragonfly/templates/ and stored
+//! in the configured storage backend (ReDB, K8s, etc.) via the DragonflyStore trait.
+//!
+//! The file system is the source of truth - templates are always loaded from files
+//! on startup, allowing updates without database wipes.
+//!
+//! Templates use `{{ server }}` as a placeholder for the Dragonfly server address,
+//! which is substituted at workflow execution time based on the machine's context.
+
 use anyhow::{anyhow, Result};
-use kube::{
-    api::{Api, PostParams},
-    Client, Error as KubeError, core::DynamicObject,
-};
-use serde_yaml;
-use tracing::{info, error, warn};
+use tracing::{info, error, warn, debug};
 use std::path::Path;
 use tokio::fs;
-use std::env;
-use url::Url;
-use std::collections::HashMap;
-use reqwest;
+use std::sync::Arc;
 
-// Tinkerbell namespace constant
-const TINKERBELL_NAMESPACE: &str = "tinkerbell";
+use crate::store::DragonflyStore;
+use dragonfly_crd::Template;
 
-/// Initialize the OS templates in Kubernetes
-pub async fn init_os_templates() -> Result<()> {
-    info!("Initializing OS templates...");
-    
-    // Get Tinkerbell client
-    let client = match crate::tinkerbell::get_client().await {
-        Ok(c) => c,
-        Err(e) => {
-            warn!("Skipping OS template initialization: {}", e);
-            return Err(anyhow!("Failed to get Kubernetes client: {}", e));
+/// Primary template directory (installed by `dragonfly install`)
+const TEMPLATE_DIR: &str = "/opt/dragonfly/templates";
+
+/// Fallback template directories for development
+const FALLBACK_TEMPLATE_DIRS: &[&str] = &[
+    "/var/lib/dragonfly/os-templates",
+    "os-templates",
+];
+
+/// Initialize the OS templates using the provided store
+///
+/// Templates are always loaded from files, making the file system the source of truth.
+/// This allows updating templates without wiping the database.
+pub async fn init_os_templates(store: Arc<dyn DragonflyStore>) -> Result<()> {
+    info!("Initializing OS templates from files...");
+
+    // Find the template directory
+    let template_dir = find_template_dir().await;
+
+    if let Some(dir) = &template_dir {
+        info!("Loading templates from: {}", dir.display());
+        load_templates_from_dir(store.clone(), dir).await?;
+    } else {
+        warn!("No template directory found. Templates will be downloaded on demand.");
+        // Fall back to downloading default templates
+        for template_name in &["ubuntu-2204", "ubuntu-2404", "debian-12", "debian-13"] {
+            if let Err(e) = install_template_if_missing(store.clone(), template_name).await {
+                warn!("Failed to install {} template: {}", template_name, e);
+            }
         }
-    };
-    
-    // Get the bare base URL (without port) for template substitution
-    let base_url_bare = get_base_url_without_port()?;
-    
-    // Check and install ubuntu-2204 template
-    if let Err(e) = install_template(client, "ubuntu-2204", &base_url_bare).await {
-        error!("Failed to install ubuntu-2204 template: {}", e);
-        return Err(anyhow!("Failed to install ubuntu-2204 template: {}", e));
-    }
-
-    // Check and install debian-12 template
-    if let Err(e) = install_template(client, "debian-12", &base_url_bare).await {
-        error!("Failed to install debian-12 template: {}", e);
-        return Err(anyhow!("Failed to install debian-12 template: {}", e));
-    }
-
-    // Check and install debian-13 template
-    if let Err(e) = install_template(client, "debian-13", &base_url_bare).await {
-        error!("Failed to install debian-13 template: {}", e);
-        return Err(anyhow!("Failed to install debian-13 template: {}", e));
     }
 
     info!("OS templates initialization complete");
     Ok(())
 }
 
-/// Extract base URL without port from DRAGONFLY_BASE_URL environment variable
-fn get_base_url_without_port() -> Result<String> {
-    // Read required base URL from environment variable
-    let base_url = match env::var("DRAGONFLY_BASE_URL") {
-        Ok(url) => url,
-        Err(_) => {
-            // If DRAGONFLY_BASE_URL is not set, try DRAGONFLY_BASE_URL_BARE
-            match env::var("DRAGONFLY_BASE_URL_BARE") {
-                Ok(url) => url,
-                Err(_) => {
-                    // If not set, default to localhost for development
-                    warn!("Neither DRAGONFLY_BASE_URL nor DRAGONFLY_BASE_URL_BARE set, using localhost as base URL for templates");
-                    "localhost".to_string()
-                }
-            }
+/// Find the template directory to use
+async fn find_template_dir() -> Option<std::path::PathBuf> {
+    // Check primary location first
+    let primary = Path::new(TEMPLATE_DIR);
+    if primary.exists() {
+        return Some(primary.to_path_buf());
+    }
+
+    // Check fallback locations
+    for fallback in FALLBACK_TEMPLATE_DIRS {
+        let path = Path::new(fallback);
+        if path.exists() {
+            return Some(path.to_path_buf());
         }
-    };
-    
-    // Parse the URL to extract just the hostname without port
-    let base_url_bare = if base_url.contains("://") {
-        // Full URL with scheme
-        match Url::parse(&base_url) {
-            Ok(parsed_url) => {
-                parsed_url.host_str().unwrap_or("localhost").to_string()
-            },
-            Err(_) => {
-                // Fall back to simple splitting if URL parsing fails
-                base_url.split(':').next().unwrap_or("localhost").to_string()
-            }
-        }
-    } else if base_url.contains(':') {
-        // Just hostname:port without scheme
-        base_url.split(':').next().unwrap_or("localhost").to_string()
-    } else {
-        // Just hostname without port
-        base_url
-    };
-    
-    info!("Using base URL without port for templates: {}", base_url_bare);
-    Ok(base_url_bare)
+    }
+
+    None
 }
 
-/// Check if a template exists in Kubernetes, and install it if it doesn't
-async fn install_template(client: &Client, template_name: &str, base_url_bare: &str) -> Result<()> {
-    // Create the API resource for Template CRD
-    let template_api_resource = kube::core::ApiResource {
-        group: "tinkerbell.org".to_string(),
-        version: "v1alpha1".to_string(),
-        kind: "Template".to_string(),
-        api_version: "tinkerbell.org/v1alpha1".to_string(),
-        plural: "templates".to_string(),
-    };
-    
-    let template_api: Api<DynamicObject> = Api::namespaced_with(client.clone(), TINKERBELL_NAMESPACE, &template_api_resource);
-    
-    // Check if template already exists
-    match template_api.get(template_name).await {
-        Ok(_) => {
-            info!("Template '{}' already exists in Tinkerbell, skipping installation", template_name);
+/// Load all templates from a directory
+async fn load_templates_from_dir(store: Arc<dyn DragonflyStore>, dir: &Path) -> Result<()> {
+    let mut entries = fs::read_dir(dir).await
+        .map_err(|e| anyhow!("Failed to read template directory: {}", e))?;
+
+    while let Some(entry) = entries.next_entry().await? {
+        let path = entry.path();
+
+        // Only process .yml files
+        if path.extension().and_then(|e| e.to_str()) != Some("yml") {
+            continue;
+        }
+
+        let template_name = path.file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("unknown");
+
+        match load_template_from_path(&path).await {
+            Ok(template) => {
+                // Always update the template in the store (file is source of truth)
+                if let Err(e) = store.put_template(&template).await {
+                    warn!("Failed to store template '{}': {}", template_name, e);
+                } else {
+                    info!("Loaded template '{}' from {}", template_name, path.display());
+                }
+            }
+            Err(e) => {
+                warn!("Failed to load template from {:?}: {}", path, e);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Load and validate a template from a file path
+async fn load_template_from_path(path: &Path) -> Result<Template> {
+    let content = fs::read_to_string(path).await
+        .map_err(|e| anyhow!("Failed to read template file: {}", e))?;
+
+    let template: Template = serde_yaml::from_str(&content)
+        .map_err(|e| anyhow!("Failed to parse template YAML: {}", e))?;
+
+    template.validate()
+        .map_err(|e| anyhow!("Template validation failed: {}", e))?;
+
+    Ok(template)
+}
+
+/// Install a template if it doesn't exist (fallback for when no template dir exists)
+async fn install_template_if_missing(store: Arc<dyn DragonflyStore>, template_name: &str) -> Result<()> {
+    // Check if template already exists in store
+    match store.get_template(template_name).await {
+        Ok(Some(_)) => {
+            debug!("Template '{}' already exists in store, skipping", template_name);
             Ok(())
         },
-        Err(KubeError::Api(ae)) if ae.code == 404 => {
-            info!("Template '{}' not found in Tinkerbell, installing...", template_name);
-            install_template_from_file(client, template_name, base_url_bare).await
+        Ok(None) => {
+            info!("Template '{}' not found in store, downloading...", template_name);
+            install_template_from_download(store, template_name).await
         },
         Err(e) => {
             error!("Error checking for template '{}': {}", template_name, e);
@@ -125,174 +142,93 @@ async fn install_template(client: &Client, template_name: &str, base_url_bare: &
     }
 }
 
-/// Install a template from a YAML file
-async fn install_template_from_file(client: &Client, template_name: &str, base_url_bare: &str) -> Result<()> {
-    // Determine file paths
-    let os_templates_dir = Path::new("/var/lib/dragonfly/os-templates");
-    let fallback_dir = Path::new("os-templates");
-    
-    let template_path = if os_templates_dir.exists() {
-        os_templates_dir.join(format!("{}.yml", template_name))
-    } else {
-        fallback_dir.join(format!("{}.yml", template_name))
-    };
-    
-    info!("Loading template from: {:?}", template_path);
-    
-    // Try to read the template file locally first
-    let template_yaml = match fs::read_to_string(&template_path).await {
-        Ok(content) => content,
-        Err(e) => {
-            // If file doesn't exist locally, try downloading from GitHub
-            info!("Tried to load template from {:?}: {}", template_path, e);
-            info!("Attempting to download template from GitHub...");
-            
-            // Construct GitHub URL for the template
-            let github_url = format!(
-                "https://raw.githubusercontent.com/Zorlin/dragonfly/refs/heads/main/os-templates/{}.yml",
-                template_name
-            );
-            
-            match download_template_from_github(&github_url).await {
-                Ok(content) => {
-                    info!("Successfully downloaded template from GitHub");
-                    content
-                },
-                Err(e) => {
-                    error!("Failed to download template from GitHub: {}", e);
-                    return Err(anyhow!("Failed to read template file: {}", e));
-                }
-            }
-        }
-    };
-    
-    // Fix metadata_urls to work with the correct port
-    let template_yaml = fix_metadata_urls(&template_yaml, base_url_bare);
-    
-    // Parse YAML to get the DynamicObject
-    let dynamic_obj: DynamicObject = match serde_yaml::from_str(&template_yaml) {
-        Ok(obj) => obj,
-        Err(e) => {
-            error!("Failed to parse template YAML: {}", e);
-            return Err(anyhow!("Failed to parse template YAML: {}", e));
-        }
-    };
-    
-    // Create the API resource for Template CRD
-    let template_api_resource = kube::core::ApiResource {
-        group: "tinkerbell.org".to_string(),
-        version: "v1alpha1".to_string(),
-        kind: "Template".to_string(),
-        api_version: "tinkerbell.org/v1alpha1".to_string(),
-        plural: "templates".to_string(),
-    };
-    
-    let template_api: Api<DynamicObject> = Api::namespaced_with(client.clone(), TINKERBELL_NAMESPACE, &template_api_resource);
-    
-    // Create the template
-    match template_api.create(&PostParams::default(), &dynamic_obj).await {
-        Ok(_) => {
-            info!("Successfully created template '{}'", template_name);
-            Ok(())
-        },
-        Err(e) => {
-            error!("Failed to create template '{}': {}", template_name, e);
-            Err(anyhow!("Failed to create template: {}", e))
-        }
+/// Download and install a template from GitHub
+async fn install_template_from_download(store: Arc<dyn DragonflyStore>, template_name: &str) -> Result<()> {
+    info!("Downloading template '{}' from GitHub...", template_name);
+    let yaml_content = download_template(template_name).await?;
+
+    // Parse YAML to Template
+    let template: Template = serde_yaml::from_str(&yaml_content)
+        .map_err(|e| {
+            error!("Failed to parse template '{}': {}", template_name, e);
+            anyhow!("Failed to parse template YAML: {}", e)
+        })?;
+
+    // Validate the template
+    if let Err(e) = template.validate() {
+        error!("Template '{}' validation failed: {}", template_name, e);
+        return Err(anyhow!("Template validation failed: {}", e));
     }
+
+    // Store the template
+    store.put_template(&template).await
+        .map_err(|e| {
+            error!("Failed to store template '{}': {}", template_name, e);
+            anyhow!("Failed to store template: {}", e)
+        })?;
+
+    info!("Successfully installed template '{}'", template_name);
+    Ok(())
 }
 
 /// Download a template from GitHub
-async fn download_template_from_github(url: &str) -> Result<String> {
-    info!("Downloading template from: {}", url);
-    
-    let response = reqwest::get(url).await
-        .map_err(|e| anyhow!("Failed to send request to GitHub: {}", e))?;
-    
-    if !response.status().is_success() {
-        return Err(anyhow!("Failed to download template, status: {}", response.status()));
-    }
-    
-    let content = response.text().await
-        .map_err(|e| anyhow!("Failed to read response body: {}", e))?;
-    
-    // Extract template name from the URL to use for saving
-    let template_name = url.split('/').last().unwrap_or("unknown.yml");
-    
-    // Try to save the template to the filesystem for future use
-    save_template_to_filesystem(template_name, &content).await?;
-    
-    Ok(content)
-}
+async fn download_template(template_name: &str) -> Result<String> {
+    // Try native-provisioning branch first, then main
+    let urls = [
+        format!(
+            "https://raw.githubusercontent.com/Zorlin/dragonfly/refs/heads/native-provisioning/os-templates/{}.yml",
+            template_name
+        ),
+        format!(
+            "https://raw.githubusercontent.com/Zorlin/dragonfly/refs/heads/main/os-templates/{}.yml",
+            template_name
+        ),
+    ];
 
-/// Save a downloaded template to the filesystem
-async fn save_template_to_filesystem(template_name: &str, content: &str) -> Result<()> {
-    // Create directory structure if it doesn't exist
-    let fallback_dir = Path::new("os-templates");
-    if !fallback_dir.exists() {
-        match fs::create_dir_all(fallback_dir).await {
-            Ok(_) => info!("Created directory: {:?}", fallback_dir),
-            Err(e) => {
-                warn!("Failed to create directory {:?}: {}", fallback_dir, e);
-                return Ok(());  // Continue even if we can't save the template
-            }
-        }
-    }
-    
-    // Save the template file
-    let template_path = fallback_dir.join(template_name);
-    match fs::write(&template_path, content).await {
-        Ok(_) => {
-            info!("Saved template to: {:?}", template_path);
-            Ok(())
-        },
-        Err(e) => {
-            warn!("Failed to save template to {:?}: {}", template_path, e);
-            Ok(())  // Continue even if we can't save the template
-        }
-    }
-}
+    for url in &urls {
+        debug!("Trying to download template from: {}", url);
 
-/// Fix the metadata_urls in the template YAML to work with the correct port
-fn fix_metadata_urls(yaml: &str, base_url_bare: &str) -> String {
-    // Replace both {{ base_url }} and {{ base_url_bare }} with the actual base_url_bare value
-    // to ensure the port will be correctly appended
-    let replacement_vars = HashMap::from([
-        // Use the same base_url_bare for both placeholders
-        ("base_url".to_string(), base_url_bare.to_string()),
-        ("base_url_bare".to_string(), base_url_bare.to_string()),
-    ]);
-    
-    let mut result = yaml.to_string();
-    for (key, value) in replacement_vars {
-        // Ensure the value used for replacement doesn't have surrounding braces
-        let clean_value = value.trim_start_matches('{').trim_end_matches('}');
-        // Replace the template placeholder (e.g., "{{ base_url_bare }}") with the cleaned value
-        result = result.replace(&format!("{{{{ {} }}}}", key), clean_value);
-    }
-    
-    result
-}
+        match reqwest::get(url).await {
+            Ok(response) if response.status().is_success() => {
+                let content = response.text().await
+                    .map_err(|e| anyhow!("Failed to read response: {}", e))?;
 
-/// Helper function for unit tests to parse a URL without accessing environment variables
-fn parse_url_to_bare(url: &str) -> String {
-    if url.contains("://") {
-        // Full URL with scheme
-        match Url::parse(url) {
-            Ok(parsed_url) => {
-                parsed_url.host_str().unwrap_or("localhost").to_string()
+                // Try to save locally for future use
+                save_template_locally(template_name, &content).await;
+
+                return Ok(content);
             },
-            Err(_) => {
-                // Fall back to simple splitting if URL parsing fails
-                url.split(':').next().unwrap_or("localhost").to_string()
+            Ok(response) => {
+                debug!("Got {} from {}", response.status(), url);
+            },
+            Err(e) => {
+                debug!("Failed to fetch {}: {}", url, e);
             }
         }
-    } else if url.contains(':') {
-        // Just hostname:port without scheme
-        url.split(':').next().unwrap_or("localhost").to_string()
+    }
+
+    Err(anyhow!("Failed to download template '{}' from any source", template_name))
+}
+
+/// Save a downloaded template locally for future use
+async fn save_template_locally(template_name: &str, content: &str) {
+    let path = Path::new("/var/lib/dragonfly/os-templates").join(format!("{}.yml", template_name));
+
+    // Create directory if needed
+    if let Some(parent) = path.parent() {
+        if !parent.exists() {
+            if let Err(e) = fs::create_dir_all(parent).await {
+                debug!("Failed to create template directory: {}", e);
+                return;
+            }
+        }
+    }
+
+    // Save the file
+    if let Err(e) = fs::write(&path, content).await {
+        debug!("Failed to save template locally: {}", e);
     } else {
-        // Just hostname without port
-        url.to_string()
+        debug!("Saved template to {:?}", path);
     }
 }
 
@@ -301,30 +237,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_url_parsing() {
-        // Test cases for different URL formats
-        let test_cases = vec![
-            // Full URLs with scheme
-            ("http://example.com:3000", "example.com"),
-            ("https://server.domain.com:8443", "server.domain.com"),
-            ("http://192.168.1.1:8080", "192.168.1.1"),
-            
-            // Hostname:port format
-            ("example.com:3000", "example.com"),
-            ("192.168.1.1:8080", "192.168.1.1"),
-            
-            // Just hostname
-            ("example.com", "example.com"),
-            ("192.168.1.1", "192.168.1.1"),
-            
-            // Edge cases
-            ("localhost", "localhost"),
-            ("localhost:3000", "localhost"),
-        ];
-        
-        for (input, expected) in test_cases {
-            let result = parse_url_to_bare(input);
-            assert_eq!(result, expected, "Failed parsing URL: {}", input);
-        }
+    fn test_template_dir_constant() {
+        // Verify primary template directory is set correctly
+        assert_eq!(TEMPLATE_DIR, "/opt/dragonfly/templates");
     }
-} 
+
+    #[test]
+    fn test_fallback_dirs() {
+        // Verify fallback directories are configured
+        assert!(FALLBACK_TEMPLATE_DIRS.contains(&"/var/lib/dragonfly/os-templates"));
+        assert!(FALLBACK_TEMPLATE_DIRS.contains(&"os-templates"));
+    }
+}

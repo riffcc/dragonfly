@@ -1,95 +1,69 @@
-apiVersion: tinkerbell.org/v1alpha1
+apiVersion: dragonfly.computer/v1
 kind: Template
 metadata:
   name: debian-13
-  namespace: tinkerbell
 spec:
-  data: |
-    name: debian-13
-    version: "0.1"
-    global_timeout: 9800
-    tasks:
-      - name: "os installation"
-        worker: "{{.device_1}}"
-        volumes:
-          - /dev:/dev
-          - /dev/console:/dev/console
-          - /lib/firmware:/lib/firmware:ro
-        actions:
-          - name: "stream debian image"
-            image: quay.io/tinkerbell/actions/qemuimg2disk:latest
-            timeout: 9600
-            environment:
-              DEST_DISK: {{ index .Hardware.Disks 0 }}
-              IMG_URL: "http://{{ base_url_bare }}:3000/ipxe/debian/debian-13-generic-amd64.qcow2"
+  timeout: 9800
+  actions:
+    - action: image2disk
+      url: "https://cloud.debian.org/images/cloud/trixie/daily/latest/debian-13-generic-amd64-daily.tar.xz"
+      disk: auto
+      timeout: 9600
 
-          - name: "write cloud-init config"
-            image: quay.io/tinkerbell/actions/writefile:latest
-            timeout: 90
-            environment:
-              DEST_DISK: {{ formatPartition ( index .Hardware.Disks 0 ) 1 }}
-              DEST_PATH: /etc/cloud/cloud.cfg.d/10_tinkerbell.cfg
-              FS_TYPE: ext4
-              UID: 0
-              GID: 0
-              MODE: 0600
-              DIRMODE: 0700
-              CONTENTS: |
-                datasource:
-                  Ec2:
-                    metadata_urls: ["http://{{ base_url_bare }}:50061"]
-                    strict_id: false
-                manage_etc_hosts: localhost
-                warnings:
-                  dsid_missing_source: off
-                users:
-                  - default
-                disable_root: true
-                ssh_import_id:
-                  - gh:zorlin
-                  - gh:michatinkers
-                packages:
-                  - qemu-guest-agent
-                runcmd:
-                  - systemctl enable qemu-guest-agent
-                  - systemctl start qemu-guest-agent
+    - action: writefile
+      path: /etc/cloud/ds-identify.cfg
+      partition: 1
+      content: |
+        datasource: NoCloud
+      mode: "0644"
+      timeout: 90
 
-          - name: "write ds-identify config"
-            image: quay.io/tinkerbell/actions/writefile:latest
-            timeout: 90
-            environment:
-              DEST_DISK: {{ formatPartition ( index .Hardware.Disks 0 ) 1 }}
-              DEST_PATH: /etc/cloud/ds-identify.cfg
-              FS_TYPE: ext4
-              UID: 0
-              GID: 0
-              MODE: 0600
-              DIRMODE: 0700
-              CONTENTS: |
-                datasource: Ec2
+    - action: writefile
+      path: /var/lib/cloud/seed/nocloud/meta-data
+      partition: 1
+      content: |
+        instance-id: {{ instance_id }}
+        local-hostname: {{ friendly_name }}
+      mode: "0644"
+      timeout: 90
 
-          - name: "write network config"
-            image: quay.io/tinkerbell/actions/writefile:latest
-            timeout: 90
-            environment:
-              DEST_DISK: {{ formatPartition ( index .Hardware.Disks 0 ) 1 }}
-              DEST_PATH: /etc/network/interfaces.d/eth0
-              FS_TYPE: ext4
-              UID: 0
-              GID: 0
-              MODE: 0644
-              DIRMODE: 0755
-              CONTENTS: |
-                auto eth0
-                iface eth0 inet dhcp
+    - action: writefile
+      path: /var/lib/cloud/seed/nocloud/user-data
+      partition: 1
+      content: |
+        #cloud-config
+        manage_etc_hosts: localhost
+        users:
+          - default
+        disable_root: true
+        password: DANGERCHANGEME
+        chpasswd:
+          expire: false
+        ssh_pwauth: true
+        ssh_import_id:
+          - gh:zorlin
+          - gh:michatinkers
+        runcmd:
+          - |
+            # Only install qemu-guest-agent if virtio serial port exists (running on QEMU/KVM)
+            if [ -e /dev/virtio-ports/org.qemu.guest_agent.0 ]; then
+              apt-get install -y qemu-guest-agent
+              systemctl enable qemu-guest-agent
+              systemctl start qemu-guest-agent
+            fi
+      mode: "0644"
+      timeout: 90
 
-          - name: "kexec to boot OS"
-            image: quay.io/tinkerbell/actions/kexec:latest
-            timeout: 90
-            pid: host
-            environment:
-                BLOCK_DEVICE: {{ formatPartition ( index .Hardware.Disks 0 ) 1 }}
-                FS_TYPE: ext4
-                KERNEL_PATH: /boot/vmlinuz
-                INITRD_PATH: /boot/initrd.img
-                CMD_LINE: "root={{ formatPartition ( index .Hardware.Disks 0 ) 1 }} ro"
+    - action: writefile
+      path: /etc/network/interfaces.d/eth0
+      partition: 1
+      content: |
+        auto eth0
+        iface eth0 inet dhcp
+      mode: "0644"
+      timeout: 90
+
+    - action: kexec
+      partition: 1
+      cmdline: "ro quiet"
+      timeout: 90

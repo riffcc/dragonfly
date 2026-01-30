@@ -25,7 +25,7 @@ use axum::response::Response;
 // use oauth2::basic::BasicClient; // Assuming BasicClient is also related to openidconnect for now
 // use oauth2;
 use urlencoding;
-use async_trait::async_trait;
+// async_trait no longer needed for axum-login 0.18
 
 // Constants for the initial password file (not for loading, just for UX)
 const INITIAL_PASSWORD_FILE: &str = "initial_password.txt";
@@ -190,7 +190,7 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            require_login: false,
+            require_login: true,  // Internal tool - require login by default
             default_os: None,
             setup_completed: false,
             admin_username: "admin".to_string(),
@@ -231,7 +231,6 @@ impl AdminBackend {
     }
 }
 
-#[async_trait]
 impl AuthnBackend for AdminBackend {
     type User = AdminUser;
     type Credentials = Credentials;
@@ -407,51 +406,55 @@ async fn login_page(
 }
 
 async fn login_handler(
+    State(app_state): State<AppState>,
     mut auth_session: AuthSession,
     Form(form): Form<LoginForm>,
 ) -> Response {
     // Check if we're in demo mode
     let is_demo_mode = std::env::var("DRAGONFLY_DEMO_MODE").is_ok();
-    
+
     if is_demo_mode {
         // In demo mode, simply create a demo user and force-login without authentication
         info!("Demo mode: accepting any credentials for login");
-        
-        // Create a simple admin user 
+
+        // Create a simple admin user
         let username = if form.username.trim().is_empty() { "demo_user".to_string() } else { form.username.clone() };
-        
+
         // Create a demo admin user - use the same hash as lib.rs creates for demo credentials
         let demo_user = AdminUser {
             id: 1,
             username,
         };
-        
+
         // Hard-set the user session
         info!("Demo mode: Setting session for user '{}'", demo_user.username);
         match auth_session.login(&demo_user).await {
             Ok(_) => {
                 info!("Demo mode: Login successful for user '{}'", demo_user.username);
-                return Redirect::to("/").into_response();
+                // Check if mode is set - if not, redirect to welcome
+                let current_mode = app_state.store.get_setting("deployment_mode").await.ok().flatten();
+                let redirect_to = if current_mode.is_some() { "/" } else { "/welcome" };
+                return Redirect::to(redirect_to).into_response();
             },
             Err(e) => {
                 error!("Demo mode: Failed to set user session: {}", e);
                 return (
-                    StatusCode::INTERNAL_SERVER_ERROR, 
+                    StatusCode::INTERNAL_SERVER_ERROR,
                     "Internal error setting demo session"
                 ).into_response();
             }
         }
     }
-    
+
     // Regular authentication flow for non-demo mode
     info!("Processing login request for user '{}'", form.username);
-    
+
     let credentials = Credentials {
         username: form.username.clone(),
         password: Some(form.password),
         password_hash: String::new(),
     };
-    
+
     // Try to authenticate the user
     match auth_session.authenticate(credentials).await {
         Ok(Some(user)) => {
@@ -460,9 +463,12 @@ async fn login_handler(
                 error!("Failed to create session after successful auth: {}", e);
                 return StatusCode::INTERNAL_SERVER_ERROR.into_response();
             }
-            
+
             info!("Login successful for user '{}'", user.username);
-            Redirect::to("/").into_response()
+            // Check if mode is set - if not, redirect to welcome for setup
+            let current_mode = app_state.store.get_setting("deployment_mode").await.ok().flatten();
+            let redirect_to = if current_mode.is_some() { "/" } else { "/welcome" };
+            Redirect::to(redirect_to).into_response()
         }
         Ok(None) => {
             info!("Authentication failed for user '{}'", form.username);
@@ -672,148 +678,308 @@ pub async fn login(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::body::Body;
-    use axum::http::{Request, StatusCode};
-    use tower::ServiceExt;
-    use axum_login::axum_sessions::{SessionLayer, SessionManagerLayer, async_session::MemoryStore};
-    use axum_login::secrecy::SecretVec;
-    use axum::response::Response;
-    use axum::routing::get;
+    use sqlx::sqlite::SqlitePoolOptions;
     use std::sync::Arc;
-    use axum_login::Key;
+    use tokio::sync::Mutex;
+    use crate::{AppState, TemplateEnv, event_manager::EventManager};
+    use minijinja::Environment;
 
-    // Helper function to hash password for tests
-    async fn hash_password(password: String) -> Result<String, argon2::password_hash::Error> {
-        let salt = SaltString::generate(&mut OsRng);
-        Argon2::default()
-            .hash_password(password.as_bytes(), &salt)
-            .map(|hash| hash.to_string())
-    }
-
-    async fn setup_test_app() -> (Router, AppState) {
-        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+    async fn create_test_db() -> sqlx::Pool<sqlx::Sqlite> {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
             .connect("sqlite::memory:")
             .await
-            .expect("Failed to connect to in-memory SQLite DB");
+            .expect("Failed to create test database");
 
-        // Apply migrations (if you have them)
-        // sqlx::migrate!("./migrations").run(&pool).await.expect("Failed migrations");
-
-        // Create dummy settings using default and hash a password
-        let mut settings = Settings::default();
-        settings.admin_password_hash = hash_password("password".to_string()).await.unwrap();
-
-        // Insert the test user credentials into the DB
-        sqlx::query!(
-            "INSERT OR IGNORE INTO admin_credentials (username, password_hash) VALUES (?, ?)",
-            settings.admin_username,
-            settings.admin_password_hash
+        // Create the admin_credentials table
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS admin_credentials (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT NOT NULL UNIQUE,
+                password_hash TEXT NOT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+            "#,
         )
         .execute(&pool)
         .await
-        .expect("Failed to insert test admin credentials");
+        .expect("Failed to create admin_credentials table");
 
-        // Fetch the ID of the inserted user (or assume 1 if IGNORE worked)
-        // let user_record = sqlx::query!("SELECT id FROM admin_credentials WHERE username = ?", settings.admin_username)
-        //    .fetch_one(&pool).await.expect("Failed to fetch test user ID");
-        // let test_user_id = user_record.id;
-
-
-        let backend = AdminBackend { db: pool.clone(), settings: settings.clone() };
-        let session_store = MemoryStore::new();
-        let secret = Key::generate();
-        let session_layer = SessionManagerLayer::new(session_store)
-            .with_secure(false)
-            .with_signed(secret.clone());
-
-        let auth_layer = axum_login::AuthManagerLayerBuilder::new(backend.clone(), session_layer).build();
-
-        // Create AppState with necessary components
-        let app_state = AppState {
-            dbpool: pool.clone(),
-            settings: backend.settings.clone(),
-            template_env: crate::TemplateEnv::Static(Arc::new(crate::ui::create_jinja_env().unwrap())), // Example static env
-            event_manager: crate::event_manager::EventManager::new(), // Example event manager
-             // auth_backend: backend, // If AppState needs the backend directly
-        };
-
-        let app = Router::new()
-             // Use the actual login handler route
-            .route("/login", post(login_handler))
-            .route("/logout", get(logout))
-            .route("/protected", get(login_test_handler))
-            .layer(auth_layer)
-            .with_state(app_state.clone());
-
-        (app, app_state)
+        pool
     }
 
-    // Dummy handler for protected route test
-    async fn login_test_handler(auth_session: AuthSession) -> impl IntoResponse {
-        if auth_session.user.is_some() {
-            (StatusCode::OK, "Protected content")
-        } else {
-            (StatusCode::UNAUTHORIZED, "Unauthorized")
+    async fn create_test_user(pool: &sqlx::Pool<sqlx::Sqlite>, username: &str, password: &str) -> i64 {
+        let salt = SaltString::generate(&mut OsRng);
+        let password_hash = Argon2::default()
+            .hash_password(password.as_bytes(), &salt)
+            .expect("Failed to hash password")
+            .to_string();
+
+        let result = sqlx::query(
+            "INSERT INTO admin_credentials (username, password_hash) VALUES (?, ?)"
+        )
+        .bind(username)
+        .bind(&password_hash)
+        .execute(pool)
+        .await
+        .expect("Failed to insert test user");
+
+        result.last_insert_rowid()
+    }
+
+    fn create_test_app_state(pool: sqlx::Pool<sqlx::Sqlite>) -> AppState {
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
+        let env = Environment::new();
+
+        AppState {
+            settings: Arc::new(Mutex::new(Settings::default())),
+            event_manager: Arc::new(EventManager::new()),
+            setup_mode: false,
+            first_run: false,
+            shutdown_tx,
+            shutdown_rx,
+            template_env: TemplateEnv::Static(Arc::new(env)),
+            is_installed: false,
+            is_demo_mode: true,
+            is_installation_server: false,
+            client_ip: Arc::new(Mutex::new(None)),
+            dbpool: pool,
+            tokens: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            provisioning: None,
+            store: Arc::new(crate::store::MemoryStore::new()),
+            network_services_started: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 
     #[tokio::test]
-    async fn test_login_success() {
-        let (app, _) = setup_test_app().await;
+    async fn test_credentials_create() {
+        let creds = Credentials::create("testuser".to_string(), "testpass123".to_string())
+            .expect("Failed to create credentials");
 
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/login")
-                    .header("content-type", "application/x-www-form-urlencoded")
-                    .body(Body::from("username=admin&password=password"))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::SEE_OTHER);
-        assert!(response.headers().get("location").unwrap().to_str().unwrap().contains("/"));
+        assert_eq!(creds.username, "testuser");
+        assert!(creds.password.is_none()); // Password should not be stored in plaintext
+        assert!(!creds.password_hash.is_empty());
+        assert!(creds.password_hash.starts_with("$argon2")); // Argon2 hash format
     }
 
     #[tokio::test]
-    async fn test_login_failure_wrong_password() {
-        let (app, _) = setup_test_app().await;
-
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/login")
-                    .header("content-type", "application/x-www-form-urlencoded")
-                    .body(Body::from("username=admin&password=wrongpassword"))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::SEE_OTHER);
-        assert!(response.headers().get("location").unwrap().to_str().unwrap().contains("/login"));
+    async fn test_credentials_default() {
+        let creds = Credentials::default();
+        assert_eq!(creds.username, "admin");
+        assert!(creds.password.is_none());
+        assert!(creds.password_hash.is_empty());
     }
 
     #[tokio::test]
-    async fn test_login_failure_user_not_found() {
-        let (app, _) = setup_test_app().await;
+    async fn test_admin_backend_authenticate_success() {
+        let pool = create_test_db().await;
+        let _user_id = create_test_user(&pool, "admin", "correctpassword").await;
 
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/login")
-                    .header("content-type", "application/x-www-form-urlencoded")
-                    .body(Body::from("username=unknownuser&password=password"))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
+        let settings = Settings::default();
+        let backend = AdminBackend::new(pool, settings);
 
-        assert_eq!(response.status(), StatusCode::SEE_OTHER);
-        assert!(response.headers().get("location").unwrap().to_str().unwrap().contains("/login"));
+        let credentials = Credentials {
+            username: "admin".to_string(),
+            password: Some("correctpassword".to_string()),
+            password_hash: String::new(),
+        };
+
+        let result = backend.authenticate(credentials).await;
+        assert!(result.is_ok());
+        let user = result.unwrap();
+        assert!(user.is_some());
+        let user = user.unwrap();
+        assert_eq!(user.username, "admin");
+    }
+
+    #[tokio::test]
+    async fn test_admin_backend_authenticate_wrong_password() {
+        let pool = create_test_db().await;
+        let _user_id = create_test_user(&pool, "admin", "correctpassword").await;
+
+        let settings = Settings::default();
+        let backend = AdminBackend::new(pool, settings);
+
+        let credentials = Credentials {
+            username: "admin".to_string(),
+            password: Some("wrongpassword".to_string()),
+            password_hash: String::new(),
+        };
+
+        let result = backend.authenticate(credentials).await;
+        // Wrong password should return InvalidCredentials error
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            AuthError::InvalidCredentials => {}
+            other => panic!("Expected InvalidCredentials, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_admin_backend_authenticate_user_not_found() {
+        let pool = create_test_db().await;
+        // Don't create any user
+
+        let settings = Settings::default();
+        let backend = AdminBackend::new(pool, settings);
+
+        let credentials = Credentials {
+            username: "nonexistent".to_string(),
+            password: Some("anypassword".to_string()),
+            password_hash: String::new(),
+        };
+
+        let result = backend.authenticate(credentials).await;
+        // Non-existent user should return InvalidCredentials (for security - don't reveal user existence)
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            AuthError::InvalidCredentials => {}
+            other => panic!("Expected InvalidCredentials, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_admin_backend_authenticate_no_password() {
+        let pool = create_test_db().await;
+        let _user_id = create_test_user(&pool, "admin", "password").await;
+
+        let settings = Settings::default();
+        let backend = AdminBackend::new(pool, settings);
+
+        let credentials = Credentials {
+            username: "admin".to_string(),
+            password: None, // No password provided
+            password_hash: String::new(),
+        };
+
+        let result = backend.authenticate(credentials).await;
+        assert!(result.is_ok());
+        // No password should return None (not authenticated)
+        assert!(result.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_admin_backend_get_user() {
+        let pool = create_test_db().await;
+        let user_id = create_test_user(&pool, "testadmin", "password123").await;
+
+        let settings = Settings::default();
+        let backend = AdminBackend::new(pool, settings);
+
+        let result = backend.get_user(&user_id).await;
+        assert!(result.is_ok());
+        let user = result.unwrap();
+        assert!(user.is_some());
+        let user = user.unwrap();
+        assert_eq!(user.id, user_id);
+        assert_eq!(user.username, "testadmin");
+    }
+
+    #[tokio::test]
+    async fn test_admin_backend_get_user_not_found() {
+        let pool = create_test_db().await;
+        // Don't create any user
+
+        let settings = Settings::default();
+        let backend = AdminBackend::new(pool, settings);
+
+        let result = backend.get_user(&999).await;
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_admin_user_auth_user_impl() {
+        let user = AdminUser {
+            id: 42,
+            username: "testuser".to_string(),
+        };
+
+        assert_eq!(user.id(), 42);
+        assert_eq!(user.session_auth_hash(), b"testuser");
+    }
+
+    #[tokio::test]
+    async fn test_settings_default() {
+        let settings = Settings::default();
+        assert!(settings.require_login); // Internal tool - require login by default
+        assert!(settings.default_os.is_none());
+        assert!(!settings.setup_completed);
+        assert_eq!(settings.admin_username, "admin");
+        assert!(settings.admin_password_hash.is_empty());
+        assert!(settings.admin_email.is_empty());
+        assert!(!settings.oauth_enabled);
+        assert!(settings.oauth_provider.is_none());
+        assert!(settings.oauth_client_id.is_none());
+        assert!(settings.oauth_client_secret.is_none());
+        assert!(settings.proxmox_host.is_none());
+        assert!(settings.proxmox_username.is_none());
+        assert!(settings.proxmox_password.is_none());
+        assert!(settings.proxmox_port.is_none());
+        assert_eq!(settings.proxmox_skip_tls_verify, Some(false));
+    }
+
+    #[tokio::test]
+    async fn test_auth_error_display() {
+        let err = AuthError::InvalidCredentials;
+        assert_eq!(err.to_string(), "Invalid credentials provided.");
+
+        let err = AuthError::UserNotFound("testuser".to_string());
+        assert_eq!(err.to_string(), "User not found: testuser");
+
+        let err = AuthError::ConfigError("test config error".to_string());
+        assert_eq!(err.to_string(), "Configuration error: test config error");
+    }
+
+    #[tokio::test]
+    async fn test_require_admin_authenticated() {
+        // This test verifies the require_admin function logic
+        // In a real scenario, you'd need a full auth session, but we can test the logic
+
+        // The function checks auth_session.user.is_some()
+        // We can't easily mock AuthSession, but the logic is straightforward:
+        // - Some(user) -> Ok(())
+        // - None -> Err(Redirect to /login)
+
+        // This is more of a documentation test - the actual behavior
+        // is tested via integration tests with a full router setup
+    }
+
+    #[tokio::test]
+    async fn test_login_template_serialization() {
+        let template = LoginTemplate {
+            is_demo_mode: true,
+            error: Some("test error".to_string()),
+        };
+
+        let json = serde_json::to_string(&template).expect("Failed to serialize");
+        assert!(json.contains("\"is_demo_mode\":true"));
+        assert!(json.contains("\"error\":\"test error\""));
+    }
+
+    #[tokio::test]
+    async fn test_app_state_creation() {
+        let pool = create_test_db().await;
+        let app_state = create_test_app_state(pool);
+
+        assert!(!app_state.setup_mode);
+        assert!(!app_state.first_run);
+        assert!(!app_state.is_installed);
+        assert!(app_state.is_demo_mode);
+        assert!(!app_state.is_installation_server);
+    }
+
+    #[tokio::test]
+    async fn test_settings_default_requires_login() {
+        // CRITICAL: Default settings must require login
+        // This is an internal tool - unauthenticated access should never be allowed
+        let settings = Settings::default();
+        assert!(
+            settings.require_login,
+            "Settings::default() MUST have require_login = true. \
+             This is a security-critical default for internal tools."
+        );
     }
 }

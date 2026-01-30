@@ -102,6 +102,7 @@ pub struct SettingsTemplate {
     pub default_os_ubuntu2204: bool,
     pub default_os_ubuntu2404: bool,
     pub default_os_debian12: bool,
+    pub default_os_debian13: bool,
     pub default_os_proxmox: bool,
     pub default_os_talos: bool,
     pub has_initial_password: bool,
@@ -411,7 +412,15 @@ pub async fn index(
     let require_login = app_state.settings.lock().await.require_login;
     let current_path = uri.path().to_string();
 
-    // --- Scenario B Logic --- 
+    // --- Login check FIRST (before any other logic) ---
+    // If require_login is enabled and user is not authenticated, redirect to login
+    // This applies regardless of mode or installation state (except demo mode)
+    if require_login && !is_authenticated && !app_state.is_demo_mode {
+        info!("Login required, redirecting to /login");
+        return Redirect::to("/login").into_response();
+    }
+
+    // --- Scenario B Logic ---
     if app_state.is_demo_mode {
         // Case B.3: Not installed (or explicitly demo) -> Show Demo Experience
         info!("Rendering Demo Experience (root route)");
@@ -419,7 +428,8 @@ pub async fn index(
         // Ensure is_demo_mode is passed to the template
     } else if app_state.is_installed {
         // Case B.1 & B.2: Installed
-        let current_mode = mode::get_current_mode().await.unwrap_or(None);
+        // Use the already-open store to check mode (avoids ReDB lock conflict)
+        let current_mode = app_state.store.get_setting("deployment_mode").await.ok().flatten();
         if current_mode.is_none() {
             // Case B.2: Installed, no mode selected -> Show Welcome Screen
             // BUT ONLY if not in installation server mode
@@ -462,15 +472,6 @@ pub async fn index(
     }
     // --- End Scenario B Logic ---
 
-    // Login check (only applies if *not* demo and mode *is* selected)
-    if require_login && !is_authenticated && app_state.is_installed {
-        let current_mode = mode::get_current_mode().await.unwrap_or(None);
-        if current_mode.is_some() { // Only redirect if mode is selected
-             info!("Login required, redirecting to /login");
-             return Redirect::to("/login").into_response();
-        }
-    }
-
     // --- Continue with Dashboard/Demo Rendering --- 
     let installation_in_progress = std::env::var("DRAGONFLY_INSTALL_SERVER_MODE").is_ok() || app_state.is_installation_server;
     let mut initial_install_message = String::new();
@@ -503,21 +504,28 @@ pub async fn index(
                 .collect();
             (demo_machines, counts, counts_json, dates)
         } else {
-            // Normal mode - fetch real machines from database
-            match db::get_all_machines().await {
-                Ok(m) => {
-                    let counts = count_machines_by_status(&m);
-                    let counts_json = serde_json::to_string(&counts).unwrap_or_else(|_| "{}".to_string());
-                    let dates = m.iter()
-                        .map(|mach| (mach.id.to_string(), format_datetime(&mach.created_at)))
-                        .collect();
-                    (m, counts, counts_json, dates)
-                },
-                Err(e) => {
-                    error!("Error fetching machines for index page: {}", e);
-                    (vec![], HashMap::new(), "{}".to_string(), HashMap::new())
+            // Normal mode - fetch machines from DragonflyStore (ReDB)
+            let m: Vec<Machine> = if let Some(ref provisioning) = app_state.provisioning {
+                match provisioning.store().list_hardware().await {
+                    Ok(hardware_list) => {
+                        hardware_list.iter().map(crate::api::hardware_to_machine).collect()
+                    }
+                    Err(e) => {
+                        error!("Failed to list hardware from store: {}", e);
+                        vec![]
+                    }
                 }
-            }
+            } else {
+                error!("Provisioning service not initialized");
+                vec![]
+            };
+
+            let counts = count_machines_by_status(&m);
+            let counts_json = serde_json::to_string(&counts).unwrap_or_else(|_| "{}".to_string());
+            let dates = m.iter()
+                .map(|mach| (mach.id.to_string(), format_datetime(&mach.created_at)))
+                .collect();
+            (m, counts, counts_json, dates)
         }
     } else {
         // Provide empty defaults if installing
@@ -555,10 +563,10 @@ pub async fn machine_list(
 
     let require_login = app_state.settings.lock().await.require_login;
 
-    // --- Scenario B: Mode/Install Check --- 
+    // --- Scenario B: Mode/Install Check ---
     // Redirect to welcome if installed but no mode selected
     if app_state.is_installed && !app_state.is_demo_mode { // Don't check mode if in demo
-        let current_mode = mode::get_current_mode().await.unwrap_or(None);
+        let current_mode = app_state.store.get_setting("deployment_mode").await.ok().flatten();
         if current_mode.is_none() {
             info!("/machines accessed before mode selection, redirecting to /welcome");
             // Need to return a response that HTMX can use to redirect
@@ -598,8 +606,23 @@ pub async fn machine_list(
         };
         return render_minijinja(&app_state, "machine_list.html", context);
     } else { // Normal mode
-        // Normal mode - fetch machines from database
-        match db::get_all_machines().await {
+        // Normal mode - fetch machines from DragonflyStore (ReDB)
+        let machines_result = if let Some(ref provisioning) = app_state.provisioning {
+            match provisioning.store().list_hardware().await {
+                Ok(hardware_list) => {
+                    let machines: Vec<Machine> = hardware_list
+                        .iter()
+                        .map(|hw| crate::api::hardware_to_machine(hw))
+                        .collect();
+                    Ok(machines)
+                }
+                Err(e) => Err(e)
+            }
+        } else {
+            Ok(vec![]) // No provisioning service means no machines
+        };
+
+        match machines_result {
             Ok(machines) => {
                 let mut workflow_infos = HashMap::new();
                 for machine in &machines {
@@ -611,13 +634,11 @@ pub async fn machine_list(
                             Ok(None) => { /* No active workflow found */ }
                             Err(e) => {
                                 error!("Error fetching workflow info for machine {}: {}", machine.id, e);
-                                // Optionally insert a default/error state info
                             }
                         }
                     }
                 }
 
-                // Replace Askama render with placeholder
                 let context = MachineListTemplate {
                     machines,
                     theme,
@@ -626,12 +647,10 @@ pub async fn machine_list(
                     workflow_infos,
                     current_path,
                 };
-                // Pass AppState to render_minijinja
                 render_minijinja(&app_state, "machine_list.html", context)
             },
             Err(e) => {
-                error!("Error fetching machines for machine list page: {}", e);
-                // Replace Askama render with placeholder
+                error!("Error fetching machines from ReDB: {}", e);
                 let context = MachineListTemplate {
                     machines: vec![],
                     theme,
@@ -640,7 +659,6 @@ pub async fn machine_list(
                     workflow_infos: HashMap::new(),
                     current_path,
                 };
-                // Pass AppState to render_minijinja
                 render_minijinja(&app_state, "machine_list.html", context)
             }
         }
@@ -765,8 +783,14 @@ pub async fn machine_details(
                 }
             }
             
-            // Normal mode - get machine by ID from database
-            match db::get_machine_by_id(&uuid).await {
+            // Normal mode - get machine by ID from DragonflyStore (ReDB)
+            let machine_result = if let Some(ref provisioning) = app_state.provisioning {
+                crate::api::get_machine_by_uuid(provisioning.store().as_ref(), &uuid).await
+            } else {
+                Ok(None) // No provisioning service means no machine found
+            };
+
+            match machine_result {
                 Ok(Some(machine)) => {
                     info!("Rendering machine details page for machine {}", uuid);
                     
@@ -836,8 +860,7 @@ pub async fn machine_details(
                 },
                 Ok(None) => {
                     error!("Machine not found: {}", uuid);
-                    // Use MiniJinja for error template
-                    let context = ErrorTemplate { // Use ErrorTemplate for consistency
+                    let context = ErrorTemplate {
                         theme,
                         is_authenticated,
                         title: "Machine Not Found".to_string(),
@@ -849,24 +872,23 @@ pub async fn machine_details(
                         retry_url: "".to_string(),
                         current_path,
                     };
-                    render_minijinja(&app_state, "error.html", context) // Render error template
+                    render_minijinja(&app_state, "error.html", context)
                 },
                 Err(e) => {
-                    error!("Error fetching machine {}: {}", uuid, e);
-                    // Use MiniJinja for error template
-                    let context = ErrorTemplate { // Use ErrorTemplate
+                    error!("Database error fetching machine {}: {}", uuid, e);
+                    let context = ErrorTemplate {
                         theme,
                         is_authenticated,
                         title: "Database Error".to_string(),
-                        message: "An error occurred while fetching machine details.".to_string(),
+                        message: "An error occurred while fetching the machine from the database.".to_string(),
                         error_details: format!("Error: {}", e),
                         back_url: "/machines".to_string(),
                         back_text: "Back to Machines".to_string(),
-                        show_retry: false,
-                        retry_url: "".to_string(),
+                        show_retry: true,
+                        retry_url: format!("/machines/{}", uuid),
                         current_path,
                     };
-                    render_minijinja(&app_state, "error.html", context) // Render error template
+                    render_minijinja(&app_state, "error.html", context)
                 }
             }
         },
@@ -980,6 +1002,7 @@ pub async fn settings_page(
         default_os_ubuntu2204: default_os.as_deref() == Some("ubuntu-2204"),
         default_os_ubuntu2404: default_os.as_deref() == Some("ubuntu-2404"),
         default_os_debian12: default_os.as_deref() == Some("debian-12"),
+        default_os_debian13: default_os.as_deref() == Some("debian-13"),
         default_os_proxmox: default_os.as_deref() == Some("proxmox"),
         default_os_talos: default_os.as_deref() == Some("talos"),
         has_initial_password,
@@ -1108,6 +1131,7 @@ pub async fn update_settings(
                 default_os_ubuntu2204: default_os.as_deref() == Some("ubuntu-2204"),
                 default_os_ubuntu2404: default_os.as_deref() == Some("ubuntu-2404"),
                 default_os_debian12: default_os.as_deref() == Some("debian-12"),
+                default_os_debian13: default_os.as_deref() == Some("debian-13"),
                 default_os_proxmox: default_os.as_deref() == Some("proxmox"),
                 default_os_talos: default_os.as_deref() == Some("talos"),
                 has_initial_password,
@@ -1116,13 +1140,13 @@ pub async fn update_settings(
                 error_message,
                 current_path, // Make sure current_path is passed here
             };
-            
+
             // Return the error template
             let mut cookie = Cookie::new("dragonfly_theme", theme.clone());
             cookie.set_path("/");
             cookie.set_max_age(time::Duration::days(365));
             cookie.set_same_site(SameSite::Lax);
-            
+
             return (
                 [(header::SET_COOKIE, cookie.to_string())],
                 render_minijinja(&app_state, "settings.html", context)
@@ -1179,6 +1203,7 @@ pub async fn update_settings(
                                 default_os_ubuntu2204: default_os.as_deref() == Some("ubuntu-2204"),
                                 default_os_ubuntu2404: default_os.as_deref() == Some("ubuntu-2404"),
                                 default_os_debian12: default_os.as_deref() == Some("debian-12"),
+                                default_os_debian13: default_os.as_deref() == Some("debian-13"),
                                 default_os_proxmox: default_os.as_deref() == Some("proxmox"),
                                 default_os_talos: default_os.as_deref() == Some("talos"),
                                 has_initial_password,
@@ -1187,13 +1212,13 @@ pub async fn update_settings(
                                 error_message,
                                 current_path, // Add current_path here
                             };
-                            
+
                             // Return the error template
                             let mut cookie = Cookie::new("dragonfly_theme", theme.clone());
                             cookie.set_path("/");
                             cookie.set_max_age(time::Duration::days(365));
                             cookie.set_same_site(SameSite::Lax);
-                            
+
                             return (
                                 [(header::SET_COOKIE, cookie.to_string())],
                                 render_minijinja(&app_state, "settings.html", context)
@@ -1235,6 +1260,7 @@ pub async fn update_settings(
                             default_os_ubuntu2204: default_os.as_deref() == Some("ubuntu-2204"),
                             default_os_ubuntu2404: default_os.as_deref() == Some("ubuntu-2404"),
                             default_os_debian12: default_os.as_deref() == Some("debian-12"),
+                            default_os_debian13: default_os.as_deref() == Some("debian-13"),
                             default_os_proxmox: default_os.as_deref() == Some("proxmox"),
                             default_os_talos: default_os.as_deref() == Some("talos"),
                             has_initial_password,
@@ -1243,13 +1269,13 @@ pub async fn update_settings(
                             error_message,
                             current_path, // Add current_path here
                         };
-                        
+
                         // Return the error template
                         let mut cookie = Cookie::new("dragonfly_theme", theme.clone());
                         cookie.set_path("/");
                         cookie.set_max_age(time::Duration::days(365));
                         cookie.set_same_site(SameSite::Lax);
-                        
+
                         return (
                             [(header::SET_COOKIE, cookie.to_string())],
                             render_minijinja(&app_state, "settings.html", context)
@@ -1258,7 +1284,7 @@ pub async fn update_settings(
                 }
             }
         }
-        
+
         // Check form password and confirm (moving this out of previous if-let block to fix scope)
         if form.password.is_some() || form.password_confirm.is_some() {
             let password = form.password.as_deref().unwrap_or("");
@@ -1290,6 +1316,7 @@ pub async fn update_settings(
                     default_os_ubuntu2204: default_os.as_deref() == Some("ubuntu-2204"),
                     default_os_ubuntu2404: default_os.as_deref() == Some("ubuntu-2404"),
                     default_os_debian12: default_os.as_deref() == Some("debian-12"),
+                    default_os_debian13: default_os.as_deref() == Some("debian-13"),
                     default_os_proxmox: default_os.as_deref() == Some("proxmox"),
                     default_os_talos: default_os.as_deref() == Some("talos"),
                     has_initial_password,
@@ -1298,13 +1325,13 @@ pub async fn update_settings(
                     error_message,
                     current_path, // Make sure current_path is passed here
                 };
-                
+
                 // Return the error template
                 let mut cookie = Cookie::new("dragonfly_theme", theme.clone());
                 cookie.set_path("/");
                 cookie.set_max_age(time::Duration::days(365));
                 cookie.set_same_site(SameSite::Lax);
-                
+
                 return (
                     [(header::SET_COOKIE, cookie.to_string())],
                     render_minijinja(&app_state, "settings.html", context)
@@ -1338,7 +1365,13 @@ pub async fn welcome_page(
     let theme = get_theme_from_cookie(&headers);
     let is_authenticated = auth_session.user.is_some();
     let current_path = uri.path().to_string();
-    
+
+    // Welcome page allows changing installation mode - always require authentication
+    if !is_authenticated {
+        info!("Login required for /welcome (mode selection), redirecting to /login");
+        return Redirect::to("/login").into_response();
+    }
+
     // Replace Askama render with placeholder
     let context = WelcomeTemplate {
         theme,
@@ -1361,11 +1394,17 @@ pub async fn setup_simple(
     let theme = get_theme_from_cookie(&headers);
     let is_authenticated = auth_session.user.is_some();
     let current_path = uri.path().to_string();
-    
-    // Save mode to database immediately
-    if let Err(e) = mode::save_mode(mode::DeploymentMode::Simple, false).await {
+
+    // Setup endpoints change the installation mode - require authentication
+    if !is_authenticated {
+        info!("Login required for /setup/simple, redirecting to /login");
+        return Redirect::to("/login").into_response();
+    }
+
+    // Save mode to ReDB using the already-open store (avoids lock conflict)
+    if let Err(e) = app_state.store.put_setting("deployment_mode", "simple").await {
         error!("Failed to save Simple mode to database: {}", e);
-        
+
         // Return error template
         let context = ErrorTemplate {
             theme,
@@ -1425,11 +1464,17 @@ pub async fn setup_flight(
     let theme = get_theme_from_cookie(&headers);
     let is_authenticated = auth_session.user.is_some();
     let current_path = uri.path().to_string();
-    
-    // Save mode to database immediately
-    if let Err(e) = mode::save_mode(mode::DeploymentMode::Flight, false).await {
+
+    // Setup endpoints change the installation mode - require authentication
+    if !is_authenticated {
+        info!("Login required for /setup/flight, redirecting to /login");
+        return Redirect::to("/login").into_response();
+    }
+
+    // Save mode to ReDB using the already-open store (avoids lock conflict)
+    if let Err(e) = app_state.store.put_setting("deployment_mode", "flight").await {
         error!("Failed to save Flight mode to database: {}", e);
-        
+
         // Return error template
         let context = ErrorTemplate {
             theme,
@@ -1459,10 +1504,14 @@ pub async fn setup_flight(
     
     // Configure the system for Flight mode in the background
     let event_manager = app_state.event_manager.clone();
+    let store_for_flight = app_state.store.clone();
+    let app_state_for_services = app_state.clone();
     tokio::spawn(async move {
-        match mode::configure_flight_mode().await {
+        match mode::configure_flight_mode(store_for_flight).await {
             Ok(_) => {
                 info!("Flight mode configuration completed successfully in background");
+                // Start network services (DHCP/TFTP) now that Flight mode is configured
+                crate::start_network_services(&app_state_for_services, app_state_for_services.shutdown_rx.clone()).await;
                 // Send event for successful configuration
                 let _ = event_manager.send("mode_configured:flight".to_string());
             },
@@ -1489,11 +1538,17 @@ pub async fn setup_swarm(
     let theme = get_theme_from_cookie(&headers);
     let is_authenticated = auth_session.user.is_some();
     let current_path = uri.path().to_string();
-    
-    // Save mode to database immediately
-    if let Err(e) = mode::save_mode(mode::DeploymentMode::Swarm, false).await {
+
+    // Setup endpoints change the installation mode - require authentication
+    if !is_authenticated {
+        info!("Login required for /setup/swarm, redirecting to /login");
+        return Redirect::to("/login").into_response();
+    }
+
+    // Save mode to ReDB using the already-open store (avoids lock conflict)
+    if let Err(e) = app_state.store.put_setting("deployment_mode", "swarm").await {
         error!("Failed to save Swarm mode to database: {}", e);
-        
+
         // Return error template
         let context = ErrorTemplate {
             theme,
@@ -1778,15 +1833,13 @@ pub async fn tags_page(
     let theme = get_theme_from_cookie(&headers);
     let is_authenticated = auth_session.user.is_some();
     let current_path = uri.path().to_string();
-    
+
     // Check if user is authenticated if login is required
     let require_login = app_state.settings.lock().await.require_login;
-    if require_login && !is_authenticated && app_state.is_installed {
-        if let Some(_) = mode::get_current_mode().await.unwrap_or(None) {
-            return Redirect::to("/login").into_response();
-        }
+    if require_login && !is_authenticated && !app_state.is_demo_mode {
+        return Redirect::to("/login").into_response();
     }
-    
+
     // Fetch all machines to display in the tag editor
     let machines = match crate::db::get_all_machines().await {
         Ok(machines) => machines,

@@ -1,9 +1,8 @@
 //! Template CRD types
 //!
 //! Templates define the structure of provisioning workflows.
-//! They contain tasks and actions that are executed on target machines.
+//! They contain a list of actions that are executed on target machines.
 //!
-//! Note: Unlike Tinkerbell which uses Docker containers for actions,
 //! Dragonfly uses native Rust crates as actions for better performance.
 
 use crate::{ObjectMeta, TypeMeta, CrdError, Result};
@@ -36,15 +35,15 @@ impl Template {
         }
     }
 
-    /// Add a task to the template
-    pub fn with_task(mut self, task: Task) -> Self {
-        self.spec.tasks.push(task);
+    /// Add an action to the template
+    pub fn with_action(mut self, action: ActionStep) -> Self {
+        self.spec.actions.push(action);
         self
     }
 
     /// Set the global timeout
     pub fn with_timeout(mut self, seconds: u64) -> Self {
-        self.spec.global_timeout = Some(seconds);
+        self.spec.timeout = Some(seconds);
         self
     }
 
@@ -54,13 +53,13 @@ impl Template {
             return Err(CrdError::MissingField("metadata.name".to_string()));
         }
 
-        if self.spec.tasks.is_empty() {
-            return Err(CrdError::MissingField("spec.tasks".to_string()));
+        if self.spec.actions.is_empty() {
+            return Err(CrdError::MissingField("spec.actions".to_string()));
         }
 
-        for (i, task) in self.spec.tasks.iter().enumerate() {
-            task.validate().map_err(|e| CrdError::InvalidFieldValue {
-                field: format!("spec.tasks[{}]", i),
+        for (i, action) in self.spec.actions.iter().enumerate() {
+            action.validate().map_err(|e| CrdError::InvalidFieldValue {
+                field: format!("spec.actions[{}]", i),
                 message: e.to_string(),
             })?;
         }
@@ -68,25 +67,19 @@ impl Template {
         Ok(())
     }
 
-    /// Get total estimated duration of all tasks
+    /// Get total estimated duration of all actions
     pub fn estimated_duration(&self) -> Duration {
         self.spec
-            .tasks
+            .actions
             .iter()
-            .flat_map(|t| &t.actions)
-            .filter_map(|a| a.timeout)
+            .filter_map(|a| a.timeout())
             .map(Duration::from_secs)
             .sum()
     }
 
     /// Get all action names in order
     pub fn action_names(&self) -> Vec<&str> {
-        self.spec
-            .tasks
-            .iter()
-            .flat_map(|t| &t.actions)
-            .map(|a| a.name.as_str())
-            .collect()
+        self.spec.actions.iter().map(|a| a.action_type()).collect()
     }
 }
 
@@ -100,223 +93,357 @@ pub struct TemplateSpec {
 
     /// Global timeout for the entire workflow (seconds)
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub global_timeout: Option<u64>,
-
-    /// Tasks to execute
-    #[serde(default)]
-    pub tasks: Vec<Task>,
-
-    /// Global volumes available to all actions
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub volumes: Vec<String>,
-
-    /// Global environment variables for all actions
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub env: HashMap<String, String>,
-}
-
-/// A task represents a group of actions executed on a worker
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct Task {
-    /// Task name
-    pub name: String,
-
-    /// Worker identifier (typically MAC address template variable)
-    /// e.g., "{{.device_1}}"
-    pub worker: String,
-
-    /// Volumes to mount for all actions in this task
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub volumes: Vec<String>,
+    pub timeout: Option<u64>,
 
     /// Actions to execute in order
-    pub actions: Vec<Action>,
+    #[serde(default)]
+    pub actions: Vec<ActionStep>,
 }
 
-impl Task {
-    /// Create a new task
-    pub fn new(name: impl Into<String>, worker: impl Into<String>) -> Self {
-        Self {
-            name: name.into(),
-            worker: worker.into(),
-            volumes: Vec::new(),
-            actions: Vec::new(),
-        }
-    }
-
-    /// Add an action to the task
-    pub fn with_action(mut self, action: Action) -> Self {
-        self.actions.push(action);
-        self
-    }
-
-    /// Add a volume mount
-    pub fn with_volume(mut self, volume: impl Into<String>) -> Self {
-        self.volumes.push(volume.into());
-        self
-    }
-
-    /// Validate the task
-    pub fn validate(&self) -> Result<()> {
-        if self.name.is_empty() {
-            return Err(CrdError::MissingField("name".to_string()));
-        }
-
-        if self.worker.is_empty() {
-            return Err(CrdError::MissingField("worker".to_string()));
-        }
-
-        if self.actions.is_empty() {
-            return Err(CrdError::MissingField("actions".to_string()));
-        }
-
-        for (i, action) in self.actions.iter().enumerate() {
-            action.validate().map_err(|e| CrdError::InvalidFieldValue {
-                field: format!("actions[{}]", i),
-                message: e.to_string(),
-            })?;
-        }
-
-        Ok(())
-    }
+/// Default disk value for actions
+fn default_disk() -> String {
+    "auto".to_string()
 }
 
-/// An action represents a single step in a provisioning workflow
+/// Default partition layout
+fn default_layout() -> String {
+    "gpt-efi".to_string()
+}
+
+/// Action step in a template - each variant represents a different action type
+///
+/// Uses internally tagged representation in YAML:
+/// ```yaml
+/// actions:
+///   - action: image2disk
+///     url: "https://..."
+///   - action: writefile
+///     path: /etc/foo
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct Action {
-    /// Action name
-    pub name: String,
+#[serde(tag = "action", rename_all = "lowercase")]
+pub enum ActionStep {
+    /// Stream an OS image to disk
+    Image2disk(Image2DiskConfig),
+    /// Write a file to the target filesystem
+    Writefile(WritefileConfig),
+    /// Boot into the installed OS using kexec
+    Kexec(KexecConfig),
+    /// Partition a disk
+    Partition(PartitionConfig),
+}
 
-    /// Action type (for native Dragonfly actions)
-    /// e.g., "image", "writefile", "kexec"
+impl ActionStep {
+    /// Get the action type name
+    pub fn action_type(&self) -> &str {
+        match self {
+            ActionStep::Image2disk(_) => "image2disk",
+            ActionStep::Writefile(_) => "writefile",
+            ActionStep::Kexec(_) => "kexec",
+            ActionStep::Partition(_) => "partition",
+        }
+    }
+
+    /// Get the timeout for this action
+    pub fn timeout(&self) -> Option<u64> {
+        match self {
+            ActionStep::Image2disk(cfg) => cfg.timeout,
+            ActionStep::Writefile(cfg) => cfg.timeout,
+            ActionStep::Kexec(cfg) => cfg.timeout,
+            ActionStep::Partition(cfg) => cfg.timeout,
+        }
+    }
+
+    /// Validate the action configuration
+    pub fn validate(&self) -> Result<()> {
+        match self {
+            ActionStep::Image2disk(cfg) => {
+                if cfg.url.is_empty() {
+                    return Err(CrdError::MissingField("image2disk.url".to_string()));
+                }
+                Ok(())
+            }
+            ActionStep::Writefile(cfg) => {
+                if cfg.path.is_empty() {
+                    return Err(CrdError::MissingField("writefile.path".to_string()));
+                }
+                if cfg.content.is_none() && cfg.content_b64.is_none() {
+                    return Err(CrdError::MissingField(
+                        "writefile.content or writefile.content_b64".to_string(),
+                    ));
+                }
+                Ok(())
+            }
+            ActionStep::Kexec(_) => Ok(()),
+            ActionStep::Partition(cfg) => {
+                let valid_layouts = ["gpt-efi", "gpt-bios", "single"];
+                if !valid_layouts.contains(&cfg.layout.as_str()) {
+                    return Err(CrdError::InvalidFieldValue {
+                        field: "partition.layout".to_string(),
+                        message: format!(
+                            "must be one of: {}",
+                            valid_layouts.join(", ")
+                        ),
+                    });
+                }
+                Ok(())
+            }
+        }
+    }
+
+    /// Convert action config to environment variables for the action executor
     ///
-    /// For Tinkerbell compatibility, this can also be a container image
-    /// e.g., "quay.io/tinkerbell/actions/qemuimg2disk:latest"
-    #[serde(alias = "image")]
-    pub action_type: String,
+    /// Template variables supported in content:
+    /// - `{{ server }}` - Dragonfly server URL
+    /// - `{{ instance_id }}` - UUID derived from MAC address (for cloud-init instance-id)
+    /// - `{{ friendly_name }}` - BIP39-style memorable name derived from MAC (for hostname)
+    pub fn to_environment(&self, hardware_disks: &[String], server: &str, mac: &str) -> HashMap<String, String> {
+        // Compute instance_id and friendly_name from MAC address
+        let instance_id = dragonfly_common::mac_to_words::mac_to_uuid(mac).to_string();
+        let friendly_name = dragonfly_common::mac_to_words::mac_to_words_safe(mac);
+        let mut env = HashMap::new();
+
+        match self {
+            ActionStep::Image2disk(cfg) => {
+                // Resolve disk
+                let disk = if cfg.disk == "auto" {
+                    hardware_disks.first().cloned().unwrap_or_else(|| "/dev/sda".to_string())
+                } else {
+                    cfg.disk.clone()
+                };
+
+                // Substitute variables in URL
+                let url = cfg.url.replace("{{ server }}", server);
+
+                env.insert("IMG_URL".to_string(), url);
+                env.insert("DEST_DISK".to_string(), disk);
+
+                if let Some(checksum) = &cfg.checksum {
+                    env.insert("CHECKSUM".to_string(), checksum.clone());
+                }
+            }
+            ActionStep::Writefile(cfg) => {
+                // Get the target disk for partition resolution
+                let disk = hardware_disks.first().cloned().unwrap_or_else(|| "/dev/sda".to_string());
+
+                // Resolve partition to device path
+                let dest_disk = if let Some(part_num) = cfg.partition {
+                    format_partition(&disk, part_num)
+                } else {
+                    disk
+                };
+
+                env.insert("DEST_DISK".to_string(), dest_disk);
+                env.insert("DEST_PATH".to_string(), cfg.path.clone());
+                env.insert("FS_TYPE".to_string(), cfg.fs_type.clone().unwrap_or_else(|| "ext4".to_string()));
+
+                if let Some(content) = &cfg.content {
+                    // Substitute variables in content
+                    let content = content
+                        .replace("{{ server }}", server)
+                        .replace("{{ instance_id }}", &instance_id)
+                        .replace("{{ friendly_name }}", &friendly_name);
+                    env.insert("CONTENTS".to_string(), content);
+                }
+                if let Some(content_b64) = &cfg.content_b64 {
+                    env.insert("CONTENTS_B64".to_string(), content_b64.clone());
+                }
+                if let Some(mode) = &cfg.mode {
+                    env.insert("MODE".to_string(), mode.clone());
+                }
+                if let Some(uid) = cfg.uid {
+                    env.insert("UID".to_string(), uid.to_string());
+                }
+                if let Some(gid) = cfg.gid {
+                    env.insert("GID".to_string(), gid.to_string());
+                }
+            }
+            ActionStep::Kexec(cfg) => {
+                // Get the target disk for partition resolution
+                let disk = hardware_disks.first().cloned().unwrap_or_else(|| "/dev/sda".to_string());
+
+                // Resolve partition to device path
+                let block_device = if let Some(part_num) = cfg.partition {
+                    format_partition(&disk, part_num)
+                } else {
+                    format_partition(&disk, 1) // Default to partition 1
+                };
+
+                env.insert("BLOCK_DEVICE".to_string(), block_device);
+                env.insert("FS_TYPE".to_string(), cfg.fs_type.clone().unwrap_or_else(|| "ext4".to_string()));
+
+                if let Some(kernel) = &cfg.kernel {
+                    env.insert("KERNEL_PATH".to_string(), kernel.clone());
+                }
+                if let Some(initrd) = &cfg.initrd {
+                    env.insert("INITRD_PATH".to_string(), initrd.clone());
+                }
+                if let Some(cmdline) = &cfg.cmdline {
+                    // Substitute variables and add root device
+                    let disk = hardware_disks.first().cloned().unwrap_or_else(|| "/dev/sda".to_string());
+                    let root_part = if let Some(part_num) = cfg.partition {
+                        format_partition(&disk, part_num)
+                    } else {
+                        format_partition(&disk, 1)
+                    };
+                    let full_cmdline = format!("root={} {}", root_part, cmdline);
+                    env.insert("CMD_LINE".to_string(), full_cmdline);
+                }
+            }
+            ActionStep::Partition(cfg) => {
+                // Resolve disk
+                let disk = if cfg.disk == "auto" {
+                    hardware_disks.first().cloned().unwrap_or_else(|| "/dev/sda".to_string())
+                } else {
+                    cfg.disk.clone()
+                };
+
+                env.insert("DEST_DISK".to_string(), disk);
+                env.insert("PARTITION_LAYOUT".to_string(), cfg.layout.clone());
+
+                if let Some(efi_size) = &cfg.efi_size {
+                    env.insert("EFI_SIZE".to_string(), efi_size.clone());
+                }
+                if let Some(swap_size) = &cfg.swap_size {
+                    env.insert("SWAP_SIZE".to_string(), swap_size.clone());
+                }
+            }
+        }
+
+        env
+    }
+}
+
+/// Format a partition path from disk and partition number
+fn format_partition(disk: &str, partition: u8) -> String {
+    // Handle NVMe drives which use p1, p2, etc.
+    if disk.contains("nvme") || disk.contains("mmcblk") || disk.contains("loop") {
+        format!("{}p{}", disk, partition)
+    } else {
+        format!("{}{}", disk, partition)
+    }
+}
+
+/// Configuration for image2disk action
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Image2DiskConfig {
+    /// URL of the OS image to stream
+    pub url: String,
+
+    /// Target disk device ("auto" to auto-detect, or explicit like "/dev/sda")
+    #[serde(default = "default_disk")]
+    pub disk: String,
+
+    /// Expected checksum for verification (optional)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub checksum: Option<String>,
 
     /// Action timeout in seconds
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timeout: Option<u64>,
-
-    /// Environment variables for the action
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub environment: HashMap<String, String>,
-
-    /// Volumes specific to this action
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub volumes: Vec<String>,
-
-    /// Command to execute (for container-based actions)
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub command: Vec<String>,
-
-    /// Arguments for the command
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub args: Vec<String>,
-
-    /// PID namespace mode (for container-based actions)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub pid: Option<String>,
-
-    /// Action-specific configuration (flexible)
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub config: HashMap<String, serde_json::Value>,
 }
 
-impl Action {
-    /// Create a new action
-    pub fn new(name: impl Into<String>, action_type: impl Into<String>) -> Self {
-        Self {
-            name: name.into(),
-            action_type: action_type.into(),
-            timeout: None,
-            environment: HashMap::new(),
-            volumes: Vec::new(),
-            command: Vec::new(),
-            args: Vec::new(),
-            pid: None,
-            config: HashMap::new(),
-        }
-    }
+/// Configuration for writefile action
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct WritefileConfig {
+    /// Target file path on the filesystem
+    pub path: String,
 
-    /// Set the timeout
-    pub fn with_timeout(mut self, seconds: u64) -> Self {
-        self.timeout = Some(seconds);
-        self
-    }
+    /// Partition number to mount (combines with auto-detected disk)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub partition: Option<u8>,
 
-    /// Add an environment variable
-    pub fn with_env(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-        self.environment.insert(key.into(), value.into());
-        self
-    }
+    /// Filesystem type for mounting
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fs_type: Option<String>,
 
-    /// Add a volume mount
-    pub fn with_volume(mut self, volume: impl Into<String>) -> Self {
-        self.volumes.push(volume.into());
-        self
-    }
+    /// Plain text file contents
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
 
-    /// Add a config value
-    pub fn with_config(mut self, key: impl Into<String>, value: serde_json::Value) -> Self {
-        self.config.insert(key.into(), value);
-        self
-    }
+    /// Base64-encoded file contents
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content_b64: Option<String>,
 
-    /// Validate the action
-    pub fn validate(&self) -> Result<()> {
-        if self.name.is_empty() {
-            return Err(CrdError::MissingField("name".to_string()));
-        }
+    /// File permissions in octal (e.g., "0644")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
 
-        if self.action_type.is_empty() {
-            return Err(CrdError::MissingField("action_type".to_string()));
-        }
+    /// Owner user ID
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub uid: Option<u32>,
 
-        Ok(())
-    }
+    /// Owner group ID
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gid: Option<u32>,
 
-    /// Check if this is a native Dragonfly action
-    pub fn is_native(&self) -> bool {
-        // Native actions are simple names like "image", "writefile", "kexec"
-        // Container images contain "/" or ":"
-        !self.action_type.contains('/') && !self.action_type.contains(':')
-    }
+    /// Action timeout in seconds
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timeout: Option<u64>,
+}
 
-    /// Check if this is a container-based action (Tinkerbell compatibility)
-    pub fn is_container(&self) -> bool {
-        !self.is_native()
-    }
+/// Configuration for kexec action
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct KexecConfig {
+    /// Partition number containing the installed OS
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub partition: Option<u8>,
 
-    /// Get the native action name (e.g., "image" from the action_type)
-    pub fn native_action_name(&self) -> Option<&str> {
-        if self.is_native() {
-            Some(&self.action_type)
-        } else {
-            None
-        }
-    }
+    /// Filesystem type (defaults to ext4)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fs_type: Option<String>,
+
+    /// Path to kernel (auto-detected if not specified)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kernel: Option<String>,
+
+    /// Path to initrd (auto-detected if not specified)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub initrd: Option<String>,
+
+    /// Kernel command line arguments
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cmdline: Option<String>,
+
+    /// Action timeout in seconds
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timeout: Option<u64>,
+}
+
+/// Configuration for partition action
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PartitionConfig {
+    /// Target disk device ("auto" to auto-detect)
+    #[serde(default = "default_disk")]
+    pub disk: String,
+
+    /// Partition layout: "gpt-efi", "gpt-bios", or "single"
+    #[serde(default = "default_layout")]
+    pub layout: String,
+
+    /// EFI partition size (default "512M")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub efi_size: Option<String>,
+
+    /// Swap partition size (optional)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub swap_size: Option<String>,
+
+    /// Action timeout in seconds
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timeout: Option<u64>,
 }
 
 /// Predefined action types for native Dragonfly actions
 pub mod actions {
     /// Stream an image to disk
-    pub const IMAGE: &str = "image";
+    pub const IMAGE2DISK: &str = "image2disk";
     /// Write a file to a mounted filesystem
     pub const WRITEFILE: &str = "writefile";
     /// Execute kexec to boot into installed OS
     pub const KEXEC: &str = "kexec";
     /// Partition a disk
     pub const PARTITION: &str = "partition";
-    /// Format a partition
-    pub const FORMAT: &str = "format";
-    /// Run a shell command
-    pub const SHELL: &str = "shell";
-    /// Wait for a condition
-    pub const WAIT: &str = "wait";
 }
 
 #[cfg(test)]
@@ -333,213 +460,294 @@ mod tests {
     }
 
     #[test]
-    fn test_template_with_task() {
-        let template = Template::new("ubuntu-2404")
+    fn test_template_with_actions() {
+        let template = Template::new("debian-13")
             .with_timeout(9800)
-            .with_task(
-                Task::new("os installation", "{{.device_1}}")
-                    .with_volume("/dev:/dev")
-                    .with_action(
-                        Action::new("stream image", actions::IMAGE)
-                            .with_timeout(9600)
-                            .with_env("DEST_DISK", "{{ index .Hardware.Disks 0 }}")
-                            .with_env("IMG_URL", "http://example.com/image.img"),
-                    )
-                    .with_action(
-                        Action::new("kexec to boot OS", actions::KEXEC)
-                            .with_timeout(90)
-                            .with_env("BLOCK_DEVICE", "/dev/sda1")
-                            .with_env("FS_TYPE", "ext4"),
-                    ),
-            );
+            .with_action(ActionStep::Image2disk(Image2DiskConfig {
+                url: "https://example.com/debian.raw".to_string(),
+                disk: "auto".to_string(),
+                checksum: None,
+                timeout: Some(9600),
+            }))
+            .with_action(ActionStep::Writefile(WritefileConfig {
+                path: "/etc/cloud/cloud.cfg.d/10_dragonfly.cfg".to_string(),
+                partition: Some(1),
+                fs_type: None,
+                content: Some("datasource: Ec2\n".to_string()),
+                content_b64: None,
+                mode: Some("0600".to_string()),
+                uid: Some(0),
+                gid: Some(0),
+                timeout: Some(90),
+            }))
+            .with_action(ActionStep::Kexec(KexecConfig {
+                partition: Some(1),
+                fs_type: None,
+                kernel: None,
+                initrd: None,
+                cmdline: Some("ro quiet".to_string()),
+                timeout: Some(60),
+            }));
 
-        assert_eq!(template.spec.global_timeout, Some(9800));
-        assert_eq!(template.spec.tasks.len(), 1);
-        assert_eq!(template.spec.tasks[0].actions.len(), 2);
-        assert_eq!(template.spec.tasks[0].actions[0].name, "stream image");
-        assert_eq!(
-            template.spec.tasks[0].actions[1].name,
-            "kexec to boot OS"
-        );
+        assert_eq!(template.spec.timeout, Some(9800));
+        assert_eq!(template.spec.actions.len(), 3);
+        assert_eq!(template.action_names(), vec!["image2disk", "writefile", "kexec"]);
     }
 
     #[test]
     fn test_template_validation() {
-        let template = Template::new("test").with_task(
-            Task::new("task1", "worker1").with_action(Action::new("action1", "image")),
-        );
+        let template = Template::new("test")
+            .with_action(ActionStep::Image2disk(Image2DiskConfig {
+                url: "https://example.com/image.raw".to_string(),
+                disk: "auto".to_string(),
+                checksum: None,
+                timeout: None,
+            }));
         assert!(template.validate().is_ok());
 
         // Empty name
         let mut template = Template::new("");
-        template.spec.tasks.push(
-            Task::new("task1", "worker1").with_action(Action::new("action1", "image")),
-        );
+        template.spec.actions.push(ActionStep::Image2disk(Image2DiskConfig {
+            url: "https://example.com/image.raw".to_string(),
+            disk: "auto".to_string(),
+            checksum: None,
+            timeout: None,
+        }));
         assert!(matches!(template.validate(), Err(CrdError::MissingField(_))));
 
-        // No tasks
+        // No actions
         let template = Template::new("test");
         assert!(matches!(template.validate(), Err(CrdError::MissingField(_))));
     }
 
     #[test]
-    fn test_action_native_vs_container() {
-        let native = Action::new("stream image", "image");
-        assert!(native.is_native());
-        assert!(!native.is_container());
-        assert_eq!(native.native_action_name(), Some("image"));
+    fn test_action_to_environment() {
+        let action = ActionStep::Image2disk(Image2DiskConfig {
+            url: "http://{{ server }}:3000/image.raw".to_string(),
+            disk: "auto".to_string(),
+            checksum: None,
+            timeout: None,
+        });
 
-        let container = Action::new(
-            "stream image",
-            "quay.io/tinkerbell/actions/qemuimg2disk:latest",
-        );
-        assert!(!container.is_native());
-        assert!(container.is_container());
-        assert_eq!(container.native_action_name(), None);
+        let disks = vec!["/dev/sda".to_string()];
+        let env = action.to_environment(&disks, "10.1.120.120", "00:11:22:33:44:55");
+
+        assert_eq!(env.get("IMG_URL").unwrap(), "http://10.1.120.120:3000/image.raw");
+        assert_eq!(env.get("DEST_DISK").unwrap(), "/dev/sda");
+    }
+
+    #[test]
+    fn test_format_partition() {
+        // Standard disk
+        assert_eq!(format_partition("/dev/sda", 1), "/dev/sda1");
+        assert_eq!(format_partition("/dev/sdb", 2), "/dev/sdb2");
+
+        // NVMe disk
+        assert_eq!(format_partition("/dev/nvme0n1", 1), "/dev/nvme0n1p1");
+        assert_eq!(format_partition("/dev/nvme0n1", 2), "/dev/nvme0n1p2");
+
+        // MMC/SD card
+        assert_eq!(format_partition("/dev/mmcblk0", 1), "/dev/mmcblk0p1");
+
+        // Loop device
+        assert_eq!(format_partition("/dev/loop0", 1), "/dev/loop0p1");
+    }
+
+    #[test]
+    fn test_writefile_environment() {
+        let action = ActionStep::Writefile(WritefileConfig {
+            path: "/etc/test.cfg".to_string(),
+            partition: Some(1),
+            fs_type: None,
+            content: Some("server={{ server }}".to_string()),
+            content_b64: None,
+            mode: Some("0644".to_string()),
+            uid: None,
+            gid: None,
+            timeout: None,
+        });
+
+        let disks = vec!["/dev/sda".to_string()];
+        let env = action.to_environment(&disks, "myserver", "00:11:22:33:44:55");
+
+        assert_eq!(env.get("DEST_DISK").unwrap(), "/dev/sda1");
+        assert_eq!(env.get("DEST_PATH").unwrap(), "/etc/test.cfg");
+        assert_eq!(env.get("CONTENTS").unwrap(), "server=myserver");
+        assert_eq!(env.get("MODE").unwrap(), "0644");
+    }
+
+    #[test]
+    fn test_writefile_template_variables() {
+        // Test all template variables: server, instance_id, friendly_name
+        let action = ActionStep::Writefile(WritefileConfig {
+            path: "/etc/cloud/meta-data".to_string(),
+            partition: Some(1),
+            fs_type: None,
+            content: Some("instance-id: {{ instance_id }}\nlocal-hostname: {{ friendly_name }}\nserver: {{ server }}".to_string()),
+            content_b64: None,
+            mode: Some("0644".to_string()),
+            uid: None,
+            gid: None,
+            timeout: None,
+        });
+
+        let disks = vec!["/dev/sda".to_string()];
+        let mac = "04:7c:16:eb:74:ed";
+        let env = action.to_environment(&disks, "10.0.0.1", mac);
+
+        let contents = env.get("CONTENTS").unwrap();
+
+        // Verify instance_id is a valid UUID
+        assert!(contents.contains("instance-id: "));
+        let instance_id_line = contents.lines().find(|l| l.starts_with("instance-id:")).unwrap();
+        let uuid_str = instance_id_line.strip_prefix("instance-id: ").unwrap();
+        assert!(uuid::Uuid::parse_str(uuid_str).is_ok(), "instance_id should be a valid UUID");
+
+        // Verify friendly_name is a BIP39-style name (4 capitalized words)
+        assert!(contents.contains("local-hostname: "));
+        let hostname_line = contents.lines().find(|l| l.starts_with("local-hostname:")).unwrap();
+        let friendly_name = hostname_line.strip_prefix("local-hostname: ").unwrap();
+        let capital_count = friendly_name.chars().filter(|c| c.is_uppercase()).count();
+        assert_eq!(capital_count, 4, "friendly_name should have 4 capitalized words");
+
+        // Verify server substitution
+        assert!(contents.contains("server: 10.0.0.1"));
+    }
+
+    #[test]
+    fn test_kexec_environment() {
+        let action = ActionStep::Kexec(KexecConfig {
+            partition: Some(1),
+            fs_type: None,
+            kernel: None,
+            initrd: None,
+            cmdline: Some("ro quiet".to_string()),
+            timeout: None,
+        });
+
+        let disks = vec!["/dev/nvme0n1".to_string()];
+        let env = action.to_environment(&disks, "server", "00:11:22:33:44:55");
+
+        assert_eq!(env.get("BLOCK_DEVICE").unwrap(), "/dev/nvme0n1p1");
+        assert_eq!(env.get("CMD_LINE").unwrap(), "root=/dev/nvme0n1p1 ro quiet");
+    }
+
+    #[test]
+    fn test_partition_validation() {
+        // Valid layout
+        let action = ActionStep::Partition(PartitionConfig {
+            disk: "auto".to_string(),
+            layout: "gpt-efi".to_string(),
+            efi_size: None,
+            swap_size: None,
+            timeout: None,
+        });
+        assert!(action.validate().is_ok());
+
+        // Invalid layout
+        let action = ActionStep::Partition(PartitionConfig {
+            disk: "auto".to_string(),
+            layout: "invalid".to_string(),
+            efi_size: None,
+            swap_size: None,
+            timeout: None,
+        });
+        assert!(action.validate().is_err());
     }
 
     #[test]
     fn test_template_estimated_duration() {
         let template = Template::new("test")
-            .with_task(
-                Task::new("task1", "worker1")
-                    .with_action(Action::new("action1", "image").with_timeout(100))
-                    .with_action(Action::new("action2", "writefile").with_timeout(30)),
-            )
-            .with_task(
-                Task::new("task2", "worker1")
-                    .with_action(Action::new("action3", "kexec").with_timeout(20)),
-            );
+            .with_action(ActionStep::Image2disk(Image2DiskConfig {
+                url: "http://example.com/image.raw".to_string(),
+                disk: "auto".to_string(),
+                checksum: None,
+                timeout: Some(100),
+            }))
+            .with_action(ActionStep::Writefile(WritefileConfig {
+                path: "/etc/test".to_string(),
+                partition: Some(1),
+                fs_type: None,
+                content: Some("test".to_string()),
+                content_b64: None,
+                mode: None,
+                uid: None,
+                gid: None,
+                timeout: Some(30),
+            }))
+            .with_action(ActionStep::Kexec(KexecConfig {
+                partition: Some(1),
+                fs_type: None,
+                kernel: None,
+                initrd: None,
+                cmdline: None,
+                timeout: Some(20),
+            }));
 
         assert_eq!(template.estimated_duration(), Duration::from_secs(150));
     }
 
     #[test]
-    fn test_template_action_names() {
-        let template = Template::new("test").with_task(
-            Task::new("task1", "worker1")
-                .with_action(Action::new("stream image", "image"))
-                .with_action(Action::new("write config", "writefile"))
-                .with_action(Action::new("boot", "kexec")),
-        );
+    fn test_template_yaml_format() {
+        // Test the new YAML format can be parsed
+        let yaml = r#"
+apiVersion: dragonfly.computer/v1
+kind: Template
+metadata:
+  name: debian-13
+spec:
+  timeout: 9800
+  actions:
+    - action: image2disk
+      url: "https://example.com/debian.raw"
+      disk: auto
+      timeout: 9600
+    - action: writefile
+      path: /etc/cloud/cloud.cfg.d/10_dragonfly.cfg
+      partition: 1
+      content: |
+        datasource: Ec2
+      mode: "0600"
+    - action: kexec
+      partition: 1
+      cmdline: "ro quiet"
+"#;
 
-        assert_eq!(
-            template.action_names(),
-            vec!["stream image", "write config", "boot"]
-        );
-    }
+        let template: Template = serde_yaml::from_str(yaml).unwrap();
 
-    #[test]
-    fn test_template_serialization() {
-        let template = Template::new("ubuntu-2404")
-            .with_timeout(9800)
-            .with_task(
-                Task::new("os installation", "{{.device_1}}")
-                    .with_action(
-                        Action::new("stream image", actions::IMAGE)
-                            .with_timeout(9600)
-                            .with_env("DEST_DISK", "/dev/sda"),
-                    ),
-            );
+        assert_eq!(template.metadata.name, "debian-13");
+        assert_eq!(template.spec.timeout, Some(9800));
+        assert_eq!(template.spec.actions.len(), 3);
 
-        let json = serde_json::to_string_pretty(&template).unwrap();
-        let parsed: Template = serde_json::from_str(&json).unwrap();
-
-        assert_eq!(template, parsed);
-    }
-
-    #[test]
-    fn test_template_tinkerbell_compatible_format() {
-        // Test that we can parse a Tinkerbell-style Template
-        // Note: Tinkerbell stores template data as a YAML string in spec.data,
-        // but we flatten it for direct use
-        let tinkerbell_style = r#"{
-            "apiVersion": "dragonfly.computer/v1",
-            "kind": "Template",
-            "metadata": {
-                "name": "ubuntu-2404",
-                "namespace": "default"
-            },
-            "spec": {
-                "version": "0.1",
-                "globalTimeout": 9800,
-                "tasks": [
-                    {
-                        "name": "os installation",
-                        "worker": "{{.device_1}}",
-                        "volumes": [
-                            "/dev:/dev",
-                            "/dev/console:/dev/console"
-                        ],
-                        "actions": [
-                            {
-                                "name": "stream image",
-                                "actionType": "quay.io/tinkerbell/actions/qemuimg2disk:latest",
-                                "timeout": 9600,
-                                "environment": {
-                                    "DEST_DISK": "{{ index .Hardware.Disks 0 }}",
-                                    "IMG_URL": "http://example.com/image.img"
-                                }
-                            },
-                            {
-                                "name": "write cloud-init config",
-                                "actionType": "writefile",
-                                "timeout": 90,
-                                "environment": {
-                                    "DEST_DISK": "/dev/sda1",
-                                    "DEST_PATH": "/etc/cloud/cloud.cfg.d/10_tinkerbell.cfg",
-                                    "FS_TYPE": "ext4",
-                                    "CONTENTS": "datasource: Ec2"
-                                }
-                            },
-                            {
-                                "name": "kexec to boot OS",
-                                "actionType": "kexec",
-                                "timeout": 90,
-                                "pid": "host",
-                                "environment": {
-                                    "BLOCK_DEVICE": "/dev/sda1",
-                                    "FS_TYPE": "ext4",
-                                    "KERNEL_PATH": "/boot/vmlinuz",
-                                    "INITRD_PATH": "/boot/initrd.img"
-                                }
-                            }
-                        ]
-                    }
-                ]
-            }
-        }"#;
-
-        let template: Template = serde_json::from_str(tinkerbell_style).unwrap();
-
-        assert_eq!(template.metadata.name, "ubuntu-2404");
-        assert_eq!(template.spec.version, Some("0.1".to_string()));
-        assert_eq!(template.spec.global_timeout, Some(9800));
-        assert_eq!(template.spec.tasks.len(), 1);
-        assert_eq!(template.spec.tasks[0].actions.len(), 3);
-
-        // First action is container-based (Tinkerbell style)
-        assert!(template.spec.tasks[0].actions[0].is_container());
-
-        // Second and third are native
-        assert!(template.spec.tasks[0].actions[1].is_native());
-        assert!(template.spec.tasks[0].actions[2].is_native());
+        // Check action types
+        assert!(matches!(template.spec.actions[0], ActionStep::Image2disk(_)));
+        assert!(matches!(template.spec.actions[1], ActionStep::Writefile(_)));
+        assert!(matches!(template.spec.actions[2], ActionStep::Kexec(_)));
 
         // Validate
         assert!(template.validate().is_ok());
     }
 
     #[test]
-    fn test_action_with_config() {
-        let action = Action::new("partition", actions::PARTITION)
-            .with_config("layout", serde_json::json!([
-                {"name": "boot", "size": "512MiB", "type": "ef00"},
-                {"name": "root", "size": "100%", "type": "8300"}
-            ]));
+    fn test_template_serialization_roundtrip() {
+        let template = Template::new("ubuntu-2404")
+            .with_timeout(9800)
+            .with_action(ActionStep::Image2disk(Image2DiskConfig {
+                url: "https://example.com/ubuntu.img".to_string(),
+                disk: "auto".to_string(),
+                checksum: None,
+                timeout: Some(9600),
+            }));
 
-        assert!(action.config.contains_key("layout"));
+        // Serialize to JSON
+        let json = serde_json::to_string_pretty(&template).unwrap();
+        let parsed: Template = serde_json::from_str(&json).unwrap();
+        assert_eq!(template, parsed);
 
-        let json = serde_json::to_string(&action).unwrap();
-        assert!(json.contains("layout"));
+        // Serialize to YAML and print it for debugging
+        let yaml = serde_yaml::to_string(&template).unwrap();
+        println!("Serialized YAML:\n{}", yaml);
+        let parsed: Template = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(template, parsed);
     }
 }

@@ -138,17 +138,22 @@ pub struct HardwareSpec {
     /// User data (cloud-init, ignition, etc.)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub user_data: Option<String>,
+
+    /// OS choice for provisioning (e.g., "debian-13", "ubuntu-2404")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub os_choice: Option<String>,
 }
 
 impl HardwareSpec {
-    /// Create a new hardware spec with a single interface
+    /// Create a new hardware spec with a single interface (PXE enabled by default)
     pub fn new(mac: impl Into<String>) -> Self {
         Self {
             metadata: None,
             disks: Vec::new(),
-            interfaces: vec![InterfaceSpec::new(mac)],
+            interfaces: vec![InterfaceSpec::with_pxe(mac)],
             bmc: None,
             user_data: None,
+            os_choice: None,
         }
     }
 

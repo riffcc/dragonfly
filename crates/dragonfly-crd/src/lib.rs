@@ -1,18 +1,20 @@
 //! Dragonfly CRD Types
 //!
 //! This crate provides CRD-compatible types for bare metal provisioning.
-//! The types are designed to be compatible with Tinkerbell's CRD format
-//! for interoperability and migration purposes.
 //!
 //! # API Group
 //!
-//! All types use the `dragonfly.computer/v1` API group, but maintain
-//! structural compatibility with `tinkerbell.org/v1alpha1` for easy migration.
+//! All types use the `dragonfly.computer/v1` API group.
+//!
+//! # Resources
+//!
+//! - `Hardware` - Physical machine definitions (MAC, disks, etc.)
+//! - `Template` - Provisioning workflow templates with actions
+//! - `Workflow` - Execution state for a template on hardware
 //!
 //! # Credit
 //!
-//! Full credit to Tinkerbell (tinkerbell.org) for the original architecture
-//! and CRD design that inspired this implementation.
+//! Inspired by Tinkerbell (tinkerbell.org) bare metal provisioning system.
 
 pub mod hardware;
 pub mod workflow;

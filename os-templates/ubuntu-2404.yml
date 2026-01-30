@@ -1,101 +1,64 @@
-apiVersion: tinkerbell.org/v1alpha1
+apiVersion: dragonfly.computer/v1
 kind: Template
 metadata:
   name: ubuntu-2404
-  namespace: tinkerbell
 spec:
-  data: |
-    name: ubuntu-2404
-    version: "0.1"
-    global_timeout: 9800
-    tasks:
-      - name: "os installation"
-        worker: "{{.device_1}}"
-        volumes:
-          - /dev:/dev
-          - /dev/console:/dev/console
-          - /lib/firmware:/lib/firmware:ro
-        actions:
-          - name: "stream image"
-            image: quay.io/tinkerbell/actions/qemuimg2disk:latest
-            timeout: 9600
-            environment:
-              DEST_DISK: {{ index .Hardware.Disks 0 }}
-              IMG_URL: "http://{{ base_url_bare }}:3000/ipxe/ubuntu/noble-server-cloudimg-amd64.img"
+  timeout: 9800
+  actions:
+    - action: image2disk
+      url: "https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img"
+      disk: auto
+      timeout: 9600
 
-          - name: "write cloud-init config"
-            image: quay.io/tinkerbell/actions/writefile:latest
-            timeout: 90
-            environment:
-              DEST_DISK: {{ formatPartition ( index .Hardware.Disks 0 ) 1 }}
-              DEST_PATH: /etc/cloud/cloud.cfg.d/10_tinkerbell.cfg
-              FS_TYPE: ext4
-              UID: 0
-              GID: 0
-              MODE: 0600
-              DIRMODE: 0700
-              CONTENTS: |
-                datasource:
-                  Ec2:
-                    metadata_urls: ["http://{{ base_url_bare }}:50061"]
-                    strict_id: false
-                manage_etc_hosts: localhost
-                warnings:
-                  dsid_missing_source: off
-                users:
-                  - default
-                disable_root: true
-                ssh_import_id:
-                  - gh:zorlin
-                  - gh:michatinkers
-                packages:
-                  - qemu-guest-agent
-                runcmd:
-                  - systemctl enable qemu-guest-agent
-                  - systemctl start qemu-guest-agent
+    - action: writefile
+      path: /etc/cloud/cloud.cfg.d/10_dragonfly.cfg
+      partition: 1
+      content: |
+        datasource:
+          Ec2:
+            metadata_urls: ["http://{{ server }}:50061"]
+            strict_id: false
+        manage_etc_hosts: localhost
+        warnings:
+          dsid_missing_source: off
+        users:
+          - default
+        disable_root: true
+        ssh_import_id:
+          - gh:zorlin
+          - gh:michatinkers
+        packages:
+          - qemu-guest-agent
+        runcmd:
+          - systemctl enable qemu-guest-agent
+          - systemctl start qemu-guest-agent
+      mode: "0600"
+      timeout: 90
 
-          - name: "write ds-identify config"
-            image: quay.io/tinkerbell/actions/writefile:latest
-            timeout: 90
-            environment:
-              DEST_DISK: {{ formatPartition ( index .Hardware.Disks 0 ) 1 }}
-              DEST_PATH: /etc/cloud/ds-identify.cfg
-              FS_TYPE: ext4
-              UID: 0
-              GID: 0
-              MODE: 0600
-              DIRMODE: 0700
-              CONTENTS: |
-                datasource: Ec2
+    - action: writefile
+      path: /etc/cloud/ds-identify.cfg
+      partition: 1
+      content: |
+        datasource: Ec2
+      mode: "0600"
+      timeout: 90
 
-          - name: "write netplan config"
-            image: quay.io/tinkerbell/actions/writefile:latest
-            timeout: 90
-            environment:
-              DEST_DISK: {{ formatPartition ( index .Hardware.Disks 0 ) 1 }}
-              DEST_PATH: /etc/netplan/config.yaml
-              FS_TYPE: ext4
-              UID: 0
-              GID: 0
-              MODE: 0644
-              DIRMODE: 0755
-              CONTENTS: |
-                network:
-                  version: 2
-                  renderer: networkd
-                  ethernets:
-                    id0:
-                      match:
-                        name: en*
-                      dhcp4: true
+    - action: writefile
+      path: /etc/netplan/config.yaml
+      partition: 1
+      content: |
+        network:
+          version: 2
+          renderer: networkd
+          ethernets:
+            id0:
+              match:
+                name: en*
+              dhcp4: true
+      mode: "0644"
+      timeout: 90
 
-          - name: "kexec to boot OS"
-            image: quay.io/tinkerbell/actions/kexec:latest
-            timeout: 90
-            pid: host
-            environment:
-                BLOCK_DEVICE: {{ formatPartition ( index .Hardware.Disks 0 ) 1 }}
-                FS_TYPE: ext4
-                KERNEL_PATH: /boot/vmlinuz
-                INITRD_PATH: /boot/initrd.img
-                CMD_LINE: "root={{ formatPartition ( index .Hardware.Disks 0 ) 1 }} ro"
+    - action: kexec
+      partition: 1
+      cmdline: "ro quiet"
+      timeout: 90

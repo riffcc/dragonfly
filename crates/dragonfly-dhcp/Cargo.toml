@@ -1,7 +1,7 @@
 [package]
 name = "dragonfly-dhcp"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 authors = ["Sparx"]
 description = "DHCP server for Dragonfly bare metal provisioning with PXE support"
 license = "AGPL-3.0"
