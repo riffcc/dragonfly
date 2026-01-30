@@ -188,6 +188,9 @@ pub fn api_router() -> Router<crate::AppState> {
         .route("/tags/{tag_name}/machines", get(api_get_machines_by_tag))
         // --- Agent Routes ---
         .route("/agent/checkin", post(agent_checkin_handler))
+        // --- Settings Routes ---
+        .route("/settings", get(api_get_settings).put(api_update_settings))
+        .route("/settings/mode", get(api_get_mode).put(api_set_mode))
         // --- Workflow Routes (for agent) ---
         .route("/workflows/{id}", get(get_workflow_handler))
         .route("/workflows/{id}/events", post(workflow_events_handler))
@@ -1923,7 +1926,7 @@ pub async fn serve_ipxe_artifact(
     const ARTIFACT_DIR_ENV_VAR: &str = "DRAGONFLY_IPXE_ARTIFACT_DIR";
     const ALLOWED_IPXE_SCRIPTS: &[&str] = &["hookos", "dragonfly-agent"]; // Define allowlist
     const AGENT_APKOVL_PATH: &str = "/var/lib/dragonfly/ipxe-artifacts/dragonfly-agent/localhost.apkovl.tar.gz";
-    const AGENT_BINARY_URL: &str = "https://github.com/Zorlin/dragonfly/raw/refs/heads/main/dragonfly-agent-musl"; // TODO: Make configurable
+    const AGENT_BINARY_URL: &str = "https://github.com/riffcc/dragonfly/releases/download/latest/dragonfly-agent-x86_64"; // TODO: Make configurable
     
     // --- Get Machine ID from Client IP --- 
     let client_ip = state.client_ip.lock().await.clone();
@@ -4237,4 +4240,184 @@ pub async fn update_proxmox_token(
             })).into_response()
         }
     }
+}
+
+// ============================================================================
+// Settings API
+// ============================================================================
+
+/// Response for GET /api/settings
+#[derive(serde::Serialize)]
+pub struct SettingsResponse {
+    pub deployment_mode: Option<String>,
+    pub default_os: Option<String>,
+    pub setup_completed: bool,
+}
+
+/// Request for PUT /api/settings
+#[derive(serde::Deserialize)]
+pub struct SettingsUpdateRequest {
+    #[serde(default)]
+    pub deployment_mode: Option<String>,
+    #[serde(default)]
+    pub default_os: Option<String>,
+}
+
+/// Get current settings
+#[axum::debug_handler]
+pub async fn api_get_settings(
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    let deployment_mode = state.store.get_setting("deployment_mode").await.ok().flatten();
+    let default_os = state.store.get_setting("default_os").await.ok().flatten();
+    let setup_completed = state.store.get_setting("setup_completed").await
+        .ok()
+        .flatten()
+        .map(|s| s == "true")
+        .unwrap_or(false);
+
+    Json(SettingsResponse {
+        deployment_mode,
+        default_os,
+        setup_completed,
+    })
+}
+
+/// Update settings
+#[axum::debug_handler]
+pub async fn api_update_settings(
+    State(state): State<AppState>,
+    Json(request): Json<SettingsUpdateRequest>,
+) -> impl IntoResponse {
+    let mut updated = Vec::new();
+
+    // Update deployment_mode if provided
+    if let Some(ref mode) = request.deployment_mode {
+        // Validate mode
+        if !["simple", "flight", "swarm"].contains(&mode.as_str()) {
+            return (StatusCode::BAD_REQUEST, Json(json!({
+                "error": "INVALID_MODE",
+                "message": "deployment_mode must be one of: simple, flight, swarm"
+            }))).into_response();
+        }
+
+        if let Err(e) = state.store.put_setting("deployment_mode", mode).await {
+            error!("Failed to update deployment_mode: {}", e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
+                "error": "SETTINGS_UPDATE_FAILED",
+                "message": format!("Failed to update deployment_mode: {}", e)
+            }))).into_response();
+        }
+        updated.push("deployment_mode");
+        info!("Updated deployment_mode to: {}", mode);
+
+        // If switching to flight mode, configure it
+        if mode == "flight" {
+            let store_clone = state.store.clone();
+            let event_manager = state.event_manager.clone();
+            let app_state_clone = state.clone();
+            tokio::spawn(async move {
+                match crate::mode::configure_flight_mode(store_clone).await {
+                    Ok(_) => {
+                        info!("Flight mode configuration completed");
+                        crate::start_network_services(&app_state_clone, app_state_clone.shutdown_rx.clone()).await;
+                        let _ = event_manager.send("mode_configured:flight".to_string());
+                    }
+                    Err(e) => {
+                        error!("Flight mode configuration failed: {}", e);
+                        let _ = event_manager.send(format!("mode_configuration_failed:flight:{}", e));
+                    }
+                }
+            });
+        }
+    }
+
+    // Update default_os if provided
+    if let Some(ref os) = request.default_os {
+        if let Err(e) = state.store.put_setting("default_os", os).await {
+            error!("Failed to update default_os: {}", e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
+                "error": "SETTINGS_UPDATE_FAILED",
+                "message": format!("Failed to update default_os: {}", e)
+            }))).into_response();
+        }
+        updated.push("default_os");
+        info!("Updated default_os to: {}", os);
+    }
+
+    (StatusCode::OK, Json(json!({
+        "success": true,
+        "updated": updated
+    }))).into_response()
+}
+
+/// Response for GET /api/settings/mode
+#[derive(serde::Serialize)]
+pub struct ModeResponse {
+    pub mode: Option<String>,
+}
+
+/// Request for PUT /api/settings/mode
+#[derive(serde::Deserialize)]
+pub struct ModeUpdateRequest {
+    pub mode: String,
+}
+
+/// Get current deployment mode
+#[axum::debug_handler]
+pub async fn api_get_mode(
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    let mode = state.store.get_setting("deployment_mode").await.ok().flatten();
+    Json(ModeResponse { mode })
+}
+
+/// Set deployment mode
+#[axum::debug_handler]
+pub async fn api_set_mode(
+    State(state): State<AppState>,
+    Json(request): Json<ModeUpdateRequest>,
+) -> impl IntoResponse {
+    // Validate mode
+    if !["simple", "flight", "swarm"].contains(&request.mode.as_str()) {
+        return (StatusCode::BAD_REQUEST, Json(json!({
+            "error": "INVALID_MODE",
+            "message": "mode must be one of: simple, flight, swarm"
+        }))).into_response();
+    }
+
+    if let Err(e) = state.store.put_setting("deployment_mode", &request.mode).await {
+        error!("Failed to set deployment mode: {}", e);
+        return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
+            "error": "MODE_UPDATE_FAILED",
+            "message": format!("Failed to set mode: {}", e)
+        }))).into_response();
+    }
+
+    info!("Deployment mode set to: {}", request.mode);
+
+    // If switching to flight mode, configure it
+    if request.mode == "flight" {
+        let store_clone = state.store.clone();
+        let event_manager = state.event_manager.clone();
+        let app_state_clone = state.clone();
+        tokio::spawn(async move {
+            match crate::mode::configure_flight_mode(store_clone).await {
+                Ok(_) => {
+                    info!("Flight mode configuration completed");
+                    crate::start_network_services(&app_state_clone, app_state_clone.shutdown_rx.clone()).await;
+                    let _ = event_manager.send("mode_configured:flight".to_string());
+                }
+                Err(e) => {
+                    error!("Flight mode configuration failed: {}", e);
+                    let _ = event_manager.send(format!("mode_configuration_failed:flight:{}", e));
+                }
+            }
+        });
+    }
+
+    (StatusCode::OK, Json(json!({
+        "success": true,
+        "mode": request.mode
+    }))).into_response()
 }

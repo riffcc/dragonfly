@@ -931,3 +931,10 @@ fn is_valid_ip(ip: String) -> bool {
 
 // Add encryption module
 pub mod encryption;
+
+// Test helpers module
+#[cfg(test)]
+pub mod test_helpers;
+
+#[cfg(test)]
+pub use test_helpers::create_test_app_state;

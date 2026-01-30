@@ -937,7 +937,7 @@ pub async fn configure_flight_mode(store: std::sync::Arc<dyn DragonflyStore>) ->
         let base_url = format!("http://{}:3000", get_loadbalancer_ip().await?);
         
         // URL for the agent binary
-        let agent_binary_url = "https://github.com/Zorlin/dragonfly/raw/refs/heads/main/dragonfly-agent-musl";
+        let agent_binary_url = "https://github.com/riffcc/dragonfly/releases/download/latest/dragonfly-agent-x86_64";
         
         // Generate the APK overlay
         match crate::api::generate_agent_apkovl(&target_apkovl_path, &base_url, agent_binary_url).await {
@@ -1009,7 +1009,7 @@ pub async fn configure_flight_mode(store: std::sync::Arc<dyn DragonflyStore>) ->
 
             // Try downloading from GitHub releases first
             let download_url = format!(
-                "https://github.com/Zorlin/dragonfly/releases/download/latest/dragonfly-agent-{}",
+                "https://github.com/riffcc/dragonfly/releases/download/latest/dragonfly-agent-{}",
                 arch
             );
             info!("Trying to download {} agent from {}", arch, download_url);
@@ -1279,7 +1279,7 @@ pub async fn enter_flight_mode() -> Result<()> {
     if repo_dir.exists() {
             fs::remove_dir_all(&repo_dir).await.ok(); // Clean up previous clone if necessary
         }
-        let clone_cmd = format!("git clone --depth 1 https://github.com/Zorlin/dragonfly-charts.git {}", repo_dir.display());
+        let clone_cmd = format!("git clone --depth 1 https://github.com/riffcc/dragonfly-charts.git {}", repo_dir.display());
         run_shell_command(&clone_cmd, "clone Dragonfly Helm charts")?;
         let chart_path = repo_dir.join("tinkerbell");
         let upgrade_chart_path = chart_path.join("stack");

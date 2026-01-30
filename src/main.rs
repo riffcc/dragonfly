@@ -42,6 +42,8 @@ enum Commands {
     Serve(ServeArgs),
     /// Interactive demo mode (no hardware touched)
     Demo,
+    /// Development mode with hot-reloading templates
+    Dev,
     /// Install Dragonfly on this system
     Install(InstallArgs),
     /// Show Dragonfly status
@@ -133,6 +135,15 @@ async fn async_main(cli: Cli) -> Result<()> {
             if let Err(e) = run_server().await {
                 error!("Demo server failed: {:#}", e);
                 eprintln!("Error running Dragonfly demo: {}", e);
+                std::process::exit(1);
+            }
+        }
+
+        // Dev mode with hot reload
+        Some(Commands::Dev) => {
+            if let Err(e) = cmd::dev::run_dev().await {
+                error!("Dev server failed: {:#}", e);
+                eprintln!("Error running Dragonfly dev: {}", e);
                 std::process::exit(1);
             }
         }

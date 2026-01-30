@@ -175,11 +175,11 @@ async fn download_template(template_name: &str) -> Result<String> {
     // Try native-provisioning branch first, then main
     let urls = [
         format!(
-            "https://raw.githubusercontent.com/Zorlin/dragonfly/refs/heads/native-provisioning/os-templates/{}.yml",
+            "https://raw.githubusercontent.com/riffcc/dragonfly/refs/heads/native-provisioning/os-templates/{}.yml",
             template_name
         ),
         format!(
-            "https://raw.githubusercontent.com/Zorlin/dragonfly/refs/heads/main/os-templates/{}.yml",
+            "https://raw.githubusercontent.com/riffcc/dragonfly/refs/heads/main/os-templates/{}.yml",
             template_name
         ),
     ];
