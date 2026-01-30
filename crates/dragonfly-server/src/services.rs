@@ -147,7 +147,7 @@ impl ServiceRunner {
         info!(bind_ip = %self.config.server_ip, actual_ip = %actual_ip, "DHCP using detected server IP");
 
         let dhcp_config = DhcpConfig::new(actual_ip)
-            .with_mode(config.mode.clone())
+            .with_mode(config.mode)
             .with_tftp_server(actual_ip)
             .with_boot_filename(&config.boot_filename_uefi)
             .with_http_port(self.config.http_port);

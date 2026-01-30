@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 // Global allocator setup for heap profiling
 #[cfg(feature = "dhat-heap")]
 #[global_allocator]
@@ -9,7 +10,6 @@ use color_eyre::eyre::Result;
 use tracing::{error, info};
 use tracing_subscriber::{fmt, prelude::*, registry, EnvFilter};
 use tokio::sync::watch;
-use clap::CommandFactory;
 use std::path::Path;
 
 // Reference the cmd module where subcommands live
@@ -198,13 +198,11 @@ fn get_server_port() -> u16 {
     };
     for line in config_content.lines() {
         let line = line.trim();
-        if line.starts_with("port") && line.contains('=') {
-            if let Some(val) = line.split('=').nth(1) {
-                if let Ok(port) = val.trim().parse::<u16>() {
+        if line.starts_with("port") && line.contains('=')
+            && let Some(val) = line.split('=').nth(1)
+                && let Ok(port) = val.trim().parse::<u16>() {
                     return port;
                 }
-            }
-        }
     }
     3000
 }
@@ -280,8 +278,8 @@ fn print_status() {
         println!("  Web UI:       http://{}:{}", ip, port);
 
         // Check for admin password file
-        if Path::new(PASSWORD_FILE).exists() {
-            if let Ok(password) = std::fs::read_to_string(PASSWORD_FILE) {
+        if Path::new(PASSWORD_FILE).exists()
+            && let Ok(password) = std::fs::read_to_string(PASSWORD_FILE) {
                 let password = password.trim();
                 if !password.is_empty() {
                     println!();
@@ -290,7 +288,6 @@ fn print_status() {
                     println!("    Password: {}", password);
                 }
             }
-        }
     } else {
         println!("🐉 Dragonfly Status");
         println!();

@@ -24,7 +24,7 @@ use crate::error::Result;
 use dragonfly_crd::Hardware;
 
 /// Configuration for iPXE script generation
-#[derive(Debug, Clone)]
+#[derive(Default, Debug, Clone)]
 pub struct IpxeConfig {
     /// Base URL for fetching resources (e.g., http://192.168.1.1:8080)
     pub base_url: String,
@@ -45,18 +45,6 @@ pub struct IpxeConfig {
     pub verbose: bool,
 }
 
-impl Default for IpxeConfig {
-    fn default() -> Self {
-        Self {
-            base_url: String::new(),
-            kernel_params: Vec::new(),
-            console: None,
-            verbose: false,
-            mage_kernel_url: None,
-            mage_initramfs_url: None,
-        }
-    }
-}
 
 impl IpxeConfig {
     /// Create a new config with base URL

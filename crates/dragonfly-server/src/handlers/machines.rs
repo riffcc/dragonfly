@@ -3,7 +3,6 @@ use serde::Deserialize;
 use uuid::Uuid;
 use tracing::{error, info, warn};
 use proxmox_client::HttpApiClient;
-use serde_json::json;
 
 use crate::AppState;
 use crate::db;
@@ -112,7 +111,7 @@ async fn handle_proxmox_vm_action(
                             } else {
                                 error!("Failed to start VM {}: Status {}", vmid, response.status);
                                 Err((StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse {
-                                    error: format!("Failed to start VM"),
+                                    error: "Failed to start VM".to_string(),
                                     message: format!("Proxmox returned status code {}", response.status)
                                 })).into_response())
                             }
@@ -150,7 +149,7 @@ async fn handle_proxmox_vm_action(
                             } else {
                                 error!("Failed to stop VM {}: Status {}", vmid, response.status);
                                 Err((StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse {
-                                    error: format!("Failed to stop VM"),
+                                    error: "Failed to stop VM".to_string(),
                                     message: format!("Proxmox returned status code {}", response.status)
                                 })).into_response())
                             }
@@ -298,7 +297,7 @@ async fn handle_proxmox_vm_action(
                             } else {
                                 error!("Failed to reboot VM {}: Status {}", vmid, response.status);
                                 Err((StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse {
-                                    error: format!("Failed to reboot VM"),
+                                    error: "Failed to reboot VM".to_string(),
                                     message: format!("Proxmox returned status code {}", response.status)
                                 })).into_response())
                             }

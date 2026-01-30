@@ -176,15 +176,14 @@ impl HardwareSpec {
 
     /// Builder method to configure DHCP on first interface
     pub fn with_ip(mut self, address: impl Into<String>) -> Self {
-        if let Some(iface) = self.interfaces.first_mut() {
-            if let Some(dhcp) = &mut iface.dhcp {
+        if let Some(iface) = self.interfaces.first_mut()
+            && let Some(dhcp) = &mut iface.dhcp {
                 dhcp.ip = Some(IpSpec {
                     address: address.into(),
                     gateway: None,
                     netmask: None,
                 });
             }
-        }
         self
     }
 
@@ -327,11 +326,10 @@ impl DhcpSpec {
         }
 
         // Validate IP address if present
-        if let Some(ip) = &self.ip {
-            if IpAddr::from_str(&ip.address).is_err() {
+        if let Some(ip) = &self.ip
+            && IpAddr::from_str(&ip.address).is_err() {
                 return Err(CrdError::InvalidIpAddress(ip.address.clone()));
             }
-        }
 
         Ok(())
     }

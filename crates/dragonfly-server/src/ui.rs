@@ -29,17 +29,15 @@ use crate::api::{format_os_name, get_os_icon, get_os_info};
 
 // Extract theme from cookies
 pub fn get_theme_from_cookie(headers: &HeaderMap) -> String {
-    if let Some(cookie_header) = headers.get(header::COOKIE) {
-        if let Ok(cookie_str) = cookie_header.to_str() {
+    if let Some(cookie_header) = headers.get(header::COOKIE)
+        && let Ok(cookie_str) = cookie_header.to_str() {
             for cookie_pair in cookie_str.split(';') {
-                if let Ok(cookie) = Cookie::parse(cookie_pair.trim()) {
-                    if cookie.name() == "dragonfly_theme" {
+                if let Ok(cookie) = Cookie::parse(cookie_pair.trim())
+                    && cookie.name() == "dragonfly_theme" {
                         return cookie.value().to_string();
                     }
-                }
             }
         }
-    }
     "light".to_string()
 }
 
@@ -262,7 +260,7 @@ fn generate_demo_machines() -> Vec<Machine> {
             mac_suffix, 
             base_ip, 
             ip_suffix, 
-            base_time.clone(), 
+            base_time, 
             MachineStatus::Ready,
             Some(500), // 500GB disk
         ));
@@ -279,7 +277,7 @@ fn generate_demo_machines() -> Vec<Machine> {
             mac_suffix, 
             base_ip, 
             ip_suffix, 
-            base_time.clone(), 
+            base_time, 
             MachineStatus::Ready,
             Some(2000), // 2TB disk
         ));
@@ -296,7 +294,7 @@ fn generate_demo_machines() -> Vec<Machine> {
             mac_suffix,
             base_ip, 
             ip_suffix, 
-            base_time.clone(), 
+            base_time, 
             MachineStatus::Ready,
             Some(500), // 500GB disk
         ));
@@ -319,7 +317,7 @@ fn generate_demo_machines() -> Vec<Machine> {
             mac_suffix, 
             base_ip, 
             ip_suffix, 
-            base_time.clone(), 
+            base_time, 
             status,
             Some(4000), // 4TB disk
         ));
@@ -328,6 +326,7 @@ fn generate_demo_machines() -> Vec<Machine> {
     machines
 }
 
+#[allow(clippy::too_many_arguments)]
 // Helper function to create a demo machine
 fn create_demo_machine(
     hostname: &str,
@@ -365,7 +364,7 @@ fn create_demo_machine(
 
     // Create a disk to match the requested disk size
     let disk = DiskInfo {
-        device: format!("/dev/sda"),
+        device: "/dev/sda".to_string(),
         size_bytes: disk_size_gb.unwrap_or(500) * 1_073_741_824, // Convert GB to bytes
         model: Some(format!("Demo Disk {}", disk_size_gb.unwrap_or(500))),
         calculated_size: Some(format!("{} GB", disk_size_gb.unwrap_or(500))),
@@ -604,7 +603,7 @@ pub async fn machine_list(
             workflow_infos,
             current_path,
         };
-        return render_minijinja(&app_state, "machine_list.html", context);
+        render_minijinja(&app_state, "machine_list.html", context)
     } else { // Normal mode
         // Normal mode - fetch machines from DragonflyStore (ReDB)
         let machines_result = if let Some(ref provisioning) = app_state.provisioning {
@@ -612,7 +611,7 @@ pub async fn machine_list(
                 Ok(hardware_list) => {
                     let machines: Vec<Machine> = hardware_list
                         .iter()
-                        .map(|hw| crate::api::hardware_to_machine(hw))
+                        .map(crate::api::hardware_to_machine)
                         .collect();
                     Ok(machines)
                 }
@@ -856,7 +855,7 @@ pub async fn machine_details(
                         ip_address_type, // Pass the determined type
                     };
                     // Use render_minijinja
-                    return render_minijinja(&app_state, "machine_details.html", context);
+                    render_minijinja(&app_state, "machine_details.html", context)
                 },
                 Ok(None) => {
                     error!("Machine not found: {}", uuid);
@@ -1164,8 +1163,8 @@ pub async fn update_settings(
 
         // Update admin password if provided and confirmed
         // Check form.password instead of form.password
-        if let (Some(password), Some(confirm)) = (&form.password, &form.password_confirm) {
-            if !password.is_empty() && password == confirm {
+        if let (Some(password), Some(confirm)) = (&form.password, &form.password_confirm)
+            && !password.is_empty() && password == confirm {
                 // Load current credentials to get username (or use default 'admin')
                 let username = match auth::load_credentials().await {
                     Ok(creds) => creds.username,
@@ -1225,11 +1224,10 @@ pub async fn update_settings(
                             ).into_response();
                         } else {
                             // Password updated successfully, delete initial password file if it exists
-                            if std::path::Path::new("initial_password.txt").exists() {
-                                if let Err(e) = std::fs::remove_file("initial_password.txt") {
+                            if std::path::Path::new("initial_password.txt").exists()
+                                && let Err(e) = std::fs::remove_file("initial_password.txt") {
                                     warn!("Failed to remove initial_password.txt: {}", e);
                                 }
-                            }
                             // Force logout after password change
                             let _ = auth_session.logout().await;
                             return Redirect::to("/login?message=password_updated").into_response();
@@ -1283,7 +1281,6 @@ pub async fn update_settings(
                     }
                 }
             }
-        }
 
         // Check form password and confirm (moving this out of previous if-let block to fix scope)
         if form.password.is_some() || form.password_confirm.is_some() {

@@ -8,6 +8,7 @@ description = "API server for Dragonfly bare metal infrastructure management"
 [features]
 default = []
 server-binary = []
+k8s = []
 
 [dependencies]
 # Web Framework

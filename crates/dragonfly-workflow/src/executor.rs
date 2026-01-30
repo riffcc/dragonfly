@@ -259,8 +259,8 @@ impl WorkflowExecutor {
             let action_number = action_idx + 1; // 1-indexed for user-facing
 
             // Check if action should be skipped due to filter
-            if let Some(ref filter) = self.action_filter {
-                if !filter.contains(&action_number) {
+            if let Some(ref filter) = self.action_filter
+                && !filter.contains(&action_number) {
                     info!(
                         action = %action_type,
                         number = action_number,
@@ -268,7 +268,6 @@ impl WorkflowExecutor {
                     );
                     continue;
                 }
-            }
 
             debug!(action = %action_type, index = action_idx, "Starting action");
 
@@ -356,11 +355,10 @@ impl WorkflowExecutor {
     where
         F: FnOnce(&mut ActionStatus),
     {
-        if let Some(status) = &mut workflow.status {
-            if let Some(action) = status.actions.get_mut(action_idx) {
+        if let Some(status) = &mut workflow.status
+            && let Some(action) = status.actions.get_mut(action_idx) {
                 f(action);
             }
-        }
     }
 }
 

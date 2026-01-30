@@ -4,7 +4,7 @@ use std::process::Command;
 use std::io::{self, Write};
 use network_interface::{NetworkInterface, NetworkInterfaceConfig, Addr};
 use crossterm::{
-    event::{self, Event, KeyCode, KeyEvent},
+    event::{self, Event, KeyCode},
     terminal::{self, disable_raw_mode, enable_raw_mode},
     style::{Color, Print, ResetColor, SetForegroundColor},
     execute,
@@ -42,8 +42,7 @@ fn get_network_config() -> Result<(Ipv4Addr, Ipv4Addr)> {
 
                 // Skip Kubernetes CNI ranges (k3s uses 10.42.0.0/16, flannel uses 10.244.0.0/16)
                 let ip_octets = ip.octets();
-                if (ip_octets[0] == 10 && ip_octets[1] == 42) ||
-                   (ip_octets[0] == 10 && ip_octets[1] == 244) {
+                if (ip_octets[1] == 244 || ip_octets[1] == 42) && ip_octets[0] == 10 {
                     continue;
                 }
 
@@ -164,7 +163,7 @@ pub fn process_ip_input(input: &str, default_ip: Ipv4Addr) -> Result<Ipv4Addr> {
 /// Returns the selected IP (either default or user-entered)
 pub fn prompt_for_ip(default_ip: Ipv4Addr) -> Result<Ipv4Addr> {
     println!("Selected [{}] as the first available IP.", default_ip);
-    print!("Press Enter to accept, or Tab to select your own.\n");
+    println!("Press Enter to accept, or Tab to select your own.");
     io::stdout().flush()?;
 
     // Enable raw mode to capture individual key presses

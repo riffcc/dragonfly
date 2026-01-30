@@ -83,11 +83,11 @@ fn read_port_from_config() -> u16 {
     for line in content.lines() {
         let line = line.trim();
         if line.starts_with("port") && !line.starts_with("port =") || line.starts_with("port =") {
-            if let Some(val) = line.split('=').nth(1) {
-                if let Ok(port) = val.trim().parse::<u16>() {
+            #[allow(clippy::collapsible_if)]
+            if let Some(val) = line.split('=').nth(1)
+                && let Ok(port) = val.trim().parse::<u16>() {
                     return port;
                 }
-            }
         }
     }
     3000
@@ -100,14 +100,13 @@ pub fn read_base_url_from_config() -> Option<String> {
     // Simple TOML parsing - look for 'base_url = "..."'
     for line in content.lines() {
         let line = line.trim();
-        if line.starts_with("base_url") {
-            if let Some(val) = line.split('=').nth(1) {
+        if line.starts_with("base_url")
+            && let Some(val) = line.split('=').nth(1) {
                 let val = val.trim().trim_matches('"');
                 if !val.is_empty() {
                     return Some(val.to_string());
                 }
             }
-        }
     }
     None
 }
@@ -143,7 +142,7 @@ pub async fn is_dragonfly_installed() -> bool {
         use k8s_openapi::api::core::v1::Namespace;
 
         let namespaces: Api<Namespace> = Api::all(client);
-        if let Ok(_) = namespaces.get("tink-system").await {
+        if (namespaces.get("tink-system").await).is_ok() {
             info!("Installation check: Detected remote Kubernetes with Tinkerbell (tink-system namespace found).");
             return true;
         } else {
@@ -517,9 +516,7 @@ pub async fn run() -> anyhow::Result<()> {
         Ok(Some(val)) => {
             let require_login = val == "true";
             info!("Loaded require_login={} from ReDB", require_login);
-            let mut s = auth::Settings::default();
-            s.require_login = require_login;
-            s
+            auth::Settings{require_login, ..Default::default()}
         }
         _ => {
             info!("No settings in ReDB, using defaults (require_login=true)");
@@ -638,7 +635,7 @@ pub async fn run() -> anyhow::Result<()> {
         };
 
         // Use the deployment mode from ReDB (already read earlier), default to Simple
-        let provisioning_mode = current_mode.clone().unwrap_or(mode::DeploymentMode::Simple);
+        let provisioning_mode = current_mode.unwrap_or(mode::DeploymentMode::Simple);
 
         info!("Native provisioning mode: {:?}", provisioning_mode);
 
@@ -771,8 +768,8 @@ pub async fn run() -> anyhow::Result<()> {
         .with_state(app_state.clone()); // State applied here
 
     // Handoff listener setup
-    if let Some(mode) = &current_mode {
-        if *mode == mode::DeploymentMode::Flight {
+    if let Some(mode) = &current_mode
+        && *mode == mode::DeploymentMode::Flight {
             if !is_installation_server { info!("Running in Flight mode - starting handoff listener"); }
             let handoff_shutdown_rx = shutdown_rx.clone();
             tokio::spawn(async move {
@@ -781,7 +778,6 @@ pub async fn run() -> anyhow::Result<()> {
                 }
             });
         }
-    }
 
     // --- Native Network Services (DHCP/TFTP) ---
     // Start DHCP and TFTP servers in Flight mode for bare metal provisioning

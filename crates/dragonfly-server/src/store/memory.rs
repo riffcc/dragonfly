@@ -100,15 +100,14 @@ impl DragonflyStore for MemoryStore {
         };
 
         // Remove from MAC index
-        if let Some(hw) = &hw {
-            if let Some(mac) = hw.primary_mac() {
+        if let Some(hw) = &hw
+            && let Some(mac) = hw.primary_mac() {
                 let normalized = normalize_mac(mac);
                 let mut index = self.mac_index.write().map_err(|e| {
                     StoreError::Database(format!("lock poisoned: {}", e))
                 })?;
                 index.remove(&normalized);
             }
-        }
 
         // Remove from main storage
         let mut guard = self.hardware.write().map_err(|e| {

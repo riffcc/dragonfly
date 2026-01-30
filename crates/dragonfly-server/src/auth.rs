@@ -24,7 +24,6 @@ use crate::ui::AlertMessage;
 use axum::response::Response;
 // use oauth2::basic::BasicClient; // Assuming BasicClient is also related to openidconnect for now
 // use oauth2;
-use urlencoding;
 // async_trait no longer needed for axum-login 0.18
 
 // Constants for the initial password file (not for loading, just for UX)
@@ -55,7 +54,7 @@ impl Credentials {
         let password_hash = match Argon2::default().hash_password(password.as_bytes(), &salt) {
             Ok(hash) => hash.to_string(),
             Err(e) => {
-                return Err(io::Error::new(io::ErrorKind::Other, format!("Failed to hash password: {}", e)));
+                return Err(io::Error::other(format!("Failed to hash password: {}", e)));
             }
         };
         
@@ -556,8 +555,7 @@ pub async fn load_credentials() -> io::Result<Credentials> {
         },
         Err(e) => {
             error!("Error loading admin credentials from database: {}", e);
-            Err(io::Error::new(
-                io::ErrorKind::Other,
+            Err(io::Error::other(
                 format!("Database error: {}", e),
             ))
         }
@@ -568,7 +566,7 @@ pub async fn save_credentials(credentials: &Credentials) -> io::Result<()> {
     // Save to database only
     if let Err(e) = crate::db::save_admin_credentials(credentials).await {
         error!("Failed to save admin credentials to database: {}", e);
-        return Err(io::Error::new(io::ErrorKind::Other, format!("Database error: {}", e)));
+        return Err(io::Error::other(format!("Database error: {}", e)));
     }
     
     info!("Saved admin credentials to database");
@@ -596,15 +594,15 @@ pub async fn save_settings(settings: &Settings) -> io::Result<()> {
         },
         Err(e) => {
             error!("Failed to save settings to database: {}", e);
-            Err(io::Error::new(io::ErrorKind::Other, format!("Database error: {}", e)))
+            Err(io::Error::other(format!("Database error: {}", e)))
         }
     }
 }
 
-pub fn require_admin(auth_session: &AuthSession) -> Result<(), Response> {
+pub fn require_admin(auth_session: &AuthSession) -> Result<(), Box<Response>> {
     match auth_session.user {
         Some(_) => Ok(()),
-        None => Err(Redirect::to("/login").into_response()),
+        None => Err(Box::new(Redirect::to("/login").into_response())),
     }
 }
 

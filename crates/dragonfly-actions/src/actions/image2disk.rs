@@ -142,7 +142,7 @@ impl Action for Image2DiskAction {
                 ));
 
                 if let Err(e) = Command::new("partprobe")
-                    .arg(&dest_disk)
+                    .arg(dest_disk)
                     .output()
                     .await
                     .map_err(|e| ActionError::ExecutionFailed(format!("Failed to run partprobe: {}", e)))
@@ -330,7 +330,7 @@ async fn stream_from_url(
         format!(
             "Downloading {} ({})",
             url,
-            total_size.map(|s| format_bytes(s)).unwrap_or_else(|| "unknown size".to_string())
+            total_size.map(format_bytes).unwrap_or_else(|| "unknown size".to_string())
         ),
     ));
 
@@ -344,7 +344,7 @@ async fn stream_from_url(
     // Convert response body to async reader
     let stream = response.bytes_stream();
     let stream_reader = tokio_util::io::StreamReader::new(
-        stream.map(|result| result.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e)))
+        stream.map(|result| result.map_err(std::io::Error::other))
     );
     let buffered = BufReader::new(stream_reader);
 
@@ -616,7 +616,6 @@ async fn stream_tar_from_url(
     reporter: &dyn crate::progress::ProgressReporter,
     action_name: &str,
 ) -> Result<u64> {
-    use tokio_tar::Archive;
 
     // Create HTTP client and start download
     let client = reqwest::Client::new();
@@ -641,14 +640,14 @@ async fn stream_tar_from_url(
         format!(
             "Downloading tar archive {} ({})",
             url,
-            total_size.map(|s| format_bytes(s)).unwrap_or_else(|| "unknown size".to_string())
+            total_size.map(format_bytes).unwrap_or_else(|| "unknown size".to_string())
         ),
     ));
 
     // Convert response body to async reader
     let stream = response.bytes_stream();
     let stream_reader = tokio_util::io::StreamReader::new(
-        stream.map(|result| result.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e)))
+        stream.map(|result| result.map_err(std::io::Error::other))
     );
     let buffered = BufReader::new(stream_reader);
 
@@ -719,7 +718,6 @@ async fn extract_disk_from_tar<R: AsyncRead + Unpin>(
     action_name: &str,
 ) -> Result<u64> {
     use tokio_tar::Archive;
-    use tokio::io::AsyncReadExt;
 
     let mut archive = Archive::new(reader);
     let mut entries = archive.entries().map_err(|e| {
@@ -734,7 +732,7 @@ async fn extract_disk_from_tar<R: AsyncRead + Unpin>(
 
     // Find the disk image entry (look for .raw, .img, or largest file)
     while let Some(entry) = entries.next().await {
-        let mut entry = entry.map_err(|e| {
+        let entry = entry.map_err(|e| {
             ActionError::ExecutionFailed(format!("Failed to read tar entry: {}", e))
         })?;
 
