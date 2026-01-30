@@ -408,86 +408,48 @@ pub async fn run() -> anyhow::Result<()> {
         }
     };
 
-    // --- Get Deployment Mode from ReDB ---
+    // --- Auto-configure Flight mode ---
+    // Dragonfly always runs in Flight mode now - no setup wizard needed
     let current_mode_str = native_store.get_setting("deployment_mode").await.ok().flatten();
-    let current_mode = current_mode_str.as_deref().and_then(|s| match s {
-        "flight" => Some(mode::DeploymentMode::Flight),
-        "simple" => Some(mode::DeploymentMode::Simple),
-        "swarm" => Some(mode::DeploymentMode::Swarm),
-        _ => None,
-    });
-
-    // Log the current deployment mode
-    match &current_mode {
-        Some(mode::DeploymentMode::Flight) => info!("Starting server in Flight mode"),
-        Some(mode::DeploymentMode::Simple) => info!("Starting server in Simple mode"),
-        Some(mode::DeploymentMode::Swarm) => info!("Starting server in Swarm mode"),
-        None => info!("No deployment mode set"),
+    if current_mode_str.is_none() {
+        // Auto-set Flight mode on first run
+        if let Err(e) = native_store.put_setting("deployment_mode", "flight").await {
+            warn!("Failed to auto-set Flight mode: {}", e);
+        }
+        if let Err(e) = native_store.put_setting("setup_completed", "true").await {
+            warn!("Failed to mark setup completed: {}", e);
+        }
     }
-
-    let is_flight_mode = matches!(current_mode, Some(mode::DeploymentMode::Flight));
-    
-    if is_flight_mode && !is_installation_server {
-        info!("Starting OS templates initialization for Flight mode...");
-        let event_manager_clone = event_manager.clone(); // Clone for the task
+    // --- Initialize OS templates and boot artifacts ---
+    if !is_installation_server {
+        let event_manager_clone = event_manager.clone();
         let store_for_templates = native_store.clone();
         tokio::spawn(async move {
-            match os_templates::init_os_templates(store_for_templates).await {
-                Ok(_) => { info!("OS templates initialized successfully"); },
-                Err(e) => { warn!("Failed to initialize OS templates: {}", e); }
+            if let Err(e) = os_templates::init_os_templates(store_for_templates).await {
+                warn!("Failed to initialize OS templates: {}", e);
             }
-            // Send event after templates are initialized
             let _ = event_manager_clone.send("templates_ready".to_string());
         });
 
-        // Verify Mage boot artifacts exist - auto-download if missing
-        info!("Verifying Mage boot artifacts for Flight mode...");
-        if let Err(e) = crate::api::verify_mage_artifacts(&["x86_64", "aarch64"]) {
-            warn!("Mage boot artifacts verification failed: {}", e);
-            info!("Auto-downloading missing Mage boot artifacts...");
-
-
-            // Download x86_64 artifacts
-            if let Err(download_err) = crate::api::download_mage_artifacts("3.23", "x86_64").await {
-                error!("Failed to download x86_64 Mage artifacts: {}", download_err);
-                error!("Flight mode requires Mage artifacts - cannot continue");
-                return Err(anyhow!("Failed to download required Mage artifacts: {}", download_err));
+        // Verify/download Mage boot artifacts (x86_64 only)
+        if let Err(_) = crate::api::verify_mage_artifacts(&["x86_64"]) {
+            debug!("Downloading boot artifacts...");
+            if let Err(e) = crate::api::download_mage_artifacts("3.23", "x86_64").await {
+                return Err(anyhow!("Failed to download boot artifacts: {}", e));
             }
-            info!("Downloaded x86_64 Mage artifacts");
-
-            // Download aarch64 artifacts
-            if let Err(download_err) = crate::api::download_mage_artifacts("3.23", "aarch64").await {
-                error!("Failed to download aarch64 Mage artifacts: {}", download_err);
-                error!("Flight mode requires Mage artifacts - cannot continue");
-                return Err(anyhow!("Failed to download required Mage artifacts: {}", download_err));
-            }
-            info!("Downloaded aarch64 Mage artifacts");
-
-            // Verify download succeeded
-            crate::api::verify_mage_artifacts(&["x86_64", "aarch64"])
-                .map_err(|e| anyhow!("Mage artifact verification failed after download: {}", e))?;
-            info!("Mage boot artifacts downloaded and verified successfully");
-        } else {
-            info!("Mage boot artifacts verified successfully");
+            crate::api::verify_mage_artifacts(&["x86_64"])
+                .map_err(|e| anyhow!("Boot artifact verification failed: {}", e))?;
         }
-    } else {
-        debug!("Skipping OS templates initialization (not in Flight mode)");
-    } // End conditional OS template init
+    }
 
-    // --- Graceful Shutdown Setup --- 
+    // --- Graceful Shutdown Setup ---
     let (shutdown_tx, shutdown_rx) = watch::channel(());
 
-    // Start the timing cleanup task
-    tinkerbell::start_timing_cleanup_task(shutdown_rx.clone()).await; // Essential
-    
-    // Event Manager already created and stored above
+    // Start background tasks
+    tinkerbell::start_timing_cleanup_task(shutdown_rx.clone()).await;
 
-    // Start the workflow polling task - only in Flight mode
-    if is_flight_mode && !is_installation_server {
-        info!("Starting workflow polling task with interval of 1s for Flight mode");
+    if !is_installation_server {
         tinkerbell::start_workflow_polling_task(event_manager.clone(), shutdown_rx.clone()).await;
-    } else {
-        debug!("Skipping workflow polling task (not in Flight mode)");
     }
 
     // Load or generate admin credentials
@@ -637,10 +599,8 @@ pub async fn run() -> anyhow::Result<()> {
             verbose: false,
         };
 
-        // Use the deployment mode from ReDB (already read earlier), default to Simple
-        let provisioning_mode = current_mode.clone().unwrap_or(mode::DeploymentMode::Simple);
-
-        info!("Native provisioning mode: {:?}", provisioning_mode);
+        // Always use Flight mode
+        let provisioning_mode = mode::DeploymentMode::Flight;
 
         let service = provisioning::ProvisioningService::new(
             native_store.clone(),
@@ -770,25 +730,16 @@ pub async fn run() -> anyhow::Result<()> {
         )
         .with_state(app_state.clone()); // State applied here
 
-    // Handoff listener setup
-    if let Some(mode) = &current_mode {
-        if *mode == mode::DeploymentMode::Flight {
-            if !is_installation_server { info!("Running in Flight mode - starting handoff listener"); }
-            let handoff_shutdown_rx = shutdown_rx.clone();
-            tokio::spawn(async move {
-                if let Err(e) = mode::start_handoff_listener(handoff_shutdown_rx).await {
-                    error!("Handoff listener failed: {}", e);
-                }
-            });
-        }
-    }
-
-    // --- Native Network Services (DHCP/TFTP) ---
-    // Start DHCP and TFTP servers in Flight mode for bare metal provisioning
-    if is_flight_mode && !is_installation_server {
+    // Start handoff listener and network services
+    if !is_installation_server {
+        let handoff_shutdown_rx = shutdown_rx.clone();
+        tokio::spawn(async move {
+            if let Err(e) = mode::start_handoff_listener(handoff_shutdown_rx).await {
+                error!("Handoff listener failed: {}", e);
+            }
+        });
         start_network_services(&app_state, shutdown_rx.clone()).await;
     }
-    // --- End Native Network Services ---
 
     // --- Start Server ---
     let default_port: u16 = read_port_from_config();
