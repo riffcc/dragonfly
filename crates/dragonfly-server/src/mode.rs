@@ -966,153 +966,59 @@ pub async fn configure_flight_mode(store: std::sync::Arc<dyn DragonflyStore>) ->
         Ok::<(), anyhow::Error>(())
     };
 
-    // Download Mage (Alpine netboot) artifacts for both architectures
+    // Download Mage (Alpine netboot) artifacts for x86_64
     let mage_download_fut = async {
-        info!("Downloading Mage boot environment for x86_64...");
+        debug!("Downloading Mage boot environment...");
         crate::api::download_mage_artifacts("3.23", "x86_64").await
-            .map_err(|e| anyhow::anyhow!("Failed to download x86_64 Mage artifacts: {}", e))?;
-
-        info!("Downloading Mage boot environment for aarch64...");
-        crate::api::download_mage_artifacts("3.23", "aarch64").await
-            .map_err(|e| anyhow::anyhow!("Failed to download aarch64 Mage artifacts: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Failed to download Mage artifacts: {}", e))?;
 
         // Verify files actually exist
-        crate::api::verify_mage_artifacts(&["x86_64", "aarch64"])
+        crate::api::verify_mage_artifacts(&["x86_64"])
             .map_err(|e| anyhow::anyhow!("Mage artifact verification failed: {}", e))?;
 
-        info!("All Mage artifacts downloaded and verified successfully");
+        debug!("Mage artifacts downloaded");
         Ok::<(), anyhow::Error>(())
     };
 
-    // Download or build dragonfly-agent binaries for both architectures
+    // Download dragonfly-agent binary for x86_64
     let agent_build_fut = async {
-        // Create mage directories for each arch
         let _ = std::fs::create_dir_all("/var/lib/dragonfly/mage/x86_64");
-        let _ = std::fs::create_dir_all("/var/lib/dragonfly/mage/aarch64");
+        let dest = "/var/lib/dragonfly/mage/x86_64/dragonfly-agent";
+        let dest_path = std::path::Path::new(dest);
 
-        // Track which architectures we successfully got
-        let mut got_x86_64 = false;
-        let mut got_aarch64 = false;
-
-        // Try to download pre-built binaries first, fall back to local build
-        for (arch, target) in [("x86_64", "x86_64-unknown-linux-musl"), ("aarch64", "aarch64-unknown-linux-musl")] {
-            let dest = format!("/var/lib/dragonfly/mage/{}/dragonfly-agent", arch);
-            let dest_path = std::path::Path::new(&dest);
-
-            // Check if already exists
-            if dest_path.exists() {
-                info!("{} agent binary already exists", arch);
-                if arch == "x86_64" { got_x86_64 = true; }
-                if arch == "aarch64" { got_aarch64 = true; }
-                continue;
-            }
-
-            // Try downloading from GitHub releases first
-            let download_url = format!(
-                "https://github.com/riffcc/dragonfly/releases/download/latest/dragonfly-agent-{}",
-                arch
-            );
-            info!("Trying to download {} agent from {}", arch, download_url);
-
-            let download_result = async {
-                let client = reqwest::Client::new();
-                let response = client.get(&download_url).send().await?;
-                if response.status().is_success() {
-                    let bytes = response.bytes().await?;
-                    tokio::fs::write(&dest, &bytes).await?;
-                    // Make executable
-                    let mut perms = tokio::fs::metadata(&dest).await?.permissions();
-                    perms.set_mode(0o755);
-                    tokio::fs::set_permissions(&dest, perms).await?;
-                    Ok::<(), anyhow::Error>(())
-                } else {
-                    Err(anyhow!("HTTP {}", response.status()))
-                }
-            }.await;
-
-            if download_result.is_ok() {
-                info!("{} agent binary downloaded successfully", arch);
-                if arch == "x86_64" { got_x86_64 = true; }
-                if arch == "aarch64" { got_aarch64 = true; }
-                continue;
-            }
-
-            // Fall back to local build if download failed
-            warn!("Failed to download {} agent, trying local build...", arch);
-            info!("Building dragonfly-agent for {}...", target);
-            let output = tokio::process::Command::new("cargo")
-                .args(["build", "--release", "--package", "dragonfly-agent", "--target", target])
-                .output()
-                .await;
-
-            if let Ok(output) = output {
-                if output.status.success() {
-                    let src = format!("target/{}/release/dragonfly-agent", target);
-                    if let Err(e) = std::fs::copy(&src, &dest) {
-                        warn!("Failed to copy {} agent: {}", arch, e);
-                    } else {
-                        info!("{} agent binary ready (built locally)", arch);
-                        if arch == "x86_64" { got_x86_64 = true; }
-                        if arch == "aarch64" { got_aarch64 = true; }
-                    }
-                } else {
-                    warn!("{} agent build failed: {}", arch, String::from_utf8_lossy(&output.stderr));
-                }
-            } else {
-                warn!("{} agent build command failed to execute", arch);
-            }
+        // Check if already exists
+        if dest_path.exists() {
+            debug!("Agent binary already exists");
+            return Ok::<(), anyhow::Error>(());
         }
 
-        // We need at least one architecture to work
-        if !got_x86_64 && !got_aarch64 {
-            return Err(anyhow!("Failed to obtain dragonfly-agent binary for any architecture. \
-                Either publish release artifacts to GitHub or ensure Rust toolchain is available for local build."));
-        }
+        // Download from GitHub releases
+        let download_url = "https://github.com/riffcc/dragonfly/releases/download/latest/dragonfly-agent-x86_64";
+        debug!("Downloading agent from {}", download_url);
 
-        if !got_x86_64 {
-            warn!("x86_64 agent not available - x86_64 machines won't be able to provision");
+        let client = reqwest::Client::new();
+        let response = client.get(download_url).send().await?;
+        if response.status().is_success() {
+            let bytes = response.bytes().await?;
+            tokio::fs::write(dest, &bytes).await?;
+            // Make executable
+            let mut perms = tokio::fs::metadata(dest).await?.permissions();
+            perms.set_mode(0o755);
+            tokio::fs::set_permissions(dest, perms).await?;
+            debug!("Agent binary downloaded");
+            Ok(())
+        } else {
+            Err(anyhow!("Failed to download agent: HTTP {}", response.status()))
         }
-        if !got_aarch64 {
-            warn!("aarch64 agent not available - ARM64 machines won't be able to provision");
-        }
-
-        Ok::<(), anyhow::Error>(())
     };
 
-    // Generate Mage APK overlays for both architectures (uses locally-built agents)
+    // Generate Mage APK overlay for x86_64
     let mage_apkovl_fut = async {
-        // Get base_url from: env var > config.toml > auto-detect > localhost
         let base_url = get_base_url(None).await;
-
-        let mut got_x86_64 = false;
-        let mut got_aarch64 = false;
-
-        // Generate for x86_64
-        info!("Generating Mage APK overlay for x86_64...");
-        match crate::api::generate_mage_apkovl_arch(&base_url, "x86_64").await {
-            Ok(()) => {
-                info!("x86_64 APK overlay generated successfully");
-                got_x86_64 = true;
-            }
-            Err(e) => warn!("Failed to generate x86_64 APK overlay: {}", e),
-        }
-
-        // Generate for aarch64
-        info!("Generating Mage APK overlay for aarch64...");
-        match crate::api::generate_mage_apkovl_arch(&base_url, "aarch64").await {
-            Ok(()) => {
-                info!("aarch64 APK overlay generated successfully");
-                got_aarch64 = true;
-            }
-            Err(e) => warn!("Failed to generate aarch64 APK overlay: {}", e),
-        }
-
-        // We need at least one architecture's overlay to work
-        if !got_x86_64 && !got_aarch64 {
-            return Err(anyhow!("Failed to generate APK overlay for any architecture. \
-                Ensure dragonfly-agent binaries are available."));
-        }
-
+        debug!("Generating APK overlay...");
+        crate::api::generate_mage_apkovl_arch(&base_url, "x86_64").await
+            .map_err(|e| anyhow!("Failed to generate APK overlay: {}", e))?;
+        debug!("APK overlay generated");
         Ok::<(), anyhow::Error>(())
     };
 
