@@ -312,12 +312,23 @@ pub fn atomic_open_or_create_file<P: AsRef<Path>>(
     let rename_result = temp_file_name.with_nix_path(|c_file_name| {
         path.with_nix_path(|new_path| unsafe {
             // This also works on file systems which don't support hardlinks (eg. vfat)
+            #[cfg(target_env = "musl")]
+            match Errno::result(libc::renameat(
+                libc::AT_FDCWD,
+                c_file_name.as_ptr(),
+                libc::AT_FDCWD,
+                new_path.as_ptr(),
+            )) {
+                Err(Errno::EINVAL) => (), // dumb file system, try `link`+`unlink`
+                other => return other,
+            };
+            #[cfg(not(target_env = "musl"))]
             match Errno::result(libc::renameat2(
                 libc::AT_FDCWD,
                 c_file_name.as_ptr(),
                 libc::AT_FDCWD,
                 new_path.as_ptr(),
-                libc::RENAME_NOREPLACE,
+                libc::RENAME_NOREPLACE
             )) {
                 Err(Errno::EINVAL) => (), // dumb file system, try `link`+`unlink`
                 other => return other,
