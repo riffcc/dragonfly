@@ -6,6 +6,7 @@ use axum::{
     Form, Router,
 };
 use dragonfly_common::models::{Machine, MachineStatus, DiskInfo};
+use crate::store::types::Machine as V1Machine;
 use tracing::{debug, error, info, warn};
 use std::collections::HashMap;
 use chrono::{DateTime, Utc, TimeZone};
@@ -474,20 +475,15 @@ pub async fn index(
                 .collect();
             (demo_machines, counts, counts_json, dates)
         } else {
-            // Normal mode - fetch machines from DragonflyStore (ReDB)
-            let m: Vec<Machine> = if let Some(ref provisioning) = app_state.provisioning {
-                match provisioning.store().list_hardware().await {
-                    Ok(hardware_list) => {
-                        hardware_list.iter().map(crate::api::hardware_to_machine).collect()
-                    }
-                    Err(e) => {
-                        error!("Failed to list hardware from store: {}", e);
-                        vec![]
-                    }
+            // Normal mode - fetch machines from v1 Store (ReDB with UUIDv7)
+            let m: Vec<Machine> = match app_state.store_v1.list_machines().await {
+                Ok(machine_list) => {
+                    machine_list.iter().map(Machine::from).collect()
                 }
-            } else {
-                error!("Provisioning service not initialized");
-                vec![]
+                Err(e) => {
+                    error!("Failed to list machines from store: {}", e);
+                    vec![]
+                }
             };
 
             let counts = count_machines_by_status(&m);
@@ -562,20 +558,16 @@ pub async fn machine_list(
         };
         return render_minijinja(&app_state, "machine_list.html", context);
     } else { // Normal mode
-        // Normal mode - fetch machines from DragonflyStore (ReDB)
-        let machines_result = if let Some(ref provisioning) = app_state.provisioning {
-            match provisioning.store().list_hardware().await {
-                Ok(hardware_list) => {
-                    let machines: Vec<Machine> = hardware_list
-                        .iter()
-                        .map(|hw| crate::api::hardware_to_machine(hw))
-                        .collect();
-                    Ok(machines)
-                }
-                Err(e) => Err(e)
+        // Normal mode - fetch machines from v1 Store (ReDB with UUIDv7)
+        let machines_result = match app_state.store_v1.list_machines().await {
+            Ok(machine_list) => {
+                let machines: Vec<Machine> = machine_list
+                    .iter()
+                    .map(Machine::from)
+                    .collect();
+                Ok(machines)
             }
-        } else {
-            Ok(vec![]) // No provisioning service means no machines
+            Err(e) => Err(e)
         };
 
         match machines_result {
@@ -583,7 +575,7 @@ pub async fn machine_list(
                 let mut workflow_infos = HashMap::new();
                 for machine in &machines {
                     if machine.status == MachineStatus::InstallingOS {
-                        match crate::tinkerbell::get_workflow_info(machine).await {
+                        match crate::tinkerbell::get_workflow_info(Some(app_state.store_v1.as_ref()), machine).await {
                             Ok(Some(info)) => {
                                 workflow_infos.insert(machine.id, info);
                             }
@@ -739,11 +731,11 @@ pub async fn machine_details(
                 }
             }
             
-            // Normal mode - get machine by ID from DragonflyStore (ReDB)
-            let machine_result = if let Some(ref provisioning) = app_state.provisioning {
-                crate::api::get_machine_by_uuid(provisioning.store().as_ref(), &uuid).await
-            } else {
-                Ok(None) // No provisioning service means no machine found
+            // Normal mode - get machine by ID from v1 Store (ReDB with UUIDv7)
+            let machine_result: Result<Option<Machine>, anyhow::Error> = match app_state.store_v1.get_machine(uuid).await {
+                Ok(Some(m)) => Ok(Some(Machine::from(&m))),
+                Ok(None) => Ok(None),
+                Err(e) => Err(anyhow::anyhow!("Store error: {}", e)),
             };
 
             match machine_result {
@@ -756,10 +748,10 @@ pub async fn machine_details(
                     
                     // Fetch workflow information for this machine if it's installing OS
                     let workflow_info = if machine.status == MachineStatus::InstallingOS {
-                        match crate::tinkerbell::get_workflow_info(&machine).await {
+                        match crate::tinkerbell::get_workflow_info(Some(app_state.store_v1.as_ref()), &machine).await {
                             Ok(info) => {
                                 if let Some(info) = &info {
-                                    info!("Found workflow information for machine {}: state={}, progress={}%", 
+                                    info!("Found workflow information for machine {}: state={}, progress={}%",
                                          uuid, info.state, info.progress);
                                 }
                                 info
@@ -1457,9 +1449,9 @@ pub async fn compute_page(
         return response;
     }
 
-    // Fetch all machines from the database
-    let all_machines = match db::get_all_machines().await {
-        Ok(machines) => machines,
+    // Fetch all machines from the v1 Store
+    let all_machines: Vec<Machine> = match app_state.store_v1.list_machines().await {
+        Ok(v1_machines) => v1_machines.iter().map(|m| m.into()).collect(),
         Err(e) => {
             error!("Error fetching machines for compute page: {}", e);
             // Optionally render an error page or return an empty list
@@ -1552,9 +1544,9 @@ pub async fn tags_page(
         return Redirect::to("/login").into_response();
     }
 
-    // Fetch all machines to display in the tag editor
-    let machines = match crate::db::get_all_machines().await {
-        Ok(machines) => machines,
+    // Fetch all machines from the v1 Store to display in the tag editor
+    let machines: Vec<Machine> = match app_state.store_v1.list_machines().await {
+        Ok(v1_machines) => v1_machines.iter().map(|m| m.into()).collect(),
         Err(e) => {
             error!("Failed to fetch machines for tags page: {}", e);
             vec![]

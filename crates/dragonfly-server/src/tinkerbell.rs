@@ -749,7 +749,10 @@ async fn save_timing_to_db(template_name: String, action_name: String, durations
 }
 
 // Get workflow information from Kubernetes for a specific machine
-pub async fn get_workflow_info(machine: &Machine) -> Result<Option<WorkflowInfo>> {
+pub async fn get_workflow_info(
+    store: Option<&dyn crate::store::v1::Store>,
+    machine: &Machine
+) -> Result<Option<WorkflowInfo>> {
     // First check if we have a recently completed workflow
     if let Ok(Some((workflow_info, _completed_at))) = crate::db::get_completed_workflow(&machine.id).await {
         return Ok(Some(workflow_info));
@@ -885,7 +888,7 @@ pub async fn get_workflow_info(machine: &Machine) -> Result<Option<WorkflowInfo>
                     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
                     // Update machine status to Ready AFTER UI has chance to show completion message
-                    if let Err(e) = update_machine_status_on_success(machine).await {
+                    if let Err(e) = update_machine_status_on_success(store.expect("store required for status update"), machine).await {
                         warn!("Failed to update machine status after kexec detection: {}", e);
                     } else {
                         info!("Successfully marked machine {} as Ready", machine.id);
@@ -1110,7 +1113,7 @@ pub async fn get_workflow_info(machine: &Machine) -> Result<Option<WorkflowInfo>
 
                 // If the workflow failed, update the machine status to Error
                 if state == "STATE_FAILED" {
-                    if let Err(e) = update_machine_status_on_failure(machine).await {
+                    if let Err(e) = update_machine_status_on_failure(store.expect("store required for status update"), machine).await {
                         warn!("Failed to update machine status after workflow failure: {}", e);
                     }
 
@@ -1123,7 +1126,7 @@ pub async fn get_workflow_info(machine: &Machine) -> Result<Option<WorkflowInfo>
 
                 // Only mark as Ready if ALL tasks are complete successfully
                 if state == "STATE_SUCCESS" && tasks.iter().all(|t| t.status == "STATE_SUCCESS") {
-                    if let Err(e) = update_machine_status_on_success(machine).await {
+                    if let Err(e) = update_machine_status_on_success(store.expect("store required for status update"), machine).await {
                         warn!("Failed to update machine status after workflow success: {}", e);
                     }
                 }
@@ -1187,54 +1190,53 @@ fn get_event_manager() -> Option<&'static crate::event_manager::EventManager> {
 }
 
 // Update machine status when workflow fails
-async fn update_machine_status_on_failure(machine: &Machine) -> Result<()> {
-    use dragonfly_common::models::MachineStatus;
+async fn update_machine_status_on_failure(
+    store: &dyn crate::store::v1::Store,
+    machine: &Machine
+) -> Result<()> {
+    use crate::store::types::MachineState;
 
     info!("Workflow failed for machine {}, updating status to Error", machine.id);
 
-    let mut updated_machine = machine.clone();
-    updated_machine.status = MachineStatus::Error("OS installation failed".to_string());
-
-    crate::db::update_machine(&updated_machine).await?;
-    Ok(())
+    // Get the v1 machine and update its status
+    match store.get_machine(machine.id).await {
+        Ok(Some(mut v1_machine)) => {
+            v1_machine.status.state = MachineState::Error { message: "OS installation failed".to_string() };
+            v1_machine.metadata.updated_at = chrono::Utc::now();
+            store.put_machine(&v1_machine).await.map_err(|e| anyhow::anyhow!("Failed to update machine: {}", e))?;
+            Ok(())
+        }
+        Ok(None) => Err(anyhow::anyhow!("Machine {} not found", machine.id)),
+        Err(e) => Err(anyhow::anyhow!("Failed to get machine: {}", e)),
+    }
 }
 
 // Update machine status when workflow succeeds
-async fn update_machine_status_on_success(machine: &Machine) -> Result<()> {
-    use dragonfly_common::models::MachineStatus;
-    use dragonfly_common::models::Machine;
+async fn update_machine_status_on_success(
+    store: &dyn crate::store::v1::Store,
+    machine: &Machine
+) -> Result<()> {
+    use crate::store::types::MachineState;
     use anyhow::anyhow;
 
-    info!("Workflow completed successfully for machine {}, updating status to Ready", machine.id);
+    info!("Workflow completed successfully for machine {}, updating status to Provisioned", machine.id);
 
-    // First update just the status for reliability
-    match crate::db::update_status(&machine.id, MachineStatus::Ready).await {
-        Ok(true) => {
-            info!("Successfully updated status to Ready for machine {}", machine.id);
-
-            // Calculate deployment duration
-            if machine.status == MachineStatus::InstallingOS {
-                let now = chrono::Utc::now();
-                let duration = now.signed_duration_since(machine.updated_at).num_seconds();
-
-                // Try to update the duration separately
-                if let Err(e) = crate::db::update_machine(&Machine {
-                    last_deployment_duration: Some(duration),
-                    ..machine.clone()
-                }).await {
-                    warn!("Failed to update deployment duration: {}", e);
-                }
-            }
-
+    // Get the v1 machine and update its status
+    match store.get_machine(machine.id).await {
+        Ok(Some(mut v1_machine)) => {
+            v1_machine.status.state = MachineState::Provisioned;
+            v1_machine.metadata.updated_at = chrono::Utc::now();
+            store.put_machine(&v1_machine).await.map_err(|e| anyhow!("Failed to update machine: {}", e))?;
+            info!("Successfully updated status to Provisioned for machine {}", machine.id);
             Ok(())
-        },
-        Ok(false) => {
+        }
+        Ok(None) => {
             error!("Failed to update machine status - machine not found: {}", machine.id);
             Err(anyhow!("Machine not found"))
-        },
+        }
         Err(e) => {
             error!("Failed to update machine status: {}", e);
-            Err(e)
+            Err(anyhow!("Failed to get machine: {}", e))
         }
     }
 }
@@ -1459,14 +1461,16 @@ async fn estimate_completion_time(template_name: &str, current_action: &str, tas
 // Start a background task to poll for workflow updates
 pub async fn start_workflow_polling_task(
     event_manager: std::sync::Arc<crate::event_manager::EventManager>,
+    store: std::sync::Arc<dyn crate::store::v1::Store>,
     mut shutdown_rx: tokio::sync::watch::Receiver<()>
 ) {
-    use dragonfly_common::models::MachineStatus;
+    use crate::store::types::MachineState;
     use std::collections::HashMap;
     use std::time::Duration;
 
     // Clone the event manager for the task
     let event_manager_clone = event_manager.clone();
+    let store_clone = store.clone();
 
     tokio::spawn(async move {
         let poll_interval = Duration::from_secs(1);
@@ -1479,14 +1483,16 @@ pub async fn start_workflow_polling_task(
             // Wait for the poll interval or shutdown signal
             tokio::select! {
                 _ = tokio::time::sleep(poll_interval) => {
-                    // Get all machines with InstallingOS status
-                    let machines = match crate::db::get_machines_by_status(MachineStatus::InstallingOS).await {
+                    // Get all machines with Provisioning (InstallingOS) status
+                    let v1_machines = match store_clone.list_machines_by_state(&MachineState::Provisioning).await {
                         Ok(machines) => machines,
                         Err(e) => {
                             error!("Failed to get machines for workflow polling: {}", e);
                             continue;
                         }
                     };
+                    // Convert to common Machine type
+                    let machines: Vec<dragonfly_common::models::Machine> = v1_machines.iter().map(|m| m.into()).collect();
 
                     if machines.is_empty() {
                         // No machines are currently installing OS
@@ -1495,7 +1501,7 @@ pub async fn start_workflow_polling_task(
 
                     // Check each machine's workflow
                     for machine in machines.iter() {
-                        match get_workflow_info(machine).await {
+                        match get_workflow_info(Some(store_clone.as_ref()), machine).await {
                             Ok(Some(info)) => {
                                 let current_state = (info.state.clone(), info.current_action.clone());
 
@@ -1555,12 +1561,16 @@ pub async fn start_workflow_polling_task(
 }
 
 // Get workflow information from Kubernetes for a specific machine ID
-pub async fn get_workflow_info_by_id(id: &uuid::Uuid) -> Result<Option<WorkflowInfo>> {
+pub async fn get_workflow_info_by_id(
+    store: &dyn crate::store::v1::Store,
+    id: &uuid::Uuid
+) -> Result<Option<WorkflowInfo>> {
     // First, find the machine by ID
-    match crate::db::get_machine_by_id(id).await {
-        Ok(Some(machine)) => {
+    match store.get_machine(*id).await {
+        Ok(Some(v1_machine)) => {
+            let machine: dragonfly_common::models::Machine = (&v1_machine).into();
             // Use the existing get_workflow_info function once we have the machine
-            get_workflow_info(&machine).await
+            get_workflow_info(Some(store), &machine).await
         },
         Ok(None) => {
             warn!("Cannot get workflow info: Machine with ID {} not found", id);

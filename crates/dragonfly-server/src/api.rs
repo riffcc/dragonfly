@@ -14,6 +14,8 @@ use uuid::Uuid;
 use dragonfly_common::models::{MachineStatus, HostnameUpdateRequest, HostnameUpdateResponse, OsInstalledUpdateRequest, OsInstalledUpdateResponse, BmcType, BmcCredentials, StatusUpdateRequest, BmcCredentialsUpdateRequest, InstallationProgressUpdateRequest, RegisterRequest, Machine, DiskInfo as CommonDiskInfo};
 use crate::db::{self, RegisterResponse, ErrorResponse, OsAssignmentRequest, get_machine_tags, update_machine_tags as db_update_machine_tags};
 use crate::provisioning::HardwareCheckIn;
+use crate::store::conversions::machine_state_to_common_status;
+use crate::store::types::Machine as V1Machine;
 use dragonfly_crd::{Hardware, HardwareState};
 use crate::AppState;
 use crate::auth::AuthSession;
@@ -407,26 +409,56 @@ async fn download_file(url: &str, target_path: &StdPath) -> Result<(), dragonfly
 #[axum::debug_handler]
 async fn register_machine(
     State(state): State<AppState>,
-    // Ensure the payload type is correct, matching the updated common struct
     Json(payload): Json<RegisterRequest>,
 ) -> Response {
-    // Pass the full payload (including new hardware fields) to the db function
-    info!("Registering machine with MAC: {}, CPU: {:?}, Cores: {:?}, RAM: {:?}", 
+    use crate::store::conversions::machine_from_register_request;
+    use crate::db::RegisterResponse;
+
+    info!("Registering machine with MAC: {}, CPU: {:?}, Cores: {:?}, RAM: {:?}",
           payload.mac_address, payload.cpu_model, payload.cpu_cores, payload.total_ram_bytes);
-    
-    match db::register_machine(&payload).await {
-        Ok(machine_id) => {
-            // Get the new machine to register with Tinkerbell
-            if let Ok(Some(machine)) = db::get_machine_by_id(&machine_id).await {
-                // Register with Tinkerbell (don't fail if this fails)
-                if let Err(e) = crate::tinkerbell::register_machine(&machine).await {
-                    warn!("Failed to register machine with Tinkerbell (continuing anyway): {}", e);
-                }
-            }
-            
+
+    // Check if machine already exists by MAC
+    let normalized_mac = crate::store::types::normalize_mac(&payload.mac_address);
+    if let Ok(Some(existing)) = state.store_v1.get_machine_by_mac(&normalized_mac).await {
+        // Machine exists - update it instead
+        info!("Machine already exists with ID {}, updating", existing.id);
+        let mut machine = existing;
+        machine.config.hostname = payload.hostname.clone();
+        if let Some(cpu) = &payload.cpu_model {
+            machine.hardware.cpu_model = Some(cpu.clone());
+        }
+        if let Some(cores) = payload.cpu_cores {
+            machine.hardware.cpu_cores = Some(cores);
+        }
+        if let Some(ram) = payload.total_ram_bytes {
+            machine.hardware.memory_bytes = Some(ram);
+        }
+        machine.metadata.updated_at = chrono::Utc::now();
+
+        if let Err(e) = state.store_v1.put_machine(&machine).await {
+            error!("Failed to update existing machine: {}", e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse {
+                error: "Update Failed".to_string(),
+                message: e.to_string(),
+            })).into_response();
+        }
+
+        let _ = state.event_manager.send(format!("machine_updated:{}", machine.id));
+        return (StatusCode::OK, Json(RegisterResponse {
+            machine_id: machine.id,
+            next_step: "awaiting_os_assignment".to_string(),
+        })).into_response();
+    }
+
+    // Create new machine from registration request
+    let machine = machine_from_register_request(&payload);
+    let machine_id = machine.id;
+
+    match state.store_v1.put_machine(&machine).await {
+        Ok(()) => {
             // Emit machine discovered event
             let _ = state.event_manager.send(format!("machine_discovered:{}", machine_id));
-            
+
             let response = RegisterResponse {
                 machine_id,
                 next_step: "awaiting_os_assignment".to_string(),
@@ -458,25 +490,20 @@ async fn get_all_machines(
     // Check if user is authenticated as admin
     let is_admin = auth_session.user.is_some();
 
-    // Query DragonflyStore (ReDB) for hardware, convert to machines
-    let machines: Vec<Machine> = if let Some(ref provisioning) = state.provisioning {
-        match provisioning.store().list_hardware().await {
-            Ok(hardware_list) => hardware_list.iter().map(hardware_to_machine).collect(),
-            Err(e) => {
-                error!("Failed to list hardware from store: {}", e);
-                vec![]
-            }
+    // Query v1 Store (ReDB) for machines
+    let machines: Vec<Machine> = match state.store_v1.list_machines().await {
+        Ok(machine_list) => machine_list.iter().map(Machine::from).collect(),
+        Err(e) => {
+            error!("Failed to list machines from store: {}", e);
+            vec![]
         }
-    } else {
-        error!("Provisioning service not initialized");
-        vec![]
     };
 
     // Get workflow info for machines that are installing OS
     let mut workflow_infos = HashMap::new();
     for machine in &machines {
         if machine.status == MachineStatus::InstallingOS {
-            if let Ok(Some(info)) = crate::tinkerbell::get_workflow_info(machine).await {
+            if let Ok(Some(info)) = crate::tinkerbell::get_workflow_info(Some(state.store_v1.as_ref()), machine).await {
                 workflow_infos.insert(machine.id, info);
             }
         }
@@ -628,27 +655,31 @@ async fn get_all_machines(
 
 #[axum::debug_handler]
 async fn get_machine(
+    State(state): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> Response {
-    match db::get_machine_by_id(&id).await {
-        Ok(Some(machine)) => { // machine now includes hardware fields from db query
+    match state.store_v1.get_machine(id).await {
+        Ok(Some(v1_machine)) => {
+            // Convert v1 Machine to common Machine for API response
+            let machine = Machine::from(&v1_machine);
+
             // Fetch workflow info if the machine is installing OS
             let workflow_info = if machine.status == MachineStatus::InstallingOS {
-                match crate::tinkerbell::get_workflow_info(&machine).await {
-                    Ok(info_opt) => info_opt, // This could be Some(info) or None
+                match crate::tinkerbell::get_workflow_info(Some(state.store_v1.as_ref()), &machine).await {
+                    Ok(info_opt) => info_opt,
                     Err(e) => {
                         warn!("Failed to get workflow info for machine {} in get_machine: {}", id, e);
-                        None // Treat error as no workflow info
+                        None
                     }
                 }
             } else {
-                None // Not installing OS, no workflow info
+                None
             };
 
-            // Create the wrapped JSON response (already includes hardware fields)
+            // Create the wrapped JSON response
             let response_data = json!({
                 "machine": machine,
-                "workflow_info": workflow_info, 
+                "workflow_info": workflow_info,
             });
 
             (StatusCode::OK, Json(response_data)).into_response()
@@ -730,31 +761,23 @@ async fn assign_os(
     }
 }
 
-// Shared implementation - uses DragonflyStore (ReDB)
+// Shared implementation - uses v1 Store (ReDB with UUIDv7)
 async fn assign_os_internal(app_state: &AppState, id: Uuid, os_choice: String) -> Response {
     info!("Assigning OS {} to machine {}", os_choice, id);
 
-    // Get the provisioning service
-    let provisioning = match &app_state.provisioning {
-        Some(p) => p,
-        None => {
-            error!("Provisioning service not available");
-            let error_html = r###"
+    // Get machine directly by UUID from v1 store
+    let mut machine = match app_state.store_v1.get_machine(id).await {
+        Ok(Some(m)) => m,
+        Ok(None) => {
+            let error_html = format!(r###"
                 <div class="p-4 mb-4 text-sm text-red-700 bg-red-100 rounded-lg" role="alert">
-                    <span class="font-medium">Error!</span> Provisioning service not available.
+                    <span class="font-medium">Error!</span> Machine with ID {} not found.
                 </div>
-            "###;
-            return (StatusCode::INTERNAL_SERVER_ERROR, [(axum::http::header::CONTENT_TYPE, "text/html")], error_html).into_response();
+            "###, id);
+            return (StatusCode::NOT_FOUND, [(axum::http::header::CONTENT_TYPE, "text/html")], error_html).into_response();
         }
-    };
-
-    let store = provisioning.store();
-
-    // Find hardware by UUID
-    let hardware_list = match store.list_hardware().await {
-        Ok(list) => list,
         Err(e) => {
-            error!("Failed to list hardware: {}", e);
+            error!("Failed to get machine: {}", e);
             let error_html = format!(r###"
                 <div class="p-4 mb-4 text-sm text-red-700 bg-red-100 rounded-lg" role="alert">
                     <span class="font-medium">Error!</span> Database error: {}.
@@ -764,32 +787,12 @@ async fn assign_os_internal(app_state: &AppState, id: Uuid, os_choice: String) -
         }
     };
 
-    // Find the hardware with matching UUID
-    let mut found_hw: Option<dragonfly_crd::Hardware> = None;
-    for hw in hardware_list {
-        if hardware_uuid(&hw) == id {
-            found_hw = Some(hw);
-            break;
-        }
-    }
-
-    let mut hw = match found_hw {
-        Some(hw) => hw,
-        None => {
-            let error_html = format!(r###"
-                <div class="p-4 mb-4 text-sm text-red-700 bg-red-100 rounded-lg" role="alert">
-                    <span class="font-medium">Error!</span> Machine with ID {} not found.
-                </div>
-            "###, id);
-            return (StatusCode::NOT_FOUND, [(axum::http::header::CONTENT_TYPE, "text/html")], error_html).into_response();
-        }
-    };
-
     // Update os_choice
-    hw.spec.os_choice = Some(os_choice.clone());
+    machine.config.os_choice = Some(os_choice.clone());
+    machine.metadata.updated_at = chrono::Utc::now();
 
     // Save back to store
-    match store.put_hardware(&hw).await {
+    match app_state.store_v1.put_machine(&machine).await {
         Ok(()) => {
             let html = format!(r###"
                 <div class="p-4 mb-4 text-sm text-green-700 bg-green-100 rounded-lg" role="alert">
@@ -801,7 +804,7 @@ async fn assign_os_internal(app_state: &AppState, id: Uuid, os_choice: String) -
             (StatusCode::OK, [(axum::http::header::CONTENT_TYPE, "text/html")], html).into_response()
         },
         Err(e) => {
-            error!("Failed to save hardware: {}", e);
+            error!("Failed to save machine: {}", e);
             let error_html = format!(r###"
                 <div class="p-4 mb-4 text-sm text-red-700 bg-red-100 rounded-lg" role="alert">
                     <span class="font-medium">Error!</span> Database error: {}.
@@ -872,34 +875,55 @@ async fn update_status(
     };
 
     info!("Updating status for machine {} to {:?}", id, status);
-    
-    match db::update_status(&id, status.clone()).await {
-        Ok(true) => {
-            // Get the updated machine to update Tinkerbell
-            if let Ok(Some(machine)) = db::get_machine_by_id(&id).await {
-                // Update the machine in Tinkerbell (don't fail if this fails)
-                if let Err(e) = crate::tinkerbell::register_machine(&machine).await {
-                    warn!("Failed to update machine in Tinkerbell (continuing anyway): {}", e);
-                }
-                
-                // If the status is AwaitingAssignment, check if we should apply a default OS
-                if status == MachineStatus::AwaitingAssignment {
-                    // Check if a default OS is configured
-                    if let Ok(settings) = db::get_app_settings().await {
-                        if let Some(default_os) = settings.default_os {
-                            info!("Applying default OS '{}' to newly registered machine {}", default_os, id);
-                            // Assign the OS without triggering installation
-                            if let Ok(true) = db::assign_os(&id, &default_os).await {
-                                info!("Default OS choice '{}' applied to machine {}", default_os, id);
-                            }
-                        }
-                    }
-                }
+
+    // Get machine from v1 Store
+    let mut machine = match state.store_v1.get_machine(id).await {
+        Ok(Some(m)) => m,
+        Ok(None) => {
+            return Html(format!(r#"
+                <div class="p-4 mb-4 text-sm text-red-700 bg-red-100 rounded-lg" role="alert">
+                    <span class="font-medium">Error!</span> Machine with ID {} not found.
+                </div>
+            "#, id)).into_response();
+        },
+        Err(e) => {
+            error!("Failed to get machine {}: {}", id, e);
+            return Html(format!(r#"
+                <div class="p-4 mb-4 text-sm text-red-700 bg-red-100 rounded-lg" role="alert">
+                    <span class="font-medium">Error!</span> Database error: {}.
+                </div>
+            "#, e)).into_response();
+        }
+    };
+
+    // Convert MachineStatus to v1 MachineState
+    use crate::store::types::MachineState;
+    machine.status.state = match &status {
+        MachineStatus::Ready => MachineState::Provisioned,
+        MachineStatus::AwaitingAssignment => MachineState::Discovered,
+        MachineStatus::InstallingOS => MachineState::Provisioning,
+        MachineStatus::Error(msg) => MachineState::Error { message: msg.clone() },
+        MachineStatus::ExistingOS => MachineState::Provisioned,
+        MachineStatus::Offline => MachineState::Offline,
+    };
+    machine.metadata.updated_at = chrono::Utc::now();
+
+    // If status is AwaitingAssignment, check for default OS
+    if status == MachineStatus::AwaitingAssignment {
+        if let Ok(settings) = db::get_app_settings().await {
+            if let Some(default_os) = settings.default_os {
+                info!("Applying default OS '{}' to newly registered machine {}", default_os, id);
+                machine.config.os_choice = Some(default_os.clone());
             }
-            
+        }
+    }
+
+    // Save to v1 Store
+    match state.store_v1.put_machine(&machine).await {
+        Ok(()) => {
             // Emit machine updated event
             let _ = state.event_manager.send(format!("machine_updated:{}", id));
-            
+
             // Return HTML success message
             Html(format!(r#"
                 <div class="p-4 mb-4 text-sm text-green-700 bg-green-100 rounded-lg" role="alert">
@@ -912,13 +936,6 @@ async fn update_status(
                     htmx.trigger(document.querySelector('tbody'), 'refreshMachines');
                 </script>
             "#)).into_response()
-        },
-        Ok(false) => {
-            Html(format!(r#"
-                <div class="p-4 mb-4 text-sm text-red-700 bg-red-100 rounded-lg" role="alert">
-                    <span class="font-medium">Error!</span> Machine with ID {} not found.
-                </div>
-            "#, id)).into_response()
         },
         Err(e) => {
             error!("Failed to update status for machine {}: {}", id, e);
@@ -947,32 +964,42 @@ async fn update_hostname(
     }
 
     info!("Updating hostname for machine {} to {}", id, payload.hostname);
-    
-    match db::update_hostname(&id, &payload.hostname).await {
-        Ok(true) => {
-            // Get the updated machine to update Tinkerbell
-            if let Ok(Some(machine)) = db::get_machine_by_id(&id).await {
-                // Update the machine in Tinkerbell (don't fail if this fails)
-                if let Err(e) = crate::tinkerbell::register_machine(&machine).await {
-                    warn!("Failed to update machine in Tinkerbell (continuing anyway): {}", e);
-                }
-            }
-            
+
+    // Get machine from v1 Store
+    let mut machine = match state.store_v1.get_machine(id).await {
+        Ok(Some(m)) => m,
+        Ok(None) => {
+            let error_response = ErrorResponse {
+                error: "Not Found".to_string(),
+                message: format!("Machine with ID {} not found", id),
+            };
+            return (StatusCode::NOT_FOUND, Json(error_response)).into_response();
+        },
+        Err(e) => {
+            error!("Failed to get machine {}: {}", id, e);
+            let error_response = ErrorResponse {
+                error: "Database Error".to_string(),
+                message: e.to_string(),
+            };
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response)).into_response();
+        }
+    };
+
+    // Update hostname
+    machine.config.hostname = Some(payload.hostname.clone());
+    machine.metadata.updated_at = chrono::Utc::now();
+
+    // Save to v1 Store
+    match state.store_v1.put_machine(&machine).await {
+        Ok(()) => {
             // Emit machine updated event
             let _ = state.event_manager.send(format!("machine_updated:{}", id));
-            
+
             let response = HostnameUpdateResponse {
                 success: true,
                 message: format!("Hostname updated for machine {}", id),
             };
             (StatusCode::OK, Json(response)).into_response()
-        },
-        Ok(false) => {
-            let error_response = ErrorResponse {
-                error: "Not Found".to_string(),
-                message: format!("Machine with ID {} not found", id),
-            };
-            (StatusCode::NOT_FOUND, Json(error_response)).into_response()
         },
         Err(e) => {
             error!("Failed to update hostname for machine {}: {}", id, e);
@@ -1094,11 +1121,12 @@ async fn update_bmc(
 // Handler to get the hostname edit form
 #[axum::debug_handler]
 async fn get_hostname_form(
+    State(state): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> impl IntoResponse {
-    match db::get_machine_by_id(&id).await {
-        Ok(Some(machine)) => {
-            let current_hostname = machine.hostname.unwrap_or_default();
+    match state.store_v1.get_machine(id).await {
+        Ok(Some(v1_machine)) => {
+            let current_hostname = v1_machine.config.hostname.clone().unwrap_or_default();
             // Use raw string literals to avoid escaping issues
             let html = format!(
                 r###"
@@ -1204,23 +1232,28 @@ pub async fn ipxe_script(
         }
     };
 
-    match db::get_machine_by_mac(&mac).await {
-        Ok(Some(_)) => {
-            // Known machine: Chain to Dragonfly's OS installation hook script (hookos.ipxe)
-            info!("Known MAC {}, chaining to HookOS script", mac);
-            let script = format!("#!ipxe\nchain {}/ipxe/hookos.ipxe", base_url);
-            (StatusCode::OK, [(axum::http::header::CONTENT_TYPE, "text/plain")], script).into_response()
-        },
-        Ok(None) => {
-            // Unknown machine: Chain to the Dragonfly agent script
-            info!("Unknown MAC {}, chaining to Dragonfly Agent iPXE script", mac);
-            let script = format!("#!ipxe\nchain {}/ipxe/dragonfly-agent.ipxe", base_url);
-            (StatusCode::OK, [(axum::http::header::CONTENT_TYPE, "text/plain")], script).into_response()
-        },
+    // Look up machine by MAC using v1 Store
+    match state.store_v1.list_machines().await {
+        Ok(machines) => {
+            let found = machines.iter().find(|m| {
+                m.identity.primary_mac == mac || m.identity.all_macs.contains(&mac)
+            });
+            if found.is_some() {
+                // Known machine: Chain to Dragonfly's OS installation hook script (hookos.ipxe)
+                info!("Known MAC {}, chaining to HookOS script", mac);
+                let script = format!("#!ipxe\nchain {}/ipxe/hookos.ipxe", base_url);
+                (StatusCode::OK, [(axum::http::header::CONTENT_TYPE, "text/plain")], script).into_response()
+            } else {
+                // Unknown machine: Chain to the Dragonfly agent script
+                info!("Unknown MAC {}, chaining to Dragonfly Agent iPXE script", mac);
+                let script = format!("#!ipxe\nchain {}/ipxe/dragonfly-agent.ipxe", base_url);
+                (StatusCode::OK, [(axum::http::header::CONTENT_TYPE, "text/plain")], script).into_response()
+            }
+        }
         Err(e) => {
-            error!("Database error while looking up MAC {}: {}", mac, e);
+            error!("Store error while looking up MAC {}: {}", mac, e);
             let error_response = ErrorResponse {
-                error: "Database Error".to_string(),
+                error: "Store Error".to_string(),
                 message: e.to_string(),
             };
             (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response)).into_response()
@@ -1244,12 +1277,12 @@ async fn delete_machine(
 
     info!("Request to delete machine: {}", id);
 
-    // Get the machine to find its MAC address
-    match db::get_machine_by_id(&id).await {
+    // Get the machine to find its MAC address (for Tinkerbell cleanup)
+    match state.store_v1.get_machine(id).await {
         Ok(Some(machine)) => {
-            // Delete from Tinkerbell
-            let mac_address = machine.mac_address.replace(":", "-").to_lowercase();
-            
+            // Delete from Tinkerbell (using MAC address)
+            let mac_address = machine.identity.primary_mac.replace(":", "-").to_lowercase();
+
             let tinkerbell_result = match crate::tinkerbell::delete_hardware(&mac_address).await {
                 Ok(_) => {
                     info!("Successfully deleted machine from Tinkerbell: {}", mac_address);
@@ -1261,18 +1294,18 @@ async fn delete_machine(
                 }
             };
 
-            // Delete from database
-            match db::delete_machine(&id).await {
+            // Delete from v1 Store
+            match state.store_v1.delete_machine(id).await {
                 Ok(true) => {
                     let message = if tinkerbell_result {
                         "Machine successfully deleted from Dragonfly and Tinkerbell."
                     } else {
                         "Machine deleted from Dragonfly but there was an issue removing it from Tinkerbell."
                     };
-                    
+
                     // Emit machine deleted event
                     let _ = state.event_manager.send(format!("machine_deleted:{}", id));
-                    
+
                     (StatusCode::OK, Json(json!({ "success": true, "message": message }))).into_response()
                 },
                 Ok(false) => {
@@ -1298,60 +1331,44 @@ async fn delete_machine(
 #[axum::debug_handler]
 async fn update_machine(
     State(state): State<AppState>,
-    // Use AuthSession directly, not Option<AuthSession>
     auth_session: AuthSession,
-    // Add ConnectInfo to get client IP
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     Path(id): Path<Uuid>,
-    Json(mut machine_payload): Json<Machine>,
+    Json(machine_payload): Json<Machine>,
 ) -> Response {
     let client_ip = addr.ip().to_string();
     info!("Update request for machine {} from IP: {}", id, client_ip);
 
-    // Authorization Logic
-    // Check if an admin user is logged in
+    // Authorization Logic - check if admin or agent's own IP
     let is_admin = auth_session.user.is_some();
 
-    let authorized = if is_admin {
-        // Admin is always authorized
-        info!("Admin user authorized update for machine {}", id);
-        true
-    } else {
-        // Not an admin, check if it's the agent based on IP
-        info!("Request is not from an admin, checking IP for agent authorization...");
-        match db::get_machine_by_id(&id).await {
-            Ok(Some(stored_machine)) => {
-                if stored_machine.ip_address == client_ip {
-                    info!("Agent IP {} matches stored IP for machine {}. Authorizing update.", client_ip, id);
-                    true // IP matches, allow update
-                } else {
-                    warn!("Agent IP {} does NOT match stored IP {} for machine {}. Denying update.",
-                          client_ip, stored_machine.ip_address, id);
-                    false // IP mismatch
-                }
-            },
-            Ok(None) => {
-                warn!("Machine {} not found during IP authorization check.", id);
-                false // Machine not found
-                },
-                Err(e) => {
-                error!("Database error during IP authorization check for machine {}: {}", id, e);
-                false // Database error
-            }
+    // Get machine from v1 Store
+    let mut machine = match state.store_v1.get_machine(id).await {
+        Ok(Some(m)) => m,
+        Ok(None) => {
+            return (StatusCode::NOT_FOUND, Json(json!({
+                "error": "Not Found",
+                "message": format!("Machine with ID {} not found", id)
+            }))).into_response();
+        },
+        Err(e) => {
+            error!("Database error during machine lookup: {}", e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
+                "error": "Database Error",
+                "message": e.to_string()
+            }))).into_response();
         }
     };
 
-    if !authorized {
-        // Use 403 Forbidden for authorization failures
-        // (axum-login middleware handles 401 for missing authentication if configured)
+    // Authorization: admin is always authorized, otherwise we'd need IP check
+    // For now, since we don't store IP in v1 Machine, just require admin
+    if !is_admin {
         return (StatusCode::FORBIDDEN, Json(json!({
             "error": "Forbidden",
-            "message": "You are not authorized to update this machine."
+            "message": "Admin authentication required for machine updates"
         }))).into_response();
     }
 
-    // --- Proceed with Update (if authorized) ---
-    
     // Ensure the ID from the path matches the payload ID
     if machine_payload.id != id {
         return (StatusCode::BAD_REQUEST, Json(json!({
@@ -1360,29 +1377,47 @@ async fn update_machine(
         }))).into_response();
     }
 
-    info!("Updating machine {} with full payload (Authorized by admin: {})", id, is_admin);
-    
-    // Set the updated_at timestamp before saving
-    machine_payload.updated_at = Utc::now();
+    info!("Updating machine {} with full payload", id);
 
-    // Call the updated db::update_machine function
-    match db::update_machine(&machine_payload).await {
-                Ok(true) => {
+    // Apply updates from payload to v1 Machine
+    machine.config.hostname = machine_payload.hostname;
+    machine.config.os_choice = machine_payload.os_choice;
+
+    // Update hardware info if provided
+    if let Some(cpu) = machine_payload.cpu_model {
+        machine.hardware.cpu_model = Some(cpu);
+    }
+    if let Some(cores) = machine_payload.cpu_cores {
+        machine.hardware.cpu_cores = Some(cores);
+    }
+    if let Some(ram) = machine_payload.total_ram_bytes {
+        machine.hardware.memory_bytes = Some(ram);
+    }
+
+    // Update status
+    use crate::store::types::MachineState;
+    machine.status.state = match &machine_payload.status {
+        MachineStatus::Ready => MachineState::Provisioned,
+        MachineStatus::AwaitingAssignment => MachineState::Discovered,
+        MachineStatus::InstallingOS => MachineState::Provisioning,
+        MachineStatus::Error(msg) => MachineState::Error { message: msg.clone() },
+        MachineStatus::ExistingOS => MachineState::Provisioned,
+        MachineStatus::Offline => MachineState::Offline,
+    };
+
+    machine.metadata.updated_at = chrono::Utc::now();
+
+    // Save to v1 Store
+    match state.store_v1.put_machine(&machine).await {
+        Ok(()) => {
             // Emit machine updated event
             let _ = state.event_manager.send(format!("machine_updated:{}", id));
-            
-            // Return the updated machine object
-            (StatusCode::OK, Json(machine_payload)).into_response()
-                },
-                Ok(false) => {
-            // This case should ideally not happen if the ID check above passed
-            // but handle it just in case (e.g., race condition with deletion)
-            (StatusCode::NOT_FOUND, Json(json!({
-                "error": "Not Found",
-                "message": format!("Machine with ID {} not found during update attempt.", id)
-            }))).into_response()
-                },
-                Err(e) => {
+
+            // Return the updated machine as common Machine
+            let response_machine = Machine::from(&machine);
+            (StatusCode::OK, Json(response_machine)).into_response()
+        },
+        Err(e) => {
             error!("Failed to update machine {}: {}", id, e);
             (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
                 "error": "Database Error",
@@ -1928,30 +1963,25 @@ pub async fn serve_ipxe_artifact(
     const AGENT_APKOVL_PATH: &str = "/var/lib/dragonfly/ipxe-artifacts/dragonfly-agent/localhost.apkovl.tar.gz";
     const AGENT_BINARY_URL: &str = "https://github.com/riffcc/dragonfly/releases/download/latest/dragonfly-agent-x86_64"; // TODO: Make configurable
     
-    // --- Get Machine ID from Client IP --- 
+    // --- Get Machine ID from Client IP ---
     let client_ip = state.client_ip.lock().await.clone();
-    let machine_id = if let Some(ip) = &client_ip {
-        // ADDED LOG: Log the IP being looked up
+    let machine_id: Option<Uuid> = if let Some(ip) = &client_ip {
         info!("[PROGRESS_DEBUG] Looking up machine by IP: {}", ip);
-        match db::get_machine_by_ip(ip).await {
+        match state.store_v1.get_machine_by_ip(ip).await {
             Ok(Some(machine)) => {
-                // ADDED LOG: Log successful lookup
                 info!("[PROGRESS_DEBUG] Found machine ID {} for IP {}", machine.id, ip);
                 Some(machine.id)
-            },
+            }
             Ok(None) => {
-                // Changed to INFO for visibility
                 info!("[PROGRESS_DEBUG] No machine found for IP {} requesting artifact {}", ip, requested_path);
                 None
-            },
+            }
             Err(e) => {
-                // Changed to INFO for visibility
-                info!("[PROGRESS_DEBUG] DB error looking up machine by IP {}: {}", ip, e);
+                info!("[PROGRESS_DEBUG] Store error looking up machine by IP {}: {}", ip, e);
                 None
             }
         }
     } else {
-        // Changed to INFO for visibility
         info!("[PROGRESS_DEBUG] Client IP not found in state for artifact request {}", requested_path);
         None
     };
@@ -2241,7 +2271,7 @@ async fn track_download_progress(
     if let Some(client_ip) = client_ip_guard.as_ref() {
         // Find machine by IP if possible (for cases where we don't have machine_id)
         let ip_machine_id = if machine_id.is_none() {
-            match db::get_machine_by_ip(client_ip).await {
+            match state.store_v1.get_machine_by_ip(client_ip).await {
                 Ok(Some(machine)) => Some(machine.id),
                 _ => None,
             }
@@ -2562,15 +2592,15 @@ pub async fn get_workflow_progress(
 ) -> Response { 
     info!("Request for workflow progress HTML partial for machine {}", id);
 
-    let machine = match db::get_machine_by_id(&id).await {
-        Ok(Some(m)) => m,
+    let machine: Machine = match app_state.store_v1.get_machine(id).await {
+        Ok(Some(m)) => (&m).into(),
         Ok(None) => {
             error!("Machine not found: {}", id);
             return (StatusCode::NOT_FOUND, Html("<div>Machine not found</div>")).into_response();
         },
         Err(e) => {
             error!("Error fetching machine {}: {}", id, e);
-            return (StatusCode::INTERNAL_SERVER_ERROR, Html("<div>Database error</div>")).into_response();
+            return (StatusCode::INTERNAL_SERVER_ERROR, Html("<div>Store error</div>")).into_response();
         }
     };
 
@@ -2579,7 +2609,7 @@ pub async fn get_workflow_progress(
         return (StatusCode::OK, Html("<div></div>")).into_response(); // Return empty div if not installing
     }
 
-    match crate::tinkerbell::get_workflow_info(&machine).await {
+    match crate::tinkerbell::get_workflow_info(Some(app_state.store_v1.as_ref()), &machine).await {
         Ok(Some(info)) => {
             info!("Successfully got workflow info for machine {}: state={}, progress={}", id, info.state, info.progress);
 
@@ -2634,7 +2664,7 @@ pub async fn agent_checkin_handler(
     match provisioning.handle_checkin(&checkin).await {
         Ok(response) => {
             info!(
-                hardware_id = %response.hardware_id,
+                machine_id = %response.machine_id,
                 is_new = response.is_new,
                 action = ?response.action,
                 "Agent check-in successful"
@@ -2658,17 +2688,8 @@ pub async fn get_workflow_handler(
 ) -> Response {
     debug!(workflow_id = %workflow_id, "Fetching workflow for agent");
 
-    let provisioning = match &state.provisioning {
-        Some(p) => p,
-        None => {
-            return (
-                StatusCode::SERVICE_UNAVAILABLE,
-                Json(serde_json::json!({ "error": "Provisioning service not available" })),
-            ).into_response();
-        }
-    };
-
-    match provisioning.store().get_workflow(&workflow_id).await {
+    // Fetch workflow from legacy store (workflows use old DragonflyStore)
+    match state.store.get_workflow(&workflow_id).await {
         Ok(Some(workflow)) => {
             info!(workflow_id = %workflow_id, "Returning workflow to agent");
             Json(workflow).into_response()
@@ -3822,14 +3843,6 @@ pub async fn track_client_ip(
     Ok(next.run(request).await)
 }
 
-// Function to add machine IP tracking to API router helpers
-async fn api_get_machine_by_ip(ip: &str) -> Option<Machine> {
-    match db::get_machine_by_ip(ip).await {
-        Ok(Some(machine)) => Some(machine),
-        _ => None,
-    }
-}
-
 // Add handler for deleting a specific machine tag
 #[axum::debug_handler]
 async fn api_delete_machine_tag(
@@ -3845,38 +3858,37 @@ async fn api_delete_machine_tag(
         }))).into_response();
     }
 
-    // Get current tags for the machine
-    let result = match db::get_machine_tags(&id).await {
-        Ok(tags) => {
+    // Get machine from v1 Store and update tags
+    let result = match state.store_v1.get_machine(id).await {
+        Ok(Some(mut machine)) => {
             // Filter out the tag to delete
-            let new_tags: Vec<String> = tags.into_iter()
-                .filter(|t| t != &tag)
-                .collect();
-            
-            // Update with the filtered tags
-            match db::update_machine_tags(&id, &new_tags).await {
-                Ok(true) => {
+            machine.config.tags.retain(|t| t != &tag);
+            machine.metadata.updated_at = chrono::Utc::now();
+
+            // Update the machine in store
+            match state.store_v1.put_machine(&machine).await {
+                Ok(()) => {
                     // Emit machine updated event
                     let _ = state.event_manager.send(format!("machine_updated:{}", id));
                     (StatusCode::OK, Json(json!({"success": true, "message": "Tag deleted"})))
                 },
-                Ok(false) => {
-                    (StatusCode::NOT_FOUND, Json(json!({"error": "Machine not found"})))
-                },
                 Err(e) => {
                     error!("Failed to update tags after deletion for machine {}: {}", id, e);
                     (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
-                        "error": "Database error", 
+                        "error": "Store error",
                         "message": format!("Failed to update tags: {}", e)
                     })))
                 }
             }
         },
+        Ok(None) => {
+            (StatusCode::NOT_FOUND, Json(json!({"error": "Machine not found"})))
+        },
         Err(e) => {
-            error!("Failed to get tags for machine {}: {}", id, e);
+            error!("Failed to get machine {} for tag deletion: {}", id, e);
             (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
-                "error": "Database error", 
-                "message": format!("Failed to retrieve tags: {}", e)
+                "error": "Store error",
+                "message": format!("Failed to retrieve machine: {}", e)
             })))
         }
     };
@@ -3892,17 +3904,17 @@ async fn get_machine_status_and_progress_partial(
 ) -> Response { // Explicitly return Response
     info!("Request for status-and-progress partial for machine {}", id);
 
-    let machine = match db::get_machine_by_id(&id).await {
-        Ok(Some(m)) => m,
+    let machine: Machine = match state.store_v1.get_machine(id).await {
+        Ok(Some(m)) => (&m).into(),
         Ok(None) => return (StatusCode::NOT_FOUND, Html("<!-- Machine not found -->")).into_response(),
         Err(e) => {
-            error!("DB error fetching machine {} for partial: {}", id, e);
-            return (StatusCode::INTERNAL_SERVER_ERROR, Html("<!-- DB Error -->")).into_response();
+            error!("Store error fetching machine {} for partial: {}", id, e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, Html("<!-- Store Error -->")).into_response();
         }
     };
 
     let workflow_info = if machine.status == MachineStatus::InstallingOS {
-        match crate::tinkerbell::get_workflow_info(&machine).await {
+        match crate::tinkerbell::get_workflow_info(Some(state.store_v1.as_ref()), &machine).await {
             Ok(info_opt) => info_opt, // Can be Some(info) or None
             Err(e) => {
                 error!("Tinkerbell error fetching workflow info for {}: {}", id, e);
@@ -4052,6 +4064,7 @@ async fn api_delete_tag(
 /// Get all machines with a specific tag
 #[axum::debug_handler]
 async fn api_get_machines_by_tag(
+    State(state): State<AppState>,
     auth_session: AuthSession,
     Path(tag_name): Path<String>,
 ) -> Response {
@@ -4060,12 +4073,15 @@ async fn api_get_machines_by_tag(
         return response;
     }
 
-    match db::get_machines_by_tag(&tag_name).await {
-        Ok(machines) => (StatusCode::OK, Json(machines)).into_response(),
+    match state.store_v1.list_machines_by_tag(&tag_name).await {
+        Ok(v1_machines) => {
+            let machines: Vec<Machine> = v1_machines.iter().map(|m| m.into()).collect();
+            (StatusCode::OK, Json(machines)).into_response()
+        }
         Err(e) => {
             error!("Failed to get machines for tag {}: {}", tag_name, e);
             let error_response = ErrorResponse {
-                error: "Database Error".to_string(),
+                error: "Store Error".to_string(),
                 message: format!("Failed to retrieve machines: {}", e),
             };
             (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response)).into_response()
@@ -4077,7 +4093,7 @@ async fn api_get_machines_by_tag(
 #[axum::debug_handler]
 async fn reimage_machine(
     auth_session: AuthSession,
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> Response {
     // Check if user is authenticated as admin
@@ -4089,10 +4105,10 @@ async fn reimage_machine(
     }
 
     info!("Initiating reimage for machine {}", id);
-    
+
     // Get the machine first to make sure we have a valid OS choice
-    let machine = match db::get_machine_by_id(&id).await {
-        Ok(Some(machine)) => machine,
+    let machine: Machine = match state.store_v1.get_machine(id).await {
+        Ok(Some(m)) => (&m).into(),
         Ok(None) => {
             return (StatusCode::NOT_FOUND, Json(json!({
                 "error": "Not Found",
@@ -4102,7 +4118,7 @@ async fn reimage_machine(
         Err(e) => {
             error!("Failed to get machine {}: {}", id, e);
             return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
-                "error": "Database Error",
+                "error": "Store Error",
                 "message": e.to_string()
             }))).into_response();
         }
@@ -4126,7 +4142,7 @@ async fn reimage_machine(
             match crate::tinkerbell::create_workflow(&machine, &os_choice).await {
                 Ok(_) => {
                     // Emit machine updated event
-                    let _ = _state.event_manager.send(format!("machine_updated:{}", id));
+                    let _ = state.event_manager.send(format!("machine_updated:{}", id));
                     
                     // If this is a Proxmox VM, reboot it into PXE boot mode
                     if machine.proxmox_vmid.is_some() && machine.proxmox_node.is_some() {
@@ -4138,7 +4154,7 @@ async fn reimage_machine(
                         
                         // Call the power action handler
                         match crate::handlers::machines::bmc_power_action_handler(
-                            State(_state.clone()),
+                            State(state.clone()),
                             Path(id),
                             Json(power_action),
                         ).await {

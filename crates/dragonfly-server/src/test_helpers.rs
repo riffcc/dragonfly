@@ -6,6 +6,7 @@ use crate::{AppState, TemplateEnv};
 use crate::auth::Settings;
 use crate::event_manager::EventManager;
 use crate::store::{StoreConfig, create_store};
+use crate::store::v1::MemoryStore as V1MemoryStore;
 use minijinja::Environment;
 use std::collections::HashMap;
 use std::sync::{Arc, atomic::AtomicBool};
@@ -21,10 +22,13 @@ pub async fn create_test_app_state() -> AppState {
     // Create event manager (it creates its own broadcast channel internally)
     let event_manager = Arc::new(EventManager::new());
 
-    // Create in-memory store
+    // Create in-memory store (legacy)
     let store = create_store(&StoreConfig::Memory)
         .await
         .expect("Failed to create memory store");
+
+    // Create in-memory v1 store for machines
+    let store_v1: Arc<dyn crate::store::v1::Store> = Arc::new(V1MemoryStore::new());
 
     // Create minimal settings
     let settings = Settings::default();
@@ -54,6 +58,7 @@ pub async fn create_test_app_state() -> AppState {
         tokens: Arc::new(Mutex::new(HashMap::new())),
         provisioning: None,
         store,
+        store_v1,
         network_services_started: Arc::new(AtomicBool::new(false)),
     }
 }

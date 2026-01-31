@@ -1,10 +1,27 @@
 //! Storage backends for Dragonfly
 //!
-//! This module provides the `DragonflyStore` trait and multiple implementations:
-//! - `MemoryStore` - In-memory storage for testing
-//! - `RedbStore` - Local embedded database using ReDB
-//! - `K8sStore` - Kubernetes CRDs via etcd (requires `k8s` feature)
+//! This module provides storage implementations:
+//!
+//! ## v0.1.0 (New)
+//! The `v1` module contains the new schema with:
+//! - `Machine` as the central entity with UUIDv7 primary keys
+//! - Deterministic identity hashing for machine re-identification
+//! - Backend-agnostic `Store` trait for ReDB, etcd, and memory
+//!
+//! ## Legacy
+//! - `MemoryStore` - In-memory storage (old schema)
+//! - `RedbStore` - Local embedded database using ReDB (old schema)
 
+// Core types for v0.1.0 schema
+pub mod types;
+
+// v0.1.0 Store trait and implementations
+pub mod v1;
+
+// Type conversion helpers for API
+pub mod conversions;
+
+// Legacy implementations (to be removed after migration)
 mod memory;
 mod redb_store;
 

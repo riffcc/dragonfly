@@ -244,8 +244,10 @@ pub struct AppState {
     pub tokens: Arc<Mutex<std::collections::HashMap<String, String>>>,
     // Native provisioning service (optional - None uses legacy behavior)
     pub provisioning: Option<Arc<provisioning::ProvisioningService>>,
-    // Native storage backend (ReDB by default)
+    // Legacy storage backend (ReDB) - for settings, templates
     pub store: Arc<dyn store::DragonflyStore>,
+    // New v0.1.0 storage backend for machines
+    pub store_v1: Arc<dyn store::v1::Store>,
     // Track if network services (DHCP/TFTP) are running
     pub network_services_started: Arc<AtomicBool>,
 }
@@ -373,13 +375,23 @@ pub async fn run() -> anyhow::Result<()> {
     db::init_timing_tables().await?;
     tinkerbell::load_historical_timings().await?;
 
-    // Initialize ReDB storage
+    // Initialize ReDB storage (legacy - for settings/templates)
     const REDB_PATH: &str = "/var/lib/dragonfly/dragonfly.redb";
     let native_store: Arc<dyn store::DragonflyStore> = match store::RedbStore::open(REDB_PATH) {
         Ok(s) => Arc::new(s),
         Err(e) => {
             warn!("ReDB failed, using in-memory store: {}", e);
             Arc::new(store::MemoryStore::new())
+        }
+    };
+
+    // Initialize v0.1.0 storage (for machines with UUIDv7 identity)
+    const REDB_V1_PATH: &str = "/var/lib/dragonfly/machines.redb";
+    let store_v1: Arc<dyn store::v1::Store> = match store::v1::RedbStore::open(REDB_V1_PATH) {
+        Ok(s) => Arc::new(s),
+        Err(e) => {
+            warn!("ReDB v1 failed, using in-memory store: {}", e);
+            Arc::new(store::v1::MemoryStore::new())
         }
     };
 
@@ -415,6 +427,40 @@ pub async fn run() -> anyhow::Result<()> {
             crate::api::verify_mage_artifacts(&["x86_64"])
                 .map_err(|e| anyhow!("Boot artifact verification failed: {}", e))?;
         }
+
+        // Download dragonfly-agent binary for x86_64 (needed for Mage apkovl)
+        let agent_dest = std::path::Path::new("/var/lib/dragonfly/mage/x86_64/dragonfly-agent");
+        if !agent_dest.exists() {
+            info!("Downloading dragonfly-agent binary...");
+            let download_url = "https://github.com/riffcc/dragonfly/releases/download/latest/dragonfly-agent-x86_64";
+            let client = reqwest::Client::new();
+            match client.get(download_url).send().await {
+                Ok(response) if response.status().is_success() => {
+                    match response.bytes().await {
+                        Ok(bytes) => {
+                            if let Err(e) = tokio::fs::write(agent_dest, &bytes).await {
+                                warn!("Failed to write agent binary: {}", e);
+                            } else {
+                                // Make executable
+                                #[cfg(unix)]
+                                {
+                                    use std::os::unix::fs::PermissionsExt;
+                                    if let Ok(metadata) = tokio::fs::metadata(agent_dest).await {
+                                        let mut perms = metadata.permissions();
+                                        perms.set_mode(0o755);
+                                        let _ = tokio::fs::set_permissions(agent_dest, perms).await;
+                                    }
+                                }
+                                info!("Downloaded dragonfly-agent binary");
+                            }
+                        }
+                        Err(e) => warn!("Failed to read agent binary response: {}", e),
+                    }
+                }
+                Ok(response) => warn!("Failed to download agent binary: HTTP {}", response.status()),
+                Err(e) => warn!("Failed to download agent binary: {}", e),
+            }
+        }
     }
 
     // --- Graceful Shutdown Setup ---
@@ -424,7 +470,7 @@ pub async fn run() -> anyhow::Result<()> {
     tinkerbell::start_timing_cleanup_task(shutdown_rx.clone()).await;
 
     if !is_installation_server {
-        tinkerbell::start_workflow_polling_task(event_manager.clone(), shutdown_rx.clone()).await;
+        tinkerbell::start_workflow_polling_task(event_manager.clone(), store_v1.clone(), shutdown_rx.clone()).await;
     }
 
     // Load or generate admin credentials
@@ -541,7 +587,8 @@ pub async fn run() -> anyhow::Result<()> {
         let provisioning_mode = mode::DeploymentMode::Flight;
 
         let service = provisioning::ProvisioningService::new(
-            native_store.clone(),
+            store_v1.clone(),      // v1 Store for machines (UUIDv7 + identity hash)
+            native_store.clone(),  // Legacy DragonflyStore for workflows/templates
             ipxe_config,
             provisioning_mode,
         );
@@ -576,8 +623,10 @@ pub async fn run() -> anyhow::Result<()> {
         tokens: Arc::new(Mutex::new(std::collections::HashMap::new())),
         // Native provisioning service (if enabled)
         provisioning: provisioning_service.clone(),
-        // Native storage backend
+        // Legacy storage backend (settings/templates)
         store: native_store,
+        // New v0.1.0 storage backend (machines with UUIDv7)
+        store_v1,
         // Track if network services (DHCP/TFTP) are running
         network_services_started: Arc::new(AtomicBool::new(false)),
     };

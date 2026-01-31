@@ -33,7 +33,7 @@ sqlx = { version = "0.8.3", features = ["runtime-tokio-rustls", "postgres", "sql
 # Utilities
 rand = "0.8.5"
 time = "0.3"
-uuid = { version = "1.8.0", features = ["v4", "v5", "serde"] }
+uuid = { version = "1.8.0", features = ["v4", "v5", "v7", "serde"] }
 tower = { version = "0.4", features = ["util"] }
 tower-http = { version = "0.5.0", features = ["fs", "trace", "cors"] }
 tokio = { version = "1.36.0", features = ["full"] }

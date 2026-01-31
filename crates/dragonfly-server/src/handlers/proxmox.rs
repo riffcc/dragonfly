@@ -15,7 +15,7 @@ use std::net::Ipv4Addr;
 use serde_json::json;
 
 use crate::AppState;
-use crate::db;
+use crate::store::conversions::machine_from_register_request;
 use dragonfly_common::models::{RegisterRequest, MachineStatus, ErrorResponse};
 
 // Define local structs needed by discover_proxmox_handler
@@ -1028,7 +1028,7 @@ fn handle_proxmox_error(e: ProxmoxClientError, skip_tls_verify: bool) -> Proxmox
 async fn discover_and_register_proxmox_vms(
     client: &ProxmoxApiClient,
     cluster_name: &str,
-    _state: &AppState,
+    state: &AppState,
 ) -> ProxmoxResult<(usize, usize, Vec<DiscoveredProxmox>)> {
     info!("Discovering and registering Proxmox VMs for cluster: {}", cluster_name);
     
@@ -1152,12 +1152,14 @@ async fn discover_and_register_proxmox_vms(
                                     nameservers: Vec::new(),
                                     cpu_model: None,
                                 };
-            info!("Host req: {:?}, Attempting to register Proxmox host node with DB", host_req);
-            match db::register_machine(&host_req).await { 
-                                    Ok(machine_id) => {
+            info!("Host req: {:?}, Attempting to register Proxmox host node with v1 Store", host_req);
+            let machine = machine_from_register_request(&host_req);
+            let machine_id = machine.id;
+            match state.store_v1.put_machine(&machine).await {
+                Ok(()) => {
                     info!("Successfully registered/updated Proxmox host node '{}' as machine ID {}", node_name, machine_id);
                 }
-                                    Err(e) => {
+                Err(e) => {
                     error!("Failed to register Proxmox host node '{}': {}", node_name, e);
                     // Log error but continue to VMs for this node
                 }
@@ -1545,32 +1547,24 @@ async fn discover_and_register_proxmox_vms(
             };
 
             // DEBUG: Log the request before attempting registration
-            info!("Register request: {:?}, Attempting to register VM with DB", register_request);
-            
-            // Register the VM
-            match db::register_machine(&register_request).await {
-                Ok(machine_id) => {
+            info!("Register request: {:?}, Attempting to register VM with v1 Store", register_request);
+
+            // Create v1 Machine from register request
+            let mut machine = machine_from_register_request(&register_request);
+            let machine_id = machine.id;
+
+            // Set the machine state based on VM status
+            use crate::store::types::MachineState;
+            machine.status.state = match status {
+                "running" => MachineState::Provisioned,
+                "stopped" => MachineState::Offline,
+                _ => MachineState::Provisioned,
+            };
+
+            // Register the VM with v1 Store
+            match state.store_v1.put_machine(&machine).await {
+                Ok(()) => {
                     info!("Successfully registered Proxmox VM {} as machine {}", vmid, machine_id);
-                    
-                    // Get the new machine to register with Tinkerbell
-                    if let Ok(Some(machine)) = db::get_machine_by_id(&machine_id).await {
-                        // Register with Tinkerbell (don't fail if this fails)
-                        // Assuming tinkerbell module is accessible via crate::tinkerbell
-                        if let Err(e) = crate::tinkerbell::register_machine(&machine).await {
-                            warn!("Failed to register machine with Tinkerbell (continuing anyway): {}", e);
-                        }
-                        
-                        // Update the machine status and OS - requires dbpool
-                        let machine_status = match status {
-                            "running" => MachineStatus::Ready,
-                            "stopped" => MachineStatus::Offline,
-                            _ => MachineStatus::ExistingOS,
-                        };
-                        
-                        let _ = db::update_status(&machine_id, machine_status).await;
-                        let _ = db::update_os_installed(&machine_id, &vm_os).await;
-                    }
-                    
                     registered_machines += 1;
                 },
                 Err(e) => {
@@ -1830,18 +1824,20 @@ pub async fn start_proxmox_sync_task(
                         }
                     }
                     
-                    // Get all machines with Proxmox information
-                    let machines = match db::get_all_machines().await {
+                    // Get all machines from v1 Store and filter for Proxmox machines
+                    use crate::store::types::MachineSource;
+                    let machines = match state_clone.store_v1.list_machines().await {
                         Ok(m) => m,
                         Err(e) => {
                             error!("Failed to get machines for Proxmox sync: {}", e);
                             continue;
                         }
                     };
-                    
-                    // Filter out machines with Proxmox info
-                    let proxmox_machines: Vec<_> = machines.into_iter()
-                        .filter(|m| m.proxmox_vmid.is_some() || m.is_proxmox_host)
+
+                    // Filter to only Proxmox-sourced machines and convert to common Machine type
+                    let proxmox_machines: Vec<dragonfly_common::models::Machine> = machines.iter()
+                        .filter(|m| matches!(m.metadata.source, MachineSource::Proxmox { .. }))
+                        .map(dragonfly_common::models::Machine::from)
                         .collect();
                     
                     if proxmox_machines.is_empty() {
@@ -1854,7 +1850,7 @@ pub async fn start_proxmox_sync_task(
                     match connect_to_proxmox(&state_clone, "sync").await {
                         Ok(client) => {
                             // Process each cluster and its machines
-                            if let Err(e) = sync_proxmox_machines(&client, &proxmox_machines).await {
+                            if let Err(e) = sync_proxmox_machines(&client, &proxmox_machines, &state_clone).await {
                                 error!("Error during Proxmox sync check: {}", e);
                             }
                         },
@@ -2028,7 +2024,8 @@ pub async fn connect_to_proxmox(
 // NEW function to handle both updates and pruning
 async fn sync_proxmox_machines(
     client: &ProxmoxApiClient,
-    db_machines: &[dragonfly_common::models::Machine]
+    db_machines: &[dragonfly_common::models::Machine],
+    state: &crate::AppState,
 ) -> Result<(), anyhow::Error> {
     info!("Starting Proxmox machine synchronization...");
 
@@ -2143,11 +2140,23 @@ async fn sync_proxmox_machines(
                         "Sync: Updating status for VM {} (ID: {}) from {:?} to {:?}",
                         vmid, db_machine.id, db_machine.status, new_db_status
                     );
-                    // Call the new db::update_machine_status function (to be created)
-                    if let Err(e) = db::update_machine_status(db_machine.id, new_db_status).await {
-                        error!("Sync: Failed to update status for VM {}: {}", vmid, e);
-                    } else {
-                        updated_status_count += 1;
+                    // Update via v1 Store
+                    if let Ok(Some(mut machine)) = state.store_v1.get_machine(db_machine.id).await {
+                        use crate::store::types::MachineState;
+                        machine.status.state = match new_db_status {
+                            MachineStatus::Ready => MachineState::Provisioned,
+                            MachineStatus::Offline => MachineState::Offline,
+                            MachineStatus::ExistingOS => MachineState::Provisioned,
+                            MachineStatus::AwaitingAssignment => MachineState::Discovered,
+                            MachineStatus::InstallingOS => MachineState::Provisioning,
+                            MachineStatus::Error(ref msg) => MachineState::Error { message: msg.clone() },
+                        };
+                        machine.metadata.updated_at = chrono::Utc::now();
+                        if let Err(e) = state.store_v1.put_machine(&machine).await {
+                            error!("Sync: Failed to update status for VM {}: {}", vmid, e);
+                        } else {
+                            updated_status_count += 1;
+                        }
                     }
                 }
 
@@ -2179,27 +2188,14 @@ async fn sync_proxmox_machines(
                                         }
 
                                         if let Some(current_ip) = found_ip {
-                                            if db_machine.ip_address != current_ip {
-                                                info!(
-                                                    "Sync: Updating IP for VM {} (ID: {}) from {} to {} (via agent)",
-                                                    vmid, db_machine.id, db_machine.ip_address, current_ip
-                                                );
-                                                // Use the generic update function with just the IP field
-                                                let _update_payload = serde_json::json!({ "ip_address": current_ip });
-                                                
-                                                // Fetch the machine, update IP, then call db::update_machine
-                                                match db::get_machine_by_id(&db_machine.id).await {
-                                                    Ok(Some(mut machine_to_update)) => {
-                                                        machine_to_update.ip_address = current_ip;
-                                                        match db::update_machine(&machine_to_update).await {
-                                                            Ok(_) => updated_ip_count += 1,
-                                                            Err(e) => error!("Sync: Failed to update machine object for VM {}: {}", vmid, e),
-                                                        }
-                                                    }
-                                                    Ok(None) => error!("Sync: Machine {} disappeared while trying to update IP?", db_machine.id),
-                                                    Err(e) => error!("Sync: Failed to fetch machine {} for IP update: {}", db_machine.id, e),
-                                                }
-                                            }
+                                            // TODO: v1 Store doesn't track IP addresses yet
+                                            // When IP tracking is added to v1 schema, update here
+                                            info!(
+                                                "Sync: Found IP {} for VM {} (ID: {}) via agent (IP tracking not yet in v1 schema)",
+                                                current_ip, vmid, db_machine.id
+                                            );
+                                            // For now, just count it as seen but don't try to update
+                                            let _ = updated_ip_count; // Suppress unused warning
                                         }
                                     }
                                 }
@@ -2222,11 +2218,13 @@ async fn sync_proxmox_machines(
     if !machines_to_prune.is_empty() {
         info!("Sync: Pruning {} machines not found in Proxmox API...", machines_to_prune.len());
         for machine_id in machines_to_prune {
-            // Pass ID by reference
-            match db::delete_machine(&machine_id).await {
-                Ok(_) => {
+            match state.store_v1.delete_machine(machine_id).await {
+                Ok(true) => {
                     info!("Sync: Successfully pruned machine {}", machine_id);
                     pruned_count += 1;
+                },
+                Ok(false) => {
+                    warn!("Sync: Machine {} was already deleted", machine_id);
                 },
                 Err(e) => {
                     error!("Sync: Failed to prune machine {}: {}", machine_id, e);
