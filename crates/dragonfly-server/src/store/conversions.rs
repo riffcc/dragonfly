@@ -333,7 +333,7 @@ impl From<&Machine> for CommonMachine {
             ip_address: m.status.current_ip.clone().unwrap_or_default(),
             hostname: m.config.hostname.clone(),
             os_choice: m.config.os_choice.clone(),
-            os_installed: None, // TODO: track this in v1 Machine
+            os_installed: m.config.os_installed.clone(),
             status: machine_state_to_common_status(&m.status.state),
             disks: m.hardware.disks.iter().map(|d| CommonDiskInfo {
                 device: d.device.clone(),
@@ -345,9 +345,18 @@ impl From<&Machine> for CommonMachine {
             created_at: m.metadata.created_at,
             updated_at: m.metadata.updated_at,
             memorable_name: Some(m.config.memorable_name.clone()),
-            bmc_credentials: None, // TODO: convert BMC if needed
-            installation_progress: 0,
-            installation_step: None,
+            bmc_credentials: m.config.bmc.as_ref().map(|b| dragonfly_common::models::BmcCredentials {
+                address: b.address.clone(),
+                username: b.username.clone(),
+                password: None, // Never expose password
+                bmc_type: match b.bmc_type {
+                    BmcType::Ipmi => dragonfly_common::models::BmcType::IPMI,
+                    BmcType::Redfish => dragonfly_common::models::BmcType::Redfish,
+                    BmcType::ProxmoxApi => dragonfly_common::models::BmcType::Other("proxmox".to_string()),
+                },
+            }),
+            installation_progress: m.config.installation_progress,
+            installation_step: m.config.installation_step.clone(),
             last_deployment_duration: None,
             cpu_model: m.hardware.cpu_model.clone(),
             cpu_cores: m.hardware.cpu_cores,

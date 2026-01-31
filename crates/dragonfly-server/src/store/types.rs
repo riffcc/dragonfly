@@ -309,11 +309,20 @@ pub struct MachineConfig {
     /// Template to use for provisioning
     pub os_choice: Option<String>,
 
+    /// OS that was actually installed (set after provisioning completes)
+    pub os_installed: Option<String>,
+
     /// User-defined tags for grouping
     pub tags: Vec<String>,
 
     /// BMC/IPMI configuration (if present)
     pub bmc: Option<BmcConfig>,
+
+    /// Installation progress (0-100)
+    pub installation_progress: u8,
+
+    /// Current installation step description
+    pub installation_step: Option<String>,
 }
 
 impl MachineConfig {
@@ -323,8 +332,11 @@ impl MachineConfig {
             hostname: None,
             memorable_name: generate_memorable_name(),
             os_choice: None,
+            os_installed: None,
             tags: Vec::new(),
             bmc: None,
+            installation_progress: 0,
+            installation_step: None,
         }
     }
 }
