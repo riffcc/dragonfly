@@ -67,4 +67,96 @@ impl Clone for EventManager {
             tx: self.tx.clone(),
         }
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_event_manager_new() {
+        let em = EventManager::new();
+        assert_eq!(em.receiver_count(), 0);
+    }
+
+    #[test]
+    fn test_event_manager_default() {
+        let em = EventManager::default();
+        assert_eq!(em.receiver_count(), 0);
+    }
+
+    #[test]
+    fn test_event_manager_subscribe_increases_count() {
+        let em = EventManager::new();
+        assert_eq!(em.receiver_count(), 0);
+
+        let _rx1 = em.subscribe();
+        assert_eq!(em.receiver_count(), 1);
+
+        let _rx2 = em.subscribe();
+        assert_eq!(em.receiver_count(), 2);
+    }
+
+    #[test]
+    fn test_event_manager_send_without_receivers_fails() {
+        let em = EventManager::new();
+        let result = em.send("test_message".to_string());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_event_manager_send_with_receiver_succeeds() {
+        let em = EventManager::new();
+        let _rx = em.subscribe();
+
+        let result = em.send("test_message".to_string());
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 1); // One receiver got the message
+    }
+
+    #[tokio::test]
+    async fn test_event_manager_receive_message() {
+        let em = EventManager::new();
+        let mut rx = em.subscribe();
+
+        // Send a message
+        let _ = em.send("hello".to_string());
+
+        // Receive it
+        let received = rx.recv().await;
+        assert!(received.is_ok());
+        assert_eq!(received.unwrap(), "hello");
+    }
+
+    #[test]
+    fn test_event_manager_clone() {
+        let em1 = EventManager::new();
+        let em2 = em1.clone();
+
+        // Both should share the same channel
+        let _rx = em1.subscribe();
+        assert_eq!(em2.receiver_count(), 1);
+    }
+
+    #[test]
+    fn test_event_enum_debug() {
+        // Test that Event enum implements Debug
+        let event = Event::MachineDiscovered("test-uuid".to_string());
+        let debug_str = format!("{:?}", event);
+        assert!(debug_str.contains("MachineDiscovered"));
+        assert!(debug_str.contains("test-uuid"));
+    }
+
+    #[test]
+    fn test_event_enum_variants() {
+        let discovered = Event::MachineDiscovered("id1".to_string());
+        let updated = Event::MachineUpdated("id2".to_string());
+        let deleted = Event::MachineDeleted("id3".to_string());
+
+        // Test clone
+        let discovered_clone = discovered.clone();
+        assert!(matches!(discovered_clone, Event::MachineDiscovered(id) if id == "id1"));
+        assert!(matches!(updated, Event::MachineUpdated(id) if id == "id2"));
+        assert!(matches!(deleted, Event::MachineDeleted(id) if id == "id3"));
+    }
 } 

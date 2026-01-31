@@ -20,8 +20,8 @@
 //! ```
 
 use super::{Result, Store, StoreError};
-use crate::store::types::{normalize_mac, Machine, MachineState};
 use async_trait::async_trait;
+use dragonfly_common::{normalize_mac, Machine, MachineState};
 use dragonfly_crd::{Template, Workflow};
 use redb::{Database, MultimapTableDefinition, ReadableDatabase, ReadableMultimapTable, ReadableTable, TableDefinition};
 use std::collections::HashMap;
@@ -76,11 +76,6 @@ impl RedbStore {
     /// Helper to convert UUID to fixed byte array for storage
     fn uuid_to_bytes(id: Uuid) -> [u8; 16] {
         *id.as_bytes()
-    }
-
-    /// Helper to convert byte array back to UUID
-    fn bytes_to_uuid(bytes: &[u8; 16]) -> Uuid {
-        Uuid::from_bytes(*bytes)
     }
 
     /// Serialize a value to JSON

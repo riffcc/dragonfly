@@ -216,3 +216,4 @@ settings.json
 # Machine database file
 config/dragonfly.db
 
+tarpaulin-report.html

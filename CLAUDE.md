@@ -24,6 +24,8 @@ Dragonfly supports TWO storage backends via `DragonflyStore` trait:
 
 **SQLite (`db.rs`) is DEPRECATED and being removed - DO NOT USE IT.**
 
+**DO NOT USE MemoryStore IN PRODUCTION.** MemoryStore is for tests ONLY. Never cache settings or state in memory - always read from ReDB. In-memory caches lead to split-brain bugs where the UI writes to one place and other code reads from another.
+
 **K8s IS NOT REQUIRED. EVER.** The storage backend choice is independent of features.
 
 ### Deployment Modes

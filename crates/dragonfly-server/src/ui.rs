@@ -6,20 +6,42 @@ use axum::{
     Form, Router,
 };
 use dragonfly_common::models::{Machine, MachineStatus, DiskInfo};
-use crate::store::types::Machine as V1Machine;
+use dragonfly_common::Machine as V1Machine;
+use crate::store::conversions::machine_to_common;
 use tracing::{debug, error, info, warn};
 use std::collections::HashMap;
 use chrono::{DateTime, Utc, TimeZone};
 use cookie::{Cookie, SameSite};
 use std::fs;
-use serde::Serialize;
-use crate::db::{self, get_app_settings, save_app_settings, mark_setup_completed};
+use serde::{Serialize, Deserialize};
+// SQLite db functions removed - using ReDB store directly
 use crate::auth::{self, AuthSession, Settings, Credentials};
 use minijinja::{Error as MiniJinjaError, ErrorKind as MiniJinjaErrorKind};
 use std::sync::Arc;
 use std::net::{IpAddr, Ipv4Addr};
-use crate::tinkerbell::WorkflowInfo;
 use uuid::Uuid;
+
+// Stub types for workflow info (Tinkerbell integration removed)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkflowInfo {
+    pub state: String,
+    pub current_action: Option<String>,
+    pub progress: u8,
+    pub tasks: Vec<TaskInfo>,
+    pub estimated_completion: Option<String>,
+    pub template_name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskInfo {
+    pub name: String,
+    pub status: String,
+    pub started_at: String,
+    pub duration: u64,
+    pub reported_duration: u64,
+    pub estimated_duration: u64,
+    pub progress: u8,
+}
 
 // Import global state
 use crate::{AppState, INSTALL_STATE_REF, InstallationState};
@@ -73,7 +95,7 @@ pub struct MachineListTemplate {
     pub theme: String,
     pub is_authenticated: bool,
     pub is_admin: bool,
-    pub workflow_infos: HashMap<uuid::Uuid, crate::tinkerbell::WorkflowInfo>,
+    pub workflow_infos: HashMap<uuid::Uuid, WorkflowInfo>,
     pub current_path: String,
 }
 
@@ -396,7 +418,7 @@ pub async fn index(
 ) -> Response {
     let theme = get_theme_from_cookie(&headers);
     let is_authenticated = auth_session.user.is_some();
-    let require_login = app_state.settings.lock().await.require_login;
+    let require_login = app_state.store.get_setting("require_login").await.ok().flatten().map(|v| v == "true").unwrap_or(true);
     let current_path = uri.path().to_string();
 
     // --- Login check FIRST (before any other logic) ---
@@ -476,9 +498,9 @@ pub async fn index(
             (demo_machines, counts, counts_json, dates)
         } else {
             // Normal mode - fetch machines from v1 Store (ReDB with UUIDv7)
-            let m: Vec<Machine> = match app_state.store_v1.list_machines().await {
+            let m: Vec<Machine> = match app_state.store.list_machines().await {
                 Ok(machine_list) => {
-                    machine_list.iter().map(Machine::from).collect()
+                    machine_list.iter().map(|m| machine_to_common(m)).collect()
                 }
                 Err(e) => {
                     error!("Failed to list machines from store: {}", e);
@@ -527,7 +549,7 @@ pub async fn machine_list(
     let is_admin = is_authenticated;
     let current_path = uri.path().to_string();
 
-    let require_login = app_state.settings.lock().await.require_login;
+    let require_login = app_state.store.get_setting("require_login").await.ok().flatten().map(|v| v == "true").unwrap_or(true);
 
     // Login check (applies to both normal and demo mode if require_login is true)
     if require_login && !is_authenticated {
@@ -559,11 +581,11 @@ pub async fn machine_list(
         return render_minijinja(&app_state, "machine_list.html", context);
     } else { // Normal mode
         // Normal mode - fetch machines from v1 Store (ReDB with UUIDv7)
-        let machines_result = match app_state.store_v1.list_machines().await {
+        let machines_result = match app_state.store.list_machines().await {
             Ok(machine_list) => {
                 let machines: Vec<Machine> = machine_list
                     .iter()
-                    .map(Machine::from)
+                    .map(|m| machine_to_common(m))
                     .collect();
                 Ok(machines)
             }
@@ -572,20 +594,8 @@ pub async fn machine_list(
 
         match machines_result {
             Ok(machines) => {
-                let mut workflow_infos = HashMap::new();
-                for machine in &machines {
-                    if machine.status == MachineStatus::InstallingOS {
-                        match crate::tinkerbell::get_workflow_info(Some(app_state.store_v1.as_ref()), machine).await {
-                            Ok(Some(info)) => {
-                                workflow_infos.insert(machine.id, info);
-                            }
-                            Ok(None) => { /* No active workflow found */ }
-                            Err(e) => {
-                                error!("Error fetching workflow info for machine {}: {}", machine.id, e);
-                            }
-                        }
-                    }
-                }
+                // Workflow info fetching removed (Tinkerbell integration removed)
+                let workflow_infos = HashMap::new();
 
                 let context = MachineListTemplate {
                     machines,
@@ -626,7 +636,7 @@ pub async fn machine_details(
     let current_path = uri.path().to_string();
     
     // Check if login is required site-wide
-    let require_login = app_state.settings.lock().await.require_login;
+    let require_login = app_state.store.get_setting("require_login").await.ok().flatten().map(|v| v == "true").unwrap_or(true);
     
     // If require_login is enabled and user is not authenticated,
     // redirect to login page
@@ -650,12 +660,12 @@ pub async fn machine_details(
                     
                     // Create a mock workflow info if the machine is in installing status
                     let workflow_info = if machine.status == MachineStatus::InstallingOS {
-                        Some(crate::tinkerbell::WorkflowInfo {
+                        Some(WorkflowInfo {
                             state: "running".to_string(),
                             current_action: Some("Writing disk image".to_string()),
                             progress: 65,
                             tasks: vec![
-                                crate::tinkerbell::TaskInfo {
+                                TaskInfo {
                                     name: "Installing operating system".to_string(),
                                     status: "STATE_RUNNING".to_string(),
                                     started_at: (Utc::now() - chrono::Duration::minutes(15)).to_rfc3339(),
@@ -732,8 +742,8 @@ pub async fn machine_details(
             }
             
             // Normal mode - get machine by ID from v1 Store (ReDB with UUIDv7)
-            let machine_result: Result<Option<Machine>, anyhow::Error> = match app_state.store_v1.get_machine(uuid).await {
-                Ok(Some(m)) => Ok(Some(Machine::from(&m))),
+            let machine_result: Result<Option<Machine>, anyhow::Error> = match app_state.store.get_machine(uuid).await {
+                Ok(Some(m)) => Ok(Some(machine_to_common(&m))),
                 Ok(None) => Ok(None),
                 Err(e) => Err(anyhow::anyhow!("Store error: {}", e)),
             };
@@ -746,24 +756,8 @@ pub async fn machine_details(
                     let created_at_formatted = machine.created_at.format("%Y-%m-%d %H:%M:%S UTC").to_string();
                     let updated_at_formatted = machine.updated_at.format("%Y-%m-%d %H:%M:%S UTC").to_string();
                     
-                    // Fetch workflow information for this machine if it's installing OS
-                    let workflow_info = if machine.status == MachineStatus::InstallingOS {
-                        match crate::tinkerbell::get_workflow_info(Some(app_state.store_v1.as_ref()), &machine).await {
-                            Ok(info) => {
-                                if let Some(info) = &info {
-                                    info!("Found workflow information for machine {}: state={}, progress={}%",
-                                         uuid, info.state, info.progress);
-                                }
-                                info
-                            },
-                            Err(e) => {
-                                error!("Error fetching workflow information for machine {}: {}", uuid, e);
-                                None
-                            }
-                        }
-                    } else {
-                        None
-                    };
+                    // Workflow information stub (Tinkerbell removed - using our own provisioning)
+                    let workflow_info: Option<WorkflowInfo> = None;
                     
                     // Serialize machine and workflow_info to JSON strings
                     let machine_json = serde_json::to_string(&machine)
@@ -897,11 +891,16 @@ pub async fn settings_page(
     let is_authenticated = auth_session.user.is_some();
     let current_path = uri.path().to_string();
     
-    // Get current settings
-    let settings_lock = app_state.settings.lock().await;
-    let require_login = settings_lock.require_login;
-    let default_os = settings_lock.default_os.clone();
-    drop(settings_lock);
+    // Get current settings from ReDB
+    let store = &app_state.store;
+    let require_login = store.get_setting("require_login").await
+        .ok().flatten()
+        .map(|v| v == "true")
+        .unwrap_or(true); // default to requiring login
+    let default_os = store.get_setting("default_os").await
+        .ok().flatten();
+
+    info!("Settings page: default_os from ReDB = {:?}", default_os);
     
     // If require_login is enabled and user is not authenticated,
     // redirect to login page
@@ -1016,99 +1015,57 @@ pub async fn update_settings(
 
     // Only update admin settings if user is authenticated
     if is_authenticated {
-        // Load current settings to get existing setup_completed value
-        let current_settings = match get_app_settings().await {
-            Ok(settings) => settings,
-            Err(e) => {
-                error!("Failed to load current settings: {}", e);
-                // Return an error response or use defaults
-                Settings::default()
-            }
-        };
+        let store = &app_state.store;
 
-        // Get the current password hash
-        let hashed_password = current_settings.admin_password_hash.clone();
-        
-        // Construct the new settings, preserving existing setup_completed
-        let new_settings = Settings {
+        // Load current settings from ReDB
+        let current_setup_completed = store.get_setting("setup_completed").await
+            .ok().flatten()
+            .map(|v| v == "true")
+            .unwrap_or(false);
+
+        // Construct the new settings
+        let settings = Settings {
             require_login: form.require_login.is_some(),
-            // Handle optional default_os correctly by filtering out empty strings
             default_os: form.default_os.as_ref().filter(|os| !os.is_empty()).cloned(),
-            setup_completed: form.setup_completed.is_some() || current_settings.setup_completed,
-            admin_username: form.username.unwrap_or_else(|| current_settings.admin_username.clone()),
-            admin_password_hash: hashed_password,
-            admin_email: form.admin_email.unwrap_or_else(|| "".to_string()),
+            setup_completed: form.setup_completed.is_some() || current_setup_completed,
+            admin_username: form.username.clone().unwrap_or_else(|| "admin".to_string()),
+            admin_password_hash: String::new(), // Password handled separately
+            admin_email: form.admin_email.clone().unwrap_or_default(),
             oauth_enabled: form.oauth_enabled.is_some(),
             oauth_provider: form.oauth_provider.clone(),
             oauth_client_id: form.oauth_client_id.clone(),
             oauth_client_secret: form.oauth_client_secret.clone(),
-            // Preserve existing Proxmox settings or use None
-            proxmox_host: current_settings.proxmox_host.clone(),
-            proxmox_username: current_settings.proxmox_username.clone(),
-            proxmox_password: current_settings.proxmox_password.clone(),
-            proxmox_port: current_settings.proxmox_port,
-            proxmox_skip_tls_verify: current_settings.proxmox_skip_tls_verify,
+            proxmox_host: None,
+            proxmox_username: None,
+            proxmox_password: None,
+            proxmox_port: None,
+            proxmox_skip_tls_verify: None,
         };
 
-        info!("Saving settings: require_login={}, default_os={:?}, setup_completed={:?}", 
-              new_settings.require_login, new_settings.default_os, new_settings.setup_completed);
+        info!("Saving settings: require_login={}, default_os={:?}, setup_completed={:?}",
+              settings.require_login, settings.default_os, settings.setup_completed);
 
-        // Save the general settings
-        if let Err(e) = save_app_settings(&new_settings).await {
-            error!("Failed to save settings: {}", e);
-            // Prepare error message and template for display
-            let error_message = Some(format!("Failed to save settings: {}", e));
-            
-            // Get current settings for template
-            let admin_username = current_settings.admin_username.clone();
-            let require_login = current_settings.require_login;
-            let default_os = current_settings.default_os.clone();
-            
-            // These fields are not in Settings, use defaults
-            let has_initial_password = false;
-            let rendered_password = "".to_string();
-            let show_admin_settings = is_authenticated;
-            
-            // Create template with error message
-            let context = SettingsTemplate {
-                theme: theme.clone(),
-                is_authenticated,
-                admin_username,
-                require_login,
-                default_os_none: default_os.is_none(),
-                default_os_ubuntu2204: default_os.as_deref() == Some("ubuntu-2204"),
-                default_os_ubuntu2404: default_os.as_deref() == Some("ubuntu-2404"),
-                default_os_debian12: default_os.as_deref() == Some("debian-12"),
-                default_os_debian13: default_os.as_deref() == Some("debian-13"),
-                default_os_proxmox: default_os.as_deref() == Some("proxmox"),
-                default_os_talos: default_os.as_deref() == Some("talos"),
-                has_initial_password,
-                rendered_password,
-                show_admin_settings,
-                error_message,
-                current_path, // Make sure current_path is passed here
-            };
+        // Save settings to ReDB store
+        let store = &app_state.store;
 
-            // Return the error template
-            let mut cookie = Cookie::new("dragonfly_theme", theme.clone());
-            cookie.set_path("/");
-            cookie.set_max_age(time::Duration::days(365));
-            cookie.set_same_site(SameSite::Lax);
-
-            return (
-                [(header::SET_COOKIE, cookie.to_string())],
-                render_minijinja(&app_state, "settings.html", context)
-            ).into_response();
-        } else {
-            // Update settings in app state ONLY after successful save
-            if let Ok(mut guard) = app_state.settings.try_lock() {
-                *guard = new_settings.clone(); // Update the in-memory state
-                info!("In-memory AppState settings updated.");
-            } else {
-                error!("Failed to acquire lock to update in-memory AppState settings.");
-                // The settings are saved in DB, but the live state might be stale until restart/reload
-            }
+        if let Err(e) = store.put_setting("require_login", &settings.require_login.to_string()).await {
+            error!("Failed to save require_login: {}", e);
         }
+
+        if let Some(ref os) = settings.default_os {
+            if let Err(e) = store.put_setting("default_os", os).await {
+                error!("Failed to save default_os: {}", e);
+            }
+        } else {
+            // Clear default_os if set to None
+            let _ = store.delete_setting("default_os").await;
+        }
+
+        if let Err(e) = store.put_setting("setup_completed", &settings.setup_completed.to_string()).await {
+            error!("Failed to save setup_completed: {}", e);
+        }
+
+        info!("Settings saved to ReDB store.");
 
         // Update admin password if provided and confirmed
         // Check form.password instead of form.password
@@ -1132,9 +1089,9 @@ pub async fn update_settings(
                             let error_message = Some(format!("Failed to save credentials: {}", e));
                             
                             // Get current settings for template
-                            let admin_username = current_settings.admin_username.clone();
-                            let require_login = current_settings.require_login;
-                            let default_os = current_settings.default_os.clone();
+                            let admin_username = settings.admin_username.clone();
+                            let require_login = settings.require_login;
+                            let default_os = settings.default_os.clone();
                             
                             // These fields are not in Settings, use defaults
                             let has_initial_password = false;
@@ -1189,9 +1146,9 @@ pub async fn update_settings(
                         let error_message = Some(format!("Failed to hash password: {}", e));
                         
                         // Get current settings for template
-                        let admin_username = current_settings.admin_username.clone();
-                        let require_login = current_settings.require_login;
-                        let default_os = current_settings.default_os.clone();
+                        let admin_username = settings.admin_username.clone();
+                        let require_login = settings.require_login;
+                        let default_os = settings.default_os.clone();
                         
                         // These fields are not in Settings, use defaults
                         let has_initial_password = false;
@@ -1245,9 +1202,9 @@ pub async fn update_settings(
                 let error_message = Some("Passwords do not match.".to_string());
                 
                 // Get current settings for template
-                let admin_username = current_settings.admin_username.clone();
-                let require_login = current_settings.require_login;
-                let default_os = current_settings.default_os.clone();
+                let admin_username = settings.admin_username.clone();
+                let require_login = settings.require_login;
+                let default_os = settings.default_os.clone();
                 
                 // These fields are not in Settings, use defaults
                 let has_initial_password = false;
@@ -1304,20 +1261,31 @@ pub async fn update_settings(
 
 // Environment setup for MiniJinja
 pub fn setup_minijinja_environment(env: &mut minijinja::Environment) -> Result<(), anyhow::Error> {
-    // Add OS name formatter
-    env.add_filter("format_os", |os: &str| -> String {
-        format_os_name(os)
+    // Add OS name formatter - handles null/None values gracefully
+    env.add_filter("format_os", |value: minijinja::Value| -> String {
+        match value.as_str() {
+            Some(os) if !os.is_empty() => format_os_name(os),
+            _ => "No OS yet".to_string(),
+        }
     });
-    
-    // Add OS icon formatter
-    env.add_filter("format_os_icon", |os: &str| -> String {
-        get_os_icon(os)
+
+    // Add OS icon formatter - handles null/None values gracefully
+    env.add_filter("format_os_icon", |value: minijinja::Value| -> String {
+        match value.as_str() {
+            Some(os) if !os.is_empty() => get_os_icon(os),
+            _ => String::new(),
+        }
     });
-    
+
     // Add combined OS info formatter that returns a serializable struct
-    env.add_filter("get_os_info", |os: &str| -> minijinja::Value {
-        let info = get_os_info(os);
-        minijinja::value::Value::from_serialize(&info)
+    env.add_filter("get_os_info", |value: minijinja::Value| -> minijinja::Value {
+        match value.as_str() {
+            Some(os) => {
+                let info = get_os_info(os);
+                minijinja::value::Value::from_serialize(&info)
+            },
+            None => minijinja::Value::UNDEFINED,
+        }
     });
     
     // Register datetime formatting filter
@@ -1439,7 +1407,7 @@ pub async fn compute_page(
     let is_admin = is_authenticated;
     let current_path = uri.path().to_string();
 
-    let require_login = app_state.settings.lock().await.require_login;
+    let require_login = app_state.store.get_setting("require_login").await.ok().flatten().map(|v| v == "true").unwrap_or(true);
 
     // Login check
     if require_login && !is_authenticated {
@@ -1450,8 +1418,8 @@ pub async fn compute_page(
     }
 
     // Fetch all machines from the v1 Store
-    let all_machines: Vec<Machine> = match app_state.store_v1.list_machines().await {
-        Ok(v1_machines) => v1_machines.iter().map(|m| m.into()).collect(),
+    let all_machines: Vec<Machine> = match app_state.store.list_machines().await {
+        Ok(v1_machines) => v1_machines.iter().map(|m| crate::store::conversions::machine_to_common(m)).collect(),
         Err(e) => {
             error!("Error fetching machines for compute page: {}", e);
             // Optionally render an error page or return an empty list
@@ -1539,14 +1507,14 @@ pub async fn tags_page(
     let current_path = uri.path().to_string();
 
     // Check if user is authenticated if login is required
-    let require_login = app_state.settings.lock().await.require_login;
+    let require_login = app_state.store.get_setting("require_login").await.ok().flatten().map(|v| v == "true").unwrap_or(true);
     if require_login && !is_authenticated && !app_state.is_demo_mode {
         return Redirect::to("/login").into_response();
     }
 
     // Fetch all machines from the v1 Store to display in the tag editor
-    let machines: Vec<Machine> = match app_state.store_v1.list_machines().await {
-        Ok(v1_machines) => v1_machines.iter().map(|m| m.into()).collect(),
+    let machines: Vec<Machine> = match app_state.store.list_machines().await {
+        Ok(v1_machines) => v1_machines.iter().map(|m| crate::store::conversions::machine_to_common(m)).collect(),
         Err(e) => {
             error!("Failed to fetch machines for tags page: {}", e);
             vec![]

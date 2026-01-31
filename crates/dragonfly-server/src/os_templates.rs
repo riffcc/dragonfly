@@ -2,7 +2,7 @@
 //!
 //! This module handles loading and managing OS templates for provisioning.
 //! Templates are loaded from YAML files in /opt/dragonfly/templates/ and stored
-//! in the configured storage backend (ReDB, K8s, etc.) via the DragonflyStore trait.
+//! in the configured storage backend (ReDB, memory, etc.) via the v1 Store trait.
 //!
 //! The file system is the source of truth - templates are always loaded from files
 //! on startup, allowing updates without database wipes.
@@ -16,7 +16,7 @@ use std::path::Path;
 use tokio::fs;
 use std::sync::Arc;
 
-use crate::store::DragonflyStore;
+use crate::store::v1::Store;
 use dragonfly_crd::Template;
 
 /// Primary template directory (installed by `dragonfly install`)
@@ -31,7 +31,7 @@ const FALLBACK_TEMPLATE_DIRS: &[&str] = &[
 ///
 /// Templates are always loaded from files, making the file system the source of truth.
 /// This allows updating templates without wiping the database.
-pub async fn init_os_templates(store: Arc<dyn DragonflyStore>) -> Result<()> {
+pub async fn init_os_templates(store: Arc<dyn Store>) -> Result<()> {
     info!("Initializing OS templates from files...");
 
     // Find the template directory
@@ -74,7 +74,7 @@ async fn find_template_dir() -> Option<std::path::PathBuf> {
 }
 
 /// Load all templates from a directory
-async fn load_templates_from_dir(store: Arc<dyn DragonflyStore>, dir: &Path) -> Result<()> {
+async fn load_templates_from_dir(store: Arc<dyn Store>, dir: &Path) -> Result<()> {
     let mut entries = fs::read_dir(dir).await
         .map_err(|e| anyhow!("Failed to read template directory: {}", e))?;
 
@@ -123,7 +123,7 @@ async fn load_template_from_path(path: &Path) -> Result<Template> {
 }
 
 /// Install a template if it doesn't exist (fallback for when no template dir exists)
-async fn install_template_if_missing(store: Arc<dyn DragonflyStore>, template_name: &str) -> Result<()> {
+async fn install_template_if_missing(store: Arc<dyn Store>, template_name: &str) -> Result<()> {
     // Check if template already exists in store
     match store.get_template(template_name).await {
         Ok(Some(_)) => {
@@ -142,7 +142,7 @@ async fn install_template_if_missing(store: Arc<dyn DragonflyStore>, template_na
 }
 
 /// Download and install a template from GitHub
-async fn install_template_from_download(store: Arc<dyn DragonflyStore>, template_name: &str) -> Result<()> {
+async fn install_template_from_download(store: Arc<dyn Store>, template_name: &str) -> Result<()> {
     info!("Downloading template '{}' from GitHub...", template_name);
     let yaml_content = download_template(template_name).await?;
 

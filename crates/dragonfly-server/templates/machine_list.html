@@ -737,17 +737,17 @@
                                     <div class="relative" @click.stop>
                                         <!-- Main Display: Installed OS -->
                                         <div class="flex items-center">
-                                            {% set installed_os_display = machine.os_installed|default('Unknown') %}
-                                            {% if installed_os_display != 'Unknown' %}
+                                            {% set installed_os_display = machine.os_installed|default('') %}
+                                            {% if installed_os_display %}
                                                 {# Display installed OS with icon and name #}
-                                                <span class="flex items-center os-current-value" data-os-raw="{{ machine.os_installed }}">
-                                                    {{ machine.os_installed | format_os_icon | safe }}
-                                                    <span class="ml-1">{{ machine.os_installed | format_os }}</span>
+                                                <span class="flex items-center os-current-value" data-os-raw="{{ installed_os_display }}">
+                                                    {{ installed_os_display | format_os_icon | safe }}
+                                                    <span class="ml-1">{{ installed_os_display | format_os }}</span>
                                                 </span>
                                             {% else %}
-                                                {# Display Unknown OS #}
+                                                {# No OS detected yet #}
                                                 <span class="text-gray-400 italic flex items-center os-current-value" data-os-raw="">
-                                                    <i class="fas fa-square-question text-gray-400 mr-1"></i> Unknown
+                                                    No OS yet
                                                 </span>
                                             {% endif %}
                                             <!-- Dropdown Arrow -->

@@ -4,8 +4,8 @@
 //! Uses RwLock for thread-safe access with minimal contention.
 
 use super::{Result, Store, StoreError};
-use crate::store::types::{normalize_mac, Machine, MachineState};
 use async_trait::async_trait;
+use dragonfly_common::{normalize_mac, Machine, MachineState};
 use dragonfly_crd::{Template, Workflow};
 use std::collections::{HashMap, HashSet};
 use std::sync::RwLock;

@@ -3,7 +3,7 @@
 //! This module provides helpers for migrating from the old database schema
 //! to the new v0.1.0 Store trait.
 
-use crate::store::types::{
+use dragonfly_common::{
     BmcConfig, BmcType, Disk, HardwareInfo, Machine, MachineConfig, MachineIdentity,
     MachineMetadata, MachineSource, MachineState, MachineStatus, NetworkInterface,
     WorkflowResult,
@@ -325,47 +325,45 @@ pub fn machine_state_to_common_status(state: &MachineState) -> CommonMachineStat
 }
 
 /// Convert v0.1.0 Machine to dragonfly_common::models::Machine for API compatibility
-impl From<&Machine> for CommonMachine {
-    fn from(m: &Machine) -> Self {
-        CommonMachine {
-            id: m.id,
-            mac_address: m.identity.primary_mac.clone(),
-            ip_address: m.status.current_ip.clone().unwrap_or_default(),
-            hostname: m.config.hostname.clone(),
-            os_choice: m.config.os_choice.clone(),
-            os_installed: m.config.os_installed.clone(),
-            status: machine_state_to_common_status(&m.status.state),
-            disks: m.hardware.disks.iter().map(|d| CommonDiskInfo {
-                device: d.device.clone(),
-                size_bytes: d.size_bytes,
-                model: d.model.clone(),
-                calculated_size: Some(format!("{:.1} GB", d.size_bytes as f64 / 1_000_000_000.0)),
-            }).collect(),
-            nameservers: vec![],
-            created_at: m.metadata.created_at,
-            updated_at: m.metadata.updated_at,
-            memorable_name: Some(m.config.memorable_name.clone()),
-            bmc_credentials: m.config.bmc.as_ref().map(|b| dragonfly_common::models::BmcCredentials {
-                address: b.address.clone(),
-                username: b.username.clone(),
-                password: None, // Never expose password
-                bmc_type: match b.bmc_type {
-                    BmcType::Ipmi => dragonfly_common::models::BmcType::IPMI,
-                    BmcType::Redfish => dragonfly_common::models::BmcType::Redfish,
-                    BmcType::ProxmoxApi => dragonfly_common::models::BmcType::Other("proxmox".to_string()),
-                },
-            }),
-            installation_progress: m.config.installation_progress,
-            installation_step: m.config.installation_step.clone(),
-            last_deployment_duration: None,
-            cpu_model: m.hardware.cpu_model.clone(),
-            cpu_cores: m.hardware.cpu_cores,
-            total_ram_bytes: m.hardware.memory_bytes,
-            proxmox_vmid: None, // TODO: extract from source if Proxmox
-            proxmox_node: None,
-            proxmox_cluster: None,
-            is_proxmox_host: false,
-        }
+pub fn machine_to_common(m: &Machine) -> CommonMachine {
+    CommonMachine {
+        id: m.id,
+        mac_address: m.identity.primary_mac.clone(),
+        ip_address: m.status.current_ip.clone().unwrap_or_default(),
+        hostname: m.config.hostname.clone(),
+        os_choice: m.config.os_choice.clone(),
+        os_installed: m.config.os_installed.clone(),
+        status: machine_state_to_common_status(&m.status.state),
+        disks: m.hardware.disks.iter().map(|d| CommonDiskInfo {
+            device: d.device.clone(),
+            size_bytes: d.size_bytes,
+            model: d.model.clone(),
+            calculated_size: Some(format!("{:.1} GB", d.size_bytes as f64 / 1_000_000_000.0)),
+        }).collect(),
+        nameservers: vec![],
+        created_at: m.metadata.created_at,
+        updated_at: m.metadata.updated_at,
+        memorable_name: Some(m.config.memorable_name.clone()),
+        bmc_credentials: m.config.bmc.as_ref().map(|b| dragonfly_common::models::BmcCredentials {
+            address: b.address.clone(),
+            username: b.username.clone(),
+            password: None, // Never expose password
+            bmc_type: match b.bmc_type {
+                BmcType::Ipmi => dragonfly_common::models::BmcType::IPMI,
+                BmcType::Redfish => dragonfly_common::models::BmcType::Redfish,
+                BmcType::ProxmoxApi => dragonfly_common::models::BmcType::Other("proxmox".to_string()),
+            },
+        }),
+        installation_progress: m.config.installation_progress,
+        installation_step: m.config.installation_step.clone(),
+        last_deployment_duration: None,
+        cpu_model: m.hardware.cpu_model.clone(),
+        cpu_cores: m.hardware.cpu_cores,
+        total_ram_bytes: m.hardware.memory_bytes,
+        proxmox_vmid: None, // TODO: extract from source if Proxmox
+        proxmox_node: None,
+        proxmox_cluster: None,
+        is_proxmox_host: false,
     }
 }
 

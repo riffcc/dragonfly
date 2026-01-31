@@ -4,7 +4,7 @@
 //! against any implementation (MemoryStore, RedbStore, EtcdStore).
 
 use super::*;
-use crate::store::types::{
+use dragonfly_common::{
     BmcConfig, BmcType, Disk, HardwareInfo, Machine, MachineConfig, MachineIdentity,
     MachineMetadata, MachineSource, MachineState, MachineStatus, NetworkInterface,
     WorkflowResult,
@@ -489,6 +489,27 @@ async fn test_settings_crud() {
     let deleted = store.delete_setting("app.mode").await.unwrap();
     assert!(deleted);
     assert!(store.get_setting("app.mode").await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn test_default_os_setting_roundtrip() {
+    let store = create_test_store();
+
+    // Save default_os exactly as the UI does
+    let os_choice = "debian-13";
+    store.put_setting("default_os", os_choice).await.unwrap();
+
+    // Read it back exactly as settings_page does
+    let default_os = store.get_setting("default_os").await
+        .ok().flatten();
+
+    // Verify it's Some("debian-13")
+    assert_eq!(default_os, Some("debian-13".to_string()));
+
+    // Verify the comparison logic used in the template works
+    assert_eq!(default_os.as_deref(), Some("debian-13"));
+    assert!(default_os.as_deref() == Some("debian-13"));
+    assert!(!(default_os.is_none()));
 }
 
 #[tokio::test]

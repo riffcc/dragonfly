@@ -7,7 +7,6 @@ use serde_json::json;
 
 use crate::AppState;
 use dragonfly_common::models::{ErrorResponse, Machine, MachineStatus};
-use crate::tinkerbell;
 use crate::handlers::proxmox; // Import proxmox functions
 
 // Struct to receive the power action request
@@ -27,8 +26,8 @@ pub async fn bmc_power_action_handler(
     info!("DEBUG: BMC power handler called with action '{}' for machine {}", payload.action, machine_id);
 
     // 1. Fetch machine details from the v1 Store
-    let machine: Machine = match state.store_v1.get_machine(machine_id).await {
-        Ok(Some(m)) => (&m).into(),
+    let machine: Machine = match state.store.get_machine(machine_id).await {
+        Ok(Some(m)) => crate::store::conversions::machine_to_common(&m),
         Ok(None) => {
             error!("Machine {} not found for BMC action", machine_id);
             return Err((StatusCode::NOT_FOUND, Json(ErrorResponse {
@@ -221,16 +220,16 @@ async fn handle_proxmox_vm_action(
 
                     // 5. Update v1 Store status to Provisioning (InstallingOS)
                     info!("Updating machine {} status to InstallingOS", machine.id);
-                    let updated_machine: Machine = match state.store_v1.get_machine(machine.id).await {
+                    let updated_machine: Machine = match state.store.get_machine(machine.id).await {
                         Ok(Some(mut v1_machine)) => {
-                            v1_machine.status.state = crate::store::types::MachineState::Provisioning;
+                            v1_machine.status.state = dragonfly_common::MachineState::Provisioning;
                             v1_machine.metadata.updated_at = chrono::Utc::now();
-                            if let Err(e) = state.store_v1.put_machine(&v1_machine).await {
+                            if let Err(e) = state.store.put_machine(&v1_machine).await {
                                 error!("Failed to update machine {} status after Proxmox reboot: {}", machine.id, e);
                             } else {
                                 let _ = state.event_manager.send(format!("machine_updated:{}", machine.id));
                             }
-                            (&v1_machine).into()
+                            crate::store::conversions::machine_to_common(&v1_machine)
                         }
                         Ok(None) => {
                             error!("Machine {} disappeared during workflow creation", machine.id);
@@ -246,30 +245,13 @@ async fn handle_proxmox_vm_action(
                         }
                     };
 
-                    // 6. Create Tinkerbell workflow
-                    info!("Creating Tinkerbell workflow for machine {}", machine.id);
-                    
-                    // Use the os_choice from the machine if available, or default to a sensible fallback
+                    // 6. Success - machine is now set for PXE boot and rebooted
+                    // (Tinkerbell workflow creation removed - using our own provisioning)
                     let os_choice = updated_machine.os_choice.as_deref().unwrap_or("ubuntu-2204");
-                    match tinkerbell::create_workflow(&updated_machine, os_choice).await {
-                        Ok(_) => {
-                            info!("Successfully created Tinkerbell workflow for machine {}", machine.id);
-                            // Check the response from set_next_boot and reboot operations in the logs
-                            info!("VM {} successfully set for PXE boot and rebooted, workflow created", vmid);
-                        },
-                        Err(e) => {
-                            // Log error but proceed, as Proxmox action succeeded
-                            error!("Failed to create Tinkerbell workflow for machine {}: {}", machine.id, e);
-                            // Return partial success
-                            return Ok((StatusCode::OK, Json(serde_json::json!({ 
-                                "message": "Proxmox reboot-pxe initiated successfully, but failed to create workflow",
-                                "error": e.to_string()
-                            }))).into_response());
-                        }
-                    }
+                    info!("VM {} successfully set for PXE boot and rebooted", vmid);
 
-                    Ok((StatusCode::OK, Json(serde_json::json!({ 
-                        "message": "Proxmox reboot-pxe initiated and workflow created successfully",
+                    Ok((StatusCode::OK, Json(serde_json::json!({
+                        "message": "Proxmox reboot-pxe initiated successfully",
                         "machine_id": machine.id.to_string(),
                         "vm_id": vmid,
                         "os_choice": os_choice

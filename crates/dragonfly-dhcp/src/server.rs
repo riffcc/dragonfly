@@ -8,18 +8,18 @@ use crate::error::{DhcpError, Result};
 use crate::packet::{DhcpRequest, DhcpResponseBuilder};
 use async_trait::async_trait;
 use dhcproto::v4::MessageType;
-use dragonfly_crd::Hardware;
+use dragonfly_common::Machine;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::sync::Arc;
 use tokio::net::UdpSocket;
 use tokio::sync::broadcast;
 use tracing::{debug, error, info, warn};
 
-/// Trait for looking up hardware information
+/// Trait for looking up machines by MAC address
 #[async_trait]
-pub trait HardwareLookup: Send + Sync {
-    /// Look up hardware by MAC address
-    async fn get_hardware_by_mac(&self, mac: &str) -> Option<Hardware>;
+pub trait MachineLookup: Send + Sync {
+    /// Look up machine by MAC address
+    async fn get_machine_by_mac(&self, mac: &str) -> Option<Machine>;
 }
 
 /// Event emitted by the DHCP server
@@ -48,17 +48,17 @@ pub enum DhcpEvent {
 /// DHCP server
 pub struct DhcpServer {
     config: DhcpConfig,
-    hardware_lookup: Arc<dyn HardwareLookup>,
+    machine_lookup: Arc<dyn MachineLookup>,
     event_sender: broadcast::Sender<DhcpEvent>,
 }
 
 impl DhcpServer {
     /// Create a new DHCP server
-    pub fn new(config: DhcpConfig, hardware_lookup: Arc<dyn HardwareLookup>) -> Self {
+    pub fn new(config: DhcpConfig, machine_lookup: Arc<dyn MachineLookup>) -> Self {
         let (event_sender, _) = broadcast::channel(1024);
         Self {
             config,
-            hardware_lookup,
+            machine_lookup,
             event_sender,
         }
     }
@@ -180,22 +180,22 @@ impl DhcpServer {
             is_pxe: request.is_pxe_request(),
         });
 
-        // Look up hardware
-        let hardware = self
-            .hardware_lookup
-            .get_hardware_by_mac(&request.mac_address)
+        // Look up machine
+        let machine = self
+            .machine_lookup
+            .get_machine_by_mac(&request.mac_address)
             .await;
 
         // Handle based on mode and message type
         let response = match self.config.mode {
             DhcpMode::Reservation => {
-                self.handle_reservation_mode(&request, hardware.as_ref()).await?
+                self.handle_reservation_mode(&request, machine.as_ref()).await?
             }
             DhcpMode::Proxy => {
-                self.handle_proxy_mode(&request, hardware.as_ref()).await?
+                self.handle_proxy_mode(&request, machine.as_ref()).await?
             }
             DhcpMode::AutoProxy => {
-                self.handle_auto_proxy_mode(&request, hardware.as_ref()).await?
+                self.handle_auto_proxy_mode(&request, machine.as_ref()).await?
             }
         };
 
@@ -237,36 +237,32 @@ impl DhcpServer {
     async fn handle_reservation_mode(
         &self,
         request: &DhcpRequest,
-        hardware: Option<&Hardware>,
+        machine: Option<&Machine>,
     ) -> Result<Option<(Vec<u8>, Option<Ipv4Addr>, String)>> {
-        let hardware = match hardware {
-            Some(hw) => hw,
+        let machine = match machine {
+            Some(m) => m,
             None => {
-                debug!(mac = %request.mac_address, "No hardware record found, ignoring");
+                debug!(mac = %request.mac_address, "No machine record found, ignoring");
                 return Ok(None);
             }
         };
 
-        // Get configured IP for this hardware
-        let offered_ip = hardware
-            .spec
-            .interfaces
-            .first()
-            .and_then(|iface| iface.dhcp.as_ref())
-            .and_then(|dhcp| dhcp.ip.as_ref())
-            .and_then(|ip| ip.address.parse().ok());
+        // Get configured IP for this machine
+        let offered_ip = machine
+            .dhcp_ip()
+            .and_then(|dhcp| dhcp.address.parse().ok());
 
         let offered_ip = match offered_ip {
             Some(ip) => ip,
             None => {
-                warn!(mac = %request.mac_address, "No IP configured for hardware");
+                warn!(mac = %request.mac_address, "No IP configured for machine");
                 return Ok(None);
             }
         };
 
         match request.message_type {
             MessageType::Discover => {
-                let response = self.build_offer(request, offered_ip, hardware)?;
+                let response = self.build_offer(request, offered_ip, machine)?;
                 Ok(Some((response, Some(offered_ip), "OFFER".to_string())))
             }
             MessageType::Request => {
@@ -278,7 +274,7 @@ impl DhcpServer {
                         return Ok(Some((response, None, "NAK".to_string())));
                     }
                 }
-                let response = self.build_ack(request, offered_ip, hardware)?;
+                let response = self.build_ack(request, offered_ip, machine)?;
                 Ok(Some((response, Some(offered_ip), "ACK".to_string())))
             }
             _ => Ok(None),
@@ -289,31 +285,31 @@ impl DhcpServer {
     async fn handle_proxy_mode(
         &self,
         request: &DhcpRequest,
-        hardware: Option<&Hardware>,
+        machine: Option<&Machine>,
     ) -> Result<Option<(Vec<u8>, Option<Ipv4Addr>, String)>> {
         // Only respond to PXE requests
         if !request.is_pxe_request() {
             return Ok(None);
         }
 
-        // Only respond if we have hardware record
-        let hardware = match hardware {
-            Some(hw) => hw,
+        // Only respond if we have machine record
+        let machine = match machine {
+            Some(m) => m,
             None => {
-                debug!(mac = %request.mac_address, "No hardware record for PXE request");
+                debug!(mac = %request.mac_address, "No machine record for PXE request");
                 return Ok(None);
             }
         };
 
         // Check if netboot is allowed
-        if !hardware.allows_pxe() {
-            debug!(mac = %request.mac_address, "PXE not allowed for hardware");
+        if !machine.allows_pxe() {
+            debug!(mac = %request.mac_address, "PXE not allowed for machine");
             return Ok(None);
         }
 
         match request.message_type {
             MessageType::Discover | MessageType::Request => {
-                let response = self.build_proxy_offer(request, Some(hardware))?;
+                let response = self.build_proxy_offer(request, Some(machine))?;
                 Ok(Some((response, None, "PROXY_OFFER".to_string())))
             }
             _ => Ok(None),
@@ -324,26 +320,26 @@ impl DhcpServer {
     async fn handle_auto_proxy_mode(
         &self,
         request: &DhcpRequest,
-        hardware: Option<&Hardware>,
+        machine: Option<&Machine>,
     ) -> Result<Option<(Vec<u8>, Option<Ipv4Addr>, String)>> {
         // Only respond to PXE requests
         if !request.is_pxe_request() {
             return Ok(None);
         }
 
-        // If we have hardware, check if PXE is allowed
-        if let Some(hw) = hardware {
-            if !hw.allows_pxe() {
-                debug!(mac = %request.mac_address, "PXE not allowed for hardware");
+        // If we have machine, check if PXE is allowed
+        if let Some(m) = machine {
+            if !m.allows_pxe() {
+                debug!(mac = %request.mac_address, "PXE not allowed for machine");
                 return Ok(None);
             }
         }
 
-        // In auto-proxy, we respond even without hardware record
+        // In auto-proxy, we respond even without machine record
         // (for discovery boot)
         match request.message_type {
             MessageType::Discover | MessageType::Request => {
-                let response = self.build_proxy_offer(request, hardware)?;
+                let response = self.build_proxy_offer(request, machine)?;
                 Ok(Some((response, None, "PROXY_OFFER".to_string())))
             }
             _ => Ok(None),
@@ -355,7 +351,7 @@ impl DhcpServer {
         &self,
         request: &DhcpRequest,
         offered_ip: Ipv4Addr,
-        hardware: &Hardware,
+        machine: &Machine,
     ) -> Result<Vec<u8>> {
         let is_uefi = request.client_arch.map(|a| a.is_uefi()).unwrap_or(false);
         let arch = request.client_arch.and_then(|a| a.arch_string());
@@ -372,7 +368,7 @@ impl DhcpServer {
         // Add gateway
         if let Some(gateway) = self.config.gateway {
             builder = builder.with_gateway(gateway);
-        } else if let Some(gw) = self.get_hardware_gateway(hardware) {
+        } else if let Some(gw) = self.get_machine_gateway(machine) {
             builder = builder.with_gateway(gw);
         }
 
@@ -382,7 +378,7 @@ impl DhcpServer {
         }
 
         // Add PXE options if this is a PXE request and allowed
-        if request.is_pxe_request() && hardware.allows_pxe() {
+        if request.is_pxe_request() && machine.allows_pxe() {
             let pxe = if request.is_ipxe {
                 // iPXE client - send boot script URL
                 let script_url = self.config.ipxe_script_url.clone().unwrap_or_else(|| {
@@ -413,7 +409,7 @@ impl DhcpServer {
         &self,
         request: &DhcpRequest,
         offered_ip: Ipv4Addr,
-        hardware: &Hardware,
+        machine: &Machine,
     ) -> Result<Vec<u8>> {
         let is_uefi = request.client_arch.map(|a| a.is_uefi()).unwrap_or(false);
         let arch = request.client_arch.and_then(|a| a.arch_string());
@@ -429,7 +425,7 @@ impl DhcpServer {
 
         if let Some(gateway) = self.config.gateway {
             builder = builder.with_gateway(gateway);
-        } else if let Some(gw) = self.get_hardware_gateway(hardware) {
+        } else if let Some(gw) = self.get_machine_gateway(machine) {
             builder = builder.with_gateway(gw);
         }
 
@@ -438,7 +434,7 @@ impl DhcpServer {
         }
 
         // Add PXE options if this is a PXE request and allowed
-        if request.is_pxe_request() && hardware.allows_pxe() {
+        if request.is_pxe_request() && machine.allows_pxe() {
             let pxe = if request.is_ipxe {
                 // iPXE client - send boot script URL
                 let script_url = self.config.ipxe_script_url.clone().unwrap_or_else(|| {
@@ -474,7 +470,7 @@ impl DhcpServer {
     fn build_proxy_offer(
         &self,
         request: &DhcpRequest,
-        _hardware: Option<&Hardware>,
+        _machine: Option<&Machine>,
     ) -> Result<Vec<u8>> {
         let is_uefi = request.client_arch.map(|a| a.is_uefi()).unwrap_or(false);
         let arch = request.client_arch.and_then(|a| a.arch_string());
@@ -538,15 +534,11 @@ impl DhcpServer {
             .build_bytes()
     }
 
-    /// Get gateway from hardware config
-    fn get_hardware_gateway(&self, hardware: &Hardware) -> Option<Ipv4Addr> {
-        hardware
-            .spec
-            .interfaces
-            .first()
-            .and_then(|iface| iface.dhcp.as_ref())
-            .and_then(|dhcp| dhcp.ip.as_ref())
-            .and_then(|ip| ip.gateway.as_ref())
+    /// Get gateway from machine config
+    fn get_machine_gateway(&self, machine: &Machine) -> Option<Ipv4Addr> {
+        machine
+            .dhcp_ip()
+            .and_then(|dhcp| dhcp.gateway.as_ref())
             .and_then(|gw| gw.parse().ok())
     }
 }
@@ -562,70 +554,55 @@ impl std::fmt::Debug for DhcpServer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dragonfly_crd::{DhcpSpec, HardwareSpec, InterfaceSpec, IpSpec, NetbootSpec, ObjectMeta, TypeMeta};
+    use dragonfly_common::{MachineIdentity, NetbootConfig, DhcpReservation};
     use std::collections::HashMap;
     use std::sync::RwLock;
 
-    struct MockHardwareLookup {
-        hardware: RwLock<HashMap<String, Hardware>>,
+    struct MockMachineLookup {
+        machines: RwLock<HashMap<String, Machine>>,
     }
 
-    impl MockHardwareLookup {
+    impl MockMachineLookup {
         fn new() -> Self {
             Self {
-                hardware: RwLock::new(HashMap::new()),
+                machines: RwLock::new(HashMap::new()),
             }
         }
 
-        fn add_hardware(&self, mac: &str, hardware: Hardware) {
-            self.hardware
+        fn add_machine(&self, mac: &str, machine: Machine) {
+            self.machines
                 .write()
                 .unwrap()
-                .insert(mac.to_lowercase(), hardware);
+                .insert(mac.to_lowercase(), machine);
         }
     }
 
     #[async_trait]
-    impl HardwareLookup for MockHardwareLookup {
-        async fn get_hardware_by_mac(&self, mac: &str) -> Option<Hardware> {
-            self.hardware.read().unwrap().get(&mac.to_lowercase()).cloned()
+    impl MachineLookup for MockMachineLookup {
+        async fn get_machine_by_mac(&self, mac: &str) -> Option<Machine> {
+            self.machines.read().unwrap().get(&mac.to_lowercase()).cloned()
         }
     }
 
-    fn test_hardware(mac: &str, ip: &str, allow_pxe: bool) -> Hardware {
-        Hardware {
-            type_meta: TypeMeta::hardware(),
-            metadata: ObjectMeta::new(format!("machine-{}", mac.replace(':', "-"))),
-            spec: HardwareSpec {
-                interfaces: vec![InterfaceSpec {
-                    dhcp: Some(DhcpSpec {
-                        mac: mac.to_string(),
-                        hostname: Some("test-host".to_string()),
-                        ip: Some(IpSpec {
-                            address: ip.to_string(),
-                            gateway: Some("192.168.1.1".to_string()),
-                            netmask: Some("255.255.255.0".to_string()),
-                        }),
-                        arch: None,
-                        lease_time: None,
-                        name_servers: Vec::new(),
-                        uefi: None,
-                    }),
-                    netboot: Some(NetbootSpec {
-                        allow_pxe: Some(allow_pxe),
-                        allow_workflow: Some(true),
-                    }),
-                }],
-                ..Default::default()
-            },
-            status: None,
-        }
+    fn test_machine(mac: &str, ip: &str, allow_pxe: bool) -> Machine {
+        let identity = MachineIdentity::from_mac(mac);
+        let mut machine = Machine::new(identity);
+        machine.config.netboot = NetbootConfig {
+            allow_pxe,
+            allow_workflow: true,
+            dhcp_ip: Some(DhcpReservation {
+                address: ip.to_string(),
+                gateway: Some("192.168.1.1".to_string()),
+                netmask: Some("255.255.255.0".to_string()),
+            }),
+        };
+        machine
     }
 
     #[test]
     fn test_dhcp_server_new() {
         let config = DhcpConfig::new(Ipv4Addr::new(192, 168, 1, 1));
-        let lookup = Arc::new(MockHardwareLookup::new());
+        let lookup = Arc::new(MockMachineLookup::new());
         let server = DhcpServer::new(config, lookup);
 
         assert_eq!(server.config.server_ip, Ipv4Addr::new(192, 168, 1, 1));
@@ -634,7 +611,7 @@ mod tests {
     #[test]
     fn test_dhcp_server_subscribe() {
         let config = DhcpConfig::new(Ipv4Addr::new(192, 168, 1, 1));
-        let lookup = Arc::new(MockHardwareLookup::new());
+        let lookup = Arc::new(MockMachineLookup::new());
         let server = DhcpServer::new(config, lookup);
 
         let _receiver = server.subscribe();
@@ -642,23 +619,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_hardware_lookup() {
-        let lookup = MockHardwareLookup::new();
-        let hw = test_hardware("00:11:22:33:44:55", "192.168.1.100", true);
-        lookup.add_hardware("00:11:22:33:44:55", hw);
+    async fn test_machine_lookup() {
+        let lookup = MockMachineLookup::new();
+        let machine = test_machine("00:11:22:33:44:55", "192.168.1.100", true);
+        lookup.add_machine("00:11:22:33:44:55", machine);
 
-        let found = lookup.get_hardware_by_mac("00:11:22:33:44:55").await;
+        let found = lookup.get_machine_by_mac("00:11:22:33:44:55").await;
         assert!(found.is_some());
 
-        let found = lookup.get_hardware_by_mac("00:11:22:33:44:55").await.unwrap();
-        assert_eq!(found.metadata.name, "machine-00-11-22-33-44-55");
+        let found = lookup.get_machine_by_mac("00:11:22:33:44:55").await.unwrap();
+        assert_eq!(found.primary_mac(), "00:11:22:33:44:55");
 
         // Case insensitive
-        let found = lookup.get_hardware_by_mac("00:11:22:33:44:55").await;
+        let found = lookup.get_machine_by_mac("00:11:22:33:44:55").await;
         assert!(found.is_some());
 
         // Not found
-        let not_found = lookup.get_hardware_by_mac("ff:ff:ff:ff:ff:ff").await;
+        let not_found = lookup.get_machine_by_mac("ff:ff:ff:ff:ff:ff").await;
         assert!(not_found.is_none());
     }
 

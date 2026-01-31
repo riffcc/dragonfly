@@ -5,16 +5,14 @@
 //! - Machine check-in from agents with identity-based re-identification
 //! - Workflow assignment and tracking
 //!
-//! Uses v0.1.0 Store trait for machines (UUIDv7 + identity hashing) and
-//! legacy DragonflyStore for workflows/templates.
+//! Uses v0.1.0 Store trait for machines (UUIDv7 + identity hashing).
 
 use crate::mode::DeploymentMode;
-use crate::store::types::{
+use dragonfly_common::{
     Disk, HardwareInfo, Machine, MachineIdentity, MachineState, MachineStatus,
     NetworkInterface, normalize_mac,
 };
 use crate::store::v1::{Result as StoreResult, Store, StoreError};
-use crate::store::DragonflyStore;
 use chrono::Utc;
 use dragonfly_crd::{Workflow, WorkflowState};
 use dragonfly_ipxe::{IpxeConfig, IpxeScriptGenerator};
@@ -106,12 +104,10 @@ pub enum AgentAction {
 /// Provisioning service
 ///
 /// Coordinates boot decisions, machine tracking, and workflow management.
-/// Uses v1 Store for machines (with identity hashing) and legacy store for workflows.
+/// Uses v0.1.0 Store for machines (with identity hashing), workflows, and templates.
 pub struct ProvisioningService {
-    /// v0.1.0 store for machines (UUIDv7 + identity hashing)
-    machine_store: Arc<dyn Store>,
-    /// Legacy store for workflows and templates
-    legacy_store: Arc<dyn DragonflyStore>,
+    /// v0.1.0 store for machines, workflows, and templates
+    store: Arc<dyn Store>,
     ipxe_generator: IpxeScriptGenerator,
     mode: DeploymentMode,
 }
@@ -119,27 +115,20 @@ pub struct ProvisioningService {
 impl ProvisioningService {
     /// Create a new provisioning service
     pub fn new(
-        machine_store: Arc<dyn Store>,
-        legacy_store: Arc<dyn DragonflyStore>,
+        store: Arc<dyn Store>,
         config: IpxeConfig,
         mode: DeploymentMode,
     ) -> Self {
         Self {
-            machine_store,
-            legacy_store,
+            store,
             ipxe_generator: IpxeScriptGenerator::new(config),
             mode,
         }
     }
 
-    /// Get access to the machine store
-    pub fn machine_store(&self) -> &Arc<dyn Store> {
-        &self.machine_store
-    }
-
-    /// Get access to the legacy store (for workflows/templates)
-    pub fn legacy_store(&self) -> &Arc<dyn DragonflyStore> {
-        &self.legacy_store
+    /// Get access to the store
+    pub fn store(&self) -> &Arc<dyn Store> {
+        &self.store
     }
 
     /// Get the appropriate boot script for a MAC address
@@ -148,7 +137,7 @@ impl ProvisioningService {
         debug!("Boot request for MAC: {}", normalized_mac);
 
         // Look up machine by MAC
-        let machine = self.machine_store.get_machine_by_mac(&normalized_mac).await
+        let machine = self.store.get_machine_by_mac(&normalized_mac).await
             .map_err(ProvisioningError::Store)?;
 
         match machine {
@@ -258,12 +247,12 @@ impl ProvisioningService {
         );
 
         // Try re-identification by identity hash first
-        let mut existing = self.machine_store.get_machine_by_identity(&identity.identity_hash).await
+        let mut existing = self.store.get_machine_by_identity(&identity.identity_hash).await
             .map_err(ProvisioningError::Store)?;
 
         // Fall back to MAC lookup (for machines registered before identity hashing)
         if existing.is_none() {
-            existing = self.machine_store.get_machine_by_mac(&normalized_mac).await
+            existing = self.store.get_machine_by_mac(&normalized_mac).await
                 .map_err(ProvisioningError::Store)?;
         }
 
@@ -271,7 +260,7 @@ impl ProvisioningService {
             Some(mut m) => {
                 // Update existing machine
                 self.update_machine_from_checkin(&mut m, info, &identity);
-                self.machine_store.put_machine(&m).await
+                self.store.put_machine(&m).await
                     .map_err(ProvisioningError::Store)?;
                 info!("Updated machine {} ({}) from check-in", m.id, m.config.memorable_name);
                 (m, false)
@@ -279,7 +268,7 @@ impl ProvisioningService {
             None => {
                 // Create new machine
                 let m = self.create_machine_from_checkin(info, identity);
-                self.machine_store.put_machine(&m).await
+                self.store.put_machine(&m).await
                     .map_err(ProvisioningError::Store)?;
                 info!("Created new machine {} ({}) from check-in", m.id, m.config.memorable_name);
                 (m, true)
@@ -296,16 +285,41 @@ impl ProvisioningService {
         });
 
         // Determine action
-        let (workflow_id, action) = match active_workflow {
-            Some(wf) => (Some(wf.metadata.name.clone()), AgentAction::Execute),
+        let (workflow_id, action, machine) = match active_workflow {
+            Some(wf) => (Some(wf.metadata.name.clone()), AgentAction::Execute, machine),
             None => {
-                if let Some(ref os_choice) = machine.config.os_choice {
-                    // Create workflow and execute
-                    info!("Machine {} has os_choice {}, creating workflow", machine.id, os_choice);
-                    let workflow = self.create_imaging_workflow(&machine, os_choice).await?;
-                    (Some(workflow.metadata.name.clone()), AgentAction::Execute)
+                // Check machine's os_choice first, then fall back to global default_os
+                let os_to_install = if machine.config.os_choice.is_some() {
+                    machine.config.os_choice.clone()
+                } else if is_new {
+                    // For new machines, check global default_os setting
+                    match self.store.get_setting("default_os").await {
+                        Ok(Some(default_os)) if !default_os.is_empty() => {
+                            info!("Using global default_os '{}' for new machine {}", default_os, machine.id);
+                            Some(default_os)
+                        }
+                        _ => None,
+                    }
                 } else {
-                    (None, AgentAction::Wait)
+                    None
+                };
+
+                if let Some(ref os_choice) = os_to_install {
+                    // Update machine's os_choice so it shows in the UI
+                    let mut machine = machine;
+                    if machine.config.os_choice.is_none() {
+                        machine.config.os_choice = Some(os_choice.clone());
+                        self.store.put_machine(&machine).await
+                            .map_err(ProvisioningError::Store)?;
+                        info!("Updated machine {} with os_choice {}", machine.id, os_choice);
+                    }
+
+                    // Create workflow and execute
+                    info!("Machine {} will install OS {}, creating workflow", machine.id, os_choice);
+                    let workflow = self.create_imaging_workflow(&machine, os_choice).await?;
+                    (Some(workflow.metadata.name.clone()), AgentAction::Execute, machine)
+                } else {
+                    (None, AgentAction::Wait, machine)
                 }
             }
         };
@@ -352,7 +366,7 @@ impl ProvisioningService {
         machine.status = MachineStatus {
             state: MachineState::Discovered,
             last_seen: Some(Utc::now()),
-            current_ip: None,
+            current_ip: info.ip_address.clone(),
             current_workflow: None,
             last_workflow_result: None,
         };
@@ -387,24 +401,16 @@ impl ProvisioningService {
             }).collect();
         }
 
-        // Update last seen
+        // Update last seen and current IP
         machine.status.last_seen = Some(Utc::now());
+        machine.status.current_ip = info.ip_address.clone();
         machine.metadata.updated_at = Utc::now();
     }
 
-    /// Get workflows for a machine (queries legacy store by machine ID)
+    /// Get workflows for a machine
     async fn get_workflows_for_machine(&self, machine: &Machine) -> Result<Vec<Workflow>, ProvisioningError> {
-        // Legacy store uses string hardware_ref, we use UUID
-        // Query by the UUID string representation
-        let machine_id_str = machine.id.to_string();
-
-        // Get all workflows and filter by hardware_ref
-        let all_workflows = self.legacy_store.list_workflows().await
-            .map_err(|e| ProvisioningError::LegacyStore(e.to_string()))?;
-
-        Ok(all_workflows.into_iter()
-            .filter(|wf| wf.spec.hardware_ref == machine_id_str)
-            .collect())
+        self.store.get_workflows_for_machine(machine.id).await
+            .map_err(ProvisioningError::Store)
     }
 
     /// Assign a workflow to a machine
@@ -414,13 +420,13 @@ impl ProvisioningService {
         template_name: &str,
     ) -> Result<Workflow, ProvisioningError> {
         // Verify machine exists
-        let machine = self.machine_store.get_machine(machine_id).await
+        let machine = self.store.get_machine(machine_id).await
             .map_err(ProvisioningError::Store)?
             .ok_or_else(|| ProvisioningError::NotFound(format!("machine: {}", machine_id)))?;
 
         // Verify template exists
-        let _template = self.legacy_store.get_template(template_name).await
-            .map_err(|e| ProvisioningError::LegacyStore(e.to_string()))?
+        let _template = self.store.get_template(template_name).await
+            .map_err(ProvisioningError::Store)?
             .ok_or_else(|| ProvisioningError::NotFound(format!("template: {}", template_name)))?;
 
         // Create workflow with UUIDv7 ID
@@ -428,15 +434,15 @@ impl ProvisioningService {
         let workflow = Workflow::new(&workflow_id.to_string(), &machine_id.to_string(), template_name);
 
         // Store workflow
-        self.legacy_store.put_workflow(&workflow).await
-            .map_err(|e| ProvisioningError::LegacyStore(e.to_string()))?;
+        self.store.put_workflow(&workflow).await
+            .map_err(ProvisioningError::Store)?;
 
         // Update machine state to Ready (has workflow assigned)
         let mut machine = machine;
         if matches!(machine.status.state, MachineState::Discovered) {
             machine.status.state = MachineState::Ready;
             machine.status.current_workflow = Some(workflow_id);
-            self.machine_store.put_machine(&machine).await
+            self.store.put_machine(&machine).await
                 .map_err(ProvisioningError::Store)?;
         }
 
@@ -462,8 +468,8 @@ impl ProvisioningService {
             actions: Vec::new(),
         });
 
-        self.legacy_store.put_workflow(&workflow).await
-            .map_err(|e| ProvisioningError::LegacyStore(e.to_string()))?;
+        self.store.put_workflow(&workflow).await
+            .map_err(ProvisioningError::Store)?;
 
         info!("Created imaging workflow {} for machine {} with OS {}",
               workflow_id, machine.id, os_choice);
@@ -483,9 +489,6 @@ pub enum ProvisioningError {
     #[error("store error: {0}")]
     Store(#[from] StoreError),
 
-    #[error("legacy store error: {0}")]
-    LegacyStore(String),
-
     #[error("not found: {0}")]
     NotFound(String),
 
@@ -499,8 +502,7 @@ pub enum ProvisioningError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::v1::MemoryStore as V1MemoryStore;
-    use crate::store::MemoryStore as LegacyMemoryStore;
+    use crate::store::v1::MemoryStore;
     use dragonfly_crd::Template;
 
     fn test_ipxe_config() -> IpxeConfig {
@@ -541,12 +543,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_unknown_mac_discovery() {
-        let machine_store: Arc<dyn Store> = Arc::new(V1MemoryStore::new());
-        let legacy_store: Arc<dyn DragonflyStore> = Arc::new(LegacyMemoryStore::new());
+        let store: Arc<dyn Store> = Arc::new(MemoryStore::new());
 
         let service = ProvisioningService::new(
-            machine_store,
-            legacy_store,
+            store,
             test_ipxe_config(),
             DeploymentMode::Simple,
         );
@@ -558,12 +558,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_checkin_new_machine() {
-        let machine_store: Arc<dyn Store> = Arc::new(V1MemoryStore::new());
-        let legacy_store: Arc<dyn DragonflyStore> = Arc::new(LegacyMemoryStore::new());
+        let store: Arc<dyn Store> = Arc::new(MemoryStore::new());
 
         let service = ProvisioningService::new(
-            machine_store.clone(),
-            legacy_store,
+            store.clone(),
             test_ipxe_config(),
             DeploymentMode::Simple,
         );
@@ -576,7 +574,7 @@ mod tests {
         assert_eq!(response.action, AgentAction::Wait);
 
         // Verify machine was stored
-        let stored = machine_store.get_machine_by_mac("00:11:22:33:44:55").await.unwrap();
+        let stored = store.get_machine_by_mac("00:11:22:33:44:55").await.unwrap();
         assert!(stored.is_some());
         let machine = stored.unwrap();
         assert_eq!(machine.identity.primary_mac, "00:11:22:33:44:55");
@@ -585,8 +583,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_checkin_existing_machine_by_identity() {
-        let machine_store: Arc<dyn Store> = Arc::new(V1MemoryStore::new());
-        let legacy_store: Arc<dyn DragonflyStore> = Arc::new(LegacyMemoryStore::new());
+        let store: Arc<dyn Store> = Arc::new(MemoryStore::new());
 
         // Create initial machine
         let identity = MachineIdentity::new(
@@ -597,11 +594,10 @@ mod tests {
         );
         let machine = Machine::new(identity.clone());
         let original_id = machine.id;
-        machine_store.put_machine(&machine).await.unwrap();
+        store.put_machine(&machine).await.unwrap();
 
         let service = ProvisioningService::new(
-            machine_store.clone(),
-            legacy_store,
+            store.clone(),
             test_ipxe_config(),
             DeploymentMode::Simple,
         );
@@ -617,8 +613,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_checkin_reidentification_mac_changed() {
-        let machine_store: Arc<dyn Store> = Arc::new(V1MemoryStore::new());
-        let legacy_store: Arc<dyn DragonflyStore> = Arc::new(LegacyMemoryStore::new());
+        let store: Arc<dyn Store> = Arc::new(MemoryStore::new());
 
         // Create machine with two NICs
         let identity = MachineIdentity::new(
@@ -629,11 +624,10 @@ mod tests {
         );
         let machine = Machine::new(identity);
         let original_id = machine.id;
-        machine_store.put_machine(&machine).await.unwrap();
+        store.put_machine(&machine).await.unwrap();
 
         let service = ProvisioningService::new(
-            machine_store.clone(),
-            legacy_store,
+            store.clone(),
             test_ipxe_config(),
             DeploymentMode::Simple,
         );
@@ -665,22 +659,20 @@ mod tests {
 
     #[tokio::test]
     async fn test_assign_workflow() {
-        let machine_store: Arc<dyn Store> = Arc::new(V1MemoryStore::new());
-        let legacy_store: Arc<dyn DragonflyStore> = Arc::new(LegacyMemoryStore::new());
+        let store: Arc<dyn Store> = Arc::new(MemoryStore::new());
 
         // Create machine
         let identity = MachineIdentity::from_mac("00:11:22:33:44:55");
         let machine = Machine::new(identity);
         let machine_id = machine.id;
-        machine_store.put_machine(&machine).await.unwrap();
+        store.put_machine(&machine).await.unwrap();
 
         // Create template
         let template = Template::new("debian-13");
-        legacy_store.put_template(&template).await.unwrap();
+        store.put_template(&template).await.unwrap();
 
         let service = ProvisioningService::new(
-            machine_store.clone(),
-            legacy_store.clone(),
+            store.clone(),
             test_ipxe_config(),
             DeploymentMode::Simple,
         );
@@ -690,30 +682,150 @@ mod tests {
         assert_eq!(workflow.spec.hardware_ref, machine_id.to_string());
         assert_eq!(workflow.spec.template_ref, "debian-13");
 
-        // Verify workflow stored
-        let stored = legacy_store.get_workflow(&workflow.metadata.name).await.unwrap();
+        // Verify workflow stored - parse UUID from workflow name
+        let workflow_id = Uuid::parse_str(&workflow.metadata.name).unwrap();
+        let stored = store.get_workflow(workflow_id).await.unwrap();
         assert!(stored.is_some());
     }
 
     #[tokio::test]
     async fn test_machine_with_os_choice_boots_discovery() {
-        let machine_store: Arc<dyn Store> = Arc::new(V1MemoryStore::new());
-        let legacy_store: Arc<dyn DragonflyStore> = Arc::new(LegacyMemoryStore::new());
+        let store: Arc<dyn Store> = Arc::new(MemoryStore::new());
 
         // Create machine with os_choice
         let identity = MachineIdentity::from_mac("00:11:22:33:44:55");
         let mut machine = Machine::new(identity);
         machine.config.os_choice = Some("debian-13".to_string());
-        machine_store.put_machine(&machine).await.unwrap();
+        store.put_machine(&machine).await.unwrap();
 
         let service = ProvisioningService::new(
-            machine_store,
-            legacy_store,
+            store.clone(),
             test_ipxe_config(),
             DeploymentMode::Simple,
         );
 
         let script = service.get_boot_script("00:11:22:33:44:55").await.unwrap();
         assert!(script.contains("Discovery Mode"));
+    }
+
+    #[tokio::test]
+    async fn test_checkin_new_machine_with_default_os_auto_assigns() {
+        let store: Arc<dyn Store> = Arc::new(MemoryStore::new());
+
+        // Set default_os in settings
+        store.put_setting("default_os", "debian-13").await.unwrap();
+
+        // Create the template so workflow can be created
+        let template = Template::new("debian-13");
+        store.put_template(&template).await.unwrap();
+
+        let service = ProvisioningService::new(
+            store.clone(),
+            test_ipxe_config(),
+            DeploymentMode::Simple,
+        );
+
+        // Check in a new machine
+        let checkin = test_checkin();
+        let response = service.handle_checkin(&checkin).await.unwrap();
+
+        // Should be new and auto-assigned a workflow
+        assert!(response.is_new, "Machine should be new");
+        assert_eq!(response.action, AgentAction::Execute, "Action should be Execute");
+        assert!(response.workflow_id.is_some(), "Should have workflow_id assigned");
+
+        // Verify machine's os_choice was updated
+        let machine = store.get_machine_by_mac("00:11:22:33:44:55").await.unwrap().unwrap();
+        assert_eq!(machine.config.os_choice, Some("debian-13".to_string()), "Machine os_choice should be set");
+    }
+
+    #[tokio::test]
+    async fn test_checkin_existing_machine_no_auto_assign() {
+        let store: Arc<dyn Store> = Arc::new(MemoryStore::new());
+
+        // Set default_os in settings
+        store.put_setting("default_os", "debian-13").await.unwrap();
+
+        // Create the template
+        let template = Template::new("debian-13");
+        store.put_template(&template).await.unwrap();
+
+        // Pre-create the machine (simulating it already exists)
+        let identity = MachineIdentity::new(
+            "00:11:22:33:44:55".to_string(),
+            vec!["00:11:22:33:44:55".to_string()],
+            Some("smbios-uuid-123".to_string()),
+            Some("machine-id-456".to_string()),
+        );
+        let machine = Machine::new(identity);
+        store.put_machine(&machine).await.unwrap();
+
+        let service = ProvisioningService::new(
+            store.clone(),
+            test_ipxe_config(),
+            DeploymentMode::Simple,
+        );
+
+        // Check in the existing machine
+        let checkin = test_checkin();
+        let response = service.handle_checkin(&checkin).await.unwrap();
+
+        // Should NOT auto-assign because it's not new
+        assert!(!response.is_new, "Machine should not be new");
+        assert_eq!(response.action, AgentAction::Wait, "Action should be Wait for existing machine without os_choice");
+        assert!(response.workflow_id.is_none(), "Should not have workflow_id");
+    }
+
+    #[tokio::test]
+    async fn test_checkin_new_machine_no_default_os_waits() {
+        let store: Arc<dyn Store> = Arc::new(MemoryStore::new());
+
+        // No default_os set
+
+        let service = ProvisioningService::new(
+            store.clone(),
+            test_ipxe_config(),
+            DeploymentMode::Simple,
+        );
+
+        // Check in a new machine
+        let checkin = test_checkin();
+        let response = service.handle_checkin(&checkin).await.unwrap();
+
+        // Should be new but wait (no default_os)
+        assert!(response.is_new, "Machine should be new");
+        assert_eq!(response.action, AgentAction::Wait, "Action should be Wait without default_os");
+        assert!(response.workflow_id.is_none(), "Should not have workflow_id");
+    }
+
+    #[tokio::test]
+    async fn test_checkin_updates_ip_address() {
+        let store: Arc<dyn Store> = Arc::new(MemoryStore::new());
+
+        let service = ProvisioningService::new(
+            store.clone(),
+            test_ipxe_config(),
+            DeploymentMode::Simple,
+        );
+
+        // First check-in with initial IP
+        let mut checkin = test_checkin();
+        checkin.ip_address = Some("10.0.0.1".to_string());
+        let response = service.handle_checkin(&checkin).await.unwrap();
+        assert!(response.is_new, "Should be a new machine");
+
+        // Verify initial IP was stored
+        let machine_id = Uuid::parse_str(&response.machine_id).unwrap();
+        let machine = store.get_machine(machine_id).await.unwrap().unwrap();
+        assert_eq!(machine.status.current_ip, Some("10.0.0.1".to_string()));
+
+        // Second check-in with different IP (machine rebooted, got new DHCP lease)
+        checkin.ip_address = Some("10.0.0.99".to_string());
+        let response = service.handle_checkin(&checkin).await.unwrap();
+        assert!(!response.is_new, "Should find existing machine");
+
+        // Verify IP was updated
+        let machine = store.get_machine(machine_id).await.unwrap().unwrap();
+        assert_eq!(machine.status.current_ip, Some("10.0.0.99".to_string()));
     }
 }

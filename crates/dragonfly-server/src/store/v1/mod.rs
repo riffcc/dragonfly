@@ -15,8 +15,8 @@ mod tests;
 pub use memory::MemoryStore;
 pub use redb::RedbStore;
 
-use crate::store::types::{Machine, MachineState};
 use async_trait::async_trait;
+use dragonfly_common::{Machine, MachineState};
 use dragonfly_crd::{Template, Workflow};
 use std::collections::HashMap;
 use std::sync::Arc;

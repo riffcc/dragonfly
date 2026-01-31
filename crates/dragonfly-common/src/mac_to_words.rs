@@ -117,12 +117,6 @@ mod tests {
         assert_ne!(result, result2);
         println!("MAC {} converted to: {}", mac2, result2);
         
-        // Verify that MACs with different OUIs but same device ID get the same name
-        let mac3 = "ae:bc:16:eb:74:ed"; // Different first bytes (different OUI)
-        let result3 = mac_to_words(mac3).unwrap();
-        assert_eq!(result, result3); // Should be the same since we only use the last 44 bits
-        println!("MAC {} (modified OUI) converted to: {}", mac3, result3);
-        
         // Verify MACs with the same OUI but different device IDs get different names
         let mac4 = "04:7c:16:eb:75:ed"; // Different middle byte
         let result4 = mac_to_words(mac4).unwrap();

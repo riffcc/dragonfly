@@ -50,7 +50,6 @@ pub mod mode;
 pub mod store;
 pub mod provisioning;
 pub mod services;
-pub mod tinkerbell;
 
 // Expose status module for integration tests
 pub mod status;
@@ -244,10 +243,8 @@ pub struct AppState {
     pub tokens: Arc<Mutex<std::collections::HashMap<String, String>>>,
     // Native provisioning service (optional - None uses legacy behavior)
     pub provisioning: Option<Arc<provisioning::ProvisioningService>>,
-    // Legacy storage backend (ReDB) - for settings, templates
-    pub store: Arc<dyn store::DragonflyStore>,
-    // New v0.1.0 storage backend for machines
-    pub store_v1: Arc<dyn store::v1::Store>,
+    // Unified v0.1.0 storage backend for machines, workflows, templates, settings
+    pub store: Arc<dyn store::v1::Store>,
     // Track if network services (DHCP/TFTP) are running
     pub network_services_started: Arc<AtomicBool>,
 }
@@ -305,11 +302,6 @@ pub async fn start_network_services(app_state: &AppState, shutdown_rx: watch::Re
             }
         }
     });
-}
-
-// Clean up any existing processes
-async fn cleanup_existing_processes() {
-    // No complex process handling - removed
 }
 
 pub async fn run() -> anyhow::Result<()> {
@@ -372,45 +364,33 @@ pub async fn run() -> anyhow::Result<()> {
 
     // Initialize databases
     let db_pool = init_db().await?;
-    db::init_timing_tables().await?;
-    tinkerbell::load_historical_timings().await?;
 
-    // Initialize ReDB storage (legacy - for settings/templates)
+    // Initialize v0.1.0 storage (unified store for machines, workflows, templates, settings)
     const REDB_PATH: &str = "/var/lib/dragonfly/dragonfly.redb";
-    let native_store: Arc<dyn store::DragonflyStore> = match store::RedbStore::open(REDB_PATH) {
+    let store: Arc<dyn store::v1::Store> = match store::v1::RedbStore::open(REDB_PATH) {
         Ok(s) => Arc::new(s),
         Err(e) => {
             warn!("ReDB failed, using in-memory store: {}", e);
-            Arc::new(store::MemoryStore::new())
-        }
-    };
-
-    // Initialize v0.1.0 storage (for machines with UUIDv7 identity)
-    const REDB_V1_PATH: &str = "/var/lib/dragonfly/machines.redb";
-    let store_v1: Arc<dyn store::v1::Store> = match store::v1::RedbStore::open(REDB_V1_PATH) {
-        Ok(s) => Arc::new(s),
-        Err(e) => {
-            warn!("ReDB v1 failed, using in-memory store: {}", e);
             Arc::new(store::v1::MemoryStore::new())
         }
     };
 
     // --- Auto-configure Flight mode ---
     // Dragonfly always runs in Flight mode now - no setup wizard needed
-    let current_mode_str = native_store.get_setting("deployment_mode").await.ok().flatten();
+    let current_mode_str = store.get_setting("deployment_mode").await.ok().flatten();
     if current_mode_str.is_none() {
         // Auto-set Flight mode on first run
-        if let Err(e) = native_store.put_setting("deployment_mode", "flight").await {
+        if let Err(e) = store.put_setting("deployment_mode", "flight").await {
             warn!("Failed to auto-set Flight mode: {}", e);
         }
-        if let Err(e) = native_store.put_setting("setup_completed", "true").await {
+        if let Err(e) = store.put_setting("setup_completed", "true").await {
             warn!("Failed to mark setup completed: {}", e);
         }
     }
     // --- Initialize OS templates and boot artifacts ---
     if !is_installation_server {
         let event_manager_clone = event_manager.clone();
-        let store_for_templates = native_store.clone();
+        let store_for_templates = store.clone();
         tokio::spawn(async move {
             if let Err(e) = os_templates::init_os_templates(store_for_templates).await {
                 warn!("Failed to initialize OS templates: {}", e);
@@ -466,13 +446,6 @@ pub async fn run() -> anyhow::Result<()> {
     // --- Graceful Shutdown Setup ---
     let (shutdown_tx, shutdown_rx) = watch::channel(());
 
-    // Start background tasks
-    tinkerbell::start_timing_cleanup_task(shutdown_rx.clone()).await;
-
-    if !is_installation_server {
-        tinkerbell::start_workflow_polling_task(event_manager.clone(), store_v1.clone(), shutdown_rx.clone()).await;
-    }
-
     // Load or generate admin credentials
     let _credentials = match auth::load_credentials().await {
         Ok(cred) => cred,
@@ -486,7 +459,7 @@ pub async fn run() -> anyhow::Result<()> {
     };
 
     // Load settings from ReDB or use defaults
-    let settings = match native_store.get_setting("require_login").await {
+    let settings = match store.get_setting("require_login").await {
         Ok(Some(val)) => {
             let mut s = auth::Settings::default();
             s.require_login = val == "true";
@@ -494,14 +467,14 @@ pub async fn run() -> anyhow::Result<()> {
         }
         _ => {
             let s = auth::Settings::default();
-            let _ = native_store.put_setting("require_login", &s.require_login.to_string()).await;
+            let _ = store.put_setting("require_login", &s.require_login.to_string()).await;
             s
         }
     };
 
     // Reset setup flag if in setup mode
     if setup_mode {
-        let _ = native_store.put_setting("setup_completed", "false").await;
+        let _ = store.put_setting("setup_completed", "false").await;
     }
 
     // Determine first run status
@@ -570,7 +543,7 @@ pub async fn run() -> anyhow::Result<()> {
         info!("Native provisioning enabled - initializing ProvisioningService");
 
         // Get boot server URL with auto-detection (env var > ReDB > auto-detect > localhost)
-        let boot_server_url = mode::get_base_url(Some(native_store.as_ref())).await;
+        let boot_server_url = mode::get_base_url(Some(store.as_ref())).await;
         info!("Using boot server URL: {}", boot_server_url);
 
         // Build iPXE configuration
@@ -587,8 +560,7 @@ pub async fn run() -> anyhow::Result<()> {
         let provisioning_mode = mode::DeploymentMode::Flight;
 
         let service = provisioning::ProvisioningService::new(
-            store_v1.clone(),      // v1 Store for machines (UUIDv7 + identity hash)
-            native_store.clone(),  // Legacy DragonflyStore for workflows/templates
+            store.clone(),
             ipxe_config,
             provisioning_mode,
         );
@@ -623,10 +595,8 @@ pub async fn run() -> anyhow::Result<()> {
         tokens: Arc::new(Mutex::new(std::collections::HashMap::new())),
         // Native provisioning service (if enabled)
         provisioning: provisioning_service.clone(),
-        // Legacy storage backend (settings/templates)
-        store: native_store,
-        // New v0.1.0 storage backend (machines with UUIDv7)
-        store_v1,
+        // Unified v0.1.0 storage backend
+        store,
         // Track if network services (DHCP/TFTP) are running
         network_services_started: Arc::new(AtomicBool::new(false)),
     };
@@ -651,7 +621,7 @@ pub async fn run() -> anyhow::Result<()> {
 
     // Auth backend setup
     // Pass the pool and settings directly from AppState
-    let backend = AdminBackend::new(app_state.dbpool.clone(), app_state.settings.lock().await.clone());
+    let backend = AdminBackend::new(app_state.dbpool.clone());
     
     // Build the auth layer
     let auth_layer = AuthManagerLayerBuilder::new(backend, session_layer)
@@ -824,13 +794,6 @@ async fn handle_favicon() -> impl IntoResponse {
 
 // Access functions for main.rs to use
 pub use db::database_exists;
-
-// Add a filter to check if a string is a valid IP address
-fn is_valid_ip(ip: String) -> bool {
-    // Use regex to check if string is a valid IPv4 address
-    let ip_regex = regex::Regex::new(r"^((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$").unwrap();
-    ip_regex.is_match(&ip)
-}
 
 // Add encryption module
 pub mod encryption;

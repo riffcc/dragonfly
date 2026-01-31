@@ -14,7 +14,7 @@ use tokio::fs;
 use serde_yaml;
 use std::path::Path as StdPath;
 use crate::status::{check_kubernetes_connectivity, get_webui_address};
-use crate::store::DragonflyStore;
+use crate::store::v1::Store;
 
 // The different deployment modes
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,8 +46,6 @@ impl DeploymentMode {
 // Constants for file paths
 const MODE_DIR: &str = "/etc/dragonfly";
 const MODE_FILE: &str = "/etc/dragonfly/mode";
-const SYSTEMD_UNIT_FILE: &str = "/etc/systemd/system/dragonfly.service";
-const K3S_CONFIG_DIR: &str = "/etc/dragonfly/k3s";
 const EXECUTABLE_TARGET_PATH: &str = "/usr/local/bin/dragonfly";
 const HANDOFF_READY_FILE: &str = "/var/lib/dragonfly/handoff_ready";
 
@@ -875,7 +873,7 @@ pub async fn start_handoff_listener(mut shutdown_rx: watch::Receiver<()>) -> Res
 }
 
 // Configure the system for Flight mode
-pub async fn configure_flight_mode(store: std::sync::Arc<dyn DragonflyStore>) -> Result<()> {
+pub async fn configure_flight_mode(store: std::sync::Arc<dyn Store>) -> Result<()> {
     info!("Configuring system for Flight mode");
 
     // Always attempt the configuration steps for Flight mode
@@ -1770,31 +1768,6 @@ pub async fn configure_swarm_mode() -> Result<()> {
     Ok(())
 }
 
-fn setup_logging(log_dir: &str) -> Result<(), anyhow::Error> {
-    // Combine log directory and file name
-    let log_path = Path::new(log_dir).join("dragonfly.log");
-    
-    // Create a non-blocking writer to the log file
-    let file_appender = tracing_appender::rolling::daily(log_dir, "dragonfly.log");
-    let (non_blocking_writer, _guard) = tracing_appender::non_blocking(file_appender);
-
-    // Build the subscriber
-    tracing_subscriber::registry()
-        .with(fmt::layer().with_writer(non_blocking_writer))
-        .with(fmt::layer().with_writer(std::io::stdout)) // Also log to stdout
-        .with(EnvFilter::from_default_env() // Read RUST_LOG from environment
-            .add_directive("info".parse()?) // Default level is info
-            .add_directive("tower_http=warn".parse()?) // Quieter HTTP logs
-            .add_directive("minijinja=warn".parse()?) // Quieter template logs
-        )
-        .init();
-        
-    // Log the path where logs are being written
-    info!("Logging initialized. Log file: {}", log_path.display());
-
-    Ok(())
-} 
-
 // TODO: Move helper functions below to a shared utility module
 
 // Placeholder for run_shell_command - Implement robustly
@@ -1904,7 +1877,7 @@ pub fn detect_server_ip() -> Option<String> {
 /// 2. Config file (/var/lib/dragonfly/config.toml)
 /// 3. Auto-detected IP with port 3000
 /// 4. Fallback to localhost:3000
-pub async fn get_base_url(_store: Option<&dyn DragonflyStore>) -> String {
+pub async fn get_base_url(_store: Option<&dyn Store>) -> String {
     // 1. Check environment variable first
     if let Ok(url) = std::env::var("DRAGONFLY_BASE_URL") {
         debug!("Using DRAGONFLY_BASE_URL from environment: {}", url);

@@ -10,5 +10,5 @@ serde = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
 thiserror = { workspace = true }
-
-# Define the models and shared types here 
+sha2 = "0.10"
+rand = "0.8" 
