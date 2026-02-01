@@ -289,7 +289,13 @@ impl WorkflowExecutor {
             // Build action context with environment from template
             // Get MAC address for template variable substitution (instance_id, friendly_name)
             let mac = hardware.primary_mac().unwrap_or("00:00:00:00:00:00");
-            let env = action_step.to_environment(&hardware_disks, &self.server_url, mac);
+            let mut env = action_step.to_environment(&hardware_disks, &self.server_url, mac);
+
+            // Add server URL and workflow ID for actions that need to notify the server directly
+            // (e.g., kexec needs to send completion before rebooting)
+            env.insert("SERVER_URL".to_string(), self.server_url.clone());
+            env.insert("WORKFLOW_ID".to_string(), workflow.metadata.name.clone());
+            env.insert("MACHINE_ID".to_string(), hardware.metadata.name.clone());
             let reporter = Arc::new(EventProgressReporter {
                 workflow_name: workflow.metadata.name.clone(),
                 action_name: action_type.to_string(),

@@ -11,6 +11,7 @@ use super::writefile::cleanup_mount;
 use async_trait::async_trait;
 use std::time::Duration;
 use tokio::process::Command;
+use tracing::warn;
 
 /// Native kexec boot action
 ///
@@ -37,7 +38,7 @@ impl Action for KexecAction {
     }
 
     fn optional_env_vars(&self) -> Vec<&str> {
-        vec!["FS_TYPE", "KERNEL_PATH", "INITRD_PATH", "CMDLINE"]
+        vec!["FS_TYPE", "KERNEL_PATH", "INITRD_PATH", "CMDLINE", "SERVER_URL", "WORKFLOW_ID", "MACHINE_ID"]
     }
 
     fn validate(&self, ctx: &ActionContext) -> Result<()> {
@@ -258,6 +259,33 @@ impl Action for KexecAction {
 
         // Execute kexec
         reporter.report(Progress::new(self.name(), 100, "Executing kexec - goodbye!"));
+
+        // Notify server directly before rebooting - the async event system may not deliver in time
+        // This is critical because kexec will immediately reboot the machine
+        if let (Some(server_url), Some(workflow_id)) = (ctx.env("SERVER_URL"), ctx.env("WORKFLOW_ID")) {
+            let url = format!("{}/api/workflows/{}/events", server_url, workflow_id);
+            let event_data = serde_json::json!({
+                "type": "action_completed",
+                "workflow": workflow_id,
+                "action": "kexec",
+                "success": true
+            });
+
+            // Use a fresh client with short timeout - we need this to complete before kexec
+            match reqwest::Client::builder()
+                .timeout(Duration::from_secs(5))
+                .build()
+            {
+                Ok(client) => {
+                    if let Err(e) = client.post(&url).json(&event_data).send().await {
+                        warn!(error = %e, "Failed to notify server of kexec completion (continuing anyway)");
+                    }
+                }
+                Err(e) => {
+                    warn!(error = %e, "Failed to build HTTP client for kexec notification");
+                }
+            }
+        }
 
         // This is the point of no return - the system will reboot into the new kernel
         let _ = Command::new("kexec")
