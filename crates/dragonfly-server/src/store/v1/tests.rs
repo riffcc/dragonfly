@@ -46,6 +46,7 @@ fn test_machine_full(primary_mac: &str, all_macs: Vec<&str>, smbios_uuid: Option
         all_macs.iter().map(|s| s.to_string()).collect(),
         smbios_uuid.map(|s| s.to_string()),
         None,
+        None,
     );
     Machine::new(identity)
 }
@@ -306,6 +307,7 @@ async fn test_machine_reidentification_by_hash() {
         vec!["00:11:22:33:44:55".to_string(), "aa:bb:cc:dd:ee:ff".to_string()],
         Some("smbios-uuid-abc".to_string()),
         None,
+        None,
     );
 
     assert_eq!(returning_identity.identity_hash, identity_hash);
@@ -335,6 +337,7 @@ async fn test_machine_reidentification_primary_mac_changed() {
         "aa:bb:cc:dd:ee:ff".to_string(), // Different primary
         vec!["00:11:22:33:44:55".to_string(), "aa:bb:cc:dd:ee:ff".to_string()],
         Some("smbios-uuid-xyz".to_string()),
+        None,
         None,
     );
 

@@ -237,11 +237,19 @@ impl ProvisioningService {
             info.all_macs.clone()
         };
 
+        // Use installed OS's machine_id and fs_uuid if available (more stable than boot env's)
+        let (machine_id, fs_uuid) = if let Some(ref existing_os) = info.existing_os {
+            (existing_os.machine_id.clone(), existing_os.fs_uuid.clone())
+        } else {
+            (info.machine_id.clone(), None)
+        };
+
         let identity = MachineIdentity::new(
             info.mac.clone(),
             all_macs,
             info.smbios_uuid.clone(),
-            info.machine_id.clone(),
+            machine_id,
+            fs_uuid,
         );
 
         // Try re-identification by identity hash first
@@ -391,15 +399,28 @@ impl ProvisioningService {
                 } else if let Some(ref existing_os) = info.existing_os {
                     // Existing OS detected and no workflow to run - boot it
                     let mut machine = machine;
-                    machine.status.state = MachineState::ExistingOs {
-                        os_name: existing_os.name.clone(),
-                    };
+
+                    // If machine was previously Installed (by us), keep it Installed
+                    // This handles the case where an installed machine reboots and PXE boots again
+                    if matches!(machine.status.state, MachineState::Installed) {
+                        // Machine was installed by us - keep it Installed, just update last_seen
+                        info!(
+                            "Machine {} (Installed) detected same OS '{}', keeping Installed state",
+                            machine.id, existing_os.name
+                        );
+                    } else {
+                        // Not installed by us - mark as ExistingOs (first time seeing this OS)
+                        machine.status.state = MachineState::ExistingOs {
+                            os_name: existing_os.name.clone(),
+                        };
+                        info!(
+                            "Machine {} has existing OS '{}', instructing LocalBoot",
+                            machine.id, existing_os.name
+                        );
+                    }
+
                     self.store.put_machine(&machine).await
                         .map_err(ProvisioningError::Store)?;
-                    info!(
-                        "Machine {} has existing OS '{}', instructing LocalBoot",
-                        machine.id, existing_os.name
-                    );
                     (None, AgentAction::LocalBoot, machine)
                 } else {
                     (None, AgentAction::Wait, machine)
@@ -675,6 +696,7 @@ mod tests {
             vec!["00:11:22:33:44:55".to_string()],
             Some("smbios-uuid-123".to_string()),
             Some("machine-id-456".to_string()),
+            None,
         );
         let machine = Machine::new(identity.clone());
         let original_id = machine.id;
@@ -704,6 +726,7 @@ mod tests {
             "00:11:22:33:44:55".to_string(),
             vec!["00:11:22:33:44:55".to_string(), "aa:bb:cc:dd:ee:ff".to_string()],
             Some("smbios-uuid-xyz".to_string()),
+            None,
             None,
         );
         let machine = Machine::new(identity);
@@ -841,6 +864,7 @@ mod tests {
             vec!["00:11:22:33:44:55".to_string()],
             Some("smbios-uuid-123".to_string()),
             Some("machine-id-456".to_string()),
+            None,
         );
         let machine = Machine::new(identity);
         store.put_machine(&machine).await.unwrap();
@@ -1003,6 +1027,7 @@ mod tests {
             vec!["00:11:22:33:44:55".to_string()],
             Some("smbios-uuid-123".to_string()),
             Some("machine-id-456".to_string()),
+            None,
         );
         let mut machine = Machine::new(identity);
         machine.config.os_choice = Some("debian-13".to_string());
@@ -1050,6 +1075,7 @@ mod tests {
             vec!["00:11:22:33:44:55".to_string()],
             Some("smbios-uuid-123".to_string()),
             Some("machine-id-456".to_string()),
+            None,
         );
         let mut machine = Machine::new(identity);
         machine.config.os_choice = Some("debian-13".to_string());
@@ -1125,6 +1151,7 @@ mod tests {
             vec!["00:11:22:33:44:55".to_string()],
             Some("smbios-uuid-123".to_string()),
             Some("machine-id-456".to_string()),
+            None,
         );
         let mut machine = Machine::new(identity);
         machine.status.state = MachineState::Installed;
@@ -1186,6 +1213,7 @@ mod tests {
             vec!["00:11:22:33:44:66".to_string()],
             Some("smbios-uuid-789".to_string()),
             Some("machine-id-abc".to_string()),
+            None,
         );
         let mut machine = Machine::new(identity);
         // ExistingOs state - agent detected this OS, we didn't install it

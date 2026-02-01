@@ -14,11 +14,12 @@ pub fn new_machine_id() -> Uuid {
 }
 
 /// Compute identity hash from identity sources.
-/// SHA-256(sorted_macs || smbios_uuid || machine_id)
+/// SHA-256(sorted_macs || smbios_uuid || machine_id || fs_uuid)
 pub fn compute_identity_hash(
     macs: &[String],
     smbios_uuid: Option<&str>,
     machine_id: Option<&str>,
+    fs_uuid: Option<&str>,
 ) -> String {
     let mut hasher = Sha256::new();
 
@@ -40,6 +41,11 @@ pub fn compute_identity_hash(
 
     if let Some(mid) = machine_id {
         hasher.update(mid.as_bytes());
+    }
+    hasher.update(b"|");
+
+    if let Some(fsuuid) = fs_uuid {
+        hasher.update(fsuuid.to_lowercase().as_bytes());
     }
 
     format!("{:x}", hasher.finalize())
@@ -142,13 +148,17 @@ impl Machine {
 // Identity
 // ============================================================================
 
-/// Stable identity derived from hardware
+/// Stable identity derived from hardware and installed OS
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct MachineIdentity {
     pub primary_mac: String,
     pub all_macs: Vec<String>,
     pub smbios_uuid: Option<String>,
+    /// /etc/machine-id from the installed OS (stable across reboots)
     pub machine_id: Option<String>,
+    /// Filesystem UUID of the root partition (from blkid)
+    #[serde(default)]
+    pub fs_uuid: Option<String>,
     pub identity_hash: String,
 }
 
@@ -158,6 +168,7 @@ impl MachineIdentity {
         all_macs: Vec<String>,
         smbios_uuid: Option<String>,
         machine_id: Option<String>,
+        fs_uuid: Option<String>,
     ) -> Self {
         let normalized_primary = normalize_mac(&primary_mac);
         let normalized_all: Vec<String> = all_macs.iter().map(|m| normalize_mac(m)).collect();
@@ -165,6 +176,7 @@ impl MachineIdentity {
             &normalized_all,
             smbios_uuid.as_deref(),
             machine_id.as_deref(),
+            fs_uuid.as_deref(),
         );
 
         Self {
@@ -172,12 +184,13 @@ impl MachineIdentity {
             all_macs: normalized_all,
             smbios_uuid,
             machine_id,
+            fs_uuid,
             identity_hash,
         }
     }
 
     pub fn from_mac(mac: &str) -> Self {
-        Self::new(mac.to_string(), vec![mac.to_string()], None, None)
+        Self::new(mac.to_string(), vec![mac.to_string()], None, None, None)
     }
 }
 
@@ -432,8 +445,15 @@ mod tests {
 
     #[test]
     fn test_identity_hash_deterministic() {
-        let hash1 = compute_identity_hash(&["00:11:22:33:44:55".to_string()], None, None);
-        let hash2 = compute_identity_hash(&["00:11:22:33:44:55".to_string()], None, None);
+        let hash1 = compute_identity_hash(&["00:11:22:33:44:55".to_string()], None, None, None);
+        let hash2 = compute_identity_hash(&["00:11:22:33:44:55".to_string()], None, None, None);
         assert_eq!(hash1, hash2);
+    }
+
+    #[test]
+    fn test_identity_hash_includes_fs_uuid() {
+        let hash_without = compute_identity_hash(&["00:11:22:33:44:55".to_string()], None, None, None);
+        let hash_with = compute_identity_hash(&["00:11:22:33:44:55".to_string()], None, None, Some("uuid-123"));
+        assert_ne!(hash_without, hash_with, "fs_uuid should affect identity hash");
     }
 }

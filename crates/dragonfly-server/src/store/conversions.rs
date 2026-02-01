@@ -233,6 +233,7 @@ impl From<RegisterMachineRequest> for Machine {
             all_macs,
             req.smbios_uuid,
             req.machine_id,
+            None, // fs_uuid learned later from existing_os
         );
 
         let mut machine = Machine::new(identity);
@@ -417,6 +418,7 @@ pub fn machine_from_register_request(req: &CommonRegisterRequest) -> Machine {
         vec![req.mac_address.clone()], // Only primary MAC from legacy request
         None, // No SMBIOS UUID in legacy format
         None, // No machine_id in legacy format
+        None, // No fs_uuid in legacy format
     );
 
     let mut machine = Machine::new(identity);
