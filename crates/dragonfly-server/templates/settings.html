@@ -3,183 +3,346 @@
 {% block title %}Dragonfly - Settings{% endblock %}
 
 {% block content %}
-<div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
-    <div class="flex justify-between items-center mb-6">
-        <h1 class="text-2xl font-bold text-gray-900 dark:text-white">Settings</h1>
-        <a href="/" class="inline-flex items-center px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm text-sm font-medium text-gray-700 dark:text-gray-300 bg-white dark:bg-gray-700 hover:bg-gray-50 dark:hover:bg-gray-600 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500">
-            Back to Dashboard
-        </a>
-    </div>
+<div class="min-h-screen flex items-center justify-center p-4" x-data="settingsPanel()">
+    <!-- Settings Panel Container -->
+    <div class="w-full max-w-5xl bg-white dark:bg-black border border-gray-200 dark:border-purple-800/50 rounded-2xl shadow-2xl overflow-hidden">
+        <div class="flex min-h-[600px]">
+            <!-- Left Sidebar - Tabs -->
+            <div class="w-56 bg-gray-50 dark:bg-gray-950 border-r border-gray-200 dark:border-purple-800/30 flex flex-col">
+                <!-- Header -->
+                <div class="p-6 border-b border-gray-200 dark:border-purple-800/30">
+                    <h2 class="text-xl font-bold text-gray-900 dark:text-white flex items-center gap-2">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 text-purple-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                        </svg>
+                        Settings
+                    </h2>
+                </div>
 
-    <div class="bg-white dark:bg-gray-800 shadow overflow-hidden sm:rounded-lg">
-        <div class="px-4 py-5 sm:px-6">
-            <h3 class="text-lg leading-6 font-medium text-gray-900 dark:text-white">
-                Application Settings
-            </h3>
-            <p class="mt-1 max-w-2xl text-sm text-gray-500 dark:text-gray-400">
-                Configure Dragonfly settings and preferences
-            </p>
+                <!-- Tab Navigation -->
+                <nav class="flex-1 p-3 space-y-1">
+                    <button @click="activeTab = 'general'"
+                            :class="activeTab === 'general' ? 'bg-purple-100 dark:bg-purple-900/50 text-purple-700 dark:text-purple-300 border-purple-500' : 'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-900 border-transparent'"
+                            class="w-full flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition-colors border-l-2">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4" />
+                        </svg>
+                        General
+                    </button>
+
+                    {% if show_admin_settings %}
+                    <button @click="activeTab = 'security'"
+                            :class="activeTab === 'security' ? 'bg-purple-100 dark:bg-purple-900/50 text-purple-700 dark:text-purple-300 border-purple-500' : 'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-900 border-transparent'"
+                            class="w-full flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition-colors border-l-2">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+                        </svg>
+                        Security
+                    </button>
+
+                    <button @click="activeTab = 'provisioning'"
+                            :class="activeTab === 'provisioning' ? 'bg-purple-100 dark:bg-purple-900/50 text-purple-700 dark:text-purple-300 border-purple-500' : 'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-900 border-transparent'"
+                            class="w-full flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition-colors border-l-2">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2m-2-4h.01M17 16h.01" />
+                        </svg>
+                        Provisioning
+                    </button>
+                    {% endif %}
+                </nav>
+
+                <!-- Back Link -->
+                <div class="p-3 border-t border-gray-200 dark:border-purple-800/30">
+                    <a href="/" class="flex items-center gap-2 px-4 py-2 text-sm text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300 transition-colors">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18" />
+                        </svg>
+                        Back to Dashboard
+                    </a>
+                </div>
+            </div>
+
+            <!-- Right Content Area -->
+            <div class="flex-1 flex flex-col">
+                <form id="settings-form" action="/settings" method="POST" class="flex-1 flex flex-col">
+                    <!-- Content -->
+                    <div class="flex-1 p-8 overflow-y-auto">
+
+                        <!-- General Tab -->
+                        <div x-show="activeTab === 'general'" x-cloak>
+                            <h3 class="text-lg font-semibold text-gray-900 dark:text-white mb-6">General Settings</h3>
+
+                            <!-- Theme -->
+                            <div class="space-y-6">
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Theme</label>
+                                    <div class="grid grid-cols-3 gap-3">
+                                        <label class="relative cursor-pointer">
+                                            <input type="radio" name="theme" value="light" {% if theme == "light" %}checked{% endif %} class="peer sr-only">
+                                            <div class="flex flex-col items-center p-4 rounded-xl border-2 border-gray-200 dark:border-gray-700 peer-checked:border-purple-500 peer-checked:bg-purple-50 dark:peer-checked:bg-purple-900/20 transition-all">
+                                                <svg xmlns="http://www.w3.org/2000/svg" class="h-8 w-8 text-yellow-500 mb-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z" />
+                                                </svg>
+                                                <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Light</span>
+                                            </div>
+                                        </label>
+                                        <label class="relative cursor-pointer">
+                                            <input type="radio" name="theme" value="dark" {% if theme == "dark" %}checked{% endif %} class="peer sr-only">
+                                            <div class="flex flex-col items-center p-4 rounded-xl border-2 border-gray-200 dark:border-gray-700 peer-checked:border-purple-500 peer-checked:bg-purple-50 dark:peer-checked:bg-purple-900/20 transition-all">
+                                                <svg xmlns="http://www.w3.org/2000/svg" class="h-8 w-8 text-purple-500 mb-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" />
+                                                </svg>
+                                                <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Dark</span>
+                                            </div>
+                                        </label>
+                                        <label class="relative cursor-pointer">
+                                            <input type="radio" name="theme" value="system" {% if theme == "system" %}checked{% endif %} class="peer sr-only">
+                                            <div class="flex flex-col items-center p-4 rounded-xl border-2 border-gray-200 dark:border-gray-700 peer-checked:border-purple-500 peer-checked:bg-purple-50 dark:peer-checked:bg-purple-900/20 transition-all">
+                                                <svg xmlns="http://www.w3.org/2000/svg" class="h-8 w-8 text-gray-500 mb-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+                                                </svg>
+                                                <span class="text-sm font-medium text-gray-700 dark:text-gray-300">System</span>
+                                            </div>
+                                        </label>
+                                    </div>
+                                    <p class="mt-2 text-xs text-gray-500 dark:text-gray-400">Choose how Dragonfly looks. System will follow your device settings.</p>
+                                </div>
+                            </div>
+                        </div>
+
+                        {% if show_admin_settings %}
+                        <!-- Security Tab -->
+                        <div x-show="activeTab === 'security'" x-cloak>
+                            <h3 class="text-lg font-semibold text-gray-900 dark:text-white mb-6">Security Settings</h3>
+
+                            <div class="space-y-8">
+                                <!-- Always Require Login -->
+                                <div class="flex items-start gap-4 p-4 rounded-xl bg-gray-50 dark:bg-gray-900/50 border border-gray-200 dark:border-purple-800/30">
+                                    <div class="flex-shrink-0 pt-0.5">
+                                        <input type="checkbox" name="require_login" id="require_login" {% if require_login %}checked{% endif %}
+                                               class="h-5 w-5 rounded border-gray-300 dark:border-gray-600 text-purple-600 focus:ring-purple-500 dark:bg-gray-800">
+                                    </div>
+                                    <div class="flex-1">
+                                        <label for="require_login" class="text-sm font-medium text-gray-900 dark:text-white cursor-pointer">Always require login</label>
+                                        <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">When enabled, the entire site will require admin login. API endpoints remain accessible for machine registration.</p>
+                                    </div>
+                                </div>
+
+                                <!-- Admin Credentials -->
+                                <div>
+                                    <h4 class="text-sm font-medium text-gray-900 dark:text-white mb-4 flex items-center gap-2">
+                                        <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 text-purple-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+                                        </svg>
+                                        Admin Credentials
+                                    </h4>
+                                    <div class="space-y-4">
+                                        <div>
+                                            <label for="username" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Username</label>
+                                            <input type="text" name="username" id="username" value="{{ admin_username }}"
+                                                   class="w-full rounded-lg border-gray-300 dark:border-gray-700 dark:bg-gray-900 dark:text-white shadow-sm focus:border-purple-500 focus:ring-purple-500 text-sm">
+                                        </div>
+                                        <div>
+                                            <label for="old_password" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Current Password</label>
+                                            <input type="password" name="old_password" id="old_password" placeholder="Required to change password"
+                                                   class="w-full rounded-lg border-gray-300 dark:border-gray-700 dark:bg-gray-900 dark:text-white shadow-sm focus:border-purple-500 focus:ring-purple-500 text-sm">
+                                        </div>
+                                        <div class="grid grid-cols-2 gap-4">
+                                            <div>
+                                                <label for="password" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">New Password</label>
+                                                <input type="password" name="password" id="password" placeholder="Leave blank to keep"
+                                                       class="w-full rounded-lg border-gray-300 dark:border-gray-700 dark:bg-gray-900 dark:text-white shadow-sm focus:border-purple-500 focus:ring-purple-500 text-sm">
+                                            </div>
+                                            <div>
+                                                <label for="password_confirm" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Confirm Password</label>
+                                                <input type="password" name="password_confirm" id="password_confirm" placeholder="Leave blank to keep"
+                                                       class="w-full rounded-lg border-gray-300 dark:border-gray-700 dark:bg-gray-900 dark:text-white shadow-sm focus:border-purple-500 focus:ring-purple-500 text-sm">
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <!-- API Tokens -->
+                                <div>
+                                    <h4 class="text-sm font-medium text-gray-900 dark:text-white mb-4 flex items-center gap-2">
+                                        <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 text-purple-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z" />
+                                        </svg>
+                                        API Tokens
+                                    </h4>
+                                    <div class="rounded-xl border border-gray-200 dark:border-purple-800/30 bg-gray-50 dark:bg-gray-900/50 p-4">
+                                        <p class="text-sm text-gray-500 dark:text-gray-400 text-center py-4">
+                                            API token management coming soon.
+                                        </p>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Provisioning Tab -->
+                        <div x-show="activeTab === 'provisioning'" x-cloak>
+                            <h3 class="text-lg font-semibold text-gray-900 dark:text-white mb-6">Provisioning Settings</h3>
+
+                            <div class="space-y-8">
+                                <!-- Default OS -->
+                                <div>
+                                    <label for="default_os" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Default OS for new machines</label>
+                                    <select name="default_os" id="default_os"
+                                            class="w-full rounded-lg border-gray-300 dark:border-gray-700 dark:bg-gray-900 dark:text-white shadow-sm focus:border-purple-500 focus:ring-purple-500 text-sm">
+                                        <option value="" {% if default_os_none %}selected{% endif %}>None (require manual selection)</option>
+                                        <option value="ubuntu-2204" {% if default_os_ubuntu2204 %}selected{% endif %}>Ubuntu 22.04 LTS</option>
+                                        <option value="ubuntu-2404" {% if default_os_ubuntu2404 %}selected{% endif %}>Ubuntu 24.04 LTS</option>
+                                        <option value="debian-12" {% if default_os_debian12 %}selected{% endif %}>Debian 12 (Bookworm)</option>
+                                        <option value="debian-13" {% if default_os_debian13 %}selected{% endif %}>Debian 13 (Trixie)</option>
+                                        <option value="proxmox" {% if default_os_proxmox %}selected{% endif %}>Proxmox VE</option>
+                                        <option value="talos" {% if default_os_talos %}selected{% endif %}>Talos Linux</option>
+                                    </select>
+                                    <p class="mt-2 text-xs text-gray-500 dark:text-gray-400">Newly discovered machines will automatically have this OS assigned for deployment.</p>
+                                </div>
+
+                                <!-- SSH Authorized Keys -->
+                                <div>
+                                    <h4 class="text-sm font-medium text-gray-900 dark:text-white mb-4 flex items-center gap-2">
+                                        <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 text-purple-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z" />
+                                        </svg>
+                                        SSH Authorized Keys
+                                    </h4>
+                                    <textarea name="ssh_keys" id="ssh_keys" rows="4" placeholder="Paste SSH public keys here, one per line..."
+                                              class="w-full rounded-lg border-gray-300 dark:border-gray-700 dark:bg-gray-900 dark:text-white shadow-sm focus:border-purple-500 focus:ring-purple-500 text-sm font-mono">{{ ssh_keys|default('') }}</textarea>
+                                    <p class="mt-2 text-xs text-gray-500 dark:text-gray-400">These keys will be added to the root user on all provisioned machines.</p>
+                                </div>
+
+                                <!-- OS Templates -->
+                                <div>
+                                    <h4 class="text-sm font-medium text-gray-900 dark:text-white mb-4 flex items-center justify-between">
+                                        <span class="flex items-center gap-2">
+                                            <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 text-purple-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4m0 5c0 2.21-3.582 4-8 4s-8-1.79-8-4" />
+                                            </svg>
+                                            OS Templates
+                                        </span>
+                                        <button type="button" @click="showAddTemplate = true"
+                                                class="text-xs px-3 py-1 rounded-lg bg-purple-600 text-white hover:bg-purple-700 transition-colors">
+                                            + Add Template
+                                        </button>
+                                    </h4>
+
+                                    <!-- Template List -->
+                                    <div class="rounded-xl border border-gray-200 dark:border-purple-800/30 divide-y divide-gray-200 dark:divide-purple-800/30 overflow-hidden">
+                                        <!-- Built-in Templates -->
+                                        <div class="bg-gray-50 dark:bg-gray-900/50 px-4 py-2">
+                                            <span class="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">Built-in Templates</span>
+                                        </div>
+
+                                        <div class="divide-y divide-gray-100 dark:divide-gray-800">
+                                            <div class="flex items-center justify-between px-4 py-3 bg-white dark:bg-black hover:bg-gray-50 dark:hover:bg-gray-900/50">
+                                                <div class="flex items-center gap-3">
+                                                    <span class="text-xl">🐧</span>
+                                                    <div>
+                                                        <p class="text-sm font-medium text-gray-900 dark:text-white">Ubuntu 24.04 LTS</p>
+                                                        <p class="text-xs text-gray-500 dark:text-gray-400">ubuntu-2404</p>
+                                                    </div>
+                                                </div>
+                                                <span class="text-xs px-2 py-1 rounded-full bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400">Enabled</span>
+                                            </div>
+                                            <div class="flex items-center justify-between px-4 py-3 bg-white dark:bg-black hover:bg-gray-50 dark:hover:bg-gray-900/50">
+                                                <div class="flex items-center gap-3">
+                                                    <span class="text-xl">🐧</span>
+                                                    <div>
+                                                        <p class="text-sm font-medium text-gray-900 dark:text-white">Ubuntu 22.04 LTS</p>
+                                                        <p class="text-xs text-gray-500 dark:text-gray-400">ubuntu-2204</p>
+                                                    </div>
+                                                </div>
+                                                <span class="text-xs px-2 py-1 rounded-full bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400">Enabled</span>
+                                            </div>
+                                            <div class="flex items-center justify-between px-4 py-3 bg-white dark:bg-black hover:bg-gray-50 dark:hover:bg-gray-900/50">
+                                                <div class="flex items-center gap-3">
+                                                    <span class="text-xl">🌀</span>
+                                                    <div>
+                                                        <p class="text-sm font-medium text-gray-900 dark:text-white">Debian 13 (Trixie)</p>
+                                                        <p class="text-xs text-gray-500 dark:text-gray-400">debian-13</p>
+                                                    </div>
+                                                </div>
+                                                <span class="text-xs px-2 py-1 rounded-full bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400">Enabled</span>
+                                            </div>
+                                            <div class="flex items-center justify-between px-4 py-3 bg-white dark:bg-black hover:bg-gray-50 dark:hover:bg-gray-900/50">
+                                                <div class="flex items-center gap-3">
+                                                    <span class="text-xl">🌀</span>
+                                                    <div>
+                                                        <p class="text-sm font-medium text-gray-900 dark:text-white">Debian 12 (Bookworm)</p>
+                                                        <p class="text-xs text-gray-500 dark:text-gray-400">debian-12</p>
+                                                    </div>
+                                                </div>
+                                                <span class="text-xs px-2 py-1 rounded-full bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400">Enabled</span>
+                                            </div>
+                                            <div class="flex items-center justify-between px-4 py-3 bg-white dark:bg-black hover:bg-gray-50 dark:hover:bg-gray-900/50">
+                                                <div class="flex items-center gap-3">
+                                                    <span class="text-xl">📦</span>
+                                                    <div>
+                                                        <p class="text-sm font-medium text-gray-900 dark:text-white">Proxmox VE</p>
+                                                        <p class="text-xs text-gray-500 dark:text-gray-400">proxmox</p>
+                                                    </div>
+                                                </div>
+                                                <span class="text-xs px-2 py-1 rounded-full bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400">Enabled</span>
+                                            </div>
+                                            <div class="flex items-center justify-between px-4 py-3 bg-white dark:bg-black hover:bg-gray-50 dark:hover:bg-gray-900/50">
+                                                <div class="flex items-center gap-3">
+                                                    <span class="text-xl">☸️</span>
+                                                    <div>
+                                                        <p class="text-sm font-medium text-gray-900 dark:text-white">Talos Linux</p>
+                                                        <p class="text-xs text-gray-500 dark:text-gray-400">talos</p>
+                                                    </div>
+                                                </div>
+                                                <span class="text-xs px-2 py-1 rounded-full bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400">Enabled</span>
+                                            </div>
+                                        </div>
+
+                                        <!-- Custom Templates Section -->
+                                        <div class="bg-gray-50 dark:bg-gray-900/50 px-4 py-2">
+                                            <span class="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">Custom Templates</span>
+                                        </div>
+                                        <div class="px-4 py-6 text-center bg-white dark:bg-black">
+                                            <p class="text-sm text-gray-500 dark:text-gray-400">No custom templates configured.</p>
+                                            <p class="text-xs text-gray-400 dark:text-gray-500 mt-1">Add templates from a URL or create your own.</p>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        {% endif %}
+
+                    </div>
+
+                    <!-- Footer with Save Button -->
+                    <div class="px-8 py-4 bg-gray-50 dark:bg-gray-950 border-t border-gray-200 dark:border-purple-800/30 flex justify-end gap-3">
+                        <a href="/" class="px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white transition-colors">
+                            Cancel
+                        </a>
+                        <button type="submit"
+                                class="px-6 py-2 text-sm font-medium text-white bg-purple-600 hover:bg-purple-700 rounded-lg shadow-sm transition-colors focus:outline-none focus:ring-2 focus:ring-purple-500 focus:ring-offset-2 dark:focus:ring-offset-black">
+                            Save Settings
+                        </button>
+                    </div>
+                </form>
+            </div>
         </div>
-
-        <!-- Settings Form -->
-        <form id="settings-form" action="/settings" method="POST">
-            <div class="border-t border-gray-200 dark:border-gray-700 px-4 py-5 sm:p-6">
-                <fieldset>
-                    <legend class="text-base font-medium text-gray-900 dark:text-white">Appearance</legend>
-                    <div class="mt-4 space-y-4">
-                        <div class="flex items-center">
-                            <label for="theme" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mr-4 w-32">
-                                Theme
-                            </label>
-                            <select 
-                                id="theme" 
-                                name="theme" 
-                                class="mt-1 block w-full pl-3 pr-10 py-2 text-base border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-white focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm rounded-md"
-                            >
-                                <option value="light" {% if theme == "light" %}selected{% endif %}>Light</option>
-                                <option value="dark" {% if theme == "dark" %}selected{% endif %}>Dark</option>
-                                <option value="system" {% if theme == "system" %}selected{% endif %}>System</option>
-                            </select>
-                        </div>
-                    </div>
-                </fieldset>
-
-                {% if show_admin_settings %}
-                <fieldset class="mt-8">
-                    <legend class="text-base font-medium text-gray-900 dark:text-white">Security</legend>
-                    <div class="mt-4 space-y-4">
-                        <div class="flex items-start">
-                            <div class="flex items-center h-5">
-                                <input 
-                                    id="require_login" 
-                                    name="require_login" 
-                                    type="checkbox" 
-                                    {% if require_login %}checked{% endif %}
-                                    class="focus:ring-indigo-500 h-4 w-4 text-indigo-600 border-gray-300 dark:border-gray-600 dark:bg-gray-700 rounded"
-                                >
-                            </div>
-                            <div class="ml-3 text-sm">
-                                <label for="require_login" class="font-medium text-gray-700 dark:text-gray-300">Always require login</label>
-                                <p class="text-gray-500 dark:text-gray-400">When enabled, the entire site will require admin login to access. API endpoints will remain accessible for machine registration.</p>
-                            </div>
-                        </div>
-                    </div>
-                </fieldset>
-                
-                <fieldset class="mt-8">
-                    <legend class="text-base font-medium text-gray-900 dark:text-white">Provisioning</legend>
-                    <div class="mt-4 space-y-4">
-                        <div class="flex items-center">
-                            <label for="default_os" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mr-4 w-32">
-                                Deploy OS by default:
-                            </label>
-                            <select 
-                                id="default_os" 
-                                name="default_os" 
-                                class="mt-1 block w-full pl-3 pr-10 py-2 text-base border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-white focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm rounded-md"
-                            >
-                                <option value="" {% if default_os_none %}selected{% endif %}>None</option>
-                                <option value="ubuntu-2204" {% if default_os_ubuntu2204 %}selected{% endif %}>
-                                    Ubuntu 22.04
-                                </option>
-                                <option value="ubuntu-2404" {% if default_os_ubuntu2404 %}selected{% endif %}>
-                                    Ubuntu 24.04
-                                </option>
-                                <option value="debian-12" {% if default_os_debian12 %}selected{% endif %}>
-                                    Debian 12
-                                </option>
-                                <option value="debian-13" {% if default_os_debian13 %}selected{% endif %}>
-                                    Debian 13 (Trixie)
-                                </option>
-                                <option value="proxmox" {% if default_os_proxmox %}selected{% endif %}>
-                                    Proxmox
-                                </option>
-                                <option value="talos" {% if default_os_talos %}selected{% endif %}>
-                                    Talos
-                                </option>
-                            </select>
-                        </div>
-                        <p class="text-sm text-gray-500 dark:text-gray-400 ml-36">When set, newly discovered machines will automatically have this OS assigned for deployment.</p>
-                    </div>
-                </fieldset>
-                <fieldset class="mt-8">
-                    <legend class="text-base font-medium text-gray-900 dark:text-white">Admin Account</legend>
-                    <div class="mt-4 space-y-4">
-                        <div class="flex items-center">
-                            <label for="username" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mr-4 w-32">
-                                Username
-                            </label>
-                            <input 
-                                type="text" 
-                                name="username" 
-                                id="username" 
-                                value="{{ admin_username }}"
-                                class="mt-1 block w-full border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-white rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
-                            >
-                        </div>
-                        <div class="flex items-center">
-                            <label for="old_password" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mr-4 w-32">
-                                Current Password
-                            </label>
-                            <input 
-                                type="password" 
-                                name="old_password" 
-                                id="old_password" 
-                                placeholder="Required to change password"
-                                class="mt-1 block w-full border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-white rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
-                            >
-                        </div>
-                        <div class="flex items-center">
-                            <label for="password" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mr-4 w-32">
-                                New Password
-                            </label>
-                            <input 
-                                type="password" 
-                                name="password" 
-                                id="password" 
-                                placeholder="Leave blank to keep current password"
-                                class="mt-1 block w-full border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-white rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
-                            >
-                        </div>
-                        <div class="flex items-center">
-                            <label for="password_confirm" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mr-4 w-32">
-                                Confirm Password
-                            </label>
-                            <input 
-                                type="password" 
-                                name="password_confirm" 
-                                id="password_confirm" 
-                                placeholder="Leave blank to keep current password"
-                                class="mt-1 block w-full border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-white rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
-                            >
-                        </div>
-                    </div>
-                </fieldset>
-                {% endif %}
-            </div>
-
-            <div class="px-4 py-3 bg-gray-50 dark:bg-gray-700 text-right sm:px-6">
-                <button type="submit" class="inline-flex justify-center py-2 px-4 border border-transparent shadow-sm text-sm font-medium rounded-md text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500">
-                    Save Settings
-                </button>
-            </div>
-        </form>
     </div>
 
     {% if has_initial_password %}
-    <div class="mt-6 bg-yellow-50 border-l-4 border-yellow-400 p-4">
-        <div class="flex">
-            <div class="flex-shrink-0">
-                <svg class="h-5 w-5 text-yellow-400" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-                    <path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd" />
-                </svg>
-            </div>
-            <div class="ml-3">
-                <h3 class="text-sm font-medium text-yellow-800">Initial Admin Password</h3>
-                <div class="mt-2 text-sm text-yellow-700">
-                    <p>Your initial admin password is: <strong>{{ rendered_password }}</strong></p>
-                    <p class="mt-1">Please change it immediately using the form above and keep it in a safe place.</p>
-                </div>
+    <!-- Initial Password Warning -->
+    <div class="fixed bottom-4 left-1/2 -translate-x-1/2 max-w-md bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-400 dark:border-yellow-600/50 rounded-xl p-4 shadow-lg">
+        <div class="flex gap-3">
+            <svg class="h-5 w-5 text-yellow-400 flex-shrink-0 mt-0.5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+                <path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd" />
+            </svg>
+            <div>
+                <h3 class="text-sm font-medium text-yellow-800 dark:text-yellow-200">Initial Admin Password</h3>
+                <p class="mt-1 text-sm text-yellow-700 dark:text-yellow-300">
+                    Your initial password is: <code class="font-mono font-bold">{{ rendered_password }}</code>
+                </p>
+                <p class="mt-1 text-xs text-yellow-600 dark:text-yellow-400">Please change it immediately in the Security tab.</p>
             </div>
         </div>
     </div>
@@ -189,14 +352,21 @@
 
 {% block scripts %}
 <script>
+    function settingsPanel() {
+        return {
+            activeTab: 'general',
+            showAddTemplate: false
+        };
+    }
+
     document.getElementById('settings-form').addEventListener('submit', function(e) {
-        const password = document.getElementById('password').value;
-        const confirmPassword = document.getElementById('password_confirm').value;
-        
-        if (password && password !== confirmPassword) {
+        const password = document.getElementById('password');
+        const confirmPassword = document.getElementById('password_confirm');
+
+        if (password && confirmPassword && password.value && password.value !== confirmPassword.value) {
             e.preventDefault();
-            alert('The passwords do not match. Please try again.');
+            showToast('Passwords do not match.', 'error');
         }
     });
 </script>
-{% endblock %} 
+{% endblock %}
