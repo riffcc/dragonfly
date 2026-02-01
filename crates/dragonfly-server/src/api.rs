@@ -3,7 +3,7 @@ use axum::{
     Router,
     extract::{
         State, Path, Json, Form, FromRequest,
-        ConnectInfo,
+        ConnectInfo, Query,
     },
     http::{StatusCode, header::HeaderValue, HeaderMap},
     response::{IntoResponse, Html, Response, sse::{Event, Sse, KeepAlive}},
@@ -87,10 +87,16 @@ pub fn api_router() -> Router<crate::AppState> {
         // --- User Management Routes ---
         .route("/users", get(api_get_users).post(api_create_user))
         .route("/users/{id}", get(api_get_user).put(api_update_user).delete(api_delete_user))
+        // --- SSH Key Import ---
+        .route("/fetch-keys", get(api_fetch_keys))
         // --- Workflow Routes (for agent) ---
         .route("/workflows/{id}", get(get_workflow_handler))
         .route("/workflows/{id}/events", post(workflow_events_handler))
         .route("/templates/{name}", get(get_template_handler))
+        // --- Template Management Routes ---
+        .route("/templates", get(list_templates_handler))
+        .route("/templates/{name}/toggle", post(toggle_template_handler))
+        .route("/templates/{name}/content", get(get_template_content_handler).put(update_template_content_handler))
         .layer(DefaultBodyLimit::max(1024 * 1024 * 50)) // 50 MB
 }
 
@@ -2596,20 +2602,94 @@ pub async fn get_workflow_handler(
 ///
 /// Templates define the actions to execute for OS installation.
 /// Templates are stored in the database and loaded from YAML files on startup.
+/// Template variables {{ ssh_authorized_keys }}, {{ ssh_import_id }}, and {{ default_user }}
+/// are substituted with values from settings before returning the template.
 pub async fn get_template_handler(
     State(state): State<crate::AppState>,
     Path(template_name): Path<String>,
 ) -> Response {
     debug!(template_name = %template_name, "Fetching template for agent");
 
+    // Fetch settings for template variable substitution
+    let ssh_keys = state.store.get_setting("ssh_keys").await
+        .ok().flatten().unwrap_or_default();
+    let ssh_key_subscriptions = state.store.get_setting("ssh_key_subscriptions").await
+        .ok().flatten().unwrap_or_else(|| "[]".to_string());
+    let default_user = state.store.get_setting("default_user").await
+        .ok().flatten().unwrap_or_else(|| "root".to_string());
+    let default_password_raw = state.store.get_setting("default_password").await
+        .ok().flatten().unwrap_or_default();
+
+    // Determine ssh_pwauth based on whether password is set
+    // If password is empty, use locked password ("!") to prevent passwordless login
+    let ssh_pwauth = !default_password_raw.is_empty();
+    let default_password = if default_password_raw.is_empty() {
+        "!".to_string()  // Locked password - no login possible
+    } else {
+        default_password_raw
+    };
+
+    // Parse subscriptions and build ssh_import_id list (gh:user, gl:user)
+    let mut import_ids: Vec<String> = Vec::new();
+    if let Ok(subs) = serde_json::from_str::<Vec<serde_json::Value>>(&ssh_key_subscriptions) {
+        for sub in subs {
+            if let (Some(sub_type), Some(value)) = (sub.get("type").and_then(|t| t.as_str()), sub.get("value").and_then(|v| v.as_str())) {
+                match sub_type {
+                    "github" => import_ids.push(format!("gh:{}", value)),
+                    "gitlab" => import_ids.push(format!("gl:{}", value)),
+                    // URL subscriptions will be fetched and added as direct keys at runtime
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    // Format ssh_import_id as YAML array value (templates have "ssh_import_id: {{ ssh_import_id }}")
+    let ssh_import_id_yaml = if import_ids.is_empty() {
+        "[]".to_string()
+    } else {
+        // Multiline array format with proper indentation for cloud-config root level
+        let ids: String = import_ids.iter().map(|id| format!("\n          - {}", id)).collect::<Vec<_>>().join("");
+        ids
+    };
+
+    // Format ssh_authorized_keys as YAML array value (templates have "ssh_authorized_keys: {{ ssh_authorized_keys }}")
+    let direct_keys: Vec<&str> = ssh_keys.lines()
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .collect();
+    let ssh_authorized_keys_yaml = if direct_keys.is_empty() {
+        "[]".to_string()
+    } else {
+        // Multiline array format with proper indentation for user entry level
+        let keys: String = direct_keys.iter().map(|k| format!("\n              - \"{}\"", k)).collect::<Vec<_>>().join("");
+        keys
+    };
+
     // Fetch template from store
     match state.store.get_template(&template_name).await {
-        Ok(Some(template)) => {
+        Ok(Some(mut template)) => {
+            // Substitute template variables in writefile actions
+            for action in &mut template.spec.actions {
+                if let dragonfly_crd::ActionStep::Writefile(cfg) = action {
+                    if let Some(content) = &mut cfg.content {
+                        *content = content
+                            .replace("{{ default_user }}", &default_user)
+                            .replace("{{ default_password }}", &default_password)
+                            .replace("{{ ssh_pwauth }}", &ssh_pwauth.to_string())
+                            .replace("{{ ssh_authorized_keys }}", &ssh_authorized_keys_yaml)
+                            .replace("{{ ssh_import_id }}", &ssh_import_id_yaml);
+                    }
+                }
+            }
+
             info!(
                 template_name = %template_name,
                 actions_count = template.spec.actions.len(),
                 action_names = ?template.action_names(),
-                "Returning template to agent"
+                ssh_keys_count = direct_keys.len(),
+                ssh_import_ids = ?import_ids,
+                "Returning template to agent with injected SSH config"
             );
             // Debug: log raw JSON being sent
             if let Ok(json) = serde_json::to_string(&template) {
@@ -2700,22 +2780,40 @@ pub async fn workflow_events_handler(
         if let (Some(mid), Some(progress)) = (&machine_id, &event.progress) {
             if let Ok(machine_uuid) = uuid::Uuid::parse_str(mid) {
                 if let Ok(Some(mut machine)) = state.store.get_machine(machine_uuid).await {
-                    // Normalize per-action progress to overall workflow progress
-                    let action_name = event.action.as_deref().unwrap_or("unknown");
-                    let normalized_progress = normalize_workflow_progress(action_name, progress.percent);
+                    // Don't update progress if machine is already Installed or at 100% (prevents race with kexec)
+                    if matches!(machine.status.state, dragonfly_common::MachineState::Installed)
+                        || machine.config.installation_progress >= 100 {
+                        // Machine already marked as installed or at 100%, skip progress update
+                    } else {
+                        // Normalize per-action progress to overall workflow progress
+                        let action_name = event.action.as_deref().unwrap_or("unknown");
+                        let normalized_progress = normalize_workflow_progress(action_name, progress.percent);
 
-                    // Only update if progress moved forward (ratchet - never go backwards)
-                    if normalized_progress >= machine.config.installation_progress {
-                        machine.config.installation_progress = normalized_progress;
-                        machine.config.installation_step = Some(progress.message.clone());
-                        machine.metadata.updated_at = chrono::Utc::now();
+                        // Only update if progress moved forward (strict - never overwrite same value)
+                        if normalized_progress > machine.config.installation_progress {
+                            machine.config.installation_progress = normalized_progress;
+                            machine.config.installation_step = Some(progress.message.clone());
+                            machine.metadata.updated_at = chrono::Utc::now();
 
-                        // Transition from Initializing to Installing when we start receiving progress
-                        if matches!(machine.status.state, dragonfly_common::MachineState::Initializing) {
-                            machine.status.state = dragonfly_common::MachineState::Installing;
+                            // Transition from Initializing to Installing when we start receiving progress
+                            if matches!(machine.status.state, dragonfly_common::MachineState::Initializing) {
+                                machine.status.state = dragonfly_common::MachineState::Installing;
+                            }
+
+                            // Re-check current state before saving to prevent race with kexec
+                            // kexec sets progress to 100 and state to Installed atomically
+                            let should_save = if let Ok(Some(current)) = state.store.get_machine(machine_uuid).await {
+                                // Only save if machine hasn't been marked Installed and progress hasn't advanced
+                                !matches!(current.status.state, dragonfly_common::MachineState::Installed)
+                                    && current.config.installation_progress <= normalized_progress
+                            } else {
+                                true // If we can't re-check, try to save anyway
+                            };
+
+                            if should_save {
+                                let _ = state.store.put_machine(&machine).await;
+                            }
                         }
-
-                        let _ = state.store.put_machine(&machine).await;
                     }
                 }
             }
@@ -4074,6 +4172,61 @@ pub struct SettingsUpdateRequest {
     pub default_os: Option<String>,
 }
 
+/// Fetch SSH keys from an external URL (GitHub, GitLab, or custom URL)
+#[axum::debug_handler]
+pub async fn api_fetch_keys(
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    let url = match params.get("url") {
+        Some(url) => url,
+        None => return (StatusCode::BAD_REQUEST, Json(json!({
+            "error": "MISSING_URL",
+            "message": "url parameter is required"
+        }))).into_response(),
+    };
+
+    // Validate URL
+    if !url.starts_with("https://") {
+        return (StatusCode::BAD_REQUEST, Json(json!({
+            "error": "INVALID_URL",
+            "message": "URL must use HTTPS"
+        }))).into_response();
+    }
+
+    // Fetch keys from URL
+    let client = reqwest::Client::new();
+    match client.get(url).send().await {
+        Ok(response) => {
+            if !response.status().is_success() {
+                return (StatusCode::BAD_GATEWAY, Json(json!({
+                    "error": "FETCH_FAILED",
+                    "message": format!("Failed to fetch keys: HTTP {}", response.status())
+                }))).into_response();
+            }
+
+            match response.text().await {
+                Ok(keys) => {
+                    Json(json!({
+                        "keys": keys
+                    })).into_response()
+                }
+                Err(e) => {
+                    (StatusCode::BAD_GATEWAY, Json(json!({
+                        "error": "READ_FAILED",
+                        "message": format!("Failed to read response: {}", e)
+                    }))).into_response()
+                }
+            }
+        }
+        Err(e) => {
+            (StatusCode::BAD_GATEWAY, Json(json!({
+                "error": "FETCH_FAILED",
+                "message": format!("Failed to fetch keys: {}", e)
+            }))).into_response()
+        }
+    }
+}
+
 /// Get current settings
 #[axum::debug_handler]
 pub async fn api_get_settings(
@@ -4596,4 +4749,190 @@ pub async fn api_delete_user(
             }))).into_response()
         }
     }
+}
+
+// === Template Management Handlers ===
+
+/// Template info for the UI
+#[derive(Debug, serde::Serialize)]
+pub struct TemplateInfo {
+    pub name: String,
+    pub display_name: String,
+    pub icon: String,
+    pub enabled: bool,
+    pub builtin: bool,
+}
+
+/// List all templates with their enabled/disabled state
+pub async fn list_templates_handler(
+    State(state): State<crate::AppState>,
+) -> Response {
+    // Get disabled templates from settings
+    let disabled_templates: Vec<String> = state.store
+        .get_setting("disabled_templates")
+        .await
+        .ok()
+        .flatten()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
+
+    // Get all templates from store
+    let templates = match state.store.list_templates().await {
+        Ok(t) => t,
+        Err(e) => {
+            error!("Failed to list templates: {}", e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": "Failed to list templates" })),
+            ).into_response();
+        }
+    };
+
+    // Map to TemplateInfo
+    let template_infos: Vec<TemplateInfo> = templates.iter().map(|t| {
+        let name = t.metadata.name.clone();
+        let (display_name, icon) = match name.as_str() {
+            "ubuntu-2404" => ("Ubuntu 24.04 LTS".to_string(), "ubuntu".to_string()),
+            "ubuntu-2204" => ("Ubuntu 22.04 LTS".to_string(), "ubuntu".to_string()),
+            "debian-13" => ("Debian 13 (Trixie)".to_string(), "debian".to_string()),
+            "debian-12" => ("Debian 12 (Bookworm)".to_string(), "debian".to_string()),
+            "proxmox" => ("Proxmox VE".to_string(), "proxmox".to_string()),
+            _ => (name.clone(), "generic".to_string()),
+        };
+        let builtin = matches!(name.as_str(), "ubuntu-2404" | "ubuntu-2204" | "debian-13" | "debian-12" | "proxmox");
+        TemplateInfo {
+            name: name.clone(),
+            display_name,
+            icon,
+            enabled: !disabled_templates.contains(&name),
+            builtin,
+        }
+    }).collect();
+
+    Json(template_infos).into_response()
+}
+
+/// Toggle template enabled/disabled state
+pub async fn toggle_template_handler(
+    State(state): State<crate::AppState>,
+    Path(template_name): Path<String>,
+) -> Response {
+    // Get current disabled templates
+    let mut disabled_templates: Vec<String> = state.store
+        .get_setting("disabled_templates")
+        .await
+        .ok()
+        .flatten()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
+
+    // Toggle
+    let now_enabled = if disabled_templates.contains(&template_name) {
+        disabled_templates.retain(|t| t != &template_name);
+        true
+    } else {
+        disabled_templates.push(template_name.clone());
+        false
+    };
+
+    // Save
+    if let Err(e) = state.store.put_setting("disabled_templates", &serde_json::to_string(&disabled_templates).unwrap()).await {
+        error!("Failed to save disabled_templates: {}", e);
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": "Failed to save setting" })),
+        ).into_response();
+    }
+
+    info!(template = %template_name, enabled = now_enabled, "Template toggled");
+    Json(json!({ "name": template_name, "enabled": now_enabled })).into_response()
+}
+
+/// Get template content as YAML
+pub async fn get_template_content_handler(
+    State(state): State<crate::AppState>,
+    Path(template_name): Path<String>,
+) -> Response {
+    // Try to read from file first (source of truth)
+    let file_path = format!("/var/lib/dragonfly/os-templates/{}.yml", template_name);
+    match tokio::fs::read_to_string(&file_path).await {
+        Ok(content) => {
+            Json(json!({ "name": template_name, "content": content })).into_response()
+        }
+        Err(_) => {
+            // Fall back to store
+            match state.store.get_template(&template_name).await {
+                Ok(Some(template)) => {
+                    match serde_yaml::to_string(&template) {
+                        Ok(yaml) => Json(json!({ "name": template_name, "content": yaml })).into_response(),
+                        Err(e) => (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(json!({ "error": format!("Failed to serialize template: {}", e) })),
+                        ).into_response(),
+                    }
+                }
+                Ok(None) => (
+                    StatusCode::NOT_FOUND,
+                    Json(json!({ "error": "Template not found" })),
+                ).into_response(),
+                Err(e) => (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({ "error": format!("Failed to get template: {}", e) })),
+                ).into_response(),
+            }
+        }
+    }
+}
+
+/// Update template content
+#[derive(Debug, serde::Deserialize)]
+pub struct UpdateTemplateRequest {
+    pub content: String,
+}
+
+pub async fn update_template_content_handler(
+    State(state): State<crate::AppState>,
+    Path(template_name): Path<String>,
+    Json(request): Json<UpdateTemplateRequest>,
+) -> Response {
+    // Validate YAML
+    let template: dragonfly_crd::Template = match serde_yaml::from_str(&request.content) {
+        Ok(t) => t,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": format!("Invalid YAML: {}", e) })),
+            ).into_response();
+        }
+    };
+
+    // Validate template
+    if let Err(e) = template.validate() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": format!("Invalid template: {}", e) })),
+        ).into_response();
+    }
+
+    // Save to file
+    let file_path = format!("/var/lib/dragonfly/os-templates/{}.yml", template_name);
+    if let Err(e) = tokio::fs::write(&file_path, &request.content).await {
+        error!("Failed to write template file: {}", e);
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": format!("Failed to save template: {}", e) })),
+        ).into_response();
+    }
+
+    // Update in store
+    if let Err(e) = state.store.put_template(&template).await {
+        error!("Failed to update template in store: {}", e);
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": format!("Failed to update template: {}", e) })),
+        ).into_response();
+    }
+
+    info!(template = %template_name, "Template updated");
+    Json(json!({ "success": true, "name": template_name })).into_response()
 }

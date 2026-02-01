@@ -2,6 +2,34 @@
 
 {% block title %}Dragonfly - Settings{% endblock %}
 
+{% block head %}
+<!-- CodeMirror for YAML editing -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/theme/material-darker.min.css">
+<style>
+    .CodeMirror {
+        height: 100%;
+        min-height: 300px;
+        font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+        font-size: 13px;
+    }
+    .CodeMirror-scroll {
+        overflow-y: auto !important;
+        overflow-x: auto !important;
+    }
+    .dark .CodeMirror {
+        background: #1e1e1e;
+        color: #d4d4d4;
+    }
+    #yaml-editor {
+        min-height: 400px;
+    }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/yaml/yaml.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/js-yaml/4.1.0/js-yaml.min.js"></script>
+{% endblock %}
+
 {% block content %}
 <div class="px-4 sm:px-6 lg:px-8 py-6" x-data="settingsPanel()">
     <!-- Header -->
@@ -351,86 +379,282 @@
                             <h3 class="text-base font-semibold text-black dark:text-white mb-4">Provisioning</h3>
 
                             <div class="space-y-6">
-                                <!-- Default OS -->
-                                <div x-data="{
-                                    open: false,
-                                    selected: '{{ default_os|default('') }}',
-                                    proxmoxSvg: '<svg class=&quot;w-4 h-4&quot; viewBox=&quot;0 0 128 128&quot;><path fill=&quot;#e57000&quot; d=&quot;M32.332 21.426a12.54 12.54 0 0 0-8.855 3.676l20.488 22.515l-20.488 22.52a12.3 12.3 0 0 0 8.855 3.75a12.28 12.28 0 0 0 9.156-4.051l11.336-12.461l8.856-9.758l-8.856-9.68l-11.336-12.46a12.28 12.28 0 0 0-9.156-4.051m63.23 0a12.28 12.28 0 0 0-9.156 4.05L75.07 37.939l-8.855 9.68l8.855 9.757l11.336 12.46a12.28 12.28 0 0 0 9.156 4.052a12.3 12.3 0 0 0 8.856-3.75L83.93 47.617l20.488-22.515a12.54 12.54 0 0 0-8.856-3.676m0 0&quot;/><path fill=&quot;currentColor&quot; d=&quot;m72.02 36.453l-8.082 8.906l-8.086-8.91l-18.7-20.55a11.44 11.44 0 0 1 8.082-3.356c3.36 0 6.164 1.371 8.29 3.7l10.413 11.37l10.344-11.37a11.2 11.2 0 0 1 8.36-3.7c3.148 0 6.027 1.3 8.082 3.355Zm0 22.328l-8.082-8.906l-8.083 8.906l-18.703 20.555a11.45 11.45 0 0 0 8.082 3.355c3.36 0 6.168-1.37 8.29-3.699l10.413-11.375l10.344 11.375a11.23 11.23 0 0 0 8.36 3.7c3.152 0 6.027-1.305 8.082-3.356Zm-70.594 41.32a1.4 1.4 0 0 0-1 .43A1.44 1.44 0 0 0 0 101.547v13.906q1.622-.041 2.7-1.121c.714-.723 1.09-1.629 1.116-2.719h7.676q1.636-.039 2.727-1.12q1.09-1.08 1.133-2.716v-3.816q-.043-1.636-1.133-2.727t-2.727-1.132Zm17.562 0a1.4 1.4 0 0 0-1.011.43a1.45 1.45 0 0 0-.415 1.016v13.906q1.624-.042 2.708-1.121q1.088-1.084 1.128-2.719v-.965h4.364l2.215 3.16q.534.763 1.34 1.2a3.75 3.75 0 0 0 1.796.445c.32 0 .633-.039.93-.113q.45-.112.848-.324l-3.09-4.41a3.85 3.85 0 0 0 2.203-1.317q.856-1.03.887-2.453v-2.875q-.043-1.636-1.121-2.727c-.723-.726-1.625-1.105-2.715-1.132Zm19.93 0q-1.636.043-2.715 1.133q-1.085 1.091-1.121 2.727v7.652q.036 1.635 1.121 2.719q1.08 1.08 2.715 1.121h7.652q1.635-.041 2.72-1.121q1.078-1.084 1.12-2.719v-7.652q-.042-1.636-1.12-2.727q-1.085-1.09-2.72-1.132Zm34.488 0c-.8 0-1.445.649-1.445 1.446v13.906q1.617-.041 2.707-1.121c.723-.723 1.102-1.629 1.129-2.719v-7.343c.387-.332.441-.31.496-.274a.3.3 0 0 1 .117.117l4.254 9.387c.164.34.504.563.879.57c.18 0 .36-.05.512-.148c.152-.102.28-.238.363-.399l4.258-9.41c.582-.027.61.055.613.157v7.343q.04 1.635 1.129 2.719q1.084 1.08 2.707 1.121v-13.906c0-.379-.148-.746-.418-1.02a1.4 1.4 0 0 0-1.008-.425h-2.41c-.75 0-1.484.222-2.11.64a3.95 3.95 0 0 0-1.398 1.66l.02-.043l-2.258 4.957l-2.238-4.957v.043a3.84 3.84 0 0 0-3.508-2.3Zm23.766 0q-1.64.043-2.719 1.133q-1.08 1.091-1.121 2.727v7.652q.041 1.635 1.121 2.719q1.078 1.08 2.719 1.121h7.652q1.636-.041 2.715-1.121c.723-.723 1.094-1.629 1.121-2.719v-7.652q-.039-1.636-1.12-2.727q-1.08-1.09-2.716-1.132Zm-41.984.024a3.55 3.55 0 0 0-1.426.29a3.7 3.7 0 0 0-1.164.78l5.988 6.582l-5.988 6.578a3.63 3.63 0 0 0 2.59 1.098a3.65 3.65 0 0 0 2.675-1.183l3.309-3.641l3.312 3.64a3.61 3.61 0 0 0 5.266.086l-5.988-6.578l5.988-6.578a3.7 3.7 0 0 0-1.164-.785a3.63 3.63 0 0 0-4.102.89l-3.312 3.645l-3.332-3.644a3.6 3.6 0 0 0-1.18-.871a3.5 3.5 0 0 0-1.472-.313Zm58.25 0q-.76.001-1.426.29a3.7 3.7 0 0 0-1.16.78l5.988 6.582l-5.988 6.578c.68.7 1.613 1.094 2.585 1.098a3.64 3.64 0 0 0 2.676-1.183l3.313-3.641l3.308 3.64a3.61 3.61 0 0 0 5.266.086l-5.988-6.578L128 101.2a3.64 3.64 0 0 0-4.082-.754c-.45.203-.852.496-1.18.86l-3.312 3.644l-3.332-3.644a3.8 3.8 0 0 0-1.18-.871a3.6 3.6 0 0 0-1.477-.313ZM10.57 103.957c.059 0 .207.035.45.121q.415.149.472.824v2.391q.03.064-.117.484q-.149.423-.824.48H3.816v-4.296h6.754Zm17.54 0c.062 0 .214.035.46.121q.422.149.485.824v1.45c.02.039-.024.195-.121.468q-.153.416-.844.473h-6.692v-3.332h6.711Zm17.519 0c.059 0 .215.035.46.121q.423.149.481.824v5.746q.03.062-.12.485q-.147.422-.845.48h-5.722c-.04.024-.2-.02-.48-.117q-.428-.157-.485-.848v-5.746q-.03-.058.121-.468q.153-.416.844-.473h5.746Zm58.25 0c.062 0 .219.035.46.121c.286.098.442.375.485.824v5.746q.03.062-.12.485q-.153.422-.845.48h-5.722c-.043.024-.203-.02-.485-.117q-.42-.157-.48-.848v-5.746q-.03-.058.117-.468q.152-.416.848-.473h5.742Zm0 0&quot;/></svg>',
-                                    options: [
-                                        { value: '', label: 'None', iconClass: 'far fa-circle text-gray-400', svg: null },
-                                        { value: 'ubuntu-2204', label: 'Ubuntu 22.04', iconClass: 'fab fa-ubuntu text-orange-500', svg: null },
-                                        { value: 'ubuntu-2404', label: 'Ubuntu 24.04', iconClass: 'fab fa-ubuntu text-orange-500', svg: null },
-                                        { value: 'debian-12', label: 'Debian 12', iconClass: 'fab fa-debian text-red-500', svg: null },
-                                        { value: 'debian-13', label: 'Debian 13', iconClass: 'fab fa-debian text-red-500', svg: null },
-                                        { value: 'proxmox', label: 'Proxmox VE', iconClass: null, svg: 'proxmox' }
-                                    ],
-                                    get selectedOption() {
-                                        return this.options.find(o => o.value === this.selected) || this.options[0];
-                                    },
-                                    async selectOs(value) {
-                                        this.selected = value;
-                                        this.open = false;
-                                        const params = new URLSearchParams();
-                                        params.append('default_os', value);
-                                        try {
-                                            const response = await fetch('/settings', {
-                                                method: 'POST',
-                                                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                                                body: params.toString(),
-                                                credentials: 'include',
-                                                redirect: 'manual'
-                                            });
-                                            if (response.type === 'opaqueredirect' || response.ok || response.status === 0) {
-                                                showToast('Setting saved', 'success');
-                                            } else {
+                                <!-- Default OS and Default User row -->
+                                <div class="flex gap-6 items-start">
+                                    <!-- Default OS -->
+                                    <div x-data="{
+                                        open: false,
+                                        selected: '{{ default_os|default('') }}',
+                                        proxmoxSvg: '<svg class=&quot;w-4 h-4&quot; viewBox=&quot;0 0 128 128&quot;><path fill=&quot;#e57000&quot; d=&quot;M32.332 21.426a12.54 12.54 0 0 0-8.855 3.676l20.488 22.515l-20.488 22.52a12.3 12.3 0 0 0 8.855 3.75a12.28 12.28 0 0 0 9.156-4.051l11.336-12.461l8.856-9.758l-8.856-9.68l-11.336-12.46a12.28 12.28 0 0 0-9.156-4.051m63.23 0a12.28 12.28 0 0 0-9.156 4.05L75.07 37.939l-8.855 9.68l8.855 9.757l11.336 12.46a12.28 12.28 0 0 0 9.156 4.052a12.3 12.3 0 0 0 8.856-3.75L83.93 47.617l20.488-22.515a12.54 12.54 0 0 0-8.856-3.676m0 0&quot;/><path fill=&quot;currentColor&quot; d=&quot;m72.02 36.453l-8.082 8.906l-8.086-8.91l-18.7-20.55a11.44 11.44 0 0 1 8.082-3.356c3.36 0 6.164 1.371 8.29 3.7l10.413 11.37l10.344-11.37a11.2 11.2 0 0 1 8.36-3.7c3.148 0 6.027 1.3 8.082 3.355Zm0 22.328l-8.082-8.906l-8.083 8.906l-18.703 20.555a11.45 11.45 0 0 0 8.082 3.355c3.36 0 6.168-1.37 8.29-3.699l10.413-11.375l10.344 11.375a11.23 11.23 0 0 0 8.36 3.7c3.152 0 6.027-1.305 8.082-3.356Zm-70.594 41.32a1.4 1.4 0 0 0-1 .43A1.44 1.44 0 0 0 0 101.547v13.906q1.622-.041 2.7-1.121c.714-.723 1.09-1.629 1.116-2.719h7.676q1.636-.039 2.727-1.12q1.09-1.08 1.133-2.716v-3.816q-.043-1.636-1.133-2.727t-2.727-1.132Zm17.562 0a1.4 1.4 0 0 0-1.011.43a1.45 1.45 0 0 0-.415 1.016v13.906q1.624-.042 2.708-1.121q1.088-1.084 1.128-2.719v-.965h4.364l2.215 3.16q.534.763 1.34 1.2a3.75 3.75 0 0 0 1.796.445c.32 0 .633-.039.93-.113q.45-.112.848-.324l-3.09-4.41a3.85 3.85 0 0 0 2.203-1.317q.856-1.03.887-2.453v-2.875q-.043-1.636-1.121-2.727c-.723-.726-1.625-1.105-2.715-1.132Zm19.93 0q-1.636.043-2.715 1.133q-1.085 1.091-1.121 2.727v7.652q.036 1.635 1.121 2.719q1.08 1.08 2.715 1.121h7.652q1.635-.041 2.72-1.121q1.078-1.084 1.12-2.719v-7.652q-.042-1.636-1.12-2.727q-1.085-1.09-2.72-1.132Zm34.488 0c-.8 0-1.445.649-1.445 1.446v13.906q1.617-.041 2.707-1.121c.723-.723 1.102-1.629 1.129-2.719v-7.343c.387-.332.441-.31.496-.274a.3.3 0 0 1 .117.117l4.254 9.387c.164.34.504.563.879.57c.18 0 .36-.05.512-.148c.152-.102.28-.238.363-.399l4.258-9.41c.582-.027.61.055.613.157v7.343q.04 1.635 1.129 2.719q1.084 1.08 2.707 1.121v-13.906c0-.379-.148-.746-.418-1.02a1.4 1.4 0 0 0-1.008-.425h-2.41c-.75 0-1.484.222-2.11.64a3.95 3.95 0 0 0-1.398 1.66l.02-.043l-2.258 4.957l-2.238-4.957v.043a3.84 3.84 0 0 0-3.508-2.3Zm23.766 0q-1.64.043-2.719 1.133q-1.08 1.091-1.121 2.727v7.652q.041 1.635 1.121 2.719q1.078 1.08 2.719 1.121h7.652q1.636-.041 2.715-1.121c.723-.723 1.094-1.629 1.121-2.719v-7.652q-.039-1.636-1.12-2.727q-1.08-1.09-2.716-1.132Zm-41.984.024a3.55 3.55 0 0 0-1.426.29a3.7 3.7 0 0 0-1.164.78l5.988 6.582l-5.988 6.578a3.63 3.63 0 0 0 2.59 1.098a3.65 3.65 0 0 0 2.675-1.183l3.309-3.641l3.312 3.64a3.61 3.61 0 0 0 5.266.086l-5.988-6.578l5.988-6.578a3.7 3.7 0 0 0-1.164-.785a3.63 3.63 0 0 0-4.102.89l-3.312 3.645l-3.332-3.644a3.6 3.6 0 0 0-1.18-.871a3.5 3.5 0 0 0-1.472-.313Zm58.25 0q-.76.001-1.426.29a3.7 3.7 0 0 0-1.16.78l5.988 6.582l-5.988 6.578c.68.7 1.613 1.094 2.585 1.098a3.64 3.64 0 0 0 2.676-1.183l3.313-3.641l3.308 3.64a3.61 3.61 0 0 0 5.266.086l-5.988-6.578L128 101.2a3.64 3.64 0 0 0-4.082-.754c-.45.203-.852.496-1.18.86l-3.312 3.644l-3.332-3.644a3.8 3.8 0 0 0-1.18-.871a3.6 3.6 0 0 0-1.477-.313ZM10.57 103.957c.059 0 .207.035.45.121q.415.149.472.824v2.391q.03.064-.117.484q-.149.423-.824.48H3.816v-4.296h6.754Zm17.54 0c.062 0 .214.035.46.121q.422.149.485.824v1.45c.02.039-.024.195-.121.468q-.153.416-.844.473h-6.692v-3.332h6.711Zm17.519 0c.059 0 .215.035.46.121q.423.149.481.824v5.746q.03.062-.12.485q-.147.422-.845.48h-5.722c-.04.024-.2-.02-.48-.117q-.428-.157-.485-.848v-5.746q-.03-.058.121-.468q.153-.416.844-.473h5.746Zm58.25 0c.062 0 .219.035.46.121c.286.098.442.375.485.824v5.746q.03.062-.12.485q-.153.422-.845.48h-5.722c-.043.024-.203-.02-.485-.117q-.42-.157-.48-.848v-5.746q-.03-.058.117-.468q.152-.416.848-.473h5.742Zm0 0&quot;/></svg>',
+                                        options: [
+                                            { value: '', label: 'None', iconClass: 'far fa-circle text-gray-400', svg: null },
+                                            { value: 'ubuntu-2204', label: 'Ubuntu 22.04', iconClass: 'fab fa-ubuntu text-orange-500', svg: null },
+                                            { value: 'ubuntu-2404', label: 'Ubuntu 24.04', iconClass: 'fab fa-ubuntu text-orange-500', svg: null },
+                                            { value: 'debian-12', label: 'Debian 12', iconClass: 'fab fa-debian text-red-500', svg: null },
+                                            { value: 'debian-13', label: 'Debian 13', iconClass: 'fab fa-debian text-red-500', svg: null },
+                                            { value: 'proxmox', label: 'Proxmox VE', iconClass: null, svg: 'proxmox' }
+                                        ],
+                                        get selectedOption() {
+                                            return this.options.find(o => o.value === this.selected) || this.options[0];
+                                        },
+                                        async selectOs(value) {
+                                            this.selected = value;
+                                            this.open = false;
+                                            const params = new URLSearchParams();
+                                            params.append('default_os', value);
+                                            try {
+                                                const response = await fetch('/settings', {
+                                                    method: 'POST',
+                                                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                                                    body: params.toString(),
+                                                    credentials: 'include',
+                                                    redirect: 'manual'
+                                                });
+                                                if (response.type === 'opaqueredirect' || response.ok || response.status === 0) {
+                                                    showToast('Setting saved', 'success');
+                                                } else {
+                                                    showToast('Failed to save setting', 'error');
+                                                }
+                                            } catch (e) {
                                                 showToast('Failed to save setting', 'error');
                                             }
-                                        } catch (e) {
-                                            showToast('Failed to save setting', 'error');
                                         }
-                                    }
-                                }" @click.away="open = false" class="relative">
-                                    <label class="block text-sm font-medium text-black dark:text-white mb-1.5">Default OS</label>
-                                    <button type="button" @click="open = !open"
-                                            class="w-full max-w-xs rounded-lg border border-purple-300 dark:border-purple-700 bg-transparent text-black dark:text-white text-sm px-3 py-2 focus:border-purple-500 focus:ring-1 focus:ring-purple-500 focus:outline-none flex items-center justify-between">
-                                        <span class="flex items-center gap-2">
-                                            <template x-if="selectedOption.svg === 'proxmox'"><span class="w-4 flex-shrink-0" x-html="proxmoxSvg"></span></template>
-                                            <template x-if="selectedOption.svg !== 'proxmox'"><i class="w-4 flex-shrink-0 text-center" :class="selectedOption.iconClass"></i></template>
-                                            <span x-text="selectedOption.label"></span>
-                                        </span>
-                                        <svg class="w-4 h-4 ml-2" :class="{ 'rotate-180': open }" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
-                                        </svg>
-                                    </button>
-                                    <div x-show="open" x-cloak x-transition
-                                         class="absolute z-50 mt-1 w-full max-w-xs rounded-lg border border-purple-300 dark:border-purple-700 bg-white dark:bg-gray-900 shadow-lg">
-                                        <template x-for="option in options" :key="option.value">
-                                            <a href="#" @click.prevent="selectOs(option.value)"
-                                               class="block px-3 py-2 text-sm text-black dark:text-white hover:bg-purple-100 dark:hover:bg-purple-900/30 flex items-center gap-2 first:rounded-t-lg last:rounded-b-lg"
-                                               :class="{ 'bg-purple-50 dark:bg-purple-900/20': selected === option.value }">
-                                                <template x-if="option.svg === 'proxmox'"><span class="w-4 flex-shrink-0" x-html="proxmoxSvg"></span></template>
-                                                <template x-if="option.svg !== 'proxmox'"><i class="w-4 flex-shrink-0 text-center" :class="option.iconClass"></i></template>
-                                                <span x-text="option.label"></span>
-                                            </a>
-                                        </template>
+                                    }" @click.away="open = false" class="relative flex-1 max-w-xs">
+                                        <label class="block text-sm font-medium text-black dark:text-white mb-1.5">Default OS</label>
+                                        <button type="button" @click="open = !open"
+                                                class="w-full rounded-lg border border-purple-300 dark:border-purple-700 bg-transparent text-black dark:text-white text-sm px-3 py-2 focus:border-purple-500 focus:ring-1 focus:ring-purple-500 focus:outline-none flex items-center justify-between">
+                                            <span class="flex items-center gap-2">
+                                                <template x-if="selectedOption.svg === 'proxmox'"><span class="w-4 flex-shrink-0" x-html="proxmoxSvg"></span></template>
+                                                <template x-if="selectedOption.svg !== 'proxmox'"><i class="w-4 flex-shrink-0 text-center" :class="selectedOption.iconClass"></i></template>
+                                                <span x-text="selectedOption.label"></span>
+                                            </span>
+                                            <svg class="w-4 h-4 ml-2" :class="{ 'rotate-180': open }" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+                                            </svg>
+                                        </button>
+                                        <div x-show="open" x-cloak x-transition
+                                             class="absolute z-50 mt-1 w-full rounded-lg border border-purple-300 dark:border-purple-700 bg-white dark:bg-gray-900 shadow-lg">
+                                            <template x-for="option in options" :key="option.value">
+                                                <a href="#" @click.prevent="selectOs(option.value)"
+                                                   class="block px-3 py-2 text-sm text-black dark:text-white hover:bg-purple-100 dark:hover:bg-purple-900/30 flex items-center gap-2 first:rounded-t-lg last:rounded-b-lg"
+                                                   :class="{ 'bg-purple-50 dark:bg-purple-900/20': selected === option.value }">
+                                                    <template x-if="option.svg === 'proxmox'"><span class="w-4 flex-shrink-0" x-html="proxmoxSvg"></span></template>
+                                                    <template x-if="option.svg !== 'proxmox'"><i class="w-4 flex-shrink-0 text-center" :class="option.iconClass"></i></template>
+                                                    <span x-text="option.label"></span>
+                                                </a>
+                                            </template>
+                                        </div>
+                                        <p class="mt-1.5 text-xs text-black/70 dark:text-white/70">Auto-assigned to new machines.</p>
                                     </div>
-                                    <p class="mt-1.5 text-xs text-black/70 dark:text-white/70">Auto-assigned to new machines.</p>
+
+                                    <!-- Default User -->
+                                    <div x-data="{
+                                        value: '{{ default_user|default('root') }}',
+                                        async save() {
+                                            const params = new URLSearchParams();
+                                            params.append('default_user', this.value || 'root');
+                                            try {
+                                                const response = await fetch('/settings', {
+                                                    method: 'POST',
+                                                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                                                    body: params.toString(),
+                                                    credentials: 'include',
+                                                    redirect: 'manual'
+                                                });
+                                                if (response.type === 'opaqueredirect' || response.ok || response.status === 0) {
+                                                    showToast('Setting saved', 'success');
+                                                } else {
+                                                    showToast('Failed to save setting', 'error');
+                                                }
+                                            } catch (e) {
+                                                showToast('Failed to save setting', 'error');
+                                            }
+                                        }
+                                    }" class="w-32">
+                                        <label class="block text-sm font-medium text-black dark:text-white mb-1.5">Default User</label>
+                                        <input type="text" x-model="value" @blur="save()" @keydown.enter="$event.target.blur()"
+                                               placeholder="root"
+                                               class="w-full rounded-lg border border-purple-300 dark:border-purple-700 bg-transparent text-black dark:text-white text-sm px-3 py-2 focus:border-purple-500 focus:ring-1 focus:ring-purple-500 focus:outline-none font-mono">
+                                        <p class="mt-1.5 text-xs text-black/70 dark:text-white/70">Login username.</p>
+                                    </div>
+
+                                    <!-- Default Password -->
+                                    <div x-data="{
+                                        value: '{{ default_password|default('') }}',
+                                        showPassword: false,
+                                        async save() {
+                                            const params = new URLSearchParams();
+                                            params.append('default_password', this.value);
+                                            try {
+                                                const response = await fetch('/settings', {
+                                                    method: 'POST',
+                                                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                                                    body: params.toString(),
+                                                    credentials: 'include',
+                                                    redirect: 'manual'
+                                                });
+                                                if (response.type === 'opaqueredirect' || response.ok || response.status === 0) {
+                                                    showToast('Setting saved', 'success');
+                                                } else {
+                                                    showToast('Failed to save setting', 'error');
+                                                }
+                                            } catch (e) {
+                                                showToast('Failed to save setting', 'error');
+                                            }
+                                        }
+                                    }" class="w-48">
+                                        <label class="block text-sm font-medium text-black dark:text-white mb-1.5">Default Password</label>
+                                        <div class="relative">
+                                            <input :type="showPassword ? 'text' : 'password'" x-model="value" @blur="save()" @keydown.enter="$event.target.blur()"
+                                                   placeholder="(empty)"
+                                                   class="w-full rounded-lg border border-purple-300 dark:border-purple-700 bg-transparent text-black dark:text-white text-sm px-3 py-2 pr-10 focus:border-purple-500 focus:ring-1 focus:ring-purple-500 focus:outline-none font-mono placeholder:text-black/40 dark:placeholder:text-white/40">
+                                            <button type="button" @click="showPassword = !showPassword" class="absolute right-2 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-700 dark:hover:text-gray-300">
+                                                <svg x-show="!showPassword" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
+                                                <svg x-show="showPassword" x-cloak class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21"/></svg>
+                                            </button>
+                                        </div>
+                                        <p x-show="value === ''" class="mt-1.5 text-xs text-green-600 dark:text-green-400">Password login disabled.</p>
+                                        <p x-show="value !== ''" x-cloak class="mt-1.5 text-xs text-amber-600 dark:text-amber-400">Password login enabled. SSH keys recommended.</p>
+                                    </div>
                                 </div>
 
                                 <!-- SSH Keys -->
-                                <div class="border-t border-purple-500/30 dark:border-purple-700/50 pt-6">
-                                    <label for="ssh_keys" class="block text-sm font-medium text-black dark:text-white mb-1.5">SSH Authorized Keys</label>
-                                    <textarea name="ssh_keys" id="ssh_keys" rows="4" placeholder="ssh-ed25519 AAAA... user@host"
-                                              @blur="saveSetting('ssh_keys', $el.value)"
-                                              class="w-full rounded-lg border border-purple-300 dark:border-purple-700 bg-transparent text-black dark:text-white text-sm font-mono px-3 py-2 focus:border-purple-500 focus:ring-1 focus:ring-purple-500 focus:outline-none placeholder:text-black/40 dark:placeholder:text-white/40">{{ ssh_keys|default('') }}</textarea>
-                                    <p class="mt-1.5 text-xs text-black/70 dark:text-white/70">Added to root on all provisioned machines. One key per line.</p>
+                                <div class="border-t border-purple-500/30 dark:border-purple-700/50 pt-6" x-data="sshKeysManager()">
+                                    <div class="flex items-center justify-between mb-1.5">
+                                        <label class="block text-sm font-medium text-black dark:text-white">SSH Authorized Keys</label>
+                                        <div class="flex items-center gap-1 text-xs text-black/70 dark:text-white/70">
+                                            <span>Import from:</span>
+                                            <button type="button" @click="openImportModal('github')" class="p-1 hover:bg-purple-100 dark:hover:bg-purple-900/30 rounded" title="Import from GitHub">
+                                                <svg class="w-4 h-4" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
+                                            </button>
+                                            <button type="button" @click="openImportModal('gitlab')" class="p-1 hover:bg-purple-100 dark:hover:bg-purple-900/30 rounded" title="Import from GitLab">
+                                                <svg class="w-4 h-4" viewBox="0 0 24 24" fill="currentColor"><path d="M22.65 14.39L12 22.13 1.35 14.39a.84.84 0 0 1-.3-.94l1.22-3.78 2.44-7.51A.42.42 0 0 1 4.82 2a.43.43 0 0 1 .58 0 .42.42 0 0 1 .11.18l2.44 7.49h8.1l2.44-7.51A.42.42 0 0 1 18.6 2a.43.43 0 0 1 .58 0 .42.42 0 0 1 .11.18l2.44 7.51L23 13.45a.84.84 0 0 1-.35.94z"/></svg>
+                                            </button>
+                                            <button type="button" @click="openImportModal('url')" class="p-1 hover:bg-purple-100 dark:hover:bg-purple-900/30 rounded" title="Import from URL">
+                                                <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+                                            </button>
+                                        </div>
+                                    </div>
+
+                                    <!-- Unified key chips container -->
+                                    <div class="w-full min-h-[120px] rounded-lg border border-purple-300 dark:border-purple-700 bg-transparent p-2 focus-within:border-purple-500 focus-within:ring-1 focus-within:ring-purple-500">
+                                        <div x-show="keys.length > 0" class="flex flex-wrap gap-2 mb-2">
+                                            <!-- Key chips -->
+                                            <template x-for="(key, index) in keys" :key="index">
+                                                <div class="group relative inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs font-mono border transition-all"
+                                                     :class="key.type === 'subscription'
+                                                         ? 'bg-purple-100 dark:bg-purple-900/50 text-purple-700 dark:text-purple-300 border-purple-300 dark:border-purple-600'
+                                                         : 'bg-gray-100 dark:bg-gray-800 text-black dark:text-white border-gray-300 dark:border-gray-600'"
+                                                     :title="key.full">
+                                                    <!-- Subscription icon -->
+                                                    <template x-if="key.type === 'subscription' && key.source === 'github'">
+                                                        <svg class="w-3 h-3 flex-shrink-0" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
+                                                    </template>
+                                                    <template x-if="key.type === 'subscription' && key.source === 'gitlab'">
+                                                        <svg class="w-3 h-3 flex-shrink-0" viewBox="0 0 24 24" fill="currentColor"><path d="M22.65 14.39L12 22.13 1.35 14.39a.84.84 0 0 1-.3-.94l1.22-3.78 2.44-7.51A.42.42 0 0 1 4.82 2a.43.43 0 0 1 .58 0 .42.42 0 0 1 .11.18l2.44 7.49h8.1l2.44-7.51A.42.42 0 0 1 18.6 2a.43.43 0 0 1 .58 0 .42.42 0 0 1 .11.18l2.44 7.51L23 13.45a.84.84 0 0 1-.35.94z"/></svg>
+                                                    </template>
+                                                    <template x-if="key.type === 'subscription' && key.source === 'url'">
+                                                        <svg class="w-3 h-3 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+                                                    </template>
+                                                    <!-- Key icon for direct keys -->
+                                                    <template x-if="key.type === 'direct'">
+                                                        <svg class="w-3 h-3 flex-shrink-0 text-gray-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>
+                                                    </template>
+                                                    <!-- Label -->
+                                                    <span x-text="key.label" :class="{ 'cursor-pointer': key.type === 'direct' }" @click="key.type === 'direct' && toggleExpand(index)"></span>
+                                                    <!-- Copy button -->
+                                                    <button type="button" @click="copyKey(index)" class="opacity-50 hover:opacity-100 hover:text-purple-600 transition-opacity" title="Copy">
+                                                        <svg class="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                                                    </button>
+                                                    <!-- Remove button -->
+                                                    <button type="button" @click="removeKey(index)" class="text-gray-500 dark:text-gray-400 hover:text-red-600 dark:hover:text-red-400 transition-colors" title="Remove">
+                                                        <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M18 6L6 18M6 6l12 12"/></svg>
+                                                    </button>
+                                                </div>
+                                            </template>
+                                        </div>
+                                        <!-- Input for new keys -->
+                                        <textarea x-ref="keyInput"
+                                                  @input="handleInput($event)"
+                                                  @paste="handlePaste($event)"
+                                                  @keydown.enter="handleEnter($event)"
+                                                  @blur="processInput()"
+                                                  placeholder="Paste keys here or type gh:username, gl:username, or a URL..."
+                                                  class="w-full bg-transparent text-black dark:text-white text-sm font-mono resize-none focus:outline-none placeholder:text-black/40 dark:placeholder:text-white/40"
+                                                  rows="2"></textarea>
+                                    </div>
+                                    <p class="mt-1.5 text-xs text-black/70 dark:text-white/70">
+                                        Paste SSH keys directly, or use <code class="bg-gray-200 dark:bg-gray-700 px-1 rounded">gh:username</code> / <code class="bg-gray-200 dark:bg-gray-700 px-1 rounded">gl:username</code> for subscriptions.
+                                    </p>
+
+                                    <!-- Expanded key modal -->
+                                    <div x-show="expandedKey !== null" x-cloak class="fixed inset-0 z-50 flex items-center justify-center" @click.self="expandedKey = null">
+                                        <div class="fixed inset-0 bg-black/50"></div>
+                                        <div class="relative bg-white dark:bg-gray-900 rounded-xl border border-purple-500 dark:border-purple-700 shadow-xl p-6 w-full max-w-2xl mx-4">
+                                            <h3 class="text-lg font-semibold text-black dark:text-white mb-4">SSH Key</h3>
+                                            <pre class="bg-gray-100 dark:bg-gray-800 p-4 rounded-lg text-xs font-mono text-black dark:text-white overflow-x-auto whitespace-pre-wrap break-all" x-text="expandedKey?.full"></pre>
+                                            <div class="flex justify-end gap-2 mt-4">
+                                                <button type="button" @click="copyExpandedKey()" class="px-4 py-2 text-sm bg-purple-600 text-white rounded-lg hover:bg-purple-700">
+                                                    Copy
+                                                </button>
+                                                <button type="button" @click="expandedKey = null" class="px-4 py-2 text-sm text-black dark:text-white hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg">
+                                                    Close
+                                                </button>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <!-- Import Modal -->
+                                    <div x-show="showModal" x-cloak class="fixed inset-0 z-50 flex items-center justify-center" @click.self="showModal = false">
+                                        <div class="fixed inset-0 bg-black/50"></div>
+                                        <div class="relative bg-white dark:bg-gray-900 rounded-xl border border-purple-500 dark:border-purple-700 shadow-xl p-6 w-full max-w-md mx-4">
+                                            <h3 class="text-lg font-semibold text-black dark:text-white mb-4" x-text="modalTitle"></h3>
+
+                                            <div class="space-y-4">
+                                                <div>
+                                                    <label class="block text-sm font-medium text-black dark:text-white mb-1" x-text="modalInputLabel"></label>
+                                                    <input type="text" x-model="modalInput"
+                                                           :placeholder="modalPlaceholder"
+                                                           @keydown.enter="doImport()"
+                                                           class="w-full rounded-lg border border-purple-300 dark:border-purple-700 bg-transparent text-black dark:text-white text-sm px-3 py-2 focus:border-purple-500 focus:ring-1 focus:ring-purple-500 focus:outline-none">
+                                                </div>
+
+                                                <div class="space-y-2">
+                                                    <label class="flex items-center gap-2 cursor-pointer">
+                                                        <input type="radio" x-model="importMode" value="onetime" class="text-purple-600 focus:ring-purple-500">
+                                                        <span class="text-sm text-black dark:text-white">One-time import</span>
+                                                    </label>
+                                                    <p class="text-xs text-black/60 dark:text-white/60 ml-6">Fetch keys now and add them as individual keys</p>
+
+                                                    <label class="flex items-center gap-2 cursor-pointer">
+                                                        <input type="radio" x-model="importMode" value="subscribe" class="text-purple-600 focus:ring-purple-500">
+                                                        <span class="text-sm text-black dark:text-white">Subscribe to keylist</span>
+                                                    </label>
+                                                    <p class="text-xs text-black/60 dark:text-white/60 ml-6">Keys will be fetched fresh during each provisioning</p>
+                                                </div>
+                                            </div>
+
+                                            <div class="flex justify-end gap-2 mt-6">
+                                                <button type="button" @click="showModal = false"
+                                                        class="px-4 py-2 text-sm text-black dark:text-white hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg">
+                                                    Cancel
+                                                </button>
+                                                <button type="button" @click="doImport()"
+                                                        :disabled="loading || !modalInput"
+                                                        class="px-4 py-2 text-sm bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2">
+                                                    <svg x-show="loading" class="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" class="opacity-25"/><path fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" class="opacity-75"/></svg>
+                                                    <span x-text="importMode === 'subscribe' ? 'Subscribe' : 'Import'"></span>
+                                                </button>
+                                            </div>
+                                        </div>
+                                    </div>
                                 </div>
 
                                 <!-- OS Templates -->
-                                <div class="border-t border-purple-500/30 dark:border-purple-700/50 pt-6">
+                                <div class="border-t border-purple-500/30 dark:border-purple-700/50 pt-6" x-data="osTemplatesManager()">
                                     <div class="flex items-center justify-between mb-3">
                                         <h4 class="text-sm font-medium text-black dark:text-white">OS Templates</h4>
-                                        <button type="button" class="text-xs px-2 py-1 rounded bg-purple-600 text-white hover:bg-purple-700">+ Add</button>
+                                        <button type="button" @click="showToast('Custom templates coming soon', 'info')" class="text-xs px-2 py-1 rounded bg-purple-600 text-white hover:bg-purple-700">+ Add</button>
                                     </div>
 
                                     <div class="border border-purple-500 dark:border-purple-700 rounded-lg overflow-hidden">
@@ -439,39 +663,94 @@
                                                 <tr>
                                                     <th class="px-3 py-2 text-left text-xs font-medium text-black dark:text-white">Template</th>
                                                     <th class="px-3 py-2 text-left text-xs font-medium text-black dark:text-white">ID</th>
-                                                    <th class="px-3 py-2 text-center text-xs font-medium text-black dark:text-white">Status</th>
+                                                    <th class="px-3 py-2 text-right text-xs font-medium text-black dark:text-white w-24"></th>
                                                 </tr>
                                             </thead>
                                             <tbody class="divide-y divide-purple-500/30 dark:divide-purple-700/50">
-                                                <tr class="hover:bg-purple-50 dark:hover:bg-purple-900/20">
-                                                    <td class="px-3 py-2 text-black dark:text-white">Ubuntu 24.04 LTS</td>
-                                                    <td class="px-3 py-2 text-purple-600 dark:text-purple-400 font-mono text-xs">ubuntu-2404</td>
-                                                    <td class="px-3 py-2 text-center"><span class="text-xs text-green-600 dark:text-green-400">✓</span></td>
-                                                </tr>
-                                                <tr class="hover:bg-purple-50 dark:hover:bg-purple-900/20">
-                                                    <td class="px-3 py-2 text-black dark:text-white">Ubuntu 22.04 LTS</td>
-                                                    <td class="px-3 py-2 text-purple-600 dark:text-purple-400 font-mono text-xs">ubuntu-2204</td>
-                                                    <td class="px-3 py-2 text-center"><span class="text-xs text-green-600 dark:text-green-400">✓</span></td>
-                                                </tr>
-                                                <tr class="hover:bg-purple-50 dark:hover:bg-purple-900/20">
-                                                    <td class="px-3 py-2 text-black dark:text-white">Debian 13 (Trixie)</td>
-                                                    <td class="px-3 py-2 text-purple-600 dark:text-purple-400 font-mono text-xs">debian-13</td>
-                                                    <td class="px-3 py-2 text-center"><span class="text-xs text-green-600 dark:text-green-400">✓</span></td>
-                                                </tr>
-                                                <tr class="hover:bg-purple-50 dark:hover:bg-purple-900/20">
-                                                    <td class="px-3 py-2 text-black dark:text-white">Debian 12 (Bookworm)</td>
-                                                    <td class="px-3 py-2 text-purple-600 dark:text-purple-400 font-mono text-xs">debian-12</td>
-                                                    <td class="px-3 py-2 text-center"><span class="text-xs text-green-600 dark:text-green-400">✓</span></td>
-                                                </tr>
-                                                <tr class="hover:bg-purple-50 dark:hover:bg-purple-900/20">
-                                                    <td class="px-3 py-2 text-black dark:text-white">Proxmox VE</td>
-                                                    <td class="px-3 py-2 text-purple-600 dark:text-purple-400 font-mono text-xs">proxmox</td>
-                                                    <td class="px-3 py-2 text-center"><span class="text-xs text-green-600 dark:text-green-400">✓</span></td>
+                                                <template x-for="tpl in templates" :key="tpl.name">
+                                                    <tr class="hover:bg-purple-50 dark:hover:bg-purple-900/20">
+                                                        <td class="px-3 py-2">
+                                                            <span class="flex items-center gap-2 text-black dark:text-white">
+                                                                <template x-if="tpl.icon === 'ubuntu'">
+                                                                    <i class="fab fa-ubuntu text-orange-500 w-4 text-center"></i>
+                                                                </template>
+                                                                <template x-if="tpl.icon === 'debian'">
+                                                                    <i class="fab fa-debian text-red-500 w-4 text-center"></i>
+                                                                </template>
+                                                                <template x-if="tpl.icon === 'proxmox'">
+                                                                    <span class="w-4 flex-shrink-0" x-html="proxmoxSvg"></span>
+                                                                </template>
+                                                                <template x-if="tpl.icon === 'generic'">
+                                                                    <i class="fas fa-server text-gray-500 w-4 text-center"></i>
+                                                                </template>
+                                                                <span x-text="tpl.display_name"></span>
+                                                            </span>
+                                                        </td>
+                                                        <td class="px-3 py-2 text-purple-600 dark:text-purple-400 font-mono text-xs" x-text="tpl.name"></td>
+                                                        <td class="px-3 py-2 text-right">
+                                                            <div class="flex items-center justify-end gap-3">
+                                                                <!-- Status icon -->
+                                                                <span x-show="tpl.enabled" class="text-green-600 dark:text-green-400" title="Active">✓</span>
+                                                                <span x-show="!tpl.enabled" class="text-gray-400" title="Disabled">○</span>
+                                                                <!-- Edit button -->
+                                                                <button type="button" @click="editTemplate(tpl.name)" class="text-purple-600 dark:text-purple-400 hover:text-purple-800 dark:hover:text-purple-200" title="Edit template">
+                                                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
+                                                                </button>
+                                                                <!-- Disable/Enable button -->
+                                                                <button type="button" @click="toggleTemplate(tpl.name)"
+                                                                        :class="tpl.enabled ? 'text-red-800 dark:text-red-900 hover:text-red-600 dark:hover:text-red-500' : 'text-green-700 dark:text-green-800 hover:text-green-600 dark:hover:text-green-500'"
+                                                                        :title="tpl.enabled ? 'Disable template' : 'Enable template'">
+                                                                    <svg x-show="tpl.enabled" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+                                                                    <svg x-show="!tpl.enabled" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
+                                                                </button>
+                                                            </div>
+                                                        </td>
+                                                    </tr>
+                                                </template>
+                                                <tr x-show="templates.length === 0">
+                                                    <td colspan="3" class="px-3 py-4 text-center text-black/50 dark:text-white/50">Loading templates...</td>
                                                 </tr>
                                             </tbody>
                                         </table>
                                     </div>
-                                    <p class="mt-2 text-xs text-black/70 dark:text-white/70">Subscribe to custom template URLs or add your own.</p>
+                                    <p class="mt-2 text-xs text-black/70 dark:text-white/70">Built-in templates can be disabled but not removed. Add custom templates with the + Add button.</p>
+
+                                    <!-- Edit Template Modal -->
+                                    <div x-show="editingTemplate" x-cloak class="fixed inset-0 z-50 flex items-center justify-center bg-black/50" @click.self="closeEditor()">
+                                        <div class="bg-white dark:bg-gray-900 rounded-xl border border-purple-500 dark:border-purple-700 shadow-2xl w-full max-w-4xl max-h-[90vh] flex flex-col m-4">
+                                            <div class="flex items-center justify-between px-6 py-4 border-b border-purple-500/30 dark:border-purple-700/50">
+                                                <h3 class="text-lg font-semibold text-black dark:text-white">Edit Template: <span class="font-mono text-purple-600 dark:text-purple-400" x-text="editingTemplate"></span></h3>
+                                                <button type="button" @click="closeEditor()" class="text-gray-500 hover:text-gray-700 dark:hover:text-gray-300">
+                                                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+                                                </button>
+                                            </div>
+                                            <div class="flex-1 min-h-0 p-6 overflow-hidden flex flex-col">
+                                                <!-- Validation status -->
+                                                <div class="flex items-center gap-2 mb-2 flex-shrink-0">
+                                                    <span x-show="validationStatus === 'valid'" class="text-xs text-green-600 dark:text-green-400 flex items-center gap-1">
+                                                        <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/></svg>
+                                                        Valid YAML
+                                                    </span>
+                                                    <span x-show="validationStatus === 'invalid'" class="text-xs text-red-600 dark:text-red-400 flex items-center gap-1">
+                                                        <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clip-rule="evenodd"/></svg>
+                                                        <span x-text="validationError"></span>
+                                                    </span>
+                                                    <span x-show="validationStatus === 'checking'" class="text-xs text-gray-500">Validating...</span>
+                                                </div>
+                                                <!-- Editor container -->
+                                                <div id="yaml-editor" class="flex-1 min-h-0 rounded-lg border border-purple-300 dark:border-purple-700 overflow-auto"></div>
+                                            </div>
+                                            <div class="flex justify-between items-center px-6 py-4 border-t border-purple-500/30 dark:border-purple-700/50">
+                                                <span class="text-xs text-gray-500">Tab inserts 2 spaces • YAML syntax highlighting</span>
+                                                <div class="flex gap-3">
+                                                    <button type="button" @click="closeEditor()" class="px-4 py-2 text-sm font-medium text-black dark:text-white hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg transition-colors">Cancel</button>
+                                                    <button type="button" @click="saveTemplate()" :disabled="validationStatus === 'invalid'"
+                                                            :class="validationStatus === 'invalid' ? 'bg-gray-400 cursor-not-allowed' : 'bg-purple-600 hover:bg-purple-700'"
+                                                            class="px-4 py-2 text-sm font-medium text-white rounded-lg transition-colors">Save</button>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
                                 </div>
                             </div>
                         </div>
@@ -550,6 +829,491 @@
 
 {% block scripts %}
 <script>
+    function sshKeysManager() {
+        return {
+            keys: [],
+            showModal: false,
+            modalType: '',
+            modalInput: '',
+            importMode: 'onetime',
+            loading: false,
+            expandedKey: null,
+
+            init() {
+                // Parse stored keys into unified array
+                const rawKeys = {{ ssh_keys|default('')|to_json|safe }};
+                const subscriptions = {{ ssh_key_subscriptions|default('[]')|safe }};
+
+                // Add subscriptions
+                for (const sub of subscriptions) {
+                    this.keys.push({
+                        type: 'subscription',
+                        source: sub.type,
+                        label: sub.label,
+                        full: sub.url,
+                        value: sub.value
+                    });
+                }
+
+                // Add direct keys
+                if (rawKeys.trim()) {
+                    for (const line of rawKeys.split('\n')) {
+                        const key = line.trim();
+                        if (key && !key.startsWith('#')) {
+                            this.keys.push({
+                                type: 'direct',
+                                label: this.shortenKey(key),
+                                full: key
+                            });
+                        }
+                    }
+                }
+            },
+
+            shortenKey(key) {
+                // Format: "ssh-ed25519...b5fd" or "ecdsa-sha2...jGk="
+                const parts = key.split(' ');
+                if (parts.length >= 2) {
+                    const keyType = parts[0].replace('ssh-', '').replace('ecdsa-sha2-', 'ecdsa-');
+                    const keyData = parts[1];
+                    const suffix = keyData.slice(-6);
+                    return `${keyType}...${suffix}`;
+                }
+                return key.length > 20 ? key.slice(0, 10) + '...' + key.slice(-6) : key;
+            },
+
+            get modalTitle() {
+                switch(this.modalType) {
+                    case 'github': return 'Import from GitHub';
+                    case 'gitlab': return 'Import from GitLab';
+                    case 'url': return 'Import from URL';
+                    default: return 'Import Keys';
+                }
+            },
+
+            get modalInputLabel() {
+                switch(this.modalType) {
+                    case 'github': return 'GitHub Username';
+                    case 'gitlab': return 'GitLab Username';
+                    case 'url': return 'Keys URL';
+                    default: return 'Input';
+                }
+            },
+
+            get modalPlaceholder() {
+                switch(this.modalType) {
+                    case 'github': return 'e.g. torvalds';
+                    case 'gitlab': return 'e.g. torvalds';
+                    case 'url': return 'https://example.com/user.keys';
+                    default: return '';
+                }
+            },
+
+            openImportModal(type) {
+                this.modalType = type;
+                this.modalInput = '';
+                this.importMode = 'onetime';
+                this.showModal = true;
+            },
+
+            async doImport() {
+                if (!this.modalInput) return;
+
+                this.loading = true;
+                let keysUrl;
+                let source = this.modalType;
+
+                switch(this.modalType) {
+                    case 'github':
+                        keysUrl = `https://github.com/${this.modalInput}.keys`;
+                        break;
+                    case 'gitlab':
+                        keysUrl = `https://gitlab.com/${this.modalInput}.keys`;
+                        break;
+                    case 'url':
+                        keysUrl = this.modalInput;
+                        break;
+                }
+
+                if (this.importMode === 'subscribe') {
+                    // Add subscription as chiclet
+                    const label = this.modalType === 'url'
+                        ? new URL(this.modalInput).hostname
+                        : `${this.modalInput}@${this.modalType}`;
+
+                    this.keys.push({
+                        type: 'subscription',
+                        source: source,
+                        label: label,
+                        full: keysUrl,
+                        value: this.modalInput
+                    });
+
+                    this.saveKeys();
+                    this.loading = false;
+                    this.showModal = false;
+                    showToast('Subscription added', 'success');
+                } else {
+                    // One-time import - fetch keys and add each as chiclet
+                    try {
+                        const response = await fetch(`/api/fetch-keys?url=${encodeURIComponent(keysUrl)}`);
+                        if (!response.ok) throw new Error('Failed to fetch keys');
+
+                        const data = await response.json();
+                        const keysText = data.keys || '';
+
+                        if (keysText.trim()) {
+                            for (const line of keysText.split('\n')) {
+                                const key = line.trim();
+                                if (key && !key.startsWith('#')) {
+                                    this.keys.push({
+                                        type: 'direct',
+                                        label: this.shortenKey(key),
+                                        full: key
+                                    });
+                                }
+                            }
+                            this.saveKeys();
+                            showToast('Keys imported successfully', 'success');
+                        } else {
+                            showToast('No keys found', 'error');
+                        }
+                    } catch (e) {
+                        console.error('Import error:', e);
+                        showToast('Failed to fetch keys', 'error');
+                    }
+
+                    this.loading = false;
+                    this.showModal = false;
+                }
+            },
+
+            handleInput(event) {
+                // Auto-detect and process input
+            },
+
+            handlePaste(event) {
+                // Let paste happen, then process on blur
+            },
+
+            handleEnter(event) {
+                if (!event.shiftKey) {
+                    event.preventDefault();
+                    this.processInput();
+                }
+            },
+
+            processInput() {
+                const input = this.$refs.keyInput.value.trim();
+                if (!input) return;
+
+                const lines = input.split('\n');
+                let added = 0;
+
+                for (const line of lines) {
+                    const trimmed = line.trim();
+                    if (!trimmed) continue;
+
+                    // Check for subscription shorthand
+                    if (trimmed.startsWith('gh:')) {
+                        const username = trimmed.slice(3);
+                        this.keys.push({
+                            type: 'subscription',
+                            source: 'github',
+                            label: `${username}@github`,
+                            full: `https://github.com/${username}.keys`,
+                            value: username
+                        });
+                        added++;
+                    } else if (trimmed.startsWith('gl:')) {
+                        const username = trimmed.slice(3);
+                        this.keys.push({
+                            type: 'subscription',
+                            source: 'gitlab',
+                            label: `${username}@gitlab`,
+                            full: `https://gitlab.com/${username}.keys`,
+                            value: username
+                        });
+                        added++;
+                    } else if (trimmed.match(/^(https?:\/\/)?(github\.com|gitlab\.com)\/[^/]+\.key$/i)) {
+                        // Hint: .key should be .keys
+                        showToast('Did you mean .keys? GitHub/GitLab use .keys not .key', 'error');
+                    } else if (trimmed.match(/^(https?:\/\/)?[\w.-]+\.[a-z]{2,}\/.*\.keys$/i)) {
+                        // URL subscription - with or without https://
+                        try {
+                            const urlStr = trimmed.startsWith('http') ? trimmed : `https://${trimmed}`;
+                            const url = new URL(urlStr);
+                            const hostname = url.hostname;
+                            const pathMatch = url.pathname.match(/^\/([^/]+)\.keys$/);
+                            const username = pathMatch ? pathMatch[1] : null;
+
+                            let source = 'url';
+                            let label = hostname;
+
+                            if (hostname === 'github.com' && username) {
+                                source = 'github';
+                                label = `${username}@github`;
+                            } else if (hostname === 'gitlab.com' && username) {
+                                source = 'gitlab';
+                                label = `${username}@gitlab`;
+                            }
+
+                            this.keys.push({
+                                type: 'subscription',
+                                source: source,
+                                label: label,
+                                full: urlStr,
+                                value: username || urlStr
+                            });
+                            added++;
+                        } catch (e) {
+                            // Invalid URL, treat as key
+                        }
+                    } else if (trimmed.startsWith('ssh-') || trimmed.startsWith('ecdsa-') || trimmed.startsWith('sk-')) {
+                        // Direct SSH key
+                        this.keys.push({
+                            type: 'direct',
+                            label: this.shortenKey(trimmed),
+                            full: trimmed
+                        });
+                        added++;
+                    }
+                }
+
+                if (added > 0) {
+                    this.$refs.keyInput.value = '';
+                    this.saveKeys();
+                    showToast(`Added ${added} key${added > 1 ? 's' : ''}`, 'success');
+                }
+            },
+
+            removeKey(index) {
+                this.keys.splice(index, 1);
+                this.saveKeys();
+            },
+
+            toggleExpand(index) {
+                this.expandedKey = this.keys[index];
+            },
+
+            copyKey(index) {
+                navigator.clipboard.writeText(this.keys[index].full);
+                showToast('Copied to clipboard', 'success');
+            },
+
+            copyExpandedKey() {
+                if (this.expandedKey) {
+                    navigator.clipboard.writeText(this.expandedKey.full);
+                    showToast('Copied to clipboard', 'success');
+                }
+            },
+
+            async saveKeys() {
+                // Separate back into raw keys and subscriptions for storage
+                const directKeys = this.keys
+                    .filter(k => k.type === 'direct')
+                    .map(k => k.full)
+                    .join('\n');
+
+                const subscriptions = this.keys
+                    .filter(k => k.type === 'subscription')
+                    .map(k => ({
+                        type: k.source,
+                        value: k.value,
+                        label: k.label,
+                        url: k.full
+                    }));
+
+                const params = new URLSearchParams();
+                params.append('ssh_keys', directKeys);
+                params.append('ssh_key_subscriptions', JSON.stringify(subscriptions));
+
+                try {
+                    const response = await fetch('/settings', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                        body: params.toString(),
+                        credentials: 'include',
+                        redirect: 'manual'
+                    });
+                    if (!(response.type === 'opaqueredirect' || response.ok || response.status === 0)) {
+                        showToast('Failed to save keys', 'error');
+                    }
+                } catch (e) {
+                    showToast('Failed to save keys', 'error');
+                }
+            }
+        };
+    }
+
+    function osTemplatesManager() {
+        return {
+            templates: [],
+            editingTemplate: null,
+            templateContent: '',
+            editor: null,
+            validationStatus: 'checking',
+            validationError: '',
+            validationTimeout: null,
+            proxmoxSvg: '<svg class="w-4 h-4" viewBox="0 0 128 128"><path fill="#e57000" d="M32.332 21.426a12.54 12.54 0 0 0-8.855 3.676l20.488 22.515l-20.488 22.52a12.3 12.3 0 0 0 8.855 3.75a12.28 12.28 0 0 0 9.156-4.051l11.336-12.461l8.856-9.758l-8.856-9.68l-11.336-12.46a12.28 12.28 0 0 0-9.156-4.051m63.23 0a12.28 12.28 0 0 0-9.156 4.05L75.07 37.939l-8.855 9.68l8.855 9.757l11.336 12.46a12.28 12.28 0 0 0 9.156 4.052a12.3 12.3 0 0 0 8.856-3.75L83.93 47.617l20.488-22.515a12.54 12.54 0 0 0-8.856-3.676m0 0"/><path fill="currentColor" d="m72.02 36.453l-8.082 8.906l-8.086-8.91l-18.7-20.55a11.44 11.44 0 0 1 8.082-3.356c3.36 0 6.164 1.371 8.29 3.7l10.413 11.37l10.344-11.37a11.2 11.2 0 0 1 8.36-3.7c3.148 0 6.027 1.3 8.082 3.355Zm0 22.328l-8.082-8.906l-8.083 8.906l-18.703 20.555a11.45 11.45 0 0 0 8.082 3.355c3.36 0 6.168-1.37 8.29-3.699l10.413-11.375l10.344 11.375a11.23 11.23 0 0 0 8.36 3.7c3.152 0 6.027-1.305 8.082-3.356Zm-70.594 41.32a1.4 1.4 0 0 0-1 .43A1.44 1.44 0 0 0 0 101.547v13.906q1.622-.041 2.7-1.121c.714-.723 1.09-1.629 1.116-2.719h7.676q1.636-.039 2.727-1.12q1.09-1.08 1.133-2.716v-3.816q-.043-1.636-1.133-2.727t-2.727-1.132Zm17.562 0a1.4 1.4 0 0 0-1.011.43a1.45 1.45 0 0 0-.415 1.016v13.906q1.624-.042 2.708-1.121q1.088-1.084 1.128-2.719v-.965h4.364l2.215 3.16q.534.763 1.34 1.2a3.75 3.75 0 0 0 1.796.445c.32 0 .633-.039.93-.113q.45-.112.848-.324l-3.09-4.41a3.85 3.85 0 0 0 2.203-1.317q.856-1.03.887-2.453v-2.875q-.043-1.636-1.121-2.727c-.723-.726-1.625-1.105-2.715-1.132Zm19.93 0q-1.636.043-2.715 1.133q-1.085 1.091-1.121 2.727v7.652q.036 1.635 1.121 2.719q1.08 1.08 2.715 1.121h7.652q1.635-.041 2.72-1.121q1.078-1.084 1.12-2.719v-7.652q-.042-1.636-1.12-2.727q-1.085-1.09-2.72-1.132Zm34.488 0c-.8 0-1.445.649-1.445 1.446v13.906q1.617-.041 2.707-1.121c.723-.723 1.102-1.629 1.129-2.719v-7.343c.387-.332.441-.31.496-.274a.3.3 0 0 1 .117.117l4.254 9.387c.164.34.504.563.879.57c.18 0 .36-.05.512-.148c.152-.102.28-.238.363-.399l4.258-9.41c.582-.027.61.055.613.157v7.343q.04 1.635 1.129 2.719q1.084 1.08 2.707 1.121v-13.906c0-.379-.148-.746-.418-1.02a1.4 1.4 0 0 0-1.008-.425h-2.41c-.75 0-1.484.222-2.11.64a3.95 3.95 0 0 0-1.398 1.66l.02-.043l-2.258 4.957l-2.238-4.957v.043a3.84 3.84 0 0 0-3.508-2.3Zm23.766 0q-1.64.043-2.719 1.133q-1.08 1.091-1.121 2.727v7.652q.041 1.635 1.121 2.719q1.078 1.08 2.719 1.121h7.652q1.636-.041 2.715-1.121c.723-.723 1.094-1.629 1.121-2.719v-7.652q-.039-1.636-1.12-2.727q-1.08-1.09-2.716-1.132Zm-41.984.024a3.55 3.55 0 0 0-1.426.29a3.7 3.7 0 0 0-1.164.78l5.988 6.582l-5.988 6.578a3.63 3.63 0 0 0 2.59 1.098a3.65 3.65 0 0 0 2.675-1.183l3.309-3.641l3.312 3.64a3.61 3.61 0 0 0 5.266.086l-5.988-6.578l5.988-6.578a3.7 3.7 0 0 0-1.164-.785a3.63 3.63 0 0 0-4.102.89l-3.312 3.645l-3.332-3.644a3.6 3.6 0 0 0-1.18-.871a3.5 3.5 0 0 0-1.472-.313Zm58.25 0q-.76.001-1.426.29a3.7 3.7 0 0 0-1.16.78l5.988 6.582l-5.988 6.578c.68.7 1.613 1.094 2.585 1.098a3.64 3.64 0 0 0 2.676-1.183l3.313-3.641l3.308 3.64a3.61 3.61 0 0 0 5.266.086l-5.988-6.578L128 101.2a3.64 3.64 0 0 0-4.082-.754c-.45.203-.852.496-1.18.86l-3.312 3.644l-3.332-3.644a3.8 3.8 0 0 0-1.18-.871a3.6 3.6 0 0 0-1.477-.313ZM10.57 103.957c.059 0 .207.035.45.121q.415.149.472.824v2.391q.03.064-.117.484q-.149.423-.824.48H3.816v-4.296h6.754Zm17.54 0c.062 0 .214.035.46.121q.422.149.485.824v1.45c.02.039-.024.195-.121.468q-.153.416-.844.473h-6.692v-3.332h6.711Zm17.519 0c.059 0 .215.035.46.121q.423.149.481.824v5.746q.03.062-.12.485q-.147.422-.845.48h-5.722c-.04.024-.2-.02-.48-.117q-.428-.157-.485-.848v-5.746q-.03-.058.121-.468q.153-.416.844-.473h5.746Zm58.25 0c.062 0 .219.035.46.121c.286.098.442.375.485.824v5.746q.03.062-.12.485q-.153.422-.845.48h-5.722c-.043.024-.203-.02-.485-.117q-.42-.157-.48-.848v-5.746q-.03-.058.117-.468q.152-.416.848-.473h5.742Zm0 0"/></svg>',
+
+            async init() {
+                await this.loadTemplates();
+            },
+
+            async loadTemplates() {
+                try {
+                    const response = await fetch('/api/templates', { credentials: 'include' });
+                    if (response.ok) {
+                        this.templates = await response.json();
+                    }
+                } catch (e) {
+                    console.error('Failed to load templates:', e);
+                }
+            },
+
+            async toggleTemplate(name) {
+                try {
+                    const response = await fetch(`/api/templates/${name}/toggle`, {
+                        method: 'POST',
+                        credentials: 'include'
+                    });
+                    if (response.ok) {
+                        const result = await response.json();
+                        const tpl = this.templates.find(t => t.name === name);
+                        if (tpl) tpl.enabled = result.enabled;
+                        showToast(result.enabled ? 'Template enabled' : 'Template disabled', 'success');
+                    } else {
+                        showToast('Failed to toggle template', 'error');
+                    }
+                } catch (e) {
+                    showToast('Failed to toggle template', 'error');
+                }
+            },
+
+            async editTemplate(name) {
+                this.editingTemplate = name;
+                this.templateContent = '';
+                this.validationStatus = 'checking';
+
+                // Wait for modal to render
+                await this.$nextTick();
+
+                try {
+                    const response = await fetch(`/api/templates/${name}/content`, { credentials: 'include' });
+                    if (response.ok) {
+                        const result = await response.json();
+                        this.templateContent = result.content;
+                        this.initEditor(result.content);
+                    } else {
+                        showToast('Failed to load template content', 'error');
+                        this.editingTemplate = null;
+                    }
+                } catch (e) {
+                    showToast('Failed to load template content', 'error');
+                    this.editingTemplate = null;
+                }
+            },
+
+            initEditor(content) {
+                const container = document.getElementById('yaml-editor');
+                if (!container) return;
+
+                // Clear previous editor
+                container.innerHTML = '';
+
+                // Create CodeMirror editor
+                const isDark = document.documentElement.classList.contains('dark');
+                this.editor = CodeMirror(container, {
+                    value: content,
+                    mode: 'yaml',
+                    theme: isDark ? 'material-darker' : 'default',
+                    lineNumbers: true,
+                    tabSize: 2,
+                    indentUnit: 2,
+                    indentWithTabs: false,
+                    lineWrapping: true,
+                    extraKeys: {
+                        Tab: (cm) => {
+                            cm.replaceSelection('  ', 'end');
+                        }
+                    }
+                });
+
+                // Set editor height
+                this.editor.setSize('100%', '100%');
+
+                // Validate on change with debounce
+                this.editor.on('change', () => {
+                    this.templateContent = this.editor.getValue();
+                    this.validateYaml();
+                });
+
+                // Initial validation
+                this.validateYaml();
+            },
+
+            validateYaml() {
+                if (this.validationTimeout) {
+                    clearTimeout(this.validationTimeout);
+                }
+
+                this.validationStatus = 'checking';
+
+                this.validationTimeout = setTimeout(() => {
+                    try {
+                        jsyaml.load(this.templateContent);
+                        this.validationStatus = 'valid';
+                        this.validationError = '';
+                    } catch (e) {
+                        this.validationStatus = 'invalid';
+                        // Extract line number and message
+                        const match = e.message.match(/at line (\d+)/);
+                        if (match) {
+                            this.validationError = `Line ${match[1]}: ${e.reason || e.message}`;
+                        } else {
+                            this.validationError = e.reason || e.message;
+                        }
+                    }
+                }, 300);
+            },
+
+            closeEditor() {
+                if (this.editor) {
+                    this.editor = null;
+                }
+                this.editingTemplate = null;
+            },
+
+            async saveTemplate() {
+                if (this.validationStatus === 'invalid') {
+                    showToast('Fix YAML errors before saving', 'error');
+                    return;
+                }
+
+                const content = this.editor ? this.editor.getValue() : this.templateContent;
+
+                try {
+                    const response = await fetch(`/api/templates/${this.editingTemplate}/content`, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ content }),
+                        credentials: 'include'
+                    });
+                    if (response.ok) {
+                        showToast('Template saved', 'success');
+                        this.closeEditor();
+                    } else {
+                        const result = await response.json();
+                        showToast(result.error || 'Failed to save template', 'error');
+                    }
+                } catch (e) {
+                    showToast('Failed to save template', 'error');
+                }
+            }
+        };
+    }
+
     function settingsPanel() {
         return {
             activeTab: 'general',

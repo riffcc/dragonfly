@@ -120,12 +120,17 @@ pub struct SettingsTemplate {
     pub is_authenticated: bool,
     pub admin_username: String,
     pub require_login: bool,
+    pub default_os: String,
     pub default_os_none: bool,
     pub default_os_ubuntu2204: bool,
     pub default_os_ubuntu2404: bool,
     pub default_os_debian12: bool,
     pub default_os_debian13: bool,
     pub default_os_proxmox: bool,
+    pub default_user: String,
+    pub default_password: String,
+    pub ssh_keys: String,
+    pub ssh_key_subscriptions: String,
     pub has_initial_password: bool,
     pub rendered_password: String,
     pub show_admin_settings: bool,
@@ -905,6 +910,18 @@ pub async fn settings_page(
         .unwrap_or(true); // default to requiring login
     let default_os = store.get_setting("default_os").await
         .ok().flatten();
+    let ssh_keys = store.get_setting("ssh_keys").await
+        .ok().flatten()
+        .unwrap_or_default();
+    let ssh_key_subscriptions = store.get_setting("ssh_key_subscriptions").await
+        .ok().flatten()
+        .unwrap_or_else(|| "[]".to_string());
+    let default_user = store.get_setting("default_user").await
+        .ok().flatten()
+        .unwrap_or_else(|| "root".to_string());
+    let default_password = store.get_setting("default_password").await
+        .ok().flatten()
+        .unwrap_or_default();
 
     info!("Settings page: default_os from ReDB = {:?}", default_os);
     
@@ -951,12 +968,17 @@ pub async fn settings_page(
         is_authenticated,
         admin_username,
         require_login,
+        default_os: default_os.clone().unwrap_or_default(),
         default_os_none: default_os.is_none(),
         default_os_ubuntu2204: default_os.as_deref() == Some("ubuntu-2204"),
         default_os_ubuntu2404: default_os.as_deref() == Some("ubuntu-2404"),
         default_os_debian12: default_os.as_deref() == Some("debian-12"),
         default_os_debian13: default_os.as_deref() == Some("debian-13"),
         default_os_proxmox: default_os.as_deref() == Some("proxmox"),
+        default_user: default_user.clone(),
+        default_password: default_password.clone(),
+        ssh_keys: ssh_keys.clone(),
+        ssh_key_subscriptions: ssh_key_subscriptions.clone(),
         has_initial_password,
         rendered_password,
         show_admin_settings,
@@ -973,6 +995,10 @@ pub struct SettingsForm {
     pub theme: Option<String>,
     pub require_login: Option<String>,
     pub default_os: Option<String>,
+    pub default_user: Option<String>,
+    pub default_password: Option<String>,
+    pub ssh_keys: Option<String>,
+    pub ssh_key_subscriptions: Option<String>,
     pub username: Option<String>,
     pub password: Option<String>,
     pub password_confirm: Option<String>,
@@ -1013,8 +1039,10 @@ pub async fn update_settings(
 
     // Only require admin authentication for admin settings
     // If trying to change admin settings but not authenticated, redirect to login
-    if (form.require_login.is_some() || 
-        form.default_os.is_some() || 
+    if (form.require_login.is_some() ||
+        form.default_os.is_some() ||
+        form.ssh_keys.is_some() ||
+        form.ssh_key_subscriptions.is_some() ||
         form.username.is_some() || 
         form.password.is_some() || 
         form.password_confirm.is_some() ||
@@ -1078,6 +1106,35 @@ pub async fn update_settings(
             let _ = store.delete_setting("default_os").await;
         }
 
+        // Save default_user if provided
+        if let Some(ref user) = form.default_user {
+            let user_to_save = if user.is_empty() { "root" } else { user };
+            if let Err(e) = store.put_setting("default_user", user_to_save).await {
+                error!("Failed to save default_user: {}", e);
+            }
+        }
+
+        // Save default_password if provided (empty string means disabled)
+        if let Some(ref password) = form.default_password {
+            if let Err(e) = store.put_setting("default_password", password).await {
+                error!("Failed to save default_password: {}", e);
+            }
+        }
+
+        // Save SSH keys if provided
+        if let Some(ref keys) = form.ssh_keys {
+            if let Err(e) = store.put_setting("ssh_keys", keys).await {
+                error!("Failed to save ssh_keys: {}", e);
+            }
+        }
+
+        // Save SSH key subscriptions if provided
+        if let Some(ref subs) = form.ssh_key_subscriptions {
+            if let Err(e) = store.put_setting("ssh_key_subscriptions", subs).await {
+                error!("Failed to save ssh_key_subscriptions: {}", e);
+            }
+        }
+
         if let Err(e) = store.put_setting("setup_completed", &settings.setup_completed.to_string()).await {
             error!("Failed to save setup_completed: {}", e);
         }
@@ -1109,29 +1166,38 @@ pub async fn update_settings(
                             let admin_username = settings.admin_username.clone();
                             let require_login = settings.require_login;
                             let default_os = settings.default_os.clone();
-                            
+                            let ssh_keys = store.get_setting("ssh_keys").await.ok().flatten().unwrap_or_default();
+                            let ssh_key_subscriptions = store.get_setting("ssh_key_subscriptions").await.ok().flatten().unwrap_or_else(|| "[]".to_string());
+                            let default_user = store.get_setting("default_user").await.ok().flatten().unwrap_or_else(|| "root".to_string());
+                            let default_password = store.get_setting("default_password").await.ok().flatten().unwrap_or_default();
+
                             // These fields are not in Settings, use defaults
                             let has_initial_password = false;
                             let rendered_password = "".to_string();
                             let show_admin_settings = is_authenticated;
-                            
+
                             // Create template with error message
                             let context = SettingsTemplate {
                                 theme: theme.clone(),
                                 is_authenticated,
                                 admin_username,
                                 require_login,
+                                default_os: default_os.clone().unwrap_or_default(),
                                 default_os_none: default_os.is_none(),
                                 default_os_ubuntu2204: default_os.as_deref() == Some("ubuntu-2204"),
                                 default_os_ubuntu2404: default_os.as_deref() == Some("ubuntu-2404"),
                                 default_os_debian12: default_os.as_deref() == Some("debian-12"),
                                 default_os_debian13: default_os.as_deref() == Some("debian-13"),
                                 default_os_proxmox: default_os.as_deref() == Some("proxmox"),
-                                                        has_initial_password,
+                                default_user: default_user.clone(),
+                                default_password: default_password.clone(),
+                                ssh_keys: ssh_keys.clone(),
+                                ssh_key_subscriptions: ssh_key_subscriptions.clone(),
+                                has_initial_password,
                                 rendered_password,
                                 show_admin_settings,
                                 error_message,
-                                current_path, // Add current_path here
+                                current_path,
                             };
 
                             // Return the error template
@@ -1165,29 +1231,38 @@ pub async fn update_settings(
                         let admin_username = settings.admin_username.clone();
                         let require_login = settings.require_login;
                         let default_os = settings.default_os.clone();
-                        
+                        let ssh_keys = store.get_setting("ssh_keys").await.ok().flatten().unwrap_or_default();
+                        let ssh_key_subscriptions = store.get_setting("ssh_key_subscriptions").await.ok().flatten().unwrap_or_else(|| "[]".to_string());
+                        let default_user = store.get_setting("default_user").await.ok().flatten().unwrap_or_else(|| "root".to_string());
+                        let default_password = store.get_setting("default_password").await.ok().flatten().unwrap_or_default();
+
                         // These fields are not in Settings, use defaults
                         let has_initial_password = false;
                         let rendered_password = "".to_string();
                         let show_admin_settings = is_authenticated;
-                        
+
                         // Create template with error message
                         let context = SettingsTemplate {
                             theme: theme.clone(),
                             is_authenticated,
                             admin_username,
                             require_login,
+                            default_os: default_os.clone().unwrap_or_default(),
                             default_os_none: default_os.is_none(),
                             default_os_ubuntu2204: default_os.as_deref() == Some("ubuntu-2204"),
                             default_os_ubuntu2404: default_os.as_deref() == Some("ubuntu-2404"),
                             default_os_debian12: default_os.as_deref() == Some("debian-12"),
                             default_os_debian13: default_os.as_deref() == Some("debian-13"),
                             default_os_proxmox: default_os.as_deref() == Some("proxmox"),
-                                                has_initial_password,
+                            default_user: default_user.clone(),
+                            default_password: default_password.clone(),
+                            ssh_keys: ssh_keys.clone(),
+                            ssh_key_subscriptions: ssh_key_subscriptions.clone(),
+                            has_initial_password,
                             rendered_password,
                             show_admin_settings,
                             error_message,
-                            current_path, // Add current_path here
+                            current_path,
                         };
 
                         // Return the error template
@@ -1220,29 +1295,38 @@ pub async fn update_settings(
                 let admin_username = settings.admin_username.clone();
                 let require_login = settings.require_login;
                 let default_os = settings.default_os.clone();
-                
+                let ssh_keys = store.get_setting("ssh_keys").await.ok().flatten().unwrap_or_default();
+                let ssh_key_subscriptions = store.get_setting("ssh_key_subscriptions").await.ok().flatten().unwrap_or_else(|| "[]".to_string());
+                let default_user = store.get_setting("default_user").await.ok().flatten().unwrap_or_else(|| "root".to_string());
+                let default_password = store.get_setting("default_password").await.ok().flatten().unwrap_or_default();
+
                 // These fields are not in Settings, use defaults
                 let has_initial_password = false;
                 let rendered_password = "".to_string();
                 let show_admin_settings = is_authenticated;
-                
+
                 // Create template with error message
                 let context = SettingsTemplate {
                     theme: theme.clone(),
                     is_authenticated,
                     admin_username,
                     require_login,
+                    default_os: default_os.clone().unwrap_or_default(),
                     default_os_none: default_os.is_none(),
                     default_os_ubuntu2204: default_os.as_deref() == Some("ubuntu-2204"),
                     default_os_ubuntu2404: default_os.as_deref() == Some("ubuntu-2404"),
                     default_os_debian12: default_os.as_deref() == Some("debian-12"),
                     default_os_debian13: default_os.as_deref() == Some("debian-13"),
                     default_os_proxmox: default_os.as_deref() == Some("proxmox"),
-                                has_initial_password,
+                    default_user: default_user.clone(),
+                    default_password: default_password.clone(),
+                    ssh_keys: ssh_keys.clone(),
+                    ssh_key_subscriptions: ssh_key_subscriptions.clone(),
+                    has_initial_password,
                     rendered_password,
                     show_admin_settings,
                     error_message,
-                    current_path, // Make sure current_path is passed here
+                    current_path,
                 };
 
                 // Return the error template
