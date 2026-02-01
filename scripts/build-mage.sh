@@ -209,7 +209,7 @@ echo "  Mode: \$DRAGONFLY_MODE"
 
 # Start the agent
 if [ -x /usr/local/bin/dragonfly-agent ]; then
-    /usr/local/bin/dragonfly-agent --server "\$DRAGONFLY_URL" --native &
+    /usr/local/bin/dragonfly-agent --server "\$DRAGONFLY_URL" &
 else
     echo "Error: dragonfly-agent not found or not executable"
 fi

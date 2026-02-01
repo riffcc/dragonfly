@@ -25,3 +25,10 @@ clap = { version = "4.5", features = ["derive"] }
 
 # OS information gathering
 sysinfo = "0.30"
+
+# Disk probing and cleanup
+scopeguard = "1.2"
+
+# Terminal UI for boot menu (Ratatui for fullscreen responsive layouts)
+ratatui = "0.30"
+crossterm = "0.28"

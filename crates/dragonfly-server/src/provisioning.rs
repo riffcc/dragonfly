@@ -21,6 +21,23 @@ use std::sync::Arc;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
+/// Detected operating system from disk probe
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct DetectedOs {
+    /// OS name from /etc/os-release PRETTY_NAME
+    pub name: String,
+    /// /etc/machine-id contents (for identity matching)
+    pub machine_id: Option<String>,
+    /// Filesystem UUID from blkid
+    pub fs_uuid: Option<String>,
+    /// Path to kernel (relative to mount point)
+    pub kernel_path: Option<String>,
+    /// Path to initrd (relative to mount point)
+    pub initrd_path: Option<String>,
+    /// Device that was mounted (e.g., /dev/sda1)
+    pub device: String,
+}
+
 /// Hardware registration request from agent check-in
 #[derive(Debug, Clone, Deserialize)]
 pub struct HardwareCheckIn {
@@ -55,6 +72,8 @@ pub struct HardwareCheckIn {
     pub is_virtual: bool,
     /// Virtualization platform
     pub virt_platform: Option<String>,
+    /// Existing OS detected on disk (if any)
+    pub existing_os: Option<DetectedOs>,
 }
 
 /// Disk information from agent
@@ -99,6 +118,8 @@ pub enum AgentAction {
     Execute,
     /// Reboot the machine
     Reboot,
+    /// Boot the existing local OS via kexec
+    LocalBoot,
 }
 
 /// Provisioning service
@@ -318,6 +339,19 @@ impl ProvisioningService {
                     info!("Machine {} will install OS {}, creating workflow", machine.id, os_choice);
                     let workflow = self.create_imaging_workflow(&machine, os_choice).await?;
                     (Some(workflow.metadata.name.clone()), AgentAction::Execute, machine)
+                } else if let Some(ref existing_os) = info.existing_os {
+                    // Existing OS detected and no workflow to run - boot it
+                    let mut machine = machine;
+                    machine.status.state = MachineState::ExistingOs {
+                        os_name: existing_os.name.clone(),
+                    };
+                    self.store.put_machine(&machine).await
+                        .map_err(ProvisioningError::Store)?;
+                    info!(
+                        "Machine {} has existing OS '{}', instructing LocalBoot",
+                        machine.id, existing_os.name
+                    );
+                    (None, AgentAction::LocalBoot, machine)
                 } else {
                     (None, AgentAction::Wait, machine)
                 }
@@ -538,6 +572,7 @@ mod tests {
             bmc_address: Some("192.168.1.200".to_string()),
             is_virtual: false,
             virt_platform: None,
+            existing_os: None,
         }
     }
 
@@ -648,6 +683,7 @@ mod tests {
             bmc_address: None,
             is_virtual: false,
             virt_platform: None,
+            existing_os: None,
         };
 
         let response = service.handle_checkin(&checkin).await.unwrap();
@@ -827,5 +863,75 @@ mod tests {
         // Verify IP was updated
         let machine = store.get_machine(machine_id).await.unwrap().unwrap();
         assert_eq!(machine.status.current_ip, Some("10.0.0.99".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_checkin_with_existing_os_returns_localboot() {
+        let store: Arc<dyn Store> = Arc::new(MemoryStore::new());
+
+        let service = ProvisioningService::new(
+            store.clone(),
+            test_ipxe_config(),
+            DeploymentMode::Simple,
+        );
+
+        // Check in a machine with an existing OS detected
+        let mut checkin = test_checkin();
+        checkin.existing_os = Some(DetectedOs {
+            name: "Debian GNU/Linux 13 (trixie)".to_string(),
+            machine_id: Some("abc123".to_string()),
+            fs_uuid: Some("12345678-1234-1234-1234-123456789abc".to_string()),
+            kernel_path: Some("/boot/vmlinuz-6.1.0-amd64".to_string()),
+            initrd_path: Some("/boot/initrd.img-6.1.0-amd64".to_string()),
+            device: "/dev/sda1".to_string(),
+        });
+        let response = service.handle_checkin(&checkin).await.unwrap();
+
+        // Should be new with LocalBoot action (no default_os, no workflow)
+        assert!(response.is_new, "Machine should be new");
+        assert_eq!(response.action, AgentAction::LocalBoot, "Action should be LocalBoot for machine with existing OS");
+        assert!(response.workflow_id.is_none(), "Should not have workflow_id");
+
+        // Verify machine state is ExistingOs
+        let machine = store.get_machine_by_mac("00:11:22:33:44:55").await.unwrap().unwrap();
+        assert!(matches!(machine.status.state, MachineState::ExistingOs { .. }), "State should be ExistingOs");
+        if let MachineState::ExistingOs { os_name } = &machine.status.state {
+            assert_eq!(os_name, "Debian GNU/Linux 13 (trixie)");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_checkin_existing_os_with_workflow_executes() {
+        let store: Arc<dyn Store> = Arc::new(MemoryStore::new());
+
+        // Set default_os so a workflow will be created
+        store.put_setting("default_os", "debian-13").await.unwrap();
+
+        // Create the template
+        let template = Template::new("debian-13");
+        store.put_template(&template).await.unwrap();
+
+        let service = ProvisioningService::new(
+            store.clone(),
+            test_ipxe_config(),
+            DeploymentMode::Simple,
+        );
+
+        // Check in a machine with existing OS but also default_os set
+        let mut checkin = test_checkin();
+        checkin.existing_os = Some(DetectedOs {
+            name: "Ubuntu 22.04".to_string(),
+            machine_id: None,
+            fs_uuid: None,
+            kernel_path: None,
+            initrd_path: None,
+            device: "/dev/sda1".to_string(),
+        });
+        let response = service.handle_checkin(&checkin).await.unwrap();
+
+        // Should Execute the workflow (pave over the existing OS)
+        assert!(response.is_new, "Machine should be new");
+        assert_eq!(response.action, AgentAction::Execute, "Action should be Execute when default_os is set");
+        assert!(response.workflow_id.is_some(), "Should have workflow_id for paving");
     }
 }

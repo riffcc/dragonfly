@@ -1,8 +1,11 @@
+mod boot_menu;
+mod kexec;
+mod probe;
 mod workflow;
 
 use reqwest::Client;
 use anyhow::{Result, Context};
-use dragonfly_common::models::{MachineStatus, DiskInfo, Machine, RegisterRequest, RegisterResponse, StatusUpdateRequest, OsInstalledUpdateRequest};
+use dragonfly_common::models::DiskInfo;
 use dragonfly_crd::Hardware;
 use std::env;
 use std::fs;
@@ -15,34 +18,20 @@ use clap::Parser;
 use tracing::{info, error, warn, debug};
 // Use wildcard import for sysinfo to bring traits into scope
 use sysinfo::*;
-use serde_json;
-
 use workflow::{AgentWorkflowRunner, AgentAction, checkin_native};
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
 struct Args {
-    /// Run in setup mode (initial PXE boot)
+    /// Show the boot menu directly (for testing the TUI)
     #[arg(long)]
-    setup: bool,
-
-    /// Attempt kexec into existing OS when in setup mode (requires --setup)
-    #[arg(long, requires = "setup")]
-    kexec: bool,
-
-    /// Run in native provisioning mode (uses Dragonfly workflows instead of Tinkerbell)
-    #[arg(long)]
-    native: bool,
+    menu: bool,
 
     /// Server URL (default: http://localhost:3000)
     #[arg(long)]
     server: Option<String>,
 
-    /// Tinkerbell IPXE URL (default: http://10.7.1.30:8080/hookos.ipxe)
-    #[arg(long, default_value = "http://10.7.1.30:8080/hookos.ipxe")]
-    ipxe_url: String,
-
-    /// Check-in interval in seconds (for native mode)
+    /// Check-in interval in seconds
     #[arg(long, default_value = "30")]
     checkin_interval: u64,
 
@@ -108,225 +97,6 @@ impl KernelParams {
     fn has_dragonfly_params(&self) -> bool {
         self.url.is_some() || self.mode.is_some()
     }
-
-    /// Is this imaging mode?
-    fn is_imaging_mode(&self) -> bool {
-        self.mode.as_deref() == Some("imaging")
-    }
-}
-
-// Enhanced OS detection with support for more distributions
-fn detect_os() -> Result<(String, String)> {
-    // Try to detect OS using os-release file first (most Linux distributions)
-    if let Ok(os_info) = detect_os_from_release_file() {
-        return Ok(os_info);
-    }
-    
-    // Try to use lsb_release command (available on many Linux distributions)
-    if let Ok(os_info) = detect_os_from_lsb_release() {
-        return Ok(os_info);
-    }
-    
-    // Try to detect specific distributions
-    if let Ok(os_info) = detect_specific_distros() {
-        return Ok(os_info);
-    }
-    
-    // Fallback to sysinfo for generic OS information
-    let _system = System::new();
-    let os_name = System::name().unwrap_or_else(|| "Unknown".to_string());
-    let os_version = System::os_version().unwrap_or_else(|| "Unknown".to_string());
-    
-    Ok((os_name, os_version))
-}
-
-fn detect_os_from_lsb_release() -> Result<(String, String)> {
-    if let Ok(output) = Command::new("lsb_release")
-        .args(["-a"])
-        .output()
-    {
-        if output.status.success() {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            let mut name = String::new();
-            let mut version = String::new();
-            
-            for line in stdout.lines() {
-                if line.starts_with("Distributor ID:") {
-                    name = line.trim_start_matches("Distributor ID:").trim().to_string();
-                } else if line.starts_with("Release:") {
-                    version = line.trim_start_matches("Release:").trim().to_string();
-                }
-            }
-            
-            if !name.is_empty() {
-                return Ok((name, version));
-            }
-        }
-    }
-    
-    anyhow::bail!("Could not detect OS using lsb_release")
-}
-
-fn detect_specific_distros() -> Result<(String, String)> {
-    // Check for Ubuntu first (since it would otherwise be detected as Debian)
-    if Path::new("/etc/lsb-release").exists() {
-        let lsb_content = fs::read_to_string("/etc/lsb-release")?;
-        if lsb_content.contains("Ubuntu") {
-            let mut ubuntu_version = String::new();
-            // Extract Ubuntu version
-            for line in lsb_content.lines() {
-                if line.starts_with("DISTRIB_RELEASE=") {
-                    ubuntu_version = line.trim_start_matches("DISTRIB_RELEASE=")
-                        .trim_matches('"')
-                        .to_string();
-                    break;
-                }
-            }
-            return Ok(("Ubuntu".to_string(), ubuntu_version));
-        }
-    }
-    
-    // Debian specific detection
-    if Path::new("/etc/debian_version").exists() {
-        let version = fs::read_to_string("/etc/debian_version")?
-            .trim()
-            .to_string();
-        
-        return Ok(("Debian".to_string(), version));
-    }
-    
-    // Red Hat based systems
-    if Path::new("/etc/redhat-release").exists() {
-        let content = fs::read_to_string("/etc/redhat-release")?;
-        let content = content.trim();
-        
-        // Extract name and version using regex-like parsing
-        if content.contains("CentOS") {
-            // Example: "CentOS Linux release 7.9.2009 (Core)"
-            if let Some(version_start) = content.find("release ") {
-                let version_str = &content[version_start + 8..];
-                if let Some(version_end) = version_str.find(' ') {
-                    return Ok(("CentOS".to_string(), version_str[..version_end].to_string()));
-                } else {
-                    return Ok(("CentOS".to_string(), version_str.to_string()));
-                }
-            }
-            return Ok(("CentOS".to_string(), "Unknown".to_string()));
-        } else if content.contains("Red Hat Enterprise Linux") || content.contains("RHEL") {
-            // Example: "Red Hat Enterprise Linux release 8.5 (Ootpa)"
-            if let Some(version_start) = content.find("release ") {
-                let version_str = &content[version_start + 8..];
-                if let Some(version_end) = version_str.find(' ') {
-                    return Ok(("RHEL".to_string(), version_str[..version_end].to_string()));
-                } else {
-                    return Ok(("RHEL".to_string(), version_str.to_string()));
-                }
-            }
-            return Ok(("RHEL".to_string(), "Unknown".to_string()));
-        } else if content.contains("Fedora") {
-            // Example: "Fedora release 35 (Thirty Five)"
-            if let Some(version_start) = content.find("release ") {
-                let version_str = &content[version_start + 8..];
-                if let Some(version_end) = version_str.find(' ') {
-                    return Ok(("Fedora".to_string(), version_str[..version_end].to_string()));
-                } else {
-                    return Ok(("Fedora".to_string(), version_str.to_string()));
-                }
-            }
-            return Ok(("Fedora".to_string(), "Unknown".to_string()));
-        }
-    }
-    
-    // SUSE based systems
-    if Path::new("/etc/SuSE-release").exists() || Path::new("/etc/SUSE-release").exists() {
-        let suse_file = if Path::new("/etc/SuSE-release").exists() {
-            "/etc/SuSE-release"
-        } else {
-            "/etc/SUSE-release"
-        };
-        
-        let content = fs::read_to_string(suse_file)?;
-        let first_line = content.lines().next().unwrap_or("");
-        
-        if first_line.contains("openSUSE") {
-            // Extract version
-            for line in content.lines() {
-                if line.starts_with("VERSION = ") {
-                    let version = line.trim_start_matches("VERSION = ").to_string();
-                    return Ok(("openSUSE".to_string(), version));
-                }
-            }
-            return Ok(("openSUSE".to_string(), "Unknown".to_string()));
-        } else if first_line.contains("SUSE Linux Enterprise") {
-            // Extract version
-            for line in content.lines() {
-                if line.starts_with("VERSION = ") {
-                    let version = line.trim_start_matches("VERSION = ").to_string();
-                    return Ok(("SLES".to_string(), version));
-                }
-            }
-            return Ok(("SLES".to_string(), "Unknown".to_string()));
-        }
-    }
-    
-    // Alpine Linux
-    if Path::new("/etc/alpine-release").exists() {
-        let version = fs::read_to_string("/etc/alpine-release")?.trim().to_string();
-        return Ok(("Alpine".to_string(), version));
-    }
-    
-    // Arch Linux
-    if Path::new("/etc/arch-release").exists() {
-        return Ok(("Arch Linux".to_string(), "Rolling".to_string()));
-    }
-    
-    anyhow::bail!("Could not detect specific distribution")
-}
-
-fn detect_os_from_release_file() -> Result<(String, String)> {
-    // Check /etc/os-release first
-    let os_release_path = Path::new("/etc/os-release");
-    if os_release_path.exists() {
-        let content = fs::read_to_string(os_release_path)?;
-        return parse_os_release(&content);
-    }
-    
-    // Check /usr/lib/os-release as fallback
-    let usr_lib_path = Path::new("/usr/lib/os-release");
-    if usr_lib_path.exists() {
-        let content = fs::read_to_string(usr_lib_path)?;
-        return parse_os_release(&content);
-    }
-    
-    // If we get here, we couldn't find os-release file
-    anyhow::bail!("Could not find os-release file")
-}
-
-fn parse_os_release(content: &str) -> Result<(String, String)> {
-    let mut name = String::new();
-    let mut version = String::new();
-    
-    for line in content.lines() {
-        if line.starts_with("NAME=") {
-            name = line.trim_start_matches("NAME=")
-                .trim_matches('"')
-                .to_string();
-        } else if line.starts_with("VERSION_ID=") {
-            version = line.trim_start_matches("VERSION_ID=")
-                .trim_matches('"')
-                .to_string();
-        }
-    }
-    
-    if name.is_empty() {
-        name = "Unknown".to_string();
-    }
-    
-    if version.is_empty() {
-        version = "Unknown".to_string();
-    }
-    
-    Ok((name, version))
 }
 
 // Detect disks on the system via /sys/block (pure Rust, no C deps)
@@ -411,50 +181,27 @@ fn detect_disks() -> Vec<DiskInfo> {
     disks
 }
 
-// Detect nameservers from resolv.conf
-fn detect_nameservers() -> Vec<String> {
-    let mut nameservers = Vec::new();
-    
-    // Read resolv.conf to get nameservers
-    if let Ok(content) = fs::read_to_string("/etc/resolv.conf") {
-        for line in content.lines() {
-            if line.starts_with("nameserver") {
-                let parts: Vec<&str> = line.split_whitespace().collect();
-                if parts.len() >= 2 {
-                    nameservers.push(parts[1].to_string());
-                }
-            }
-        }
-    }
-    
-    // If no nameservers found in resolv.conf, add some sensible defaults
-    if nameservers.is_empty() {
-        nameservers.push("8.8.8.8".to_string()); // Google DNS
-        nameservers.push("1.1.1.1".to_string()); // Cloudflare DNS
-    }
-    
-    tracing::info!("Detected {} nameservers", nameservers.len());
-    for ns in &nameservers {
-        tracing::info!("  Nameserver: {}", ns);
-    }
-    
-    nameservers
-}
-
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
 
-    // Initialize logger
-    tracing_subscriber::fmt::init();
+    // Initialize logger (but not for menu mode - it interferes with TUI)
+    if !args.menu {
+        tracing_subscriber::fmt::init();
+    }
+
+    // If --menu flag, show boot menu directly and exit
+    if args.menu {
+        // Probe for existing OS to show in menu
+        let existing_os = probe::probe_for_existing_os().ok().flatten();
+        let server_url = args.server.as_deref();
+        let selection = boot_menu::show_boot_menu(existing_os.as_ref(), server_url).await?;
+        println!("Selected: {:?}", selection);
+        return Ok(());
+    }
 
     // Parse kernel command line parameters (for Mage boot environment)
     let kernel_params = KernelParams::from_cmdline();
-
-    // Determine if we should run in native mode:
-    // 1. Explicitly requested via --native flag
-    // 2. Detected Dragonfly kernel parameters (Mage boot)
-    let run_native = args.native || kernel_params.has_dragonfly_params();
 
     if kernel_params.has_dragonfly_params() {
         info!("Detected Mage boot environment (dragonfly.* kernel parameters present)");
@@ -527,357 +274,33 @@ async fn main() -> Result<()> {
     info!("Detected RAM: {} bytes ({:.2} GiB)", total_ram_bytes, total_ram_gib);
     // --- End CPU/RAM Detection ---
     
-    // Detect disks and nameservers
+    // Detect disks
     let disks = detect_disks();
-    let nameservers = detect_nameservers();
 
-    // If in native provisioning mode, run the check-in loop instead of legacy flow
-    if run_native {
-        info!("Running in native provisioning mode (Mage boot: {})", kernel_params.has_dragonfly_params());
+    info!("Starting Dragonfly agent (Mage boot: {})", kernel_params.has_dragonfly_params());
 
-        // Build Hardware CRD from detected info for workflow execution context
-        let hardware = build_hardware_from_detected_info(
-            &mac_address,
-            &ip_address_str,
-            &hostname,
-            cpu_model.as_deref(),
-            cpu_cores,
-            total_ram_bytes,
-            &disks,
-        );
+    // Build Hardware CRD from detected info for workflow execution context
+    let hardware = build_hardware_from_detected_info(
+        &mac_address,
+        &ip_address_str,
+        &hostname,
+        cpu_model.as_deref(),
+        cpu_cores,
+        total_ram_bytes,
+        &disks,
+    );
 
-        // Run the native provisioning check-in loop
-        run_native_provisioning_loop(
-            &client,
-            &api_url,
-            &mac_address,
-            Some(&hostname),
-            Some(&ip_address_str),
-            hardware,
-            Duration::from_secs(args.checkin_interval),
-            args.action.clone(),
-        ).await?;
-
-        return Ok(());
-    }
-
-    // Detect OS - even in setup mode we want to check for existing OS
-    let (os_name, os_version) = detect_os()?;
-    tracing::info!("Detected OS: {} {}", os_name, os_version);
-    
-    // Check if we have a bootable OS
-    let has_bootable_os = if args.setup {
-        // In setup mode, check if we can find bootable partitions
-        let bootable = check_bootable_os()?;
-        tracing::info!("Bootable OS check result: {}", bootable);
-        bootable
-    } else {
-        // In normal mode, if we detected a non-Alpine OS, consider it bootable
-        os_name != "Alpine" && os_name != "Unknown"
-    };
-    
-    // Determine machine status based on OS detection and setup mode
-    let (current_status, os_info) = if has_bootable_os {
-        let os_full_name = format!("{} {}", os_name, os_version);
-        tracing::info!("Found existing OS: {}", os_full_name);
-        (MachineStatus::ExistingOS, Some(os_full_name))
-    } else if args.setup {
-        tracing::info!("No bootable OS found, marking as ready for adoption");
-        (MachineStatus::AwaitingAssignment, None)
-    } else {
-        tracing::info!("Running in Alpine environment");
-        (MachineStatus::AwaitingAssignment, None)
-    };
-    
-    // Check if this machine already exists in the database
-    tracing::info!("Checking if machine with MAC {} already exists...", mac_address);
-    let existing_machines_response = client.get(format!("{}/api/machines", api_url))
-        .send()
-        .await
-        .context("Failed to fetch existing machines")?;
-    
-    if !existing_machines_response.status().is_success() {
-        let error_text = existing_machines_response.text().await?;
-        anyhow::bail!("Failed to fetch existing machines: {}", error_text);
-    }
-    
-    let existing_machines_body = existing_machines_response.text().await
-        .context("Failed to read existing machines response body")?;
-    let existing_machines: Vec<Machine> = serde_json::from_str(&existing_machines_body)
-        .with_context(|| format!(
-            "Failed to parse existing machines response.\nResponse body: {}",
-            existing_machines_body
-        ))?;
-    
-    // Find if this machine already exists by MAC address
-    let existing_machine_option = existing_machines.iter().find(|m| m.mac_address == mac_address).cloned();
-    
-    // Process registration/update as before
-    let _machine_id = match existing_machine_option {
-        Some(mut machine) => { // Make machine mutable
-            // Machine exists, update its status, OS, and hardware info
-            tracing::info!("Machine already exists with ID: {}, fetching current state...", machine.id);
-
-            // Fetch the full machine data first to ensure we have the latest base
-            // This is less efficient but safer than assuming the list endpoint has absolutely latest data
-            let fetch_url = format!("{}/api/machines/{}", api_url, machine.id);
-            match client.get(&fetch_url).send().await {
-                Ok(resp) => {
-                    if resp.status().is_success() {
-                        // The API returns {"machine": ..., "workflow_info": ...}
-                        let body_text = resp.text().await
-                            .context("Failed to read full machine data response body")?;
-                        let full_data: serde_json::Value = serde_json::from_str(&body_text)
-                            .with_context(|| format!(
-                                "Failed to parse full machine data JSON.\nResponse body: {}",
-                                body_text
-                            ))?;
-                        if let Some(fetched_machine_json) = full_data.get("machine") {
-                             match serde_json::from_value::<Machine>(fetched_machine_json.clone()) {
-                                Ok(fetched_machine) => {
-                                    machine = fetched_machine; // Replace with the latest fetched data
-                                    info!("Successfully fetched latest machine data for ID: {}", machine.id);
-                                }
-                                Err(e) => {
-                                    warn!("Failed to deserialize fetched machine data for {}: {}. Proceeding with list data.", machine.id, e);
-                                    // Fallback to using the 'machine' from the list if fetch parsing fails
-                                }
-                            }
-                        } else {
-                             warn!("Fetched machine data for {} is missing 'machine' field. Proceeding with list data.", machine.id);
-                        }
-                    } else {
-                        warn!("Failed to fetch full machine data for {}: Status {}. Proceeding with list data.", 
-                              machine.id, resp.status());
-                        // Fallback to using the 'machine' from the list if fetch fails
-                    }
-                },
-                Err(e) => {
-                     warn!("Network error fetching full machine data for {}: {}. Proceeding with list data.", machine.id, e);
-                     // Fallback to using the 'machine' from the list if fetch fails
-                }
-            }
-            
-            // Update fields on the (potentially refreshed) machine object
-            machine.status = current_status; // Set status based on detection
-            machine.os_installed = os_info;  // Set os_installed based on detection
-            machine.cpu_model = cpu_model.clone();
-            machine.cpu_cores = cpu_cores;
-            machine.total_ram_bytes = Some(total_ram_bytes);
-            // Note: We don't update disks/nameservers here, assuming registration is the source of truth for those
-            // updated_at will be set by the server handler
-            
-            // Send the full updated machine object back to the server
-            tracing::info!("Updating existing machine {} with full payload...", machine.id);
-            let update_url = format!("{}/api/machines/{}", api_url, machine.id);
-            
-            // Log the request details before sending
-            info!("Attempting to PUT full machine update to URL: {} with payload: {:?}", update_url, machine);
-
-            let update_response = client.put(&update_url)
-                .json(&machine) // Send the whole updated machine struct
-                .send()
-                .await
-                .context("Failed to send machine update request")?;
-
-            // Log status and raw response text for debugging
-            let status = update_response.status();
-            let response_text = match update_response.text().await {
-                Ok(text) => text,
-                Err(e) => {
-                    error!("Failed to read update response text: {}", e);
-                    format!("Failed to read response text: {}", e)
-                }
-            };
-            info!("Received response for machine update: Status={}, Body=\"{}\"", status, response_text);
-
-            if !status.is_success() {
-                // Use the response text we already read
-                error!(
-                    "Failed to update machine {}. Status: {}, Response: {}",
-                    machine.id,
-                    status,
-                    response_text
-                );
-                // Logged the error, but continue agent operation if possible
-                // Depending on the error, may want to bail here in some cases?
-            } else {
-                info!("Successfully updated machine {} on server", machine.id);
-            }
-            
-            // We don't need to update status/os_installed separately anymore
-            /*
-            // Update machine status with the OS information
-            tracing::info!("Updating machine status with OS information...");
-            // ... old separate status update code removed ...
-            
-            // If we detected an OS, also update the os_installed field
-            if let Some(os_name) = &os_info {
-                tracing::info!("Updating OS installed to: {}", os_name);
-                // ... old separate os_installed update code removed ...
-            }
-            */
-            
-            machine.id // Return the ID
-        },
-        None => {
-            // Machine doesn't exist, register it
-            tracing::info!("Machine not found, registering as new...");
-            
-            // Prepare registration request
-            let register_request = RegisterRequest {
-                mac_address,
-                ip_address: ip_address_str,
-                hostname: Some(hostname),
-                disks,
-                nameservers,
-                // Add the detected hardware info (cloning cpu_model Option)
-                cpu_model: cpu_model.clone(),
-                cpu_cores,
-                total_ram_bytes: Some(total_ram_bytes),
-                // Proxmox fields (not used in bare metal agent)
-                proxmox_vmid: None,
-                proxmox_node: None,
-                proxmox_cluster: None,
-            };
-            
-            // Register the machine
-            let response = client.post(format!("{}/api/machines", api_url))
-                .json(&register_request)
-                .send()
-                .await
-                .context("Failed to send registration request")?;
-            
-            if !response.status().is_success() {
-                let error_text = response.text().await?;
-                anyhow::bail!("Failed to register machine: {}", error_text);
-            }
-            
-            let register_body = response.text().await
-                .context("Failed to read registration response body")?;
-            let register_response: RegisterResponse = serde_json::from_str(&register_body)
-                .with_context(|| format!(
-                    "Failed to parse registration response.\nResponse body: {}",
-                    register_body
-                ))?;
-            
-            tracing::info!("Machine registered successfully!");
-            tracing::info!("Machine ID: {}", register_response.machine_id);
-            tracing::info!("Next step: {}", register_response.next_step);
-            
-            // Update machine status with the OS information
-            tracing::info!("Updating machine status with OS information...");
-            let status_update = StatusUpdateRequest {
-                status: MachineStatus::AwaitingAssignment,
-                message: None,
-            };
-            
-            let status_response = client.put(format!("{}/api/machines/{}/status", api_url, register_response.machine_id))
-                .json(&status_update)
-                .send()
-                .await
-                .context("Failed to send status update")?;
-            
-            if !status_response.status().is_success() {
-                let error_text = status_response.text().await?;
-                anyhow::bail!("Failed to update machine status: {}", error_text);
-            }
-            
-            tracing::info!("Machine status updated successfully!");
-            
-            // If we detected an OS, also update the os_installed field
-            if let Some(os_name) = &os_info {
-                tracing::info!("Updating OS installed to: {}", os_name);
-                let os_installed_update = OsInstalledUpdateRequest {
-                    os_installed: os_name.to_string(),
-                };
-                
-                // Construct the URL
-                let url = format!(
-                    "{}/api/machines/{}/os-installed",
-                    api_url,
-                    register_response.machine_id
-                );
-
-                // Log the request details before sending
-                info!("Attempting to PUT OS installed update to URL: {} with payload: {:?}", url, os_installed_update);
-
-                // Send the request and handle potential network/send errors
-                let response_result = client
-                    .put(&url)
-                    .json(&os_installed_update)
-                    .send()
-                    .await;
-
-                match response_result {
-                    Ok(response) => {
-                        // Log status and raw response text for debugging
-                        let status = response.status();
-                        let response_text = match response.text().await {
-                            Ok(text) => text,
-                            Err(e) => {
-                                error!("Failed to read response text: {}", e);
-                                format!("Failed to read response text: {}", e)
-                            }
-                        };
-                        info!("Received response for OS installed update: Status={}, Body=\"{}\"", status, response_text);
-
-                        // Check the status code
-                        if status.is_success() {
-                            info!("Successfully updated OS installed status on server");
-                        } else {
-                            // Use the response text we already read
-                            error!(
-                                "Failed to update OS installed. Status: {}, Response: {}",
-                                status,
-                                response_text
-                            );
-                             // Logged the error, continue agent operation
-                        }
-                     },
-                    Err(e) => {
-                        // Log the specific reqwest error from send()
-                        error!("Failed to send OS installed update request: {}", e);
-                         // Logged the error, continue agent operation
-                    }
-                }
-            }
-            
-            register_response.machine_id
-        }
-    };
-
-    // If in setup mode, handle boot decision
-    if args.setup {
-        if has_bootable_os {
-            if args.kexec {
-                tracing::info!("--kexec flag provided, attempting to chainload existing OS...");
-                // Try to chainload the existing OS
-                chainload_existing_os()?;
-                // If chainload succeeds, the process is replaced. If it fails, we fall through.
-                // Add a log here in case kexec load/exec fails but doesn't return Err?
-                tracing::error!("kexec command sequence completed but did not transfer control. This is unexpected.");
-                // Still exit cleanly even if kexec didn't work as expected,
-                // as the user explicitly asked for it.
-                return Ok(());
-            } else {
-                tracing::info!("Bootable OS detected, but --kexec not specified. Exiting agent cleanly.");
-                // Exit cleanly without attempting kexec or reboot
-                return Ok(());
-            }
-        } else {
-            tracing::info!("No bootable OS found, attempting reboot into Tinkerbell for OS installation...");
-            // Only attempt reboot if no bootable OS is found during setup
-            let mut cmd = Command::new("reboot");
-            cmd.status().context("Failed to reboot")?;
-            // Reboot replaces the current process, so we won't reach here normally.
-            // If reboot fails, the context error will propagate.
-        }
-    } else {
-        tracing::info!("Agent finished running in non-setup mode.");
-    }
-
-    Ok(())
+    // Run the provisioning check-in loop
+    run_native_provisioning_loop(
+        &client,
+        &api_url,
+        &mac_address,
+        Some(&hostname),
+        Some(&ip_address_str),
+        hardware,
+        Duration::from_secs(args.checkin_interval),
+        args.action.clone(),
+    ).await
 }
 
 /// Build a Hardware CRD from detected system information
@@ -936,7 +359,13 @@ fn build_hardware_from_detected_info(
     Hardware::new(&hardware_id, spec)
 }
 
-/// Run the native provisioning check-in loop
+/// Run the provisioning check-in loop
+///
+/// Implements the "invisible PXE" philosophy:
+/// - If there's an existing OS: quick timeout, boot it if server is slow
+/// - If no existing OS: wait indefinitely for server (nothing else to do)
+/// - User can always press ENTER/SPACEBAR to access the boot menu
+/// - The check-in is slipstreamed into existing flows, making any delay invisible
 async fn run_native_provisioning_loop(
     client: &Client,
     server_url: &str,
@@ -947,206 +376,269 @@ async fn run_native_provisioning_loop(
     checkin_interval: Duration,
     action_filter: Option<Vec<usize>>,
 ) -> Result<()> {
-    info!("Starting native provisioning check-in loop");
+    info!("Starting native provisioning");
 
-    loop {
-        // Check in with the server
-        match checkin_native(client, server_url, mac, hostname, ip_address).await {
-            Ok(response) => {
+    // Probe disks for existing OS FIRST (before any check-in)
+    let existing_os = match probe::probe_for_existing_os() {
+        Ok(os) => {
+            if let Some(ref detected) = os {
                 info!(
-                    machine_id = %response.machine_id,
-                    name = %response.memorable_name,
-                    is_new = %response.is_new,
-                    action = ?response.action,
-                    "Check-in successful"
+                    name = %detected.name,
+                    device = %detected.device,
+                    "Detected existing OS on disk"
                 );
-
-                match response.action {
-                    AgentAction::Wait => {
-                        debug!("Server says wait, will check in again in {:?}", checkin_interval);
-                        tokio::time::sleep(checkin_interval).await;
-                    }
-                    AgentAction::Execute => {
-                        if let Some(workflow_id) = response.workflow_id {
-                            info!(workflow_id = %workflow_id, "Server assigned workflow, executing...");
-
-                            // Update hardware name to match machine_id (workflow's hardware_ref uses this)
-                            let mut hw = hardware.clone();
-                            hw.metadata.name = response.machine_id.clone();
-
-                            // Create workflow runner and execute
-                            let runner = AgentWorkflowRunner::new(
-                                client.clone(),
-                                server_url.to_string(),
-                                hw,
-                            ).with_action_filter(action_filter.clone());
-
-                            match runner.execute(&workflow_id).await {
-                                Ok(()) => {
-                                    info!(workflow_id = %workflow_id, "Workflow completed successfully");
-                                }
-                                Err(e) => {
-                                    error!(workflow_id = %workflow_id, error = %e, "Workflow execution failed");
-                                }
-                            }
-
-                            // If action filter was specified, exit after execution (debugging mode)
-                            if action_filter.is_some() {
-                                info!("Action filter specified - exiting after execution");
-                                return Ok(());
-                            }
-
-                            // After workflow execution, continue check-in loop
-                            // Server will decide next action based on workflow result
-                            tokio::time::sleep(Duration::from_secs(5)).await;
-                        } else {
-                            warn!("Server said Execute but no workflow_id provided");
-                            tokio::time::sleep(checkin_interval).await;
-                        }
-                    }
-                    AgentAction::Reboot => {
-                        info!("Server requested reboot");
-                        let mut cmd = Command::new("reboot");
-                        cmd.status().context("Failed to reboot")?;
-                        // Won't reach here normally
-                        return Ok(());
-                    }
-                }
             }
-            Err(e) => {
-                error!(error = %e, "Check-in failed, will retry in {:?}", checkin_interval);
-                tokio::time::sleep(checkin_interval).await;
+            os
+        }
+        Err(e) => {
+            warn!(error = %e, "Failed to probe for existing OS, continuing anyway");
+            None
+        }
+    };
+
+    // Clone values for the async closure
+    let client_clone = client.clone();
+    let server_url_owned = server_url.to_string();
+    let mac_owned = mac.to_string();
+    let hostname_owned = hostname.map(|s| s.to_string());
+    let ip_address_owned = ip_address.map(|s| s.to_string());
+    let existing_os_clone = existing_os.clone();
+
+    // Wait for check-in with user interrupt capability
+    // User can press ENTER/SPACEBAR to access the boot menu
+    let checkin_result = boot_menu::wait_for_checkin_with_interrupt(
+        || async move {
+            checkin_native(
+                &client_clone,
+                &server_url_owned,
+                &mac_owned,
+                hostname_owned.as_deref(),
+                ip_address_owned.as_deref(),
+                existing_os_clone.as_ref(),
+            ).await
+        },
+        existing_os.as_ref(),
+    ).await?;
+
+    // Handle the result
+    let initial_response = match checkin_result {
+        None => {
+            // User requested menu
+            let selection = boot_menu::show_boot_menu(existing_os.as_ref(), Some(server_url)).await?;
+            return handle_menu_selection(
+                selection,
+                &existing_os,
+                client,
+                server_url,
+                &hardware,
+                &action_filter,
+            ).await;
+        }
+        Some(response) => response,
+    };
+
+    // If we have a machine_id, we got a real response
+    if !initial_response.machine_id.is_empty() {
+        info!(
+            machine_id = %initial_response.machine_id,
+            name = %initial_response.memorable_name,
+            is_new = %initial_response.is_new,
+            action = ?initial_response.action,
+            "Check-in successful"
+        );
+    }
+
+    // Handle initial response
+    handle_agent_action(
+        &initial_response,
+        &existing_os,
+        client,
+        server_url,
+        &hardware,
+        &action_filter,
+    ).await?;
+
+    // If we get here after LocalBoot/Execute, the action didn't terminate
+    // Enter the main loop for ongoing check-ins (only if action was Wait)
+    if initial_response.action == AgentAction::Wait {
+        loop {
+            tokio::time::sleep(checkin_interval).await;
+
+            match checkin_native(client, server_url, mac, hostname, ip_address, existing_os.as_ref()).await {
+                Ok(response) => {
+                    debug!(action = ?response.action, "Check-in response");
+                    handle_agent_action(
+                        &response,
+                        &existing_os,
+                        client,
+                        server_url,
+                        &hardware,
+                        &action_filter,
+                    ).await?;
+                }
+                Err(e) => {
+                    // After initial success, we can be more lenient with retries
+                    error!(error = %e, "Check-in failed, will retry");
+                }
             }
         }
     }
+
+    Ok(())
 }
 
-/// Check if there's a bootable OS on the system
-fn check_bootable_os() -> Result<bool> {
-    // First check for EFI boot entries
-    if Path::new("/sys/firmware/efi").exists() {
-        tracing::info!("Checking EFI boot entries...");
-        
-        // Use efibootmgr to check boot entries
-        if let Ok(output) = Command::new("efibootmgr")
-            .output()
-        {
-            if output.status.success() {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                // Look for non-network boot entries
-                for line in stdout.lines() {
-                    if line.contains("Boot") && !line.contains("Network") {
-                        tracing::info!("Found EFI boot entry: {}", line);
-                        return Ok(true);
-                    }
-                }
+/// Handle a menu selection from the boot menu
+async fn handle_menu_selection(
+    selection: boot_menu::MenuSelection,
+    existing_os: &Option<probe::DetectedOs>,
+    client: &Client,
+    server_url: &str,
+    hardware: &Hardware,
+    action_filter: &Option<Vec<usize>>,
+) -> Result<()> {
+    use boot_menu::MenuSelection;
+
+    match selection {
+        MenuSelection::BootExistingOs => {
+            if let Some(os) = existing_os {
+                info!(name = %os.name, "User selected: boot existing OS");
+                kexec::boot_local_os(os)?;
+            } else {
+                warn!("No existing OS to boot");
             }
         }
-    }
-    
-    // Check for GRUB installations
-    for path in ["/boot/grub", "/boot/grub2", "/boot/efi/EFI"] {
-        if Path::new(path).exists() {
-            tracing::info!("Found bootloader directory: {}", path);
-            return Ok(true);
+        MenuSelection::MemoryTest => {
+            info!("User selected: memory test");
+            // TODO: Boot memtest86+ via kexec
+            warn!("Memory test not yet implemented");
         }
-    }
-    
-    // Check for bootable partitions using blkid
-    if let Ok(output) = Command::new("blkid")
-        .output()
-    {
-        if output.status.success() {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            for line in stdout.lines() {
-                // Look for common Linux root filesystem types
-                if line.contains("TYPE=\"ext4\"") || 
-                   line.contains("TYPE=\"xfs\"") || 
-                   line.contains("TYPE=\"btrfs\"") {
-                    tracing::info!("Found bootable partition: {}", line);
-                    return Ok(true);
-                }
+        MenuSelection::Wipe => {
+            info!("User selected: wipe disk");
+            // TODO: Implement disk wipe
+            warn!("Disk wipe not yet implemented - requires confirmation workflow");
+        }
+        MenuSelection::InstallOs(template) => {
+            info!(template = %template, "User selected: install OS");
+            // TODO: Create workflow for OS installation
+            warn!("OS installation via menu not yet implemented");
+        }
+        MenuSelection::BootIso(url) => {
+            info!(url = %url, "User selected: boot ISO");
+            // TODO: Implement ISO boot via memdisk/sanboot
+            warn!("ISO boot not yet implemented");
+        }
+        MenuSelection::BootRescue => {
+            info!("User selected: boot rescue environment");
+            // TODO: Boot rescue environment
+            warn!("Rescue environment not yet implemented");
+        }
+        MenuSelection::VendorDiagnostics => {
+            info!("User selected: vendor diagnostics");
+            // TODO: Detect vendor and boot appropriate diagnostics
+            warn!("Vendor diagnostics not yet implemented");
+        }
+        MenuSelection::RemoveFromDragonfly => {
+            info!("User selected: remove from Dragonfly");
+            // TODO: Call API to unregister machine
+            warn!("Remove from Dragonfly not yet implemented");
+        }
+        MenuSelection::ExecuteWorkflow(workflow_id) => {
+            info!(workflow_id = %workflow_id, "Executing workflow from menu");
+            let mut hw = hardware.clone();
+            hw.metadata.name = "menu-selected".to_string();
+
+            let runner = workflow::AgentWorkflowRunner::new(
+                client.clone(),
+                server_url.to_string(),
+                hw,
+            ).with_action_filter(action_filter.clone());
+
+            match runner.execute(&workflow_id).await {
+                Ok(()) => info!(workflow_id = %workflow_id, "Workflow completed"),
+                Err(e) => error!(workflow_id = %workflow_id, error = %e, "Workflow failed"),
             }
         }
+        MenuSelection::Wait => {
+            info!("User selected: wait for instructions");
+            // Nothing to do - would enter the check-in loop
+        }
+        MenuSelection::ExitToShell => {
+            info!("User selected: exit to shell");
+            // Check if we're in Alpine/Mage (PXE boot environment) vs normal Linux
+            let is_mage = std::path::Path::new("/etc/alpine-release").exists()
+                || std::env::var("DRAGONFLY_MAGE").is_ok();
+
+            if is_mage {
+                // Drop to maintenance shell
+                println!("\n\x1b[1;33mDropping to maintenance shell...\x1b[0m");
+                println!("Type 'exit' to return to boot menu, or 'reboot' to restart.\n");
+                let _ = Command::new("/bin/sh").status();
+                // If shell exits, we could loop back to menu, but for now just exit
+            }
+            // Exit the agent - on normal Linux this just returns to shell
+            std::process::exit(0);
+        }
     }
-    
-    Ok(false)
+
+    Ok(())
 }
 
-/// Attempt to chainload the existing OS
-fn chainload_existing_os() -> Result<()> {
-    // First try to find the kernel in standard locations
-    let kernel_locations = [
-        "/boot/vmlinuz",
-        "/boot/vmlinuz-linux",
-        "/boot/vmlinuz-current",
-    ];
-    
-    let initrd_locations = [
-        "/boot/initrd.img",
-        "/boot/initramfs-linux.img",
-        "/boot/initrd-current",
-    ];
-    
-    // Try to find the newest kernel
-    let mut newest_kernel: Option<(String, std::fs::Metadata)> = None;
-    for kernel in kernel_locations.iter() {
-        if let Ok(metadata) = std::fs::metadata(kernel) {
-            if metadata.is_file() {
-                match &newest_kernel {
-                    None => newest_kernel = Some((kernel.to_string(), metadata)),
-                    Some((_, old_meta)) => {
-                        if let (Ok(old_time), Ok(new_time)) = (old_meta.modified(), metadata.modified()) {
-                            if new_time > old_time {
-                                newest_kernel = Some((kernel.to_string(), metadata));
-                            }
-                        }
-                    }
+/// Handle an action from the server
+async fn handle_agent_action(
+    response: &workflow::CheckInResponse,
+    existing_os: &Option<probe::DetectedOs>,
+    client: &Client,
+    server_url: &str,
+    hardware: &Hardware,
+    action_filter: &Option<Vec<usize>>,
+) -> Result<()> {
+    match response.action {
+        AgentAction::Wait => {
+            debug!("Server says wait");
+            Ok(())
+        }
+        AgentAction::Execute => {
+            if let Some(ref workflow_id) = response.workflow_id {
+                info!(workflow_id = %workflow_id, "Server assigned workflow, executing...");
+
+                // Update hardware name to match machine_id
+                let mut hw = hardware.clone();
+                hw.metadata.name = response.machine_id.clone();
+
+                let runner = AgentWorkflowRunner::new(
+                    client.clone(),
+                    server_url.to_string(),
+                    hw,
+                ).with_action_filter(action_filter.clone());
+
+                match runner.execute(workflow_id).await {
+                    Ok(()) => info!(workflow_id = %workflow_id, "Workflow completed successfully"),
+                    Err(e) => error!(workflow_id = %workflow_id, error = %e, "Workflow execution failed"),
                 }
+
+                if action_filter.is_some() {
+                    info!("Action filter specified - exiting");
+                    std::process::exit(0);
+                }
+            } else {
+                warn!("Server said Execute but no workflow_id provided");
             }
+            Ok(())
         }
-    }
-    
-    // Find matching initrd
-    let mut initrd_path = None;
-    if let Some((_kernel_path, _)) = &newest_kernel { // Prefix kernel_path with underscore
-        for initrd in initrd_locations.iter() {
-            if Path::new(initrd).exists() {
-                initrd_path = Some(initrd.to_string());
-                break;
+        AgentAction::Reboot => {
+            info!("Server requested reboot");
+            Command::new("reboot").status().context("Failed to reboot")?;
+            Ok(())
+        }
+        AgentAction::LocalBoot => {
+            if let Some(os) = existing_os {
+                info!(name = %os.name, "Booting into existing OS via kexec");
+                kexec::boot_local_os(os)?;
+            } else {
+                warn!("Server said LocalBoot but no existing OS detected");
             }
+            Ok(())
         }
-    }
-    
-    if let Some((kernel_path, _)) = newest_kernel { // Use original kernel_path here for kexec
-        tracing::info!("Found kernel at: {}", kernel_path);
-        if let Some(initrd) = &initrd_path {
-            tracing::info!("Found initrd at: {}", initrd);
-        }
-        
-        // Build kexec command
-        let mut cmd = Command::new("kexec");
-        cmd.arg("-l").arg(&kernel_path);
-        
-        if let Some(initrd) = &initrd_path {
-            cmd.args(["--initrd", initrd]);
-        }
-        
-        // Add basic kernel parameters
-        cmd.args(["--append", "root=auto rw"]);
-        
-        // Execute kexec load
-        cmd.status().context("Failed to load kernel with kexec")?;
-        
-        // Execute the loaded kernel
-        Command::new("kexec")
-            .arg("-e")
-            .status()
-            .context("Failed to execute IPXE kernel")?;
-            
-        Ok(())
-    } else {
-        anyhow::bail!("Could not find bootable kernel")
     }
 }
 
