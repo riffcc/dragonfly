@@ -175,19 +175,19 @@ impl ProvisioningService {
 
         // Check machine state
         match &machine.status.state {
-            MachineState::Ready | MachineState::Provisioned => {
-                debug!("Machine {} is ready, booting locally", machine.id);
+            MachineState::Installed | MachineState::ExistingOs { .. } => {
+                debug!("Machine {} has OS, booting locally", machine.id);
                 Ok(self.ipxe_generator.local_boot_script())
             }
-            MachineState::Provisioning => {
-                debug!("Machine {} in provisioning state", machine.id);
+            MachineState::Initializing | MachineState::Installing | MachineState::Writing => {
+                debug!("Machine {} in installation state", machine.id);
                 let script = self.ipxe_generator.discovery_script(None)
                     .map_err(|e| ProvisioningError::IpxeGeneration(e.to_string()))?;
                 Ok(script)
             }
-            MachineState::Discovered => {
-                // Newly discovered - boot into discovery
-                debug!("Machine {} discovered, booting into discovery", machine.id);
+            MachineState::Discovered | MachineState::ReadyToInstall => {
+                // Discovered or ready to install - boot into discovery/mage
+                debug!("Machine {} ready for install, booting into discovery", machine.id);
                 let script = self.ipxe_generator.discovery_script(None)
                     .map_err(|e| ProvisioningError::IpxeGeneration(e.to_string()))?;
                 Ok(script)
@@ -437,10 +437,10 @@ impl ProvisioningService {
         self.store.put_workflow(&workflow).await
             .map_err(ProvisioningError::Store)?;
 
-        // Update machine state to Ready (has workflow assigned)
+        // Update machine state to ReadyToInstall (has workflow assigned, waiting for boot)
         let mut machine = machine;
         if matches!(machine.status.state, MachineState::Discovered) {
-            machine.status.state = MachineState::Ready;
+            machine.status.state = MachineState::ReadyToInstall;
             machine.status.current_workflow = Some(workflow_id);
             self.store.put_machine(&machine).await
                 .map_err(ProvisioningError::Store)?;

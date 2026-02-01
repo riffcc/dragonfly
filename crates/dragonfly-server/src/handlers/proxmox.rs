@@ -1471,9 +1471,9 @@ async fn discover_and_register_proxmox_vms(
             // Set the machine state based on VM status
             use dragonfly_common::MachineState;
             machine.status.state = match status {
-                "running" => MachineState::Provisioned,
+                "running" => MachineState::ExistingOs { os_name: "Unknown".to_string() },
                 "stopped" => MachineState::Offline,
-                _ => MachineState::Provisioned,
+                _ => MachineState::ExistingOs { os_name: "Unknown".to_string() },
             };
 
             // Register the VM with v1 Store
@@ -2059,12 +2059,12 @@ async fn sync_proxmox_machines(
                     if let Ok(Some(mut machine)) = state.store.get_machine(db_machine.id).await {
                         use dragonfly_common::MachineState;
                         machine.status.state = match new_db_status {
-                            MachineStatus::Ready => MachineState::Provisioned,
+                            MachineStatus::Ready => MachineState::Installed,
                             MachineStatus::Offline => MachineState::Offline,
-                            MachineStatus::ExistingOS => MachineState::Provisioned,
+                            MachineStatus::ExistingOS => MachineState::ExistingOs { os_name: "Unknown".to_string() },
                             MachineStatus::AwaitingAssignment => MachineState::Discovered,
-                            MachineStatus::InstallingOS => MachineState::Provisioning,
-                            MachineStatus::Error(ref msg) => MachineState::Error { message: msg.clone() },
+                            MachineStatus::InstallingOS => MachineState::Installing,
+                            MachineStatus::Error(ref msg) => MachineState::Failed { message: msg.clone() },
                         };
                         machine.metadata.updated_at = chrono::Utc::now();
                         if let Err(e) = state.store.put_machine(&machine).await {

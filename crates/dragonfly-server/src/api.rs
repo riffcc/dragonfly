@@ -773,11 +773,11 @@ async fn update_status(
     // Convert MachineStatus to v1 MachineState
     use dragonfly_common::MachineState;
     machine.status.state = match &status {
-        MachineStatus::Ready => MachineState::Provisioned,
+        MachineStatus::Ready => MachineState::Installed,
         MachineStatus::AwaitingAssignment => MachineState::Discovered,
-        MachineStatus::InstallingOS => MachineState::Provisioning,
-        MachineStatus::Error(msg) => MachineState::Error { message: msg.clone() },
-        MachineStatus::ExistingOS => MachineState::Provisioned,
+        MachineStatus::InstallingOS => MachineState::Installing,
+        MachineStatus::Error(msg) => MachineState::Failed { message: msg.clone() },
+        MachineStatus::ExistingOS => MachineState::ExistingOs { os_name: "Unknown".to_string() },
         MachineStatus::Offline => MachineState::Offline,
     };
     machine.metadata.updated_at = chrono::Utc::now();
@@ -1290,11 +1290,11 @@ async fn update_machine(
     // Update status
     use dragonfly_common::MachineState;
     machine.status.state = match &machine_payload.status {
-        MachineStatus::Ready => MachineState::Provisioned,
+        MachineStatus::Ready => MachineState::Installed,
         MachineStatus::AwaitingAssignment => MachineState::Discovered,
-        MachineStatus::InstallingOS => MachineState::Provisioning,
-        MachineStatus::Error(msg) => MachineState::Error { message: msg.clone() },
-        MachineStatus::ExistingOS => MachineState::Provisioned,
+        MachineStatus::InstallingOS => MachineState::Installing,
+        MachineStatus::Error(msg) => MachineState::Failed { message: msg.clone() },
+        MachineStatus::ExistingOS => MachineState::ExistingOs { os_name: "Unknown".to_string() },
         MachineStatus::Offline => MachineState::Offline,
     };
 
@@ -3742,15 +3742,15 @@ async fn reimage_machine(
         }
     };
 
-    // Set the machine status to Provisioning (InstallingOS equivalent)
-    v1_machine.status.state = MachineState::Provisioning;
+    // Set the machine status to Installing
+    v1_machine.status.state = MachineState::Installing;
     v1_machine.config.installation_progress = 0;
     v1_machine.config.installation_step = None;
     v1_machine.metadata.updated_at = chrono::Utc::now();
 
     // Save the updated machine state
     if let Err(e) = state.store.put_machine(&v1_machine).await {
-        error!("Failed to set machine {} status to Provisioning: {}", id, e);
+        error!("Failed to set machine {} status to Installing: {}", id, e);
         return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
             "error": "Store Error",
             "message": e.to_string()

@@ -194,27 +194,69 @@ pub struct MachineStatus {
     pub last_workflow_result: Option<WorkflowResult>,
 }
 
+/// Machine lifecycle state
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub enum MachineState {
+    /// Just saw on network, no OS chosen (rarely used in Flight mode)
     #[default]
     Discovered,
-    Ready,
-    Provisioning,
-    Provisioned,
-    Error { message: String },
+    /// OS chosen, waiting for next PXE boot
+    ReadyToInstall,
+    /// Mage agent booted, checking in
+    Initializing,
+    /// Workflow started, executing actions
+    Installing,
+    /// Image being written to disk (progress in MachineConfig.installation_progress)
+    Writing,
+    /// Successfully completed installation
+    Installed,
+    /// Detected existing OS on disk, not wiping
+    ExistingOs { os_name: String },
+    /// Something went wrong
+    Failed { message: String },
+    /// Manually marked offline
     Offline,
 }
 
 impl MachineState {
+    /// Internal string representation for serialization/database
     pub fn as_str(&self) -> &'static str {
         match self {
             MachineState::Discovered => "discovered",
-            MachineState::Ready => "ready",
-            MachineState::Provisioning => "provisioning",
-            MachineState::Provisioned => "provisioned",
-            MachineState::Error { .. } => "error",
+            MachineState::ReadyToInstall => "ready_to_install",
+            MachineState::Initializing => "initializing",
+            MachineState::Installing => "installing",
+            MachineState::Writing => "writing",
+            MachineState::Installed => "installed",
+            MachineState::ExistingOs { .. } => "existing_os",
+            MachineState::Failed { .. } => "failed",
             MachineState::Offline => "offline",
         }
+    }
+
+    /// Human-readable display name for the UI
+    pub fn display_name(&self) -> String {
+        match self {
+            MachineState::Discovered => "No OS yet".to_string(),
+            MachineState::ReadyToInstall => "Ready to install".to_string(),
+            MachineState::Initializing => "Initializing".to_string(),
+            MachineState::Installing => "Installing".to_string(),
+            MachineState::Writing => "Writing image".to_string(),
+            MachineState::Installed => "Installed".to_string(),
+            MachineState::ExistingOs { os_name } => format!("Has {}", os_name),
+            MachineState::Failed { message } => format!("Failed: {}", message),
+            MachineState::Offline => "Offline".to_string(),
+        }
+    }
+
+    /// Whether this state represents an active installation in progress
+    pub fn is_installing(&self) -> bool {
+        matches!(self, MachineState::Initializing | MachineState::Installing | MachineState::Writing)
+    }
+
+    /// Whether the machine has a confirmed OS (installed or detected)
+    pub fn has_os(&self) -> bool {
+        matches!(self, MachineState::Installed | MachineState::ExistingOs { .. })
     }
 }
 

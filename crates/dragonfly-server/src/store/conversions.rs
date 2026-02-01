@@ -139,10 +139,13 @@ impl From<&BmcConfig> for BmcResponse {
 pub fn machine_state_to_string(state: &MachineState) -> String {
     match state {
         MachineState::Discovered => "discovered".to_string(),
-        MachineState::Ready => "ready".to_string(),
-        MachineState::Provisioning => "provisioning".to_string(),
-        MachineState::Provisioned => "provisioned".to_string(),
-        MachineState::Error { message } => format!("error: {}", message),
+        MachineState::ReadyToInstall => "ready_to_install".to_string(),
+        MachineState::Initializing => "initializing".to_string(),
+        MachineState::Installing => "installing".to_string(),
+        MachineState::Writing => "writing".to_string(),
+        MachineState::Installed => "installed".to_string(),
+        MachineState::ExistingOs { os_name } => format!("existing_os: {}", os_name),
+        MachineState::Failed { message } => format!("failed: {}", message),
         MachineState::Offline => "offline".to_string(),
     }
 }
@@ -151,15 +154,21 @@ pub fn machine_state_to_string(state: &MachineState) -> String {
 pub fn string_to_machine_state(status: &str) -> MachineState {
     match status.to_lowercase().as_str() {
         "discovered" => MachineState::Discovered,
-        "ready" => MachineState::Ready,
-        "provisioning" => MachineState::Provisioning,
-        "provisioned" => MachineState::Provisioned,
+        "ready_to_install" => MachineState::ReadyToInstall,
+        "initializing" => MachineState::Initializing,
+        "installing" => MachineState::Installing,
+        "writing" => MachineState::Writing,
+        "installed" => MachineState::Installed,
         "offline" => MachineState::Offline,
-        s if s.starts_with("error") => {
-            let message = s.strip_prefix("error:").unwrap_or(s).trim().to_string();
-            MachineState::Error { message }
+        s if s.starts_with("existing_os:") => {
+            let os_name = s.strip_prefix("existing_os:").unwrap_or("Unknown").trim().to_string();
+            MachineState::ExistingOs { os_name }
         }
-        _ => MachineState::Discovered, // Default
+        s if s.starts_with("failed:") => {
+            let message = s.strip_prefix("failed:").unwrap_or(s).trim().to_string();
+            MachineState::Failed { message }
+        }
+        _ => MachineState::Discovered,
     }
 }
 
@@ -280,9 +289,9 @@ pub fn apply_machine_update(machine: &mut Machine, req: UpdateMachineRequest) {
     }
     if let Some(os_choice) = req.os_choice {
         machine.config.os_choice = Some(os_choice);
-        // If OS choice is set and state is Discovered, transition to Ready
+        // If OS choice is set and state is Discovered, transition to ReadyToInstall
         if matches!(machine.status.state, MachineState::Discovered) {
-            machine.status.state = MachineState::Ready;
+            machine.status.state = MachineState::ReadyToInstall;
         }
     }
     if let Some(tags) = req.tags {
@@ -316,10 +325,13 @@ use dragonfly_common::models::{
 pub fn machine_state_to_common_status(state: &MachineState) -> CommonMachineStatus {
     match state {
         MachineState::Discovered => CommonMachineStatus::AwaitingAssignment,
-        MachineState::Ready => CommonMachineStatus::AwaitingAssignment,
-        MachineState::Provisioning => CommonMachineStatus::InstallingOS,
-        MachineState::Provisioned => CommonMachineStatus::Ready,
-        MachineState::Error { message } => CommonMachineStatus::Error(message.clone()),
+        MachineState::ReadyToInstall => CommonMachineStatus::AwaitingAssignment,
+        MachineState::Initializing => CommonMachineStatus::InstallingOS,
+        MachineState::Installing => CommonMachineStatus::InstallingOS,
+        MachineState::Writing => CommonMachineStatus::InstallingOS,
+        MachineState::Installed => CommonMachineStatus::Ready,
+        MachineState::ExistingOs { .. } => CommonMachineStatus::ExistingOS,
+        MachineState::Failed { message } => CommonMachineStatus::Error(message.clone()),
         MachineState::Offline => CommonMachineStatus::Error("Offline".to_string()),
     }
 }
@@ -481,16 +493,19 @@ mod tests {
     #[test]
     fn test_state_string_conversion() {
         assert_eq!(machine_state_to_string(&MachineState::Discovered), "discovered");
-        assert_eq!(machine_state_to_string(&MachineState::Ready), "ready");
+        assert_eq!(machine_state_to_string(&MachineState::ReadyToInstall), "ready_to_install");
+        assert_eq!(machine_state_to_string(&MachineState::Installing), "installing");
+        assert_eq!(machine_state_to_string(&MachineState::Installed), "installed");
         assert_eq!(
-            machine_state_to_string(&MachineState::Error { message: "test".to_string() }),
-            "error: test"
+            machine_state_to_string(&MachineState::Failed { message: "test".to_string() }),
+            "failed: test"
         );
 
-        assert!(matches!(string_to_machine_state("ready"), MachineState::Ready));
+        assert!(matches!(string_to_machine_state("ready_to_install"), MachineState::ReadyToInstall));
+        assert!(matches!(string_to_machine_state("installed"), MachineState::Installed));
         assert!(matches!(
-            string_to_machine_state("error: something failed"),
-            MachineState::Error { .. }
+            string_to_machine_state("failed: something failed"),
+            MachineState::Failed { .. }
         ));
     }
 }

@@ -129,13 +129,13 @@ async fn test_machine_update() {
 
     // Update the machine
     machine.config.hostname = Some("new-hostname".to_string());
-    machine.status.state = MachineState::Ready;
+    machine.status.state = MachineState::ReadyToInstall;
     store.put_machine(&machine).await.unwrap();
 
     // Verify update
     let retrieved = store.get_machine(id).await.unwrap().unwrap();
     assert_eq!(retrieved.config.hostname, Some("new-hostname".to_string()));
-    assert_eq!(retrieved.status.state, MachineState::Ready);
+    assert_eq!(retrieved.status.state, MachineState::ReadyToInstall);
 }
 
 #[tokio::test]
@@ -226,13 +226,13 @@ async fn test_machine_list_by_state() {
     m1.status.state = MachineState::Discovered;
 
     let mut m2 = test_machine("aa:bb:cc:dd:ee:ff");
-    m2.status.state = MachineState::Ready;
+    m2.status.state = MachineState::ReadyToInstall;
 
     let mut m3 = test_machine("11:22:33:44:55:66");
-    m3.status.state = MachineState::Ready;
+    m3.status.state = MachineState::ReadyToInstall;
 
     let mut m4 = test_machine("22:33:44:55:66:77");
-    m4.status.state = MachineState::Error {
+    m4.status.state = MachineState::Failed {
         message: "test error".to_string(),
     };
 
@@ -244,16 +244,16 @@ async fn test_machine_list_by_state() {
     let discovered = store.list_machines_by_state(&MachineState::Discovered).await.unwrap();
     assert_eq!(discovered.len(), 1);
 
-    let ready = store.list_machines_by_state(&MachineState::Ready).await.unwrap();
+    let ready = store.list_machines_by_state(&MachineState::ReadyToInstall).await.unwrap();
     assert_eq!(ready.len(), 2);
 
-    let error = store
-        .list_machines_by_state(&MachineState::Error {
+    let failed = store
+        .list_machines_by_state(&MachineState::Failed {
             message: String::new(),
         })
         .await
         .unwrap();
-    assert_eq!(error.len(), 1);
+    assert_eq!(failed.len(), 1);
 }
 
 #[tokio::test]
@@ -269,15 +269,15 @@ async fn test_machine_index_update_on_state_change() {
     assert_eq!(discovered.len(), 1);
 
     // Change state
-    machine.status.state = MachineState::Provisioning;
+    machine.status.state = MachineState::Installing;
     store.put_machine(&machine).await.unwrap();
 
     // Verify moved to new state
     let discovered = store.list_machines_by_state(&MachineState::Discovered).await.unwrap();
     assert!(discovered.is_empty());
 
-    let provisioning = store.list_machines_by_state(&MachineState::Provisioning).await.unwrap();
-    assert_eq!(provisioning.len(), 1);
+    let installing = store.list_machines_by_state(&MachineState::Installing).await.unwrap();
+    assert_eq!(installing.len(), 1);
 }
 
 // ============================================================================
@@ -814,7 +814,7 @@ async fn test_redb_machine_indices() {
 
     let mut m1 = test_machine("00:11:22:33:44:55");
     m1.config.tags = vec!["production".to_string(), "web".to_string()];
-    m1.status.state = MachineState::Ready;
+    m1.status.state = MachineState::ReadyToInstall;
 
     let mut m2 = test_machine("aa:bb:cc:dd:ee:ff");
     m2.config.tags = vec!["staging".to_string()];
@@ -828,9 +828,9 @@ async fn test_redb_machine_indices() {
     assert_eq!(production.len(), 1);
 
     // State index
-    let ready = store.list_machines_by_state(&MachineState::Ready).await.unwrap();
-    assert_eq!(ready.len(), 1);
-    assert_eq!(ready[0].id, m1.id);
+    let ready_to_install = store.list_machines_by_state(&MachineState::ReadyToInstall).await.unwrap();
+    assert_eq!(ready_to_install.len(), 1);
+    assert_eq!(ready_to_install[0].id, m1.id);
 }
 
 #[tokio::test]
@@ -911,7 +911,7 @@ async fn test_redb_machine_update_preserves_indices() {
     assert_eq!(discovered.len(), 1);
 
     // Update state
-    machine.status.state = MachineState::Provisioning;
+    machine.status.state = MachineState::Installing;
     machine.config.tags = vec!["staging".to_string()]; // Change tags too
     store.put_machine(&machine).await.unwrap();
 
@@ -922,8 +922,8 @@ async fn test_redb_machine_update_preserves_indices() {
     assert!(production.is_empty());
 
     // New indices should be populated
-    let provisioning = store.list_machines_by_state(&MachineState::Provisioning).await.unwrap();
-    assert_eq!(provisioning.len(), 1);
+    let installing = store.list_machines_by_state(&MachineState::Installing).await.unwrap();
+    assert_eq!(installing.len(), 1);
     let staging = store.list_machines_by_tag("staging").await.unwrap();
     assert_eq!(staging.len(), 1);
 }

@@ -218,11 +218,11 @@ async fn handle_proxmox_vm_action(
                 Ok(_) => {
                     info!("Successfully initiated Proxmox reboot for VM {}", vmid);
 
-                    // 5. Update v1 Store status to Provisioning (InstallingOS)
-                    info!("Updating machine {} status to InstallingOS", machine.id);
+                    // 5. Update v1 Store status to Installing
+                    info!("Updating machine {} status to Installing", machine.id);
                     let updated_machine: Machine = match state.store.get_machine(machine.id).await {
                         Ok(Some(mut v1_machine)) => {
-                            v1_machine.status.state = dragonfly_common::MachineState::Provisioning;
+                            v1_machine.status.state = dragonfly_common::MachineState::Installing;
                             v1_machine.metadata.updated_at = chrono::Utc::now();
                             if let Err(e) = state.store.put_machine(&v1_machine).await {
                                 error!("Failed to update machine {} status after Proxmox reboot: {}", machine.id, e);
