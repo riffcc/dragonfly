@@ -39,7 +39,49 @@
     selectAll: false, // State for the header checkbox
     selectedMachines: {}, // Object to track selected machine IDs { machineId: true/false }
     currentMachineType: null, // Store the type of the machine for modal actions
-    
+
+    // Get count of selected machines
+    getSelectedCount() {
+        return Object.values(this.selectedMachines).filter(v => v === true).length;
+    },
+
+    // Get array of selected machine IDs
+    getSelectedIds() {
+        return Object.entries(this.selectedMachines).filter(([k, v]) => v === true).map(([k, v]) => k);
+    },
+
+    // Bulk delete action
+    async bulkDelete() {
+        const ids = this.getSelectedIds();
+        if (ids.length === 0) return;
+        if (!confirm(`Delete ${ids.length} machine(s)? This cannot be undone.`)) return;
+
+        for (const id of ids) {
+            try {
+                await fetch(`/api/machines/${id}`, { method: 'DELETE' });
+            } catch (e) {
+                console.error('Failed to delete machine', id, e);
+            }
+        }
+        window.location.reload();
+    },
+
+    // Bulk reimage action
+    bulkReimage() {
+        const ids = this.getSelectedIds();
+        if (ids.length === 0) return;
+        // For now, just show a message - could open a modal to select OS
+        alert(`Bulk reimage for ${ids.length} machine(s) - coming soon!`);
+    },
+
+    // Bulk tag action
+    bulkTag() {
+        const ids = this.getSelectedIds();
+        if (ids.length === 0) return;
+        // For now, just show a message - could open a modal to add tags
+        alert(`Bulk tag for ${ids.length} machine(s) - coming soon!`);
+    },
+
     // Just Type functionality
     startEditing(machineId, fieldName, currentValue) {
         // Don't allow editing if not authenticated
@@ -572,7 +614,28 @@
             <h1 class="text-xl font-semibold text-gray-900 dark:text-white">Machines</h1>
             <p class="mt-2 text-sm text-gray-700 dark:text-gray-300">A list of all machines that have been discovered or added.</p>
         </div>
-        <div>
+        <div class="flex items-center space-x-3">
+            {# Bulk Action Chiclets - only show when 2+ machines selected #}
+            <template x-if="getSelectedCount() > 1">
+                <div class="flex items-center space-x-2">
+                    <span class="text-sm text-gray-500 dark:text-gray-400" x-text="getSelectedCount() + ' selected'"></span>
+                    <button @click="bulkTag()"
+                            class="inline-flex items-center px-3 py-2 rounded-md text-sm font-medium bg-purple-100 text-purple-700 hover:bg-purple-200 dark:bg-purple-900 dark:text-purple-200 dark:hover:bg-purple-800 shadow-sm"
+                            title="Bulk Tag">
+                        🏷️ Tag
+                    </button>
+                    <button @click="bulkReimage()"
+                            class="inline-flex items-center px-3 py-2 rounded-md text-sm font-medium bg-cyan-100 text-cyan-700 hover:bg-cyan-200 dark:bg-cyan-900 dark:text-cyan-200 dark:hover:bg-cyan-800 shadow-sm"
+                            title="Bulk Reimage">
+                        ♻️ Reimage
+                    </button>
+                    <button @click="bulkDelete()"
+                            class="inline-flex items-center px-3 py-2 rounded-md text-sm font-medium bg-red-100 text-red-700 hover:bg-red-200 dark:bg-red-900 dark:text-red-200 dark:hover:bg-red-800 shadow-sm"
+                            title="Bulk Delete">
+                        🗑️ Delete
+                    </button>
+                </div>
+            </template>
             <button type="button"
                     class="inline-flex items-center px-4 py-2 border border-purple-500 dark:border-purple-700 rounded-md shadow-sm text-sm font-medium text-gray-700 dark:text-gray-300 bg-white dark:bg-black hover:bg-gray-50 dark:hover:bg-gray-600 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
                     {% if not is_authenticated %}style="display: none;"{% endif %}
@@ -596,8 +659,8 @@
                                            x-model="selectAll"
                                            @click="cycleBulkMode() ; document.getElementById('bulk-select-checkbox').checked = false"
                                            title="Select/Deselect All Visible"
-                                           class="left-2 -mt-2 -mb-2 w-1 rounded dark:bg-black border-gray-300 text-indigo-600 focus:ring-indigo-500 sm:left-6" />
-                                    <span class="ml-6">Name</span>
+                                           class="h-4 w-4 rounded dark:bg-black border-gray-300 text-indigo-600 focus:ring-indigo-500" />
+                                    <span class="ml-2">Name</span>
                                 </th>
                                 <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-200 uppercase tracking-wider">
                                     MAC Address
