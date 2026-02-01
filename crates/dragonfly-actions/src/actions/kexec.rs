@@ -83,6 +83,46 @@ impl Action for KexecAction {
             )));
         }
 
+        // CRITICAL: Notify server IMMEDIATELY that kexec is starting
+        // The machine WILL reboot and async events may not arrive in time
+        // This direct HTTP call ensures the server knows installation is complete
+        if let (Some(server_url), Some(workflow_id)) = (ctx.env("SERVER_URL"), ctx.env("WORKFLOW_ID")) {
+            let url = format!("{}/api/workflows/{}/events", server_url, workflow_id);
+            tracing::info!(url = %url, "Notifying server that kexec is starting - marking installation complete");
+
+            let event_data = serde_json::json!({
+                "type": "action_started",
+                "workflow": workflow_id,
+                "action": "kexec"
+            });
+
+            // Synchronous call - MUST complete before we continue
+            match reqwest::Client::builder()
+                .timeout(Duration::from_secs(10))
+                .build()
+            {
+                Ok(client) => {
+                    match client.post(&url).json(&event_data).send().await {
+                        Ok(response) => {
+                            tracing::info!(status = %response.status(), "Server acknowledged kexec start");
+                        }
+                        Err(e) => {
+                            tracing::error!(error = %e, "Failed to notify server of kexec start - installation may appear stuck");
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, "Failed to build HTTP client");
+                }
+            }
+        } else {
+            tracing::warn!(
+                server_url = ?ctx.env("SERVER_URL"),
+                workflow_id = ?ctx.env("WORKFLOW_ID"),
+                "Missing SERVER_URL or WORKFLOW_ID - cannot notify server"
+            );
+        }
+
         // Unmount any writefile partitions before kexec
         reporter.report(Progress::new(
             self.name(),
@@ -264,6 +304,8 @@ impl Action for KexecAction {
         // This is critical because kexec will immediately reboot the machine
         if let (Some(server_url), Some(workflow_id)) = (ctx.env("SERVER_URL"), ctx.env("WORKFLOW_ID")) {
             let url = format!("{}/api/workflows/{}/events", server_url, workflow_id);
+            tracing::info!(url = %url, workflow_id = %workflow_id, "Sending kexec completion notification to server");
+
             let event_data = serde_json::json!({
                 "type": "action_completed",
                 "workflow": workflow_id,
@@ -277,14 +319,25 @@ impl Action for KexecAction {
                 .build()
             {
                 Ok(client) => {
-                    if let Err(e) = client.post(&url).json(&event_data).send().await {
-                        warn!(error = %e, "Failed to notify server of kexec completion (continuing anyway)");
+                    match client.post(&url).json(&event_data).send().await {
+                        Ok(response) => {
+                            tracing::info!(status = %response.status(), "Server acknowledged kexec completion");
+                        }
+                        Err(e) => {
+                            tracing::error!(error = %e, url = %url, "Failed to notify server of kexec completion");
+                        }
                     }
                 }
                 Err(e) => {
-                    warn!(error = %e, "Failed to build HTTP client for kexec notification");
+                    tracing::error!(error = %e, "Failed to build HTTP client for kexec notification");
                 }
             }
+        } else {
+            tracing::error!(
+                server_url = ?ctx.env("SERVER_URL"),
+                workflow_id = ?ctx.env("WORKFLOW_ID"),
+                "Missing SERVER_URL or WORKFLOW_ID - cannot notify server of kexec completion!"
+            );
         }
 
         // This is the point of no return - the system will reboot into the new kernel
