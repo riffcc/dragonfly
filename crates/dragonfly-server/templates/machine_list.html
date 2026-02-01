@@ -650,11 +650,11 @@
     <div class="mt-8 flex flex-col overflow-visible">
         <div class="-my-2 -mx-4 overflow-visible sm:-mx-6 lg:-mx-8">
           <div class="inline-block min-w-full py-2 align-middle md:px-6 lg:px-8">
-            <div class="overflow-hidden rounded-xl border border-purple-500 dark:border-purple-700 shadow">
-              <table class="min-w-full divide-y divide-gray-300 dark:divide-purple-800/50">
-                <thead class="bg-gray-50 dark:bg-gray-950">      
+            <div class="overflow-visible rounded-xl border border-purple-500 dark:border-purple-700 shadow">
+              <table class="min-w-full divide-y divide-gray-300 dark:divide-purple-800/50 border-separate border-spacing-0">
+                <thead class="bg-gray-50 dark:bg-gray-950">
                             <tr>
-                                <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-200 uppercase tracking-wider">
+                                <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-200 uppercase tracking-wider rounded-tl-xl">
                                     Name
                                 </th>
                                 <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-200 uppercase tracking-wider">
@@ -669,7 +669,7 @@
                                 <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-200 uppercase tracking-wider">
                                     OS
                                 </th>
-                                <th scope="col" class="px-2 py-3 text-center w-10">
+                                <th scope="col" class="px-2 py-3 text-center w-10 rounded-tr-xl">
                                     <input id="bulk-select-checkbox" type="checkbox"
                                            x-model="selectAll"
                                            @change="selectAll ? selectAllVisibleMachines() : deselectAllMachines()"
@@ -678,12 +678,12 @@
                                 </th>
                             </tr>
                         </thead>
-                        <tbody id="machine-list" class="divide-y divide-gray-200 dark:divide-gray-700/60 bg-white dark:bg-black">
+                        <tbody id="machine-list" class="divide-y divide-gray-200 dark:divide-gray-700/60">
                             {% for machine in machines %}
-                            <tr class="hover:ring-purple-500 dark:hover:ring-purple-700/60 hover:bg-gray-50 dark:hover:bg-gray-700/50 cursor-pointer" 
+                            <tr class="cursor-pointer"
                                 @click="window.location='/machines/{{ machine.id }}'"
                                 data-machine-id="{{ machine.id }}">
-                                <td class="px-6 py-4 whitespace-nowrap relative">
+                                <td class="px-6 py-4 whitespace-nowrap relative {% if loop.last %}rounded-bl-xl{% endif %}">
                                         <div x-on:click.stop="startEditing('{{ machine.id }}', 'hostname', '{{ machine.hostname|default('') }}')" class="inline-block" {# Make hostname inline #}
                                              :class="{'cursor-text': isAuthenticated}"
                                              class="hover:text-indigo-600 dark:hover:text-indigo-400">
@@ -931,7 +931,7 @@
                                          <span class="hidden os-current-value">{{ machine.os_installed|default('') }}</span>
                                     </div>
                                 </td>
-                                <td class="px-2 py-4 text-center w-10" @click.stop>
+                                <td class="px-2 py-4 text-center w-10 {% if loop.last %}rounded-br-xl{% endif %}" @click.stop>
                                     <input type="checkbox"
                                         :id="'select-' + '{{ machine.id }}'"
                                         :value="'{{ machine.id }}'"
@@ -942,7 +942,7 @@
                             </tr>
                             {% else %}
                             <tr>
-                                <td colspan="6" class="px-6 py-10 text-center text-gray-500 dark:text-gray-400">
+                                <td colspan="6" class="px-6 py-10 text-center text-gray-500 dark:text-gray-400 rounded-b-xl">
                                     <p class="mb-2">No machines discovered yet.</p>
                                     <p class="text-sm italic">Machines will appear here once they connect to Dragonfly.</p>
                                 </td>
