@@ -126,7 +126,6 @@ pub struct SettingsTemplate {
     pub default_os_debian12: bool,
     pub default_os_debian13: bool,
     pub default_os_proxmox: bool,
-    pub default_os_talos: bool,
     pub has_initial_password: bool,
     pub rendered_password: String,
     pub show_admin_settings: bool,
@@ -932,7 +931,7 @@ pub async fn settings_page(
         };
         info!("Current directory: {}", current_dir);
         
-        match fs::read_to_string("initial_password.txt") {
+        match fs::read_to_string("/var/lib/dragonfly/initial_password.txt") {
             Ok(password) => {
                 info!("Found initial password file, will display to admin");
                 (true, password)
@@ -958,7 +957,6 @@ pub async fn settings_page(
         default_os_debian12: default_os.as_deref() == Some("debian-12"),
         default_os_debian13: default_os.as_deref() == Some("debian-13"),
         default_os_proxmox: default_os.as_deref() == Some("proxmox"),
-        default_os_talos: default_os.as_deref() == Some("talos"),
         has_initial_password,
         rendered_password,
         show_admin_settings,
@@ -969,9 +967,10 @@ pub async fn settings_page(
     render_minijinja(&app_state, "settings.html", context)
 }
 
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, Default)]
 pub struct SettingsForm {
-    pub theme: String,
+    #[serde(default)]
+    pub theme: Option<String>,
     pub require_login: Option<String>,
     pub default_os: Option<String>,
     pub username: Option<String>,
@@ -979,7 +978,7 @@ pub struct SettingsForm {
     pub password_confirm: Option<String>,
     pub setup_completed: Option<String>,
     pub admin_email: Option<String>,
-    pub oauth_enabled: Option<String>, // Changed from bool to Option<String>
+    pub oauth_enabled: Option<String>,
     pub oauth_provider: Option<String>,
     pub oauth_client_id: Option<String>,
     pub oauth_client_secret: Option<String>,
@@ -995,10 +994,21 @@ pub async fn update_settings(
     State(app_state): State<crate::AppState>,
     mut auth_session: AuthSession,
     uri: OriginalUri,
+    headers: axum::http::HeaderMap,
     Form(form): Form<SettingsForm>,
 ) -> Response {
     let is_authenticated = auth_session.user.is_some();
-    let theme = form.theme.clone();
+    // Get theme from form, or fall back to cookie, or default to "system"
+    let theme = form.theme.clone().unwrap_or_else(|| {
+        headers.get(axum::http::header::COOKIE)
+            .and_then(|c| c.to_str().ok())
+            .and_then(|cookies| {
+                cookies.split(';')
+                    .find(|c| c.trim().starts_with("dragonfly_theme="))
+                    .map(|c| c.trim().trim_start_matches("dragonfly_theme=").to_string())
+            })
+            .unwrap_or_else(|| "system".to_string())
+    });
     let current_path = uri.path().to_string();
 
     // Only require admin authentication for admin settings
@@ -1079,7 +1089,7 @@ pub async fn update_settings(
         if let (Some(password), Some(confirm)) = (&form.password, &form.password_confirm) {
             if !password.is_empty() && password == confirm {
                 // Load current credentials to get username (or use default 'admin')
-                let username = match auth::load_credentials().await {
+                let username = match auth::load_credentials(&app_state.store).await {
                     Ok(creds) => creds.username,
                     Err(_) => {
                         warn!("Could not load current credentials, defaulting username to 'admin' for password change.");
@@ -1090,7 +1100,7 @@ pub async fn update_settings(
                 // Hash the new password
                 match Credentials::create(username, password.clone()) {
                     Ok(new_creds) => {
-                        if let Err(e) = auth::save_credentials(&new_creds).await {
+                        if let Err(e) = auth::save_credentials(&app_state.store, &new_creds).await {
                             error!("Failed to save new admin password: {}", e);
                             // Prepare error message and template for display
                             let error_message = Some(format!("Failed to save credentials: {}", e));
@@ -1117,8 +1127,7 @@ pub async fn update_settings(
                                 default_os_debian12: default_os.as_deref() == Some("debian-12"),
                                 default_os_debian13: default_os.as_deref() == Some("debian-13"),
                                 default_os_proxmox: default_os.as_deref() == Some("proxmox"),
-                                default_os_talos: default_os.as_deref() == Some("talos"),
-                                has_initial_password,
+                                                        has_initial_password,
                                 rendered_password,
                                 show_admin_settings,
                                 error_message,
@@ -1137,8 +1146,8 @@ pub async fn update_settings(
                             ).into_response();
                         } else {
                             // Password updated successfully, delete initial password file if it exists
-                            if std::path::Path::new("initial_password.txt").exists() {
-                                if let Err(e) = std::fs::remove_file("initial_password.txt") {
+                            if std::path::Path::new("/var/lib/dragonfly/initial_password.txt").exists() {
+                                if let Err(e) = std::fs::remove_file("/var/lib/dragonfly/initial_password.txt") {
                                     warn!("Failed to remove initial_password.txt: {}", e);
                                 }
                             }
@@ -1174,8 +1183,7 @@ pub async fn update_settings(
                             default_os_debian12: default_os.as_deref() == Some("debian-12"),
                             default_os_debian13: default_os.as_deref() == Some("debian-13"),
                             default_os_proxmox: default_os.as_deref() == Some("proxmox"),
-                            default_os_talos: default_os.as_deref() == Some("talos"),
-                            has_initial_password,
+                                                has_initial_password,
                             rendered_password,
                             show_admin_settings,
                             error_message,
@@ -1230,8 +1238,7 @@ pub async fn update_settings(
                     default_os_debian12: default_os.as_deref() == Some("debian-12"),
                     default_os_debian13: default_os.as_deref() == Some("debian-13"),
                     default_os_proxmox: default_os.as_deref() == Some("proxmox"),
-                    default_os_talos: default_os.as_deref() == Some("talos"),
-                    has_initial_password,
+                                has_initial_password,
                     rendered_password,
                     show_admin_settings,
                     error_message,
