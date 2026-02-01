@@ -84,6 +84,9 @@ pub fn api_router() -> Router<crate::AppState> {
         // --- Settings Routes ---
         .route("/settings", get(api_get_settings).put(api_update_settings))
         .route("/settings/mode", get(api_get_mode).put(api_set_mode))
+        // --- User Management Routes ---
+        .route("/users", get(api_get_users).post(api_create_user))
+        .route("/users/{id}", get(api_get_user).put(api_update_user).delete(api_delete_user))
         // --- Workflow Routes (for agent) ---
         .route("/workflows/{id}", get(get_workflow_handler))
         .route("/workflows/{id}/events", post(workflow_events_handler))
@@ -1357,7 +1360,6 @@ async fn get_machine_os(Path(id): Path<Uuid>) -> Response {
                                 <option value="ubuntu-2404">Ubuntu 24.04</option>
                                 <option value="debian-12">Debian 12</option>
                                 <option value="proxmox">Proxmox VE</option>
-                                <option value="talos">Talos</option>
                             </select>
                         </div>
                         <div class="mt-5 sm:mt-4 sm:flex sm:flex-row-reverse">
@@ -3296,7 +3298,6 @@ pub fn get_os_icon(os: &str) -> String {
         os if os.contains("ubuntu") => "<i class=\"fab fa-ubuntu text-orange-500 dark:text-orange-500 no-invert\"></i>",
         os if os.contains("debian") => "<i class=\"fab fa-debian text-red-500\"></i>",
         "proxmox" => "<i class=\"fas fa-server text-blue-500\"></i>",
-        "talos" => "<i class=\"fas fa-robot text-purple-500\"></i>",
         os if os.contains("windows") => "<i class=\"fab fa-windows text-blue-400\"></i>",
         os if os.contains("rocky") => "<i class=\"fas fa-mountain text-green-500\"></i>",
         os if os.contains("fedora") => "<i class=\"fab fa-fedora text-blue-600\"></i>",
@@ -3341,7 +3342,6 @@ pub fn format_os_name(os: &str) -> String {
         "ubuntu-2404" => "Ubuntu 24.04",
         "debian-12" => "Debian 12",
         "proxmox" => "Proxmox VE",
-        "talos" => "Talos",
         _ => os, // Return original string if no match
     }.to_string()
 }
@@ -4231,4 +4231,369 @@ pub async fn api_set_mode(
         "success": true,
         "mode": request.mode
     }))).into_response()
+}
+
+// ============================================================================
+// User Management API
+// ============================================================================
+
+/// User response for API
+#[derive(serde::Serialize)]
+pub struct UserResponse {
+    pub id: String,
+    pub username: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+impl From<crate::store::v1::User> for UserResponse {
+    fn from(user: crate::store::v1::User) -> Self {
+        Self {
+            id: user.id.to_string(),
+            username: user.username,
+            created_at: user.created_at,
+            updated_at: user.updated_at,
+        }
+    }
+}
+
+/// Request for creating a new user
+#[derive(serde::Deserialize)]
+pub struct CreateUserRequest {
+    pub username: String,
+    pub password: String,
+}
+
+/// Request for updating a user
+#[derive(serde::Deserialize)]
+pub struct UpdateUserRequest {
+    #[serde(default)]
+    pub username: Option<String>,
+    #[serde(default)]
+    pub password: Option<String>,
+}
+
+/// Get all users
+#[axum::debug_handler]
+pub async fn api_get_users(
+    State(state): State<AppState>,
+    auth_session: AuthSession,
+) -> impl IntoResponse {
+    // Require authentication
+    if auth_session.user.is_none() {
+        return (StatusCode::UNAUTHORIZED, Json(json!({
+            "error": "UNAUTHORIZED",
+            "message": "Authentication required"
+        }))).into_response();
+    }
+
+    match state.store.list_users().await {
+        Ok(users) => {
+            let responses: Vec<UserResponse> = users.into_iter().map(UserResponse::from).collect();
+            Json(responses).into_response()
+        }
+        Err(e) => {
+            error!("Failed to fetch users: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
+                "error": "DATABASE_ERROR",
+                "message": "Failed to fetch users"
+            }))).into_response()
+        }
+    }
+}
+
+/// Get a single user
+#[axum::debug_handler]
+pub async fn api_get_user(
+    State(state): State<AppState>,
+    auth_session: AuthSession,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    if auth_session.user.is_none() {
+        return (StatusCode::UNAUTHORIZED, Json(json!({
+            "error": "UNAUTHORIZED",
+            "message": "Authentication required"
+        }))).into_response();
+    }
+
+    let user_id = match Uuid::parse_str(&id) {
+        Ok(id) => id,
+        Err(_) => {
+            return (StatusCode::BAD_REQUEST, Json(json!({
+                "error": "INVALID_ID",
+                "message": "Invalid user ID format"
+            }))).into_response();
+        }
+    };
+
+    match state.store.get_user(user_id).await {
+        Ok(Some(user)) => Json(UserResponse::from(user)).into_response(),
+        Ok(None) => (StatusCode::NOT_FOUND, Json(json!({
+            "error": "NOT_FOUND",
+            "message": "User not found"
+        }))).into_response(),
+        Err(e) => {
+            error!("Failed to fetch user: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
+                "error": "DATABASE_ERROR",
+                "message": "Failed to fetch user"
+            }))).into_response()
+        }
+    }
+}
+
+/// Create a new user
+#[axum::debug_handler]
+pub async fn api_create_user(
+    State(state): State<AppState>,
+    auth_session: AuthSession,
+    Json(request): Json<CreateUserRequest>,
+) -> impl IntoResponse {
+    if auth_session.user.is_none() {
+        return (StatusCode::UNAUTHORIZED, Json(json!({
+            "error": "UNAUTHORIZED",
+            "message": "Authentication required"
+        }))).into_response();
+    }
+
+    // Validate input
+    if request.username.trim().is_empty() {
+        return (StatusCode::BAD_REQUEST, Json(json!({
+            "error": "INVALID_INPUT",
+            "message": "Username cannot be empty"
+        }))).into_response();
+    }
+
+    if request.password.len() < 4 {
+        return (StatusCode::BAD_REQUEST, Json(json!({
+            "error": "INVALID_INPUT",
+            "message": "Password must be at least 4 characters"
+        }))).into_response();
+    }
+
+    // Check if username already exists
+    if let Ok(Some(_)) = state.store.get_user_by_username(&request.username).await {
+        return (StatusCode::CONFLICT, Json(json!({
+            "error": "DUPLICATE_USER",
+            "message": "A user with this username already exists"
+        }))).into_response();
+    }
+
+    // Hash the password
+    use argon2::{password_hash::SaltString, Argon2, PasswordHasher};
+    use rand::rngs::OsRng;
+
+    let salt = SaltString::generate(&mut OsRng);
+    let argon2 = Argon2::default();
+    let password_hash = match argon2.hash_password(request.password.as_bytes(), &salt) {
+        Ok(hash) => hash.to_string(),
+        Err(e) => {
+            error!("Failed to hash password: {}", e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
+                "error": "HASH_ERROR",
+                "message": "Failed to create user"
+            }))).into_response();
+        }
+    };
+
+    let now = chrono::Utc::now().to_rfc3339();
+    let user_id = uuid::Uuid::now_v7();
+
+    let user = crate::store::v1::User {
+        id: user_id,
+        username: request.username.clone(),
+        password_hash,
+        created_at: now.clone(),
+        updated_at: now.clone(),
+    };
+
+    match state.store.put_user(&user).await {
+        Ok(()) => {
+            info!("Created new user: {} (id: {})", request.username, user_id);
+            (StatusCode::CREATED, Json(json!({
+                "id": user_id.to_string(),
+                "username": request.username,
+                "created_at": now,
+                "updated_at": now
+            }))).into_response()
+        }
+        Err(e) => {
+            error!("Failed to create user: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
+                "error": "DATABASE_ERROR",
+                "message": "Failed to create user"
+            }))).into_response()
+        }
+    }
+}
+
+/// Update a user
+#[axum::debug_handler]
+pub async fn api_update_user(
+    State(state): State<AppState>,
+    auth_session: AuthSession,
+    Path(id): Path<String>,
+    Json(request): Json<UpdateUserRequest>,
+) -> impl IntoResponse {
+    if auth_session.user.is_none() {
+        return (StatusCode::UNAUTHORIZED, Json(json!({
+            "error": "UNAUTHORIZED",
+            "message": "Authentication required"
+        }))).into_response();
+    }
+
+    let user_id = match Uuid::parse_str(&id) {
+        Ok(id) => id,
+        Err(_) => {
+            return (StatusCode::BAD_REQUEST, Json(json!({
+                "error": "INVALID_ID",
+                "message": "Invalid user ID format"
+            }))).into_response();
+        }
+    };
+
+    // Get existing user
+    let mut user = match state.store.get_user(user_id).await {
+        Ok(Some(user)) => user,
+        Ok(None) => {
+            return (StatusCode::NOT_FOUND, Json(json!({
+                "error": "NOT_FOUND",
+                "message": "User not found"
+            }))).into_response();
+        }
+        Err(e) => {
+            error!("Failed to check user: {}", e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
+                "error": "DATABASE_ERROR",
+                "message": "Failed to update user"
+            }))).into_response();
+        }
+    };
+
+    let now = chrono::Utc::now().to_rfc3339();
+
+    // Update username if provided
+    if let Some(ref username) = request.username {
+        if !username.trim().is_empty() && username != &user.username {
+            // Check if new username is already taken
+            if let Ok(Some(existing)) = state.store.get_user_by_username(username).await {
+                if existing.id != user_id {
+                    return (StatusCode::CONFLICT, Json(json!({
+                        "error": "DUPLICATE_USER",
+                        "message": "A user with this username already exists"
+                    }))).into_response();
+                }
+            }
+            user.username = username.clone();
+        }
+    }
+
+    // Update password if provided
+    if let Some(ref password) = request.password {
+        if !password.is_empty() {
+            use argon2::{password_hash::SaltString, Argon2, PasswordHasher};
+            use rand::rngs::OsRng;
+
+            let salt = SaltString::generate(&mut OsRng);
+            let argon2 = Argon2::default();
+            let password_hash = match argon2.hash_password(password.as_bytes(), &salt) {
+                Ok(hash) => hash.to_string(),
+                Err(e) => {
+                    error!("Failed to hash password: {}", e);
+                    return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
+                        "error": "HASH_ERROR",
+                        "message": "Failed to update password"
+                    }))).into_response();
+                }
+            };
+            user.password_hash = password_hash;
+        }
+    }
+
+    user.updated_at = now;
+
+    match state.store.put_user(&user).await {
+        Ok(()) => {
+            info!("Updated user id: {}", user_id);
+            (StatusCode::OK, Json(json!({
+                "success": true,
+                "id": user_id.to_string()
+            }))).into_response()
+        }
+        Err(e) => {
+            error!("Failed to update user: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
+                "error": "DATABASE_ERROR",
+                "message": "Failed to update user"
+            }))).into_response()
+        }
+    }
+}
+
+/// Delete a user
+#[axum::debug_handler]
+pub async fn api_delete_user(
+    State(state): State<AppState>,
+    auth_session: AuthSession,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let current_user = match auth_session.user {
+        Some(user) => user,
+        None => {
+            return (StatusCode::UNAUTHORIZED, Json(json!({
+                "error": "UNAUTHORIZED",
+                "message": "Authentication required"
+            }))).into_response();
+        }
+    };
+
+    let user_id = match Uuid::parse_str(&id) {
+        Ok(id) => id,
+        Err(_) => {
+            return (StatusCode::BAD_REQUEST, Json(json!({
+                "error": "INVALID_ID",
+                "message": "Invalid user ID format"
+            }))).into_response();
+        }
+    };
+
+    // Prevent deleting yourself (compare usernames since auth uses username for session)
+    if current_user.username == state.store.get_user(user_id).await.ok().flatten().map(|u| u.username).unwrap_or_default() {
+        return (StatusCode::BAD_REQUEST, Json(json!({
+            "error": "CANNOT_DELETE_SELF",
+            "message": "You cannot delete your own account"
+        }))).into_response();
+    }
+
+    // Check how many users exist - don't allow deleting the last user
+    let users = state.store.list_users().await.unwrap_or_default();
+    if users.len() <= 1 {
+        return (StatusCode::BAD_REQUEST, Json(json!({
+            "error": "LAST_USER",
+            "message": "Cannot delete the last user"
+        }))).into_response();
+    }
+
+    match state.store.delete_user(user_id).await {
+        Ok(true) => {
+            info!("Deleted user id: {}", user_id);
+            (StatusCode::OK, Json(json!({
+                "success": true,
+                "id": user_id.to_string()
+            }))).into_response()
+        }
+        Ok(false) => {
+            (StatusCode::NOT_FOUND, Json(json!({
+                "error": "NOT_FOUND",
+                "message": "User not found"
+            }))).into_response()
+        }
+        Err(e) => {
+            error!("Failed to delete user: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
+                "error": "DATABASE_ERROR",
+                "message": "Failed to delete user"
+            }))).into_response()
+        }
+    }
 }
