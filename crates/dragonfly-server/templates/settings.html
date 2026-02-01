@@ -49,6 +49,16 @@
                     </button>
 
                     {% if show_admin_settings %}
+                    <button type="button" @click="activeTab = 'users'"
+                            :class="activeTab === 'users' ? 'bg-purple-600 text-white' : 'text-black dark:text-white hover:bg-purple-100 dark:hover:bg-purple-900/30'"
+                            class="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition-colors">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z" />
+                        </svg>
+                        Users
+                    </button>
+                    {% endif %}
+
                     <button type="button" @click="activeTab = 'security'"
                             :class="activeTab === 'security' ? 'bg-purple-600 text-white' : 'text-black dark:text-white hover:bg-purple-100 dark:hover:bg-purple-900/30'"
                             class="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition-colors">
@@ -58,6 +68,7 @@
                         Security
                     </button>
 
+                    {% if show_admin_settings %}
                     <button type="button" @click="activeTab = 'provisioning'"
                             :class="activeTab === 'provisioning' ? 'bg-purple-600 text-white' : 'text-black dark:text-white hover:bg-purple-100 dark:hover:bg-purple-900/30'"
                             class="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition-colors">
@@ -65,6 +76,15 @@
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2m-2-4h.01M17 16h.01" />
                         </svg>
                         Provisioning
+                    </button>
+
+                    <button type="button" @click="activeTab = 'license'"
+                            :class="activeTab === 'license' ? 'bg-purple-600 text-white' : 'text-black dark:text-white hover:bg-purple-100 dark:hover:bg-purple-900/30'"
+                            class="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition-colors">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4M7.835 4.697a3.42 3.42 0 001.946-.806 3.42 3.42 0 014.438 0 3.42 3.42 0 001.946.806 3.42 3.42 0 013.138 3.138 3.42 3.42 0 00.806 1.946 3.42 3.42 0 010 4.438 3.42 3.42 0 00-.806 1.946 3.42 3.42 0 01-3.138 3.138 3.42 3.42 0 00-1.946.806 3.42 3.42 0 01-4.438 0 3.42 3.42 0 00-1.946-.806 3.42 3.42 0 01-3.138-3.138 3.42 3.42 0 00-.806-1.946 3.42 3.42 0 010-4.438 3.42 3.42 0 00.806-1.946 3.42 3.42 0 013.138-3.138z" />
+                        </svg>
+                        License
                     </button>
                     {% endif %}
                 </nav>
@@ -84,7 +104,8 @@
                                     <label class="block text-sm font-medium text-black dark:text-white mb-2">Theme</label>
                                     <div class="flex gap-2">
                                         <label class="cursor-pointer">
-                                            <input type="radio" name="theme" value="light" {% if theme == "light" %}checked{% endif %} class="peer sr-only">
+                                            <input type="radio" name="theme" value="light" {% if theme == "light" %}checked{% endif %}
+                                                   @change="Alpine.$data(document.body).setTheme('light')" class="peer sr-only">
                                             <div class="flex items-center gap-2 px-4 py-2 rounded-lg border border-purple-300 dark:border-purple-700 peer-checked:border-purple-500 peer-checked:bg-purple-100 dark:peer-checked:bg-purple-900/50 transition-all">
                                                 <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-yellow-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z" />
@@ -93,7 +114,8 @@
                                             </div>
                                         </label>
                                         <label class="cursor-pointer">
-                                            <input type="radio" name="theme" value="dark" {% if theme == "dark" %}checked{% endif %} class="peer sr-only">
+                                            <input type="radio" name="theme" value="dark" {% if theme == "dark" %}checked{% endif %}
+                                                   @change="Alpine.$data(document.body).setTheme('dark')" class="peer sr-only">
                                             <div class="flex items-center gap-2 px-4 py-2 rounded-lg border border-purple-300 dark:border-purple-700 peer-checked:border-purple-500 peer-checked:bg-purple-100 dark:peer-checked:bg-purple-900/50 transition-all">
                                                 <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-purple-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" />
@@ -102,7 +124,8 @@
                                             </div>
                                         </label>
                                         <label class="cursor-pointer">
-                                            <input type="radio" name="theme" value="system" {% if theme == "system" %}checked{% endif %} class="peer sr-only">
+                                            <input type="radio" name="theme" value="system" {% if theme == "system" %}checked{% endif %}
+                                                   @change="Alpine.$data(document.body).setTheme('system')" class="peer sr-only">
                                             <div class="flex items-center gap-2 px-4 py-2 rounded-lg border border-purple-300 dark:border-purple-700 peer-checked:border-purple-500 peer-checked:bg-purple-100 dark:peer-checked:bg-purple-900/50 transition-all">
                                                 <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-purple-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
@@ -116,83 +139,291 @@
                         </div>
 
                         {% if show_admin_settings %}
-                        <!-- Security Tab -->
-                        <div x-show="activeTab === 'security'" x-cloak>
-                            <h3 class="text-base font-semibold text-black dark:text-white mb-4">Security</h3>
+                        <!-- Users Tab -->
+                        <div x-show="activeTab === 'users'" x-cloak x-init="loadUsers()">
+                            <h3 class="text-base font-semibold text-black dark:text-white mb-6">User Management</h3>
 
                             <div class="space-y-6">
-                                <!-- Always Require Login -->
-                                <label class="flex items-start gap-3 cursor-pointer">
-                                    <input type="checkbox" name="require_login" {% if require_login %}checked{% endif %}
-                                           class="mt-0.5 h-4 w-4 rounded border-purple-500 text-purple-600 focus:ring-purple-500 dark:bg-black">
-                                    <div>
-                                        <span class="text-sm font-medium text-black dark:text-white">Always require login</span>
-                                        <p class="text-xs text-black/70 dark:text-white/70">Entire site requires admin login. API endpoints remain open for machine registration.</p>
+                                <!-- User List -->
+                                <div>
+                                    <div class="flex items-center justify-between mb-4">
+                                        <p class="text-sm text-black/70 dark:text-white/70">Manage who can access Dragonfly.</p>
+                                        <button type="button" @click="openAddUserModal()" class="text-xs px-3 py-1.5 rounded-lg bg-purple-600 text-white hover:bg-purple-700 transition-colors">
+                                            + Add User
+                                        </button>
                                     </div>
-                                </label>
 
-                                <!-- Admin Credentials -->
+                                    <div class="border border-purple-500 dark:border-purple-700 rounded-lg overflow-hidden">
+                                        <table class="w-full text-sm">
+                                            <thead>
+                                                <tr class="border-b border-purple-500 dark:border-purple-700">
+                                                    <th class="px-4 py-3 text-left text-xs font-medium text-black dark:text-white">Username</th>
+                                                    <th class="px-4 py-3 text-left text-xs font-medium text-black dark:text-white">Role</th>
+                                                    <th class="px-4 py-3 text-left text-xs font-medium text-black dark:text-white">Created</th>
+                                                    <th class="px-4 py-3 text-right text-xs font-medium text-black dark:text-white">Actions</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody class="divide-y divide-purple-500/30 dark:divide-purple-700/50">
+                                                <template x-for="user in users" :key="user.id">
+                                                    <tr class="hover:bg-purple-50 dark:hover:bg-purple-900/20">
+                                                        <td class="px-4 py-3">
+                                                            <div class="flex items-center gap-3">
+                                                                <img :src="'https://api.dicebear.com/7.x/shapes/svg?seed=' + encodeURIComponent(user.username) + '&backgroundColor=7c3aed,a855f7,c084fc&shape1Color=e9d5ff,faf5ff&shape2Color=7c3aed,a855f7'"
+                                                                     alt="" class="w-7 h-7 rounded-full">
+                                                                <span class="text-black dark:text-white font-medium" x-text="user.username"></span>
+                                                            </div>
+                                                        </td>
+                                                        <td class="px-4 py-3">
+                                                            <span class="px-2 py-0.5 text-xs rounded-full bg-purple-600 text-white font-medium">Admin</span>
+                                                        </td>
+                                                        <td class="px-4 py-3 text-black/70 dark:text-white/70" x-text="formatDate(user.created_at)"></td>
+                                                        <td class="px-4 py-3 text-right space-x-2">
+                                                            <button type="button" @click="openEditUserModal(user)" class="text-purple-600 dark:text-purple-400 hover:text-purple-800 dark:hover:text-purple-200 text-xs">Edit</button>
+                                                            <button type="button" @click="confirmDeleteUser(user)" x-show="users.length > 1" class="text-red-600 dark:text-red-400 hover:text-red-800 dark:hover:text-red-200 text-xs">Delete</button>
+                                                        </td>
+                                                    </tr>
+                                                </template>
+                                                <tr x-show="users.length === 0">
+                                                    <td colspan="4" class="px-4 py-6 text-center text-black/50 dark:text-white/50">Loading users...</td>
+                                                </tr>
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
+
+                                <!-- Access Settings -->
                                 <div class="border-t border-purple-500/30 dark:border-purple-700/50 pt-6">
-                                    <h4 class="text-sm font-medium text-black dark:text-white mb-3">Admin Credentials</h4>
-                                    <div class="grid grid-cols-2 gap-4">
+                                    <h4 class="text-sm font-medium text-black dark:text-white mb-4">Access Settings</h4>
+                                    <label class="flex items-center gap-2 cursor-pointer">
+                                        <input type="checkbox" name="require_login" {% if require_login %}checked{% endif %}
+                                               @change="saveSetting('require_login', $el.checked)"
+                                               class="h-4 w-4 rounded border-purple-500 text-purple-600 focus:ring-purple-500 bg-transparent">
+                                        <span class="text-sm text-black dark:text-white">Require login for all pages</span>
+                                    </label>
+                                    <p class="text-xs text-black/70 dark:text-white/70 mt-1 ml-6">When enabled, visitors must log in to view the dashboard. API endpoints for machine registration remain open.</p>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Add User Modal -->
+                        <div x-show="addUserModal" x-cloak class="fixed inset-0 z-50 flex items-center justify-center bg-black/50" @click.self="addUserModal = false">
+                            <div class="bg-white dark:bg-black border border-purple-500 dark:border-purple-700 rounded-xl p-6 w-full max-w-md shadow-xl" @keydown.escape.window="addUserModal = false">
+                                <h3 class="text-lg font-semibold text-black dark:text-white mb-4">Add User</h3>
+                                <div class="space-y-4">
+                                    <div>
+                                        <label class="block text-xs font-medium text-black dark:text-white mb-1.5">Username</label>
+                                        <input type="text" x-model="newUser.username" placeholder="Enter username"
+                                               class="w-full rounded-lg border border-purple-300 dark:border-purple-700 bg-transparent text-black dark:text-white text-sm px-3 py-2 focus:border-purple-500 focus:ring-1 focus:ring-purple-500 focus:outline-none">
+                                    </div>
+                                    <div>
+                                        <label class="block text-xs font-medium text-black dark:text-white mb-1.5">Password</label>
+                                        <input type="password" x-model="newUser.password" placeholder="Enter password"
+                                               class="w-full rounded-lg border border-purple-300 dark:border-purple-700 bg-transparent text-black dark:text-white text-sm px-3 py-2 focus:border-purple-500 focus:ring-1 focus:ring-purple-500 focus:outline-none">
+                                    </div>
+                                    <div>
+                                        <label class="block text-xs font-medium text-black dark:text-white mb-1.5">Confirm Password</label>
+                                        <input type="password" x-model="newUser.confirmPassword" placeholder="Confirm password"
+                                               class="w-full rounded-lg border border-purple-300 dark:border-purple-700 bg-transparent text-black dark:text-white text-sm px-3 py-2 focus:border-purple-500 focus:ring-1 focus:ring-purple-500 focus:outline-none">
+                                    </div>
+                                </div>
+                                <div class="flex justify-end gap-3 mt-6">
+                                    <button type="button" @click="addUserModal = false" class="px-4 py-2 text-sm font-medium text-black dark:text-white hover:bg-purple-100 dark:hover:bg-purple-900/30 rounded-lg transition-colors">
+                                        Cancel
+                                    </button>
+                                    <button type="button" @click="createUser()" class="px-4 py-2 text-sm font-medium text-white bg-purple-600 hover:bg-purple-700 rounded-lg transition-colors">
+                                        Create User
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Edit User Modal -->
+                        <div x-show="editUserModal" x-cloak class="fixed inset-0 z-50 flex items-center justify-center bg-black/50" @click.self="editUserModal = false">
+                            <div class="bg-white dark:bg-black border border-purple-500 dark:border-purple-700 rounded-xl p-6 w-full max-w-md shadow-xl" @keydown.escape.window="editUserModal = false">
+                                <h3 class="text-lg font-semibold text-black dark:text-white mb-4">Edit User</h3>
+                                <div class="space-y-4">
+                                    <div>
+                                        <label class="block text-xs font-medium text-black dark:text-white mb-1.5">Username</label>
+                                        <input type="text" x-model="editingUser.username" placeholder="Enter username"
+                                               class="w-full rounded-lg border border-purple-300 dark:border-purple-700 bg-transparent text-black dark:text-white text-sm px-3 py-2 focus:border-purple-500 focus:ring-1 focus:ring-purple-500 focus:outline-none">
+                                    </div>
+                                    <div>
+                                        <label class="block text-xs font-medium text-black dark:text-white mb-1.5">New Password <span class="text-black/50 dark:text-white/50">(leave blank to keep current)</span></label>
+                                        <input type="password" x-model="editingUser.password" placeholder="Enter new password"
+                                               class="w-full rounded-lg border border-purple-300 dark:border-purple-700 bg-transparent text-black dark:text-white text-sm px-3 py-2 focus:border-purple-500 focus:ring-1 focus:ring-purple-500 focus:outline-none">
+                                    </div>
+                                    <div x-show="editingUser.password">
+                                        <label class="block text-xs font-medium text-black dark:text-white mb-1.5">Confirm Password</label>
+                                        <input type="password" x-model="editingUser.confirmPassword" placeholder="Confirm new password"
+                                               class="w-full rounded-lg border border-purple-300 dark:border-purple-700 bg-transparent text-black dark:text-white text-sm px-3 py-2 focus:border-purple-500 focus:ring-1 focus:ring-purple-500 focus:outline-none">
+                                    </div>
+                                </div>
+                                <div class="flex justify-end gap-3 mt-6">
+                                    <button type="button" @click="editUserModal = false" class="px-4 py-2 text-sm font-medium text-black dark:text-white hover:bg-purple-100 dark:hover:bg-purple-900/30 rounded-lg transition-colors">
+                                        Cancel
+                                    </button>
+                                    <button type="button" @click="updateUser()" class="px-4 py-2 text-sm font-medium text-white bg-purple-600 hover:bg-purple-700 rounded-lg transition-colors">
+                                        Save Changes
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Delete User Confirmation Modal -->
+                        <div x-show="deleteUserModal" x-cloak class="fixed inset-0 z-50 flex items-center justify-center bg-black/50" @click.self="deleteUserModal = false">
+                            <div class="bg-white dark:bg-black border border-red-500 dark:border-red-700 rounded-xl p-6 w-full max-w-md shadow-xl" @keydown.escape.window="deleteUserModal = false">
+                                <h3 class="text-lg font-semibold text-black dark:text-white mb-2">Delete User</h3>
+                                <p class="text-sm text-black/70 dark:text-white/70 mb-4">Are you sure you want to delete <span class="font-medium text-black dark:text-white" x-text="deletingUser?.username"></span>? This action cannot be undone.</p>
+                                <div class="flex justify-end gap-3">
+                                    <button type="button" @click="deleteUserModal = false" class="px-4 py-2 text-sm font-medium text-black dark:text-white hover:bg-purple-100 dark:hover:bg-purple-900/30 rounded-lg transition-colors">
+                                        Cancel
+                                    </button>
+                                    <button type="button" @click="deleteUser()" class="px-4 py-2 text-sm font-medium text-white bg-red-600 hover:bg-red-700 rounded-lg transition-colors">
+                                        Delete
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                        {% endif %}
+
+                        <!-- Security Tab (Your Account) -->
+                        <div x-show="activeTab === 'security'" x-cloak>
+                            <h3 class="text-base font-semibold text-black dark:text-white mb-2">Your Account</h3>
+                            <p class="text-sm text-black/70 dark:text-white/70 mb-6">Manage your login credentials and personal security settings.</p>
+
+                            <div class="space-y-8">
+                                <!-- Username -->
+                                <div>
+                                    <h4 class="text-sm font-medium text-black dark:text-white mb-4">Profile</h4>
+                                    <div class="max-w-md">
+                                        <label for="username" class="block text-xs font-medium text-black dark:text-white mb-1.5">Username</label>
+                                        <input type="text" name="username" id="username" value="{{ admin_username }}"
+                                               @blur="saveSetting('username', $el.value)"
+                                               class="w-full rounded-lg border border-purple-300 dark:border-purple-700 bg-transparent text-black dark:text-white text-sm px-3 py-2 focus:border-purple-500 focus:ring-1 focus:ring-purple-500 focus:outline-none">
+                                    </div>
+                                </div>
+
+                                <!-- Change Password -->
+                                <div class="border-t border-purple-500/30 dark:border-purple-700/50 pt-6">
+                                    <h4 class="text-sm font-medium text-black dark:text-white mb-4">Change Password</h4>
+                                    <div class="space-y-4 max-w-md">
                                         <div>
-                                            <label for="username" class="block text-xs font-medium text-black dark:text-white mb-1">Username</label>
-                                            <input type="text" name="username" id="username" value="{{ admin_username }}"
-                                                   class="w-full rounded-lg border-purple-300 dark:border-purple-700 bg-white dark:bg-black text-black dark:text-white text-sm focus:border-purple-500 focus:ring-purple-500">
+                                            <label for="old_password" class="block text-xs font-medium text-black dark:text-white mb-1.5">Current Password</label>
+                                            <input type="password" name="old_password" id="old_password" placeholder="Enter current password"
+                                                   class="w-full rounded-lg border border-purple-300 dark:border-purple-700 bg-transparent text-black dark:text-white text-sm px-3 py-2 focus:border-purple-500 focus:ring-1 focus:ring-purple-500 focus:outline-none placeholder:text-black/40 dark:placeholder:text-white/40">
                                         </div>
                                         <div>
-                                            <label for="old_password" class="block text-xs font-medium text-black dark:text-white mb-1">Current Password</label>
-                                            <input type="password" name="old_password" id="old_password" placeholder="Required to change"
-                                                   class="w-full rounded-lg border-purple-300 dark:border-purple-700 bg-white dark:bg-black text-black dark:text-white text-sm focus:border-purple-500 focus:ring-purple-500">
+                                            <label for="password" class="block text-xs font-medium text-black dark:text-white mb-1.5">New Password</label>
+                                            <input type="password" name="password" id="password" placeholder="Enter new password"
+                                                   class="w-full rounded-lg border border-purple-300 dark:border-purple-700 bg-transparent text-black dark:text-white text-sm px-3 py-2 focus:border-purple-500 focus:ring-1 focus:ring-purple-500 focus:outline-none placeholder:text-black/40 dark:placeholder:text-white/40">
                                         </div>
                                         <div>
-                                            <label for="password" class="block text-xs font-medium text-black dark:text-white mb-1">New Password</label>
-                                            <input type="password" name="password" id="password" placeholder="Leave blank to keep"
-                                                   class="w-full rounded-lg border-purple-300 dark:border-purple-700 bg-white dark:bg-black text-black dark:text-white text-sm focus:border-purple-500 focus:ring-purple-500">
+                                            <label for="password_confirm" class="block text-xs font-medium text-black dark:text-white mb-1.5">Confirm New Password</label>
+                                            <input type="password" name="password_confirm" id="password_confirm" placeholder="Confirm new password"
+                                                   class="w-full rounded-lg border border-purple-300 dark:border-purple-700 bg-transparent text-black dark:text-white text-sm px-3 py-2 focus:border-purple-500 focus:ring-1 focus:ring-purple-500 focus:outline-none placeholder:text-black/40 dark:placeholder:text-white/40">
                                         </div>
-                                        <div>
-                                            <label for="password_confirm" class="block text-xs font-medium text-black dark:text-white mb-1">Confirm Password</label>
-                                            <input type="password" name="password_confirm" id="password_confirm" placeholder="Leave blank to keep"
-                                                   class="w-full rounded-lg border-purple-300 dark:border-purple-700 bg-white dark:bg-black text-black dark:text-white text-sm focus:border-purple-500 focus:ring-purple-500">
-                                        </div>
+                                        <button type="button" @click="updatePassword()"
+                                                class="px-4 py-2 text-sm font-medium text-white bg-purple-600 hover:bg-purple-700 rounded-lg transition-colors">
+                                            Update Password
+                                        </button>
                                     </div>
                                 </div>
 
                                 <!-- API Tokens -->
                                 <div class="border-t border-purple-500/30 dark:border-purple-700/50 pt-6">
-                                    <h4 class="text-sm font-medium text-black dark:text-white mb-3">API Tokens</h4>
-                                    <p class="text-sm text-black/70 dark:text-white/70">Token management coming soon.</p>
+                                    <div class="flex items-center justify-between mb-4">
+                                        <div>
+                                            <h4 class="text-sm font-medium text-black dark:text-white">API Tokens</h4>
+                                            <p class="text-xs text-black/70 dark:text-white/70 mt-0.5">Personal access tokens for API authentication.</p>
+                                        </div>
+                                        <button type="button" @click="showToast('API tokens coming soon', 'info')" class="text-xs px-3 py-1.5 rounded-lg bg-purple-600 text-white hover:bg-purple-700 transition-colors">
+                                            + Generate Token
+                                        </button>
+                                    </div>
+                                    <p class="text-sm text-black/50 dark:text-white/50 italic">No tokens created yet.</p>
                                 </div>
                             </div>
                         </div>
 
+                        {% if show_admin_settings %}
                         <!-- Provisioning Tab -->
                         <div x-show="activeTab === 'provisioning'" x-cloak>
                             <h3 class="text-base font-semibold text-black dark:text-white mb-4">Provisioning</h3>
 
                             <div class="space-y-6">
                                 <!-- Default OS -->
-                                <div>
-                                    <label for="default_os" class="block text-sm font-medium text-black dark:text-white mb-1">Default OS</label>
-                                    <select name="default_os" id="default_os"
-                                            class="w-full max-w-xs rounded-lg border-purple-300 dark:border-purple-700 bg-white dark:bg-black text-black dark:text-white text-sm focus:border-purple-500 focus:ring-purple-500">
-                                        <option value="" {% if default_os_none %}selected{% endif %}>None</option>
-                                        <option value="ubuntu-2204" {% if default_os_ubuntu2204 %}selected{% endif %}>Ubuntu 22.04</option>
-                                        <option value="ubuntu-2404" {% if default_os_ubuntu2404 %}selected{% endif %}>Ubuntu 24.04</option>
-                                        <option value="debian-12" {% if default_os_debian12 %}selected{% endif %}>Debian 12</option>
-                                        <option value="debian-13" {% if default_os_debian13 %}selected{% endif %}>Debian 13</option>
-                                        <option value="proxmox" {% if default_os_proxmox %}selected{% endif %}>Proxmox VE</option>
-                                        <option value="talos" {% if default_os_talos %}selected{% endif %}>Talos</option>
-                                    </select>
-                                    <p class="mt-1 text-xs text-black/70 dark:text-white/70">Auto-assigned to new machines.</p>
+                                <div x-data="{
+                                    open: false,
+                                    selected: '{{ default_os|default('') }}',
+                                    proxmoxSvg: '<svg class=&quot;w-4 h-4&quot; viewBox=&quot;0 0 128 128&quot;><path fill=&quot;#e57000&quot; d=&quot;M32.332 21.426a12.54 12.54 0 0 0-8.855 3.676l20.488 22.515l-20.488 22.52a12.3 12.3 0 0 0 8.855 3.75a12.28 12.28 0 0 0 9.156-4.051l11.336-12.461l8.856-9.758l-8.856-9.68l-11.336-12.46a12.28 12.28 0 0 0-9.156-4.051m63.23 0a12.28 12.28 0 0 0-9.156 4.05L75.07 37.939l-8.855 9.68l8.855 9.757l11.336 12.46a12.28 12.28 0 0 0 9.156 4.052a12.3 12.3 0 0 0 8.856-3.75L83.93 47.617l20.488-22.515a12.54 12.54 0 0 0-8.856-3.676m0 0&quot;/><path fill=&quot;currentColor&quot; d=&quot;m72.02 36.453l-8.082 8.906l-8.086-8.91l-18.7-20.55a11.44 11.44 0 0 1 8.082-3.356c3.36 0 6.164 1.371 8.29 3.7l10.413 11.37l10.344-11.37a11.2 11.2 0 0 1 8.36-3.7c3.148 0 6.027 1.3 8.082 3.355Zm0 22.328l-8.082-8.906l-8.083 8.906l-18.703 20.555a11.45 11.45 0 0 0 8.082 3.355c3.36 0 6.168-1.37 8.29-3.699l10.413-11.375l10.344 11.375a11.23 11.23 0 0 0 8.36 3.7c3.152 0 6.027-1.305 8.082-3.356Zm-70.594 41.32a1.4 1.4 0 0 0-1 .43A1.44 1.44 0 0 0 0 101.547v13.906q1.622-.041 2.7-1.121c.714-.723 1.09-1.629 1.116-2.719h7.676q1.636-.039 2.727-1.12q1.09-1.08 1.133-2.716v-3.816q-.043-1.636-1.133-2.727t-2.727-1.132Zm17.562 0a1.4 1.4 0 0 0-1.011.43a1.45 1.45 0 0 0-.415 1.016v13.906q1.624-.042 2.708-1.121q1.088-1.084 1.128-2.719v-.965h4.364l2.215 3.16q.534.763 1.34 1.2a3.75 3.75 0 0 0 1.796.445c.32 0 .633-.039.93-.113q.45-.112.848-.324l-3.09-4.41a3.85 3.85 0 0 0 2.203-1.317q.856-1.03.887-2.453v-2.875q-.043-1.636-1.121-2.727c-.723-.726-1.625-1.105-2.715-1.132Zm19.93 0q-1.636.043-2.715 1.133q-1.085 1.091-1.121 2.727v7.652q.036 1.635 1.121 2.719q1.08 1.08 2.715 1.121h7.652q1.635-.041 2.72-1.121q1.078-1.084 1.12-2.719v-7.652q-.042-1.636-1.12-2.727q-1.085-1.09-2.72-1.132Zm34.488 0c-.8 0-1.445.649-1.445 1.446v13.906q1.617-.041 2.707-1.121c.723-.723 1.102-1.629 1.129-2.719v-7.343c.387-.332.441-.31.496-.274a.3.3 0 0 1 .117.117l4.254 9.387c.164.34.504.563.879.57c.18 0 .36-.05.512-.148c.152-.102.28-.238.363-.399l4.258-9.41c.582-.027.61.055.613.157v7.343q.04 1.635 1.129 2.719q1.084 1.08 2.707 1.121v-13.906c0-.379-.148-.746-.418-1.02a1.4 1.4 0 0 0-1.008-.425h-2.41c-.75 0-1.484.222-2.11.64a3.95 3.95 0 0 0-1.398 1.66l.02-.043l-2.258 4.957l-2.238-4.957v.043a3.84 3.84 0 0 0-3.508-2.3Zm23.766 0q-1.64.043-2.719 1.133q-1.08 1.091-1.121 2.727v7.652q.041 1.635 1.121 2.719q1.078 1.08 2.719 1.121h7.652q1.636-.041 2.715-1.121c.723-.723 1.094-1.629 1.121-2.719v-7.652q-.039-1.636-1.12-2.727q-1.08-1.09-2.716-1.132Zm-41.984.024a3.55 3.55 0 0 0-1.426.29a3.7 3.7 0 0 0-1.164.78l5.988 6.582l-5.988 6.578a3.63 3.63 0 0 0 2.59 1.098a3.65 3.65 0 0 0 2.675-1.183l3.309-3.641l3.312 3.64a3.61 3.61 0 0 0 5.266.086l-5.988-6.578l5.988-6.578a3.7 3.7 0 0 0-1.164-.785a3.63 3.63 0 0 0-4.102.89l-3.312 3.645l-3.332-3.644a3.6 3.6 0 0 0-1.18-.871a3.5 3.5 0 0 0-1.472-.313Zm58.25 0q-.76.001-1.426.29a3.7 3.7 0 0 0-1.16.78l5.988 6.582l-5.988 6.578c.68.7 1.613 1.094 2.585 1.098a3.64 3.64 0 0 0 2.676-1.183l3.313-3.641l3.308 3.64a3.61 3.61 0 0 0 5.266.086l-5.988-6.578L128 101.2a3.64 3.64 0 0 0-4.082-.754c-.45.203-.852.496-1.18.86l-3.312 3.644l-3.332-3.644a3.8 3.8 0 0 0-1.18-.871a3.6 3.6 0 0 0-1.477-.313ZM10.57 103.957c.059 0 .207.035.45.121q.415.149.472.824v2.391q.03.064-.117.484q-.149.423-.824.48H3.816v-4.296h6.754Zm17.54 0c.062 0 .214.035.46.121q.422.149.485.824v1.45c.02.039-.024.195-.121.468q-.153.416-.844.473h-6.692v-3.332h6.711Zm17.519 0c.059 0 .215.035.46.121q.423.149.481.824v5.746q.03.062-.12.485q-.147.422-.845.48h-5.722c-.04.024-.2-.02-.48-.117q-.428-.157-.485-.848v-5.746q-.03-.058.121-.468q.153-.416.844-.473h5.746Zm58.25 0c.062 0 .219.035.46.121c.286.098.442.375.485.824v5.746q.03.062-.12.485q-.153.422-.845.48h-5.722c-.043.024-.203-.02-.485-.117q-.42-.157-.48-.848v-5.746q-.03-.058.117-.468q.152-.416.848-.473h5.742Zm0 0&quot;/></svg>',
+                                    options: [
+                                        { value: '', label: 'None', iconClass: 'far fa-circle text-gray-400', svg: null },
+                                        { value: 'ubuntu-2204', label: 'Ubuntu 22.04', iconClass: 'fab fa-ubuntu text-orange-500', svg: null },
+                                        { value: 'ubuntu-2404', label: 'Ubuntu 24.04', iconClass: 'fab fa-ubuntu text-orange-500', svg: null },
+                                        { value: 'debian-12', label: 'Debian 12', iconClass: 'fab fa-debian text-red-500', svg: null },
+                                        { value: 'debian-13', label: 'Debian 13', iconClass: 'fab fa-debian text-red-500', svg: null },
+                                        { value: 'proxmox', label: 'Proxmox VE', iconClass: null, svg: 'proxmox' }
+                                    ],
+                                    get selectedOption() {
+                                        return this.options.find(o => o.value === this.selected) || this.options[0];
+                                    },
+                                    async selectOs(value) {
+                                        this.selected = value;
+                                        this.open = false;
+                                        const params = new URLSearchParams();
+                                        params.append('default_os', value);
+                                        try {
+                                            const response = await fetch('/settings', {
+                                                method: 'POST',
+                                                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                                                body: params.toString(),
+                                                credentials: 'include',
+                                                redirect: 'manual'
+                                            });
+                                            if (response.type === 'opaqueredirect' || response.ok || response.status === 0) {
+                                                showToast('Setting saved', 'success');
+                                            } else {
+                                                showToast('Failed to save setting', 'error');
+                                            }
+                                        } catch (e) {
+                                            showToast('Failed to save setting', 'error');
+                                        }
+                                    }
+                                }" @click.away="open = false" class="relative">
+                                    <label class="block text-sm font-medium text-black dark:text-white mb-1.5">Default OS</label>
+                                    <button type="button" @click="open = !open"
+                                            class="w-full max-w-xs rounded-lg border border-purple-300 dark:border-purple-700 bg-transparent text-black dark:text-white text-sm px-3 py-2 focus:border-purple-500 focus:ring-1 focus:ring-purple-500 focus:outline-none flex items-center justify-between">
+                                        <span class="flex items-center gap-2">
+                                            <template x-if="selectedOption.svg === 'proxmox'"><span class="w-4 flex-shrink-0" x-html="proxmoxSvg"></span></template>
+                                            <template x-if="selectedOption.svg !== 'proxmox'"><i class="w-4 flex-shrink-0 text-center" :class="selectedOption.iconClass"></i></template>
+                                            <span x-text="selectedOption.label"></span>
+                                        </span>
+                                        <svg class="w-4 h-4 ml-2" :class="{ 'rotate-180': open }" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+                                        </svg>
+                                    </button>
+                                    <div x-show="open" x-cloak x-transition
+                                         class="absolute z-50 mt-1 w-full max-w-xs rounded-lg border border-purple-300 dark:border-purple-700 bg-white dark:bg-gray-900 shadow-lg">
+                                        <template x-for="option in options" :key="option.value">
+                                            <a href="#" @click.prevent="selectOs(option.value)"
+                                               class="block px-3 py-2 text-sm text-black dark:text-white hover:bg-purple-100 dark:hover:bg-purple-900/30 flex items-center gap-2 first:rounded-t-lg last:rounded-b-lg"
+                                               :class="{ 'bg-purple-50 dark:bg-purple-900/20': selected === option.value }">
+                                                <template x-if="option.svg === 'proxmox'"><span class="w-4 flex-shrink-0" x-html="proxmoxSvg"></span></template>
+                                                <template x-if="option.svg !== 'proxmox'"><i class="w-4 flex-shrink-0 text-center" :class="option.iconClass"></i></template>
+                                                <span x-text="option.label"></span>
+                                            </a>
+                                        </template>
+                                    </div>
+                                    <p class="mt-1.5 text-xs text-black/70 dark:text-white/70">Auto-assigned to new machines.</p>
                                 </div>
 
                                 <!-- SSH Keys -->
                                 <div class="border-t border-purple-500/30 dark:border-purple-700/50 pt-6">
-                                    <label for="ssh_keys" class="block text-sm font-medium text-black dark:text-white mb-1">SSH Authorized Keys</label>
-                                    <textarea name="ssh_keys" id="ssh_keys" rows="3" placeholder="ssh-ed25519 AAAA... user@host"
-                                              class="w-full rounded-lg border-purple-300 dark:border-purple-700 bg-white dark:bg-black text-black dark:text-white text-sm font-mono focus:border-purple-500 focus:ring-purple-500">{{ ssh_keys|default('') }}</textarea>
-                                    <p class="mt-1 text-xs text-black/70 dark:text-white/70">Added to root on all provisioned machines. One key per line.</p>
+                                    <label for="ssh_keys" class="block text-sm font-medium text-black dark:text-white mb-1.5">SSH Authorized Keys</label>
+                                    <textarea name="ssh_keys" id="ssh_keys" rows="4" placeholder="ssh-ed25519 AAAA... user@host"
+                                              @blur="saveSetting('ssh_keys', $el.value)"
+                                              class="w-full rounded-lg border border-purple-300 dark:border-purple-700 bg-transparent text-black dark:text-white text-sm font-mono px-3 py-2 focus:border-purple-500 focus:ring-1 focus:ring-purple-500 focus:outline-none placeholder:text-black/40 dark:placeholder:text-white/40">{{ ssh_keys|default('') }}</textarea>
+                                    <p class="mt-1.5 text-xs text-black/70 dark:text-white/70">Added to root on all provisioned machines. One key per line.</p>
                                 </div>
 
                                 <!-- OS Templates -->
@@ -237,11 +468,6 @@
                                                     <td class="px-3 py-2 text-purple-600 dark:text-purple-400 font-mono text-xs">proxmox</td>
                                                     <td class="px-3 py-2 text-center"><span class="text-xs text-green-600 dark:text-green-400">✓</span></td>
                                                 </tr>
-                                                <tr class="hover:bg-purple-50 dark:hover:bg-purple-900/20">
-                                                    <td class="px-3 py-2 text-black dark:text-white">Talos Linux</td>
-                                                    <td class="px-3 py-2 text-purple-600 dark:text-purple-400 font-mono text-xs">talos</td>
-                                                    <td class="px-3 py-2 text-center"><span class="text-xs text-green-600 dark:text-green-400">✓</span></td>
-                                                </tr>
                                             </tbody>
                                         </table>
                                     </div>
@@ -249,17 +475,72 @@
                                 </div>
                             </div>
                         </div>
+
+                        <!-- License Tab -->
+                        <div x-show="activeTab === 'license'" x-cloak>
+                            <h3 class="text-base font-semibold text-black dark:text-white mb-2">License</h3>
+                            <p class="text-sm text-black/70 dark:text-white/70 mb-6">Dragonfly is open source software.</p>
+
+                            <div class="space-y-6">
+                                <!-- Open Source License -->
+                                <div class="border border-purple-500 dark:border-purple-700 rounded-lg p-5">
+                                    <div class="flex items-start gap-4">
+                                        <div class="w-12 h-12 rounded-lg bg-purple-100 dark:bg-purple-900/50 flex items-center justify-center flex-shrink-0">
+                                            <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 text-purple-600 dark:text-purple-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" />
+                                            </svg>
+                                        </div>
+                                        <div>
+                                            <h4 class="text-sm font-semibold text-black dark:text-white mb-1">GNU Affero General Public License v3.0</h4>
+                                            <p class="text-sm text-black/70 dark:text-white/70 leading-relaxed">
+                                                Dragonfly is free and open source software, licensed under the <span class="font-medium text-black dark:text-white">AGPLv3</span>.
+                                                You are free to use, modify, and distribute this software in accordance with the license terms.
+                                            </p>
+                                            <a href="https://www.gnu.org/licenses/agpl-3.0.html" target="_blank" rel="noopener"
+                                               class="inline-flex items-center gap-1 text-sm text-purple-600 dark:text-purple-400 hover:text-purple-800 dark:hover:text-purple-200 mt-2">
+                                                Read the full license
+                                                <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                                                </svg>
+                                            </a>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <!-- Commercial License -->
+                                <div class="border-t border-purple-500/30 dark:border-purple-700/50 pt-6">
+                                    <h4 class="text-sm font-medium text-black dark:text-white mb-3">Commercial License & Support</h4>
+                                    <p class="text-sm text-black/70 dark:text-white/70 mb-4 leading-relaxed">
+                                        Need a commercial license or professional support? We offer licensing options for organizations
+                                        that require proprietary use or dedicated assistance.
+                                    </p>
+                                    <a href="https://dragonfly.computer" target="_blank" rel="noopener"
+                                       class="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-lg bg-purple-600 text-white hover:bg-purple-700 transition-colors">
+                                        <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9" />
+                                        </svg>
+                                        Visit dragonfly.computer
+                                    </a>
+                                </div>
+
+                                <!-- License Key (for commercial users) -->
+                                <div class="border-t border-purple-500/30 dark:border-purple-700/50 pt-6">
+                                    <h4 class="text-sm font-medium text-black dark:text-white mb-1.5">Commercial License Key</h4>
+                                    <p class="text-xs text-black/70 dark:text-white/70 mb-3">If you've purchased a commercial license, enter your key below.</p>
+                                    <div class="flex gap-3 max-w-lg">
+                                        <input type="text" name="license_key" placeholder="XXXX-XXXX-XXXX-XXXX"
+                                               class="flex-1 rounded-lg border border-purple-300 dark:border-purple-700 bg-transparent text-black dark:text-white text-sm px-3 py-2 font-mono focus:border-purple-500 focus:ring-1 focus:ring-purple-500 focus:outline-none placeholder:text-black/40 dark:placeholder:text-white/40">
+                                        <button type="button" class="px-4 py-2 text-sm font-medium rounded-lg border border-purple-500 text-purple-600 dark:text-purple-400 hover:bg-purple-50 dark:hover:bg-purple-900/30 transition-colors">
+                                            Activate
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
                         {% endif %}
 
                     </div>
 
-                    <!-- Footer -->
-                    <div class="px-6 py-3 bg-white dark:bg-black border-t border-purple-500 dark:border-purple-700 flex justify-end">
-                        <button type="submit"
-                                class="px-4 py-2 text-sm font-medium text-white bg-purple-600 hover:bg-purple-700 rounded-lg transition-colors focus:outline-none focus:ring-2 focus:ring-purple-500 focus:ring-offset-2 dark:focus:ring-offset-black">
-                            Save Settings
-                        </button>
-                    </div>
                 </form>
             </div>
         </div>
@@ -271,18 +552,223 @@
 <script>
     function settingsPanel() {
         return {
-            activeTab: 'general'
+            activeTab: 'general',
+            saving: false,
+
+            // User management state
+            users: [],
+            addUserModal: false,
+            editUserModal: false,
+            deleteUserModal: false,
+            newUser: { username: '', password: '', confirmPassword: '' },
+            editingUser: { id: null, username: '', password: '', confirmPassword: '' },
+            deletingUser: null,
+
+            formatDate(dateStr) {
+                if (!dateStr) return '-';
+                const date = new Date(dateStr);
+                return date.toLocaleDateString();
+            },
+
+            async loadUsers() {
+                try {
+                    const response = await fetch('/api/users', { credentials: 'include' });
+                    if (response.ok) {
+                        this.users = await response.json();
+                    }
+                } catch (e) {
+                    console.error('Failed to load users:', e);
+                }
+            },
+
+            openAddUserModal() {
+                this.newUser = { username: '', password: '', confirmPassword: '' };
+                this.addUserModal = true;
+            },
+
+            openEditUserModal(user) {
+                this.editingUser = { id: user.id, username: user.username, password: '', confirmPassword: '' };
+                this.editUserModal = true;
+            },
+
+            confirmDeleteUser(user) {
+                this.deletingUser = user;
+                this.deleteUserModal = true;
+            },
+
+            async createUser() {
+                if (!this.newUser.username.trim()) {
+                    showToast('Username is required', 'error');
+                    return;
+                }
+                if (!this.newUser.password) {
+                    showToast('Password is required', 'error');
+                    return;
+                }
+                if (this.newUser.password !== this.newUser.confirmPassword) {
+                    showToast('Passwords do not match', 'error');
+                    return;
+                }
+
+                try {
+                    const response = await fetch('/api/users', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        credentials: 'include',
+                        body: JSON.stringify({
+                            username: this.newUser.username,
+                            password: this.newUser.password
+                        })
+                    });
+
+                    if (response.ok) {
+                        showToast('User created', 'success');
+                        this.addUserModal = false;
+                        await this.loadUsers();
+                    } else {
+                        const data = await response.json();
+                        showToast(data.message || 'Failed to create user', 'error');
+                    }
+                } catch (e) {
+                    showToast('Failed to create user', 'error');
+                }
+            },
+
+            async updateUser() {
+                if (!this.editingUser.username.trim()) {
+                    showToast('Username is required', 'error');
+                    return;
+                }
+                if (this.editingUser.password && this.editingUser.password !== this.editingUser.confirmPassword) {
+                    showToast('Passwords do not match', 'error');
+                    return;
+                }
+
+                const updateData = { username: this.editingUser.username };
+                if (this.editingUser.password) {
+                    updateData.password = this.editingUser.password;
+                }
+
+                try {
+                    const response = await fetch(`/api/users/${this.editingUser.id}`, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        credentials: 'include',
+                        body: JSON.stringify(updateData)
+                    });
+
+                    if (response.ok) {
+                        showToast('User updated', 'success');
+                        this.editUserModal = false;
+                        await this.loadUsers();
+                    } else {
+                        const data = await response.json();
+                        showToast(data.message || 'Failed to update user', 'error');
+                    }
+                } catch (e) {
+                    showToast('Failed to update user', 'error');
+                }
+            },
+
+            async deleteUser() {
+                if (!this.deletingUser) return;
+
+                try {
+                    const response = await fetch(`/api/users/${this.deletingUser.id}`, {
+                        method: 'DELETE',
+                        credentials: 'include'
+                    });
+
+                    if (response.ok) {
+                        showToast('User deleted', 'success');
+                        this.deleteUserModal = false;
+                        this.deletingUser = null;
+                        await this.loadUsers();
+                    } else {
+                        const data = await response.json();
+                        showToast(data.message || 'Failed to delete user', 'error');
+                    }
+                } catch (e) {
+                    showToast('Failed to delete user', 'error');
+                }
+            },
+
+            async saveSetting(name, value) {
+                const params = new URLSearchParams();
+                params.append(name, value);
+
+                try {
+                    const response = await fetch('/settings', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/x-www-form-urlencoded',
+                        },
+                        body: params.toString(),
+                        credentials: 'include',
+                        redirect: 'manual'
+                    });
+
+                    // Server redirects on success, so 0 (opaque redirect) or 200 are both OK
+                    if (response.type === 'opaqueredirect' || response.ok || response.status === 0) {
+                        showToast('Setting saved', 'success');
+                    } else {
+                        showToast('Failed to save setting', 'error');
+                    }
+                } catch (e) {
+                    showToast('Failed to save setting', 'error');
+                }
+            },
+
+            async updatePassword() {
+                const oldPassword = document.getElementById('old_password').value;
+                const newPassword = document.getElementById('password').value;
+                const confirmPassword = document.getElementById('password_confirm').value;
+
+                if (!oldPassword) {
+                    showToast('Current password is required', 'error');
+                    return;
+                }
+
+                if (!newPassword) {
+                    showToast('New password is required', 'error');
+                    return;
+                }
+
+                if (newPassword !== confirmPassword) {
+                    showToast('Passwords do not match', 'error');
+                    return;
+                }
+
+                const params = new URLSearchParams();
+                params.append('old_password', oldPassword);
+                params.append('password', newPassword);
+                params.append('password_confirm', confirmPassword);
+
+                try {
+                    const response = await fetch('/settings', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/x-www-form-urlencoded',
+                        },
+                        body: params.toString(),
+                        credentials: 'include',
+                        redirect: 'manual'
+                    });
+
+                    // Server redirects on success
+                    if (response.type === 'opaqueredirect' || response.ok || response.status === 0) {
+                        showToast('Password updated', 'success');
+                        document.getElementById('old_password').value = '';
+                        document.getElementById('password').value = '';
+                        document.getElementById('password_confirm').value = '';
+                    } else {
+                        showToast('Failed to update password', 'error');
+                    }
+                } catch (e) {
+                    showToast('Failed to update password', 'error');
+                }
+            }
         };
     }
-
-    document.getElementById('settings-form').addEventListener('submit', function(e) {
-        const password = document.getElementById('password');
-        const confirmPassword = document.getElementById('password_confirm');
-
-        if (password && confirmPassword && password.value && password.value !== confirmPassword.value) {
-            e.preventDefault();
-            showToast('Passwords do not match.', 'error');
-        }
-    });
 </script>
 {% endblock %}
