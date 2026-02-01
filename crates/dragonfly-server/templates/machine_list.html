@@ -67,19 +67,114 @@
     },
 
     // Bulk reimage action
-    bulkReimage() {
+    async bulkReimage() {
         const ids = this.getSelectedIds();
         if (ids.length === 0) return;
-        // For now, just show a message - could open a modal to select OS
-        alert(`Bulk reimage for ${ids.length} machine(s) - coming soon!`);
+
+        if (!this.isAuthenticated) {
+            showToast('Authentication required.', 'error');
+            return;
+        }
+
+        const count = ids.length;
+        if (!confirm('Request reimage for ' + count + ' machine(s)?\n\nThis will mark them for reinstallation on next boot.')) {
+            return;
+        }
+
+        let successCount = 0;
+        let failCount = 0;
+
+        for (const id of ids) {
+            try {
+                const response = await fetch('/api/machines/' + id + '/reimage', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' }
+                });
+                if (response.ok) {
+                    successCount++;
+                } else {
+                    failCount++;
+                    console.error('Failed to reimage ' + id + ':', await response.text());
+                }
+            } catch (e) {
+                failCount++;
+                console.error('Error reimaging ' + id + ':', e);
+            }
+        }
+
+        if (failCount === 0) {
+            showToast('Reimage requested for ' + successCount + ' machine(s).', 'success');
+        } else {
+            showToast('Reimage: ' + successCount + ' succeeded, ' + failCount + ' failed.', 'warning');
+        }
+
+        // Clear selection and refresh
+        this.deselectAllMachines();
+        window.location.reload();
     },
 
     // Bulk tag action
     bulkTag() {
         const ids = this.getSelectedIds();
         if (ids.length === 0) return;
-        // For now, just show a message - could open a modal to add tags
-        alert(`Bulk tag for ${ids.length} machine(s) - coming soon!`);
+
+        if (!this.isAuthenticated) {
+            showToast('Authentication required.', 'error');
+            return;
+        }
+
+        // Open tag modal for bulk editing
+        // For now, prompt for a tag to add
+        const tag = prompt('Enter tag to add to ' + ids.length + ' machine(s):');
+        if (!tag || !tag.trim()) return;
+
+        this.bulkAddTag(ids, tag.trim());
+    },
+
+    async bulkAddTag(ids, tag) {
+        let successCount = 0;
+        let failCount = 0;
+
+        for (const id of ids) {
+            try {
+                // Get current tags
+                const getResp = await fetch('/api/machines/' + id + '/tags');
+                if (!getResp.ok) {
+                    failCount++;
+                    continue;
+                }
+                const currentTags = await getResp.json();
+
+                // Add new tag if not already present
+                if (!currentTags.includes(tag)) {
+                    const newTags = [...currentTags, tag];
+                    const putResp = await fetch('/api/machines/' + id + '/tags', {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(newTags)
+                    });
+                    if (putResp.ok) {
+                        successCount++;
+                    } else {
+                        failCount++;
+                    }
+                } else {
+                    successCount++; // Already has tag
+                }
+            } catch (e) {
+                failCount++;
+                console.error('Error tagging ' + id + ':', e);
+            }
+        }
+
+        if (failCount === 0) {
+            showToast('Tag "' + tag + '" added to ' + successCount + ' machine(s).', 'success');
+        } else {
+            showToast('Tag: ' + successCount + ' succeeded, ' + failCount + ' failed.', 'warning');
+        }
+
+        this.deselectAllMachines();
+        window.location.reload();
     },
 
     // Just Type functionality
