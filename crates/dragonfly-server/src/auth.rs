@@ -5,6 +5,7 @@ use axum::{
     routing::{get, post},
     Router,
     Form,
+    Json,
 };
 // use openidconnect::core::{CoreAuthenticationFlow, CoreClient, CoreProviderMetadata, CoreResponseType};
 // use openidconnect::{AuthenticationFlow, AuthorizationCode, CsrfToken, Nonce, PkceCodeChallenge, PkceCodeVerifier, Scope, TokenResponse, reqwest::async_http_client};
@@ -460,22 +461,44 @@ async fn login_handler(
             // Successfully authenticated, set up the session
             if let Err(e) = auth_session.login(&user).await {
                 error!("Failed to create session after successful auth: {}", e);
-                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                return Json(serde_json::json!({
+                    "success": false,
+                    "error": "Failed to create session. Please try again."
+                })).into_response();
             }
 
             info!("Login successful for user '{}'", user.username);
             // Check if mode is set - if not, redirect to welcome for setup
             let current_mode = app_state.store.get_setting("deployment_mode").await.ok().flatten();
             let redirect_to = if current_mode.is_some() { "/" } else { "/welcome" };
-            Redirect::to(redirect_to).into_response()
+            Json(serde_json::json!({
+                "success": true,
+                "redirect": redirect_to
+            })).into_response()
         }
         Ok(None) => {
             info!("Authentication failed for user '{}'", form.username);
-            Redirect::to("/login?error=invalid_credentials").into_response()
+            Json(serde_json::json!({
+                "success": false,
+                "error": "Invalid username or password."
+            })).into_response()
         }
         Err(e) => {
-            error!("Error during authentication: {}", e);
-            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+            // Check if this is an InvalidCredentials error (wrapped by axum_login)
+            let err_str = format!("{}", e);
+            if err_str.contains("Invalid credentials") {
+                info!("Authentication failed for user '{}': invalid credentials", form.username);
+                Json(serde_json::json!({
+                    "success": false,
+                    "error": "Invalid username or password."
+                })).into_response()
+            } else {
+                error!("Error during authentication: {}", e);
+                Json(serde_json::json!({
+                    "success": false,
+                    "error": "Internal server error. Please try again."
+                })).into_response()
+            }
         }
     }
 }

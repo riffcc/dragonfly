@@ -64,19 +64,11 @@
                 {% endif %}
 
                 <!-- Error message display -->
-                {% if error %}
-                <div class="error-banner mb-4">
-                    <p><strong>Login Error:</strong> 
-                    {% if error == "invalid_credentials" %}
-                        Invalid credentials. Please try again.
-                    {% else %}
-                        {{ error }}
-                    {% endif %}
-                    </p>
+                <div id="error-banner" class="error-banner mb-4 hidden">
+                    <p><strong>Login Error:</strong> <span id="error-message"></span></p>
                 </div>
-                {% endif %}
 
-                <form class="space-y-6" action="/login" method="POST">
+                <form id="login-form" class="space-y-6">
                     <div>
                         <label for="username" class="block text-sm font-medium text-gray-700">
                             Username
@@ -98,12 +90,51 @@
                     </div>
 
                     <div>
-                        <button type="submit"
+                        <button type="submit" id="submit-btn"
                             class="w-full flex justify-center py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500">
                             Sign in
                         </button>
                     </div>
                 </form>
+
+                <script>
+                document.getElementById('login-form').addEventListener('submit', async (e) => {
+                    e.preventDefault();
+                    const form = e.target;
+                    const submitBtn = document.getElementById('submit-btn');
+                    const errorBanner = document.getElementById('error-banner');
+                    const errorMessage = document.getElementById('error-message');
+
+                    // Disable button while submitting
+                    submitBtn.disabled = true;
+                    submitBtn.textContent = 'Signing in...';
+                    errorBanner.classList.add('hidden');
+
+                    try {
+                        const response = await fetch('/login', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                            body: new URLSearchParams(new FormData(form))
+                        });
+
+                        const data = await response.json();
+
+                        if (data.success) {
+                            window.location.href = data.redirect;
+                        } else {
+                            errorMessage.textContent = data.error;
+                            errorBanner.classList.remove('hidden');
+                            submitBtn.disabled = false;
+                            submitBtn.textContent = 'Sign in';
+                        }
+                    } catch (err) {
+                        errorMessage.textContent = 'Network error. Please try again.';
+                        errorBanner.classList.remove('hidden');
+                        submitBtn.disabled = false;
+                        submitBtn.textContent = 'Sign in';
+                    }
+                });
+                </script>
             </div>
         </div>
     </div>
