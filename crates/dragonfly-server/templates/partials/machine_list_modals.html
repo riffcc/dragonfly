@@ -61,12 +61,14 @@
     <!-- Removed background overlay -->
     <div class="fixed inset-0 z-20 overflow-y-auto" @click="$dispatch('close-tag-modal')">
         <div class="flex min-h-full items-end justify-center p-4 text-center sm:items-center sm:p-0">
-            <div class="relative transform overflow-hidden rounded-lg bg-white dark:bg-gray-800 px-4 pb-4 pt-5 text-left shadow-xl transition-all sm:my-8 sm:w-full sm:max-w-lg sm:p-6" 
-                @click.stop x-data="tagEditorData()" x-init="if (tagModal) loadTags(currentMachineId)" x-show="tagModal">
+            <div class="relative transform overflow-hidden rounded-lg bg-white dark:bg-gray-800 px-4 pb-4 pt-5 text-left shadow-xl transition-all sm:my-8 sm:w-full sm:max-w-lg sm:p-6"
+                @click.stop x-data="tagEditorData()" x-init="if (tagModal) initTagEditor(currentMachineId, bulkTagMachineIds)" x-show="tagModal">
                 <h3 class="text-lg font-medium leading-6 text-gray-900 dark:text-white mb-1" id="tag-modal-title">
-                    Edit Tags for <code class="text-purple-600 dark:text-purple-400" x-text="currentMachineName"></code>
+                    <span x-show="!bulkMode">Edit Tags for <code class="text-purple-600 dark:text-purple-400" x-text="$root.currentMachineName"></code></span>
+                    <span x-show="bulkMode">Add Tags to <code class="text-purple-600 dark:text-purple-400" x-text="bulkIds.length + ' machines'"></code></span>
                 </h3>
-                <p class="text-xs text-gray-500 dark:text-gray-400 mb-4">Machine ID: <code class="text-xs" x-text="currentMachineId"></code></p>
+                <p class="text-xs text-gray-500 dark:text-gray-400 mb-4" x-show="!bulkMode">Machine ID: <code class="text-xs" x-text="$root.currentMachineId"></code></p>
+                <p class="text-xs text-gray-500 dark:text-gray-400 mb-4" x-show="bulkMode">Tags added here will be applied to all selected machines.</p>
 
                 {# Loading State #}
                 <template x-if="isLoading">

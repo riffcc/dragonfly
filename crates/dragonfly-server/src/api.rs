@@ -2675,10 +2675,21 @@ pub async fn workflow_events_handler(
     // Look up the workflow to get the machine_id (hardware_ref)
     let machine_id = if let Ok(wf_uuid) = uuid::Uuid::parse_str(&workflow_id) {
         match state.store.get_workflow(wf_uuid).await {
-            Ok(Some(wf)) => Some(wf.spec.hardware_ref.clone()),
-            _ => None,
+            Ok(Some(wf)) => {
+                debug!(workflow_id = %workflow_id, hardware_ref = %wf.spec.hardware_ref, "Found workflow");
+                Some(wf.spec.hardware_ref.clone())
+            }
+            Ok(None) => {
+                warn!(workflow_id = %workflow_id, "Workflow not found in store");
+                None
+            }
+            Err(e) => {
+                warn!(workflow_id = %workflow_id, error = %e, "Error looking up workflow");
+                None
+            }
         }
     } else {
+        warn!(workflow_id = %workflow_id, "Invalid workflow ID format (not a UUID)");
         None
     };
 
@@ -2700,24 +2711,6 @@ pub async fn workflow_events_handler(
                         // Transition from Initializing to Installing when we start receiving progress
                         if matches!(machine.status.state, dragonfly_common::MachineState::Initializing) {
                             machine.status.state = dragonfly_common::MachineState::Installing;
-                        }
-
-                        // If kexec is at high progress (>= 90%), mark as Installed NOW
-                        // The actual kexec will reboot the machine and no completion event will be sent
-                        if action_name == "kexec" && progress.percent >= 90 {
-                            info!(
-                                machine_id = %mid,
-                                kexec_progress = progress.percent,
-                                "kexec approaching reboot - marking machine as Installed"
-                            );
-                            machine.status.state = dragonfly_common::MachineState::Installed;
-                            machine.config.installation_progress = 100;
-                            machine.config.installation_step = Some("Installation complete".to_string());
-                            machine.config.reimage_requested = false;
-                            machine.config.os_installed = machine.config.os_choice.clone();
-                            machine.config.os_choice = None;
-                            // Emit machine_updated so UI refreshes
-                            let _ = state.event_manager.send(format!("machine_updated:{}", mid));
                         }
 
                         let _ = state.store.put_machine(&machine).await;
@@ -2793,23 +2786,33 @@ pub async fn workflow_events_handler(
             // If kexec completed successfully, mark machine as Installed NOW
             // (the machine may never PXE boot again if it boots from local disk)
             if action_name == "kexec" && success {
+                info!(machine_id = ?machine_id, "Received kexec completion event");
                 if let Some(mid) = &machine_id {
                     if let Ok(machine_uuid) = uuid::Uuid::parse_str(mid) {
-                        if let Ok(Some(mut machine)) = state.store.get_machine(machine_uuid).await {
-                            info!(
-                                machine_id = %mid,
-                                "kexec completed - marking machine as Installed"
-                            );
-                            machine.status.state = dragonfly_common::MachineState::Installed;
-                            machine.config.installation_progress = 100;
-                            machine.config.installation_step = Some("Installation complete".to_string());
-                            machine.config.reimage_requested = false;
-                            machine.config.os_installed = machine.config.os_choice.clone();
-                            machine.config.os_choice = None;
-                            machine.metadata.updated_at = chrono::Utc::now();
-                            let _ = state.store.put_machine(&machine).await;
-                            // Emit machine_updated so UI refreshes
-                            let _ = state.event_manager.send(format!("machine_updated:{}", mid));
+                        match state.store.get_machine(machine_uuid).await {
+                            Ok(Some(mut machine)) => {
+                                info!(
+                                    machine_id = %mid,
+                                    current_state = ?machine.status.state,
+                                    "kexec completed - marking machine as Installed"
+                                );
+                                machine.status.state = dragonfly_common::MachineState::Installed;
+                                machine.config.installation_progress = 100;
+                                machine.config.installation_step = Some("Installation complete".to_string());
+                                machine.config.reimage_requested = false;
+                                machine.config.os_installed = machine.config.os_choice.clone();
+                                machine.config.os_choice = None;
+                                machine.metadata.updated_at = chrono::Utc::now();
+                                let _ = state.store.put_machine(&machine).await;
+                                // Emit machine_updated so UI refreshes
+                                let _ = state.event_manager.send(format!("machine_updated:{}", mid));
+                            }
+                            Ok(None) => {
+                                warn!(machine_id = %mid, "Machine not found when handling kexec completion");
+                            }
+                            Err(e) => {
+                                warn!(machine_id = %mid, error = %e, "Error getting machine for kexec completion");
+                            }
                         }
                     }
                 }

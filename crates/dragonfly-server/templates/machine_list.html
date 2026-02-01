@@ -39,6 +39,7 @@
     selectAll: false, // State for the header checkbox
     selectedMachines: {}, // Object to track selected machine IDs { machineId: true/false }
     currentMachineType: null, // Store the type of the machine for modal actions
+    bulkTagMachineIds: [], // Machine IDs for bulk tagging
 
     // Get count of selected machines
     getSelectedCount() {
@@ -54,15 +55,36 @@
     async bulkDelete() {
         const ids = this.getSelectedIds();
         if (ids.length === 0) return;
-        if (!confirm(`Delete ${ids.length} machine(s)? This cannot be undone.`)) return;
+
+        if (!this.isAuthenticated) {
+            showToast('Authentication required.', 'error');
+            return;
+        }
+
+        let successCount = 0;
+        let failCount = 0;
 
         for (const id of ids) {
             try {
-                await fetch(`/api/machines/${id}`, { method: 'DELETE' });
+                const response = await fetch('/api/machines/' + id, { method: 'DELETE' });
+                if (response.ok) {
+                    successCount++;
+                } else {
+                    failCount++;
+                }
             } catch (e) {
+                failCount++;
                 console.error('Failed to delete machine', id, e);
             }
         }
+
+        if (failCount === 0) {
+            showToast('Deleted ' + successCount + ' machine(s).', 'success');
+        } else {
+            showToast('Delete: ' + successCount + ' succeeded, ' + failCount + ' failed.', 'warning');
+        }
+
+        this.deselectAllMachines();
         window.location.reload();
     },
 
@@ -73,11 +95,6 @@
 
         if (!this.isAuthenticated) {
             showToast('Authentication required.', 'error');
-            return;
-        }
-
-        const count = ids.length;
-        if (!confirm('Request reimage for ' + count + ' machine(s)?\n\nThis will mark them for reinstallation on next boot.')) {
             return;
         }
 
@@ -113,7 +130,7 @@
         window.location.reload();
     },
 
-    // Bulk tag action
+    // Bulk tag action - opens tag modal in bulk mode
     bulkTag() {
         const ids = this.getSelectedIds();
         if (ids.length === 0) return;
@@ -123,58 +140,11 @@
             return;
         }
 
-        // Open tag modal for bulk editing
-        // For now, prompt for a tag to add
-        const tag = prompt('Enter tag to add to ' + ids.length + ' machine(s):');
-        if (!tag || !tag.trim()) return;
-
-        this.bulkAddTag(ids, tag.trim());
-    },
-
-    async bulkAddTag(ids, tag) {
-        let successCount = 0;
-        let failCount = 0;
-
-        for (const id of ids) {
-            try {
-                // Get current tags
-                const getResp = await fetch('/api/machines/' + id + '/tags');
-                if (!getResp.ok) {
-                    failCount++;
-                    continue;
-                }
-                const currentTags = await getResp.json();
-
-                // Add new tag if not already present
-                if (!currentTags.includes(tag)) {
-                    const newTags = [...currentTags, tag];
-                    const putResp = await fetch('/api/machines/' + id + '/tags', {
-                        method: 'PUT',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(newTags)
-                    });
-                    if (putResp.ok) {
-                        successCount++;
-                    } else {
-                        failCount++;
-                    }
-                } else {
-                    successCount++; // Already has tag
-                }
-            } catch (e) {
-                failCount++;
-                console.error('Error tagging ' + id + ':', e);
-            }
-        }
-
-        if (failCount === 0) {
-            showToast('Tag "' + tag + '" added to ' + successCount + ' machine(s).', 'success');
-        } else {
-            showToast('Tag: ' + successCount + ' succeeded, ' + failCount + ' failed.', 'warning');
-        }
-
-        this.deselectAllMachines();
-        window.location.reload();
+        // Store selected IDs for bulk mode and open tag modal
+        this.bulkTagMachineIds = ids;
+        this.currentMachineId = null;
+        this.currentMachineName = ids.length + ' machines';
+        this.tagModal = true;
     },
 
     // Just Type functionality
@@ -338,7 +308,7 @@
         this.macConfirmModal = false;
     },
     
-    openTagModal(id, name) { this.tagModal = true; this.currentMachineId = id; this.currentMachineName = name; },
+    openTagModal(id, name) { this.bulkTagMachineIds = []; this.tagModal = true; this.currentMachineId = id; this.currentMachineName = name; },
     openReimageModal(id) { this.reimageModal = true; this.currentMachineId = id; },
     openPowerModal(id) { this.powerModal = true; this.currentMachineId = id; },
     openDeleteModal(id) { this.deleteModal = true; this.currentMachineId = id; },
@@ -1165,7 +1135,7 @@
     function requireAdmin(callback) {
         // window.isAuthenticated is now set by Alpine's x-init
         if (!window.isAuthenticated) {
-            alert("You need to be logged in as admin to perform this action.");
+            showToast('Authentication required.', 'error');
             return false;
         }
         return callback();
@@ -1178,63 +1148,137 @@
             newTag: '',
             isLoading: false,
             machineId: null,
-            
-            init() {
-                // Initial tags will be loaded when the modal is opened
-            },
-            addTag() {
-                if (!this.newTag.trim()) return;
-                if (this.tags.includes(this.newTag.trim())) {
-                    this.newTag = '';
-                    return;
+            errorMessage: null,
+            bulkMode: false,
+            bulkIds: [],
+
+            initTagEditor(machineId, bulkMachineIds) {
+                // Check if bulk mode based on passed array
+                if (bulkMachineIds && bulkMachineIds.length > 0) {
+                    this.bulkMode = true;
+                    this.bulkIds = bulkMachineIds;
+                    this.machineId = null;
+                    this.tags = [];
+                    this.isLoading = false;
+                } else {
+                    this.bulkMode = false;
+                    this.bulkIds = [];
+                    this.loadTags(machineId);
                 }
-                this.isLoading = true;
-                
-                // Make API call to add tag
-                fetch(`/api/machines/${this.machineId}/tags`, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({ tag: this.newTag.trim() })
-                })
-                .then(response => {
-                    if (!response.ok) throw new Error('Failed to add tag');
-                    return response.json();
-                })
-                .then(data => {
-                    this.tags.push(this.newTag.trim());
+            },
+
+            async addTag() {
+                if (!this.newTag.trim()) return;
+                const tag = this.newTag.trim();
+
+                if (this.bulkMode) {
+                    // Bulk mode: add tag to all selected machines
+                    this.isLoading = true;
+                    let successCount = 0;
+                    let failCount = 0;
+
+                    for (const id of this.bulkIds) {
+                        try {
+                            const response = await fetch('/api/machines/' + id + '/tags', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ tag: tag })
+                            });
+                            if (response.ok) successCount++;
+                            else failCount++;
+                        } catch (e) {
+                            failCount++;
+                        }
+                    }
+
+                    this.isLoading = false;
+                    if (failCount === 0) {
+                        showToast('Tag added to ' + successCount + ' machine(s).', 'success');
+                        if (!this.tags.includes(tag)) this.tags.push(tag);
+                    } else {
+                        showToast('Tag: ' + successCount + ' succeeded, ' + failCount + ' failed.', 'warning');
+                    }
                     this.newTag = '';
-                    this.isLoading = false;
-                })
-                .catch(error => {
-                    this.isLoading = false;
-                    alert('Failed to add tag. Please try again.');
-                });
+                } else {
+                    // Single machine mode
+                    if (this.tags.includes(tag)) {
+                        this.newTag = '';
+                        return;
+                    }
+                    this.isLoading = true;
+
+                    fetch('/api/machines/' + this.machineId + '/tags', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ tag: tag })
+                    })
+                    .then(response => {
+                        if (!response.ok) throw new Error('Failed to add tag');
+                        return response.json();
+                    })
+                    .then(data => {
+                        this.tags.push(tag);
+                        this.newTag = '';
+                        this.isLoading = false;
+                    })
+                    .catch(error => {
+                        this.isLoading = false;
+                        showToast('Failed to add tag.', 'error');
+                    });
+                }
             },
-            removeTag(tag) {
-                this.isLoading = true;
-                
-                // Make API call to remove tag
-                fetch(`/api/machines/${this.machineId}/tags/${encodeURIComponent(tag)}`, {
-                    method: 'DELETE'
-                })
-                .then(response => {
-                    if (!response.ok) throw new Error('Failed to remove tag');
+
+            async removeTag(tag) {
+                if (this.bulkMode) {
+                    // Bulk mode: remove tag from all selected machines
+                    this.isLoading = true;
+                    let successCount = 0;
+                    let failCount = 0;
+
+                    for (const id of this.bulkIds) {
+                        try {
+                            const response = await fetch('/api/machines/' + id + '/tags/' + encodeURIComponent(tag), {
+                                method: 'DELETE'
+                            });
+                            if (response.ok) successCount++;
+                            else failCount++;
+                        } catch (e) {
+                            failCount++;
+                        }
+                    }
+
+                    this.isLoading = false;
                     this.tags = this.tags.filter(t => t !== tag);
-                    this.isLoading = false;
-                })
-                .catch(error => {
-                    this.isLoading = false;
-                    alert('Failed to remove tag. Please try again.');
-                });
+                    if (failCount === 0) {
+                        showToast('Tag removed from ' + successCount + ' machine(s).', 'success');
+                    } else {
+                        showToast('Remove: ' + successCount + ' succeeded, ' + failCount + ' failed.', 'warning');
+                    }
+                } else {
+                    // Single machine mode
+                    this.isLoading = true;
+
+                    fetch('/api/machines/' + this.machineId + '/tags/' + encodeURIComponent(tag), {
+                        method: 'DELETE'
+                    })
+                    .then(response => {
+                        if (!response.ok) throw new Error('Failed to remove tag');
+                        this.tags = this.tags.filter(t => t !== tag);
+                        this.isLoading = false;
+                    })
+                    .catch(error => {
+                        this.isLoading = false;
+                        showToast('Failed to remove tag.', 'error');
+                    });
+                }
             },
-            openModal(machineId) {
+
+            loadTags(machineId) {
                 this.machineId = machineId;
                 this.isLoading = true;
-                
+
                 // Fetch existing tags for this machine
-                fetch(`/api/machines/${machineId}/tags`)
+                fetch('/api/machines/' + machineId + '/tags')
                 .then(response => {
                     if (!response.ok) throw new Error('Failed to fetch tags');
                     return response.json();
@@ -1245,7 +1289,7 @@
                 })
                 .catch(error => {
                     this.isLoading = false;
-                    alert('Failed to load tags. Please try again.');
+                    showToast('Failed to load tags.', 'error');
                 });
             }
         };
@@ -1838,13 +1882,12 @@
                     // Check if this is a TLS error with suggestion to disable verification
                     if (error.cause && error.cause.suggestDisableTls) {
                         this.errorMessage = error.message;
-                        
-                        // Ask user if they want to try again with TLS verification disabled
-                        if (confirm("TLS certificate verification failed. Would you like to try again with certificate validation disabled?")) {
-                            this.formData.skipTlsVerify = true;
-                            this.connectProxmox(); // Try the connection again
-                            return;
-                        }
+
+                        // Auto-retry with TLS verification disabled
+                        showToast('TLS verification failed - retrying without certificate validation.', 'warning');
+                        this.formData.skipTlsVerify = true;
+                        this.connectProxmox();
+                        return;
                     } else {
                         // Regular error
                         this.errorMessage = `Connection failed: ${error.message}`;

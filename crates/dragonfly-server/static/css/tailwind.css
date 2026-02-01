@@ -677,6 +677,14 @@
   .grow {
     flex-grow: 1;
   }
+  .border-separate {
+    border-collapse: separate;
+  }
+  .border-spacing-0 {
+    --tw-border-spacing-x: calc(var(--spacing) * 0);
+    --tw-border-spacing-y: calc(var(--spacing) * 0);
+    border-spacing: var(--tw-border-spacing-x) var(--tw-border-spacing-y);
+  }
   .translate-y-0 {
     --tw-translate-y: calc(var(--spacing) * 0);
     translate: var(--tw-translate-x) var(--tw-translate-y);
@@ -910,6 +918,16 @@
   }
   .rounded-tr-xl {
     border-top-right-radius: var(--radius-xl);
+  }
+  .rounded-b-xl {
+    border-bottom-right-radius: var(--radius-xl);
+    border-bottom-left-radius: var(--radius-xl);
+  }
+  .rounded-br-xl {
+    border-bottom-right-radius: var(--radius-xl);
+  }
+  .rounded-bl-xl {
+    border-bottom-left-radius: var(--radius-xl);
   }
   .border {
     border-style: var(--tw-border-style);
@@ -2280,13 +2298,6 @@
       }
     }
   }
-  .hover\:ring-purple-500 {
-    &:hover {
-      @media (hover: hover) {
-        --tw-ring-color: var(--color-purple-500);
-      }
-    }
-  }
   .focus\:border-indigo-500 {
     &:focus {
       border-color: var(--color-indigo-500);
@@ -3551,18 +3562,6 @@
       }
     }
   }
-  .dark\:hover\:bg-gray-700\/50 {
-    &:where(.dark, .dark *) {
-      &:hover {
-        @media (hover: hover) {
-          background-color: color-mix(in srgb, oklch(37.3% 0.034 259.733) 50%, transparent);
-          @supports (color: color-mix(in lab, red, red)) {
-            background-color: color-mix(in oklab, var(--color-gray-700) 50%, transparent);
-          }
-        }
-      }
-    }
-  }
   .dark\:hover\:bg-gray-900 {
     &:where(.dark, .dark *) {
       &:hover {
@@ -3674,18 +3673,6 @@
       }
     }
   }
-  .dark\:hover\:ring-purple-700\/60 {
-    &:where(.dark, .dark *) {
-      &:hover {
-        @media (hover: hover) {
-          --tw-ring-color: color-mix(in srgb, oklch(49.6% 0.265 301.924) 60%, transparent);
-          @supports (color: color-mix(in lab, red, red)) {
-            --tw-ring-color: color-mix(in oklab, var(--color-purple-700) 60%, transparent);
-          }
-        }
-      }
-    }
-  }
   .dark\:hover\:backdrop-blur-sm {
     &:where(.dark, .dark *) {
       &:hover {
@@ -3703,6 +3690,16 @@
 .tech-mono {
   font-family: 'JetBrains Mono', monospace !important;
   letter-spacing: -0.025em;
+}
+@property --tw-border-spacing-x {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 0;
+}
+@property --tw-border-spacing-y {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 0;
 }
 @property --tw-translate-x {
   syntax: "*";
@@ -4033,6 +4030,8 @@
 @layer properties {
   @supports ((-webkit-hyphens: none) and (not (margin-trim: inline))) or ((-moz-orient: inline) and (not (color:rgb(from red r g b)))) {
     *, ::before, ::after, ::backdrop {
+      --tw-border-spacing-x: 0;
+      --tw-border-spacing-y: 0;
       --tw-translate-x: 0;
       --tw-translate-y: 0;
       --tw-translate-z: 0;
