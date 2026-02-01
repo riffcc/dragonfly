@@ -2598,17 +2598,29 @@ pub async fn get_workflow_handler(
     }
 }
 
+/// Query parameters for template handler
+#[derive(Debug, Deserialize)]
+pub struct TemplateQuery {
+    /// Optional machine ID for machine-specific variable substitution
+    pub machine_id: Option<String>,
+}
+
 /// Get template by name for agent execution
 ///
 /// Templates define the actions to execute for OS installation.
 /// Templates are stored in the database and loaded from YAML files on startup.
-/// Template variables {{ ssh_authorized_keys }}, {{ ssh_import_id }}, and {{ default_user }}
-/// are substituted with values from settings before returning the template.
+/// Template variables {{ ssh_authorized_keys }}, {{ ssh_import_id }}, {{ default_user }},
+/// {{ friendly_name }}, and {{ instance_id }} are substituted before returning the template.
+///
+/// If `machine_id` query param is provided, machine-specific variables are substituted:
+/// - {{ friendly_name }} = hostname (if set) or memorable_name
+/// - {{ instance_id }} = machine UUID
 pub async fn get_template_handler(
     State(state): State<crate::AppState>,
     Path(template_name): Path<String>,
+    Query(query): Query<TemplateQuery>,
 ) -> Response {
-    debug!(template_name = %template_name, "Fetching template for agent");
+    debug!(template_name = %template_name, machine_id = ?query.machine_id, "Fetching template for agent");
 
     // Fetch settings for template variable substitution
     let ssh_keys = state.store.get_setting("ssh_keys").await
@@ -2666,6 +2678,44 @@ pub async fn get_template_handler(
         keys
     };
 
+    // Fetch machine-specific variables if machine_id is provided
+    let (friendly_name, instance_id) = if let Some(ref machine_id_str) = query.machine_id {
+        match Uuid::parse_str(machine_id_str) {
+            Ok(machine_uuid) => {
+                match state.store.get_machine(machine_uuid).await {
+                    Ok(Some(machine)) => {
+                        // Priority: hostname (user-set) > memorable_name (auto-generated) > "localhost"
+                        let name = machine.config.hostname
+                            .clone()
+                            .unwrap_or_else(|| machine.config.memorable_name.clone());
+                        let name = if name.is_empty() || name == "localhost" {
+                            machine.config.memorable_name.clone()
+                        } else {
+                            name
+                        };
+                        info!(machine_id = %machine_uuid, friendly_name = %name, "Using machine-specific hostname");
+                        (name, machine_uuid.to_string())
+                    }
+                    Ok(None) => {
+                        warn!(machine_id = %machine_id_str, "Machine not found, using defaults");
+                        ("localhost".to_string(), machine_id_str.clone())
+                    }
+                    Err(e) => {
+                        warn!(machine_id = %machine_id_str, error = %e, "Failed to fetch machine, using defaults");
+                        ("localhost".to_string(), machine_id_str.clone())
+                    }
+                }
+            }
+            Err(e) => {
+                warn!(machine_id = %machine_id_str, error = %e, "Invalid machine UUID, using defaults");
+                ("localhost".to_string(), machine_id_str.clone())
+            }
+        }
+    } else {
+        // No machine_id provided - use placeholder values
+        ("localhost".to_string(), "00000000-0000-0000-0000-000000000000".to_string())
+    };
+
     // Fetch template from store
     match state.store.get_template(&template_name).await {
         Ok(Some(mut template)) => {
@@ -2678,7 +2728,9 @@ pub async fn get_template_handler(
                             .replace("{{ default_password }}", &default_password)
                             .replace("{{ ssh_pwauth }}", &ssh_pwauth.to_string())
                             .replace("{{ ssh_authorized_keys }}", &ssh_authorized_keys_yaml)
-                            .replace("{{ ssh_import_id }}", &ssh_import_id_yaml);
+                            .replace("{{ ssh_import_id }}", &ssh_import_id_yaml)
+                            .replace("{{ friendly_name }}", &friendly_name)
+                            .replace("{{ instance_id }}", &instance_id);
                     }
                 }
             }

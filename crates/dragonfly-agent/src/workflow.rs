@@ -57,7 +57,7 @@ impl AgentWorkflowRunner {
             "Fetched workflow from server"
         );
 
-        let template = self.fetch_template(&workflow.spec.template_ref).await?;
+        let template = self.fetch_template(&workflow.spec.template_ref, Some(&workflow.spec.hardware_ref)).await?;
         info!(
             template = %template.metadata.name,
             actions = template.spec.actions.len(),
@@ -151,9 +151,15 @@ impl AgentWorkflowRunner {
     }
 
     /// Fetch template from server
-    async fn fetch_template(&self, template_name: &str) -> Result<Template> {
-        let url = format!("{}/api/templates/{}", self.server_url, template_name);
-        debug!(url = %url, "Fetching template");
+    ///
+    /// If machine_id is provided, it's passed as a query parameter so the server
+    /// can substitute machine-specific variables like {{ friendly_name }}.
+    async fn fetch_template(&self, template_name: &str, machine_id: Option<&str>) -> Result<Template> {
+        let url = match machine_id {
+            Some(id) => format!("{}/api/templates/{}?machine_id={}", self.server_url, template_name, id),
+            None => format!("{}/api/templates/{}", self.server_url, template_name),
+        };
+        debug!(url = %url, machine_id = ?machine_id, "Fetching template");
 
         let response = self.client.get(&url).send().await?;
 
