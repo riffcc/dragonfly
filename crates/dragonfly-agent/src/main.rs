@@ -601,8 +601,13 @@ async fn main() -> Result<()> {
         anyhow::bail!("Failed to fetch existing machines: {}", error_text);
     }
     
-    let existing_machines: Vec<Machine> = existing_machines_response.json().await
-        .context("Failed to parse existing machines response")?;
+    let existing_machines_body = existing_machines_response.text().await
+        .context("Failed to read existing machines response body")?;
+    let existing_machines: Vec<Machine> = serde_json::from_str(&existing_machines_body)
+        .with_context(|| format!(
+            "Failed to parse existing machines response.\nResponse body: {}",
+            existing_machines_body
+        ))?;
     
     // Find if this machine already exists by MAC address
     let existing_machine_option = existing_machines.iter().find(|m| m.mac_address == mac_address).cloned();
@@ -620,8 +625,13 @@ async fn main() -> Result<()> {
                 Ok(resp) => {
                     if resp.status().is_success() {
                         // The API returns {"machine": ..., "workflow_info": ...}
-                        let full_data: serde_json::Value = resp.json().await
-                            .context("Failed to parse full machine data JSON")?;
+                        let body_text = resp.text().await
+                            .context("Failed to read full machine data response body")?;
+                        let full_data: serde_json::Value = serde_json::from_str(&body_text)
+                            .with_context(|| format!(
+                                "Failed to parse full machine data JSON.\nResponse body: {}",
+                                body_text
+                            ))?;
                         if let Some(fetched_machine_json) = full_data.get("machine") {
                              match serde_json::from_value::<Machine>(fetched_machine_json.clone()) {
                                 Ok(fetched_machine) => {
@@ -743,8 +753,13 @@ async fn main() -> Result<()> {
                 anyhow::bail!("Failed to register machine: {}", error_text);
             }
             
-            let register_response: RegisterResponse = response.json().await
-                .context("Failed to parse registration response")?;
+            let register_body = response.text().await
+                .context("Failed to read registration response body")?;
+            let register_response: RegisterResponse = serde_json::from_str(&register_body)
+                .with_context(|| format!(
+                    "Failed to parse registration response.\nResponse body: {}",
+                    register_body
+                ))?;
             
             tracing::info!("Machine registered successfully!");
             tracing::info!("Machine ID: {}", register_response.machine_id);
@@ -939,7 +954,8 @@ async fn run_native_provisioning_loop(
         match checkin_native(client, server_url, mac, hostname, ip_address).await {
             Ok(response) => {
                 info!(
-                    hardware_id = %response.hardware_id,
+                    machine_id = %response.machine_id,
+                    name = %response.memorable_name,
                     is_new = %response.is_new,
                     action = ?response.action,
                     "Check-in successful"
@@ -954,11 +970,15 @@ async fn run_native_provisioning_loop(
                         if let Some(workflow_id) = response.workflow_id {
                             info!(workflow_id = %workflow_id, "Server assigned workflow, executing...");
 
+                            // Update hardware name to match machine_id (workflow's hardware_ref uses this)
+                            let mut hw = hardware.clone();
+                            hw.metadata.name = response.machine_id.clone();
+
                             // Create workflow runner and execute
                             let runner = AgentWorkflowRunner::new(
                                 client.clone(),
                                 server_url.to_string(),
-                                hardware.clone(),
+                                hw,
                             ).with_action_filter(action_filter.clone());
 
                             match runner.execute(&workflow_id).await {

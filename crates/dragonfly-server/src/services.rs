@@ -7,11 +7,11 @@
 //!
 //! All services are optional and can be enabled/disabled via configuration.
 
-use crate::store::DragonflyStore;
+use crate::store::v1::Store;
 use async_trait::async_trait;
 use bytes::Bytes;
-use dragonfly_crd::Hardware;
-use dragonfly_dhcp::{DhcpConfig, DhcpEvent, DhcpMode, DhcpServer, HardwareLookup};
+use dragonfly_common::Machine;
+use dragonfly_dhcp::{DhcpConfig, DhcpEvent, DhcpMode, DhcpServer, MachineLookup};
 use dragonfly_tftp::{FileProvider, TftpEvent, TftpServer};
 use std::collections::HashMap;
 use std::net::Ipv4Addr;
@@ -88,12 +88,12 @@ impl Default for TftpServiceConfig {
 /// Manages the lifecycle of DHCP and TFTP servers.
 pub struct ServiceRunner {
     config: ServicesConfig,
-    store: Arc<dyn DragonflyStore>,
+    store: Arc<dyn Store>,
 }
 
 impl ServiceRunner {
     /// Create a new service runner
-    pub fn new(config: ServicesConfig, store: Arc<dyn DragonflyStore>) -> Self {
+    pub fn new(config: ServicesConfig, store: Arc<dyn Store>) -> Self {
         Self { config, store }
     }
 
@@ -152,8 +152,8 @@ impl ServiceRunner {
             .with_boot_filename(&config.boot_filename_uefi)
             .with_http_port(self.config.http_port);
 
-        // Create hardware lookup wrapper
-        let lookup = StoreHardwareLookup::new(self.store.clone());
+        // Create machine lookup wrapper
+        let lookup = StoreMachineLookup::new(self.store.clone());
 
         let server = Arc::new(DhcpServer::new(dhcp_config, Arc::new(lookup)));
         let server_clone = server.clone();
@@ -214,24 +214,24 @@ pub struct ServiceHandle<E> {
     pub join_handle: tokio::task::JoinHandle<()>,
 }
 
-/// Hardware lookup implementation using DragonflyStore
-struct StoreHardwareLookup {
-    store: Arc<dyn DragonflyStore>,
+/// Machine lookup implementation using v1 Store
+struct StoreMachineLookup {
+    store: Arc<dyn Store>,
 }
 
-impl StoreHardwareLookup {
-    fn new(store: Arc<dyn DragonflyStore>) -> Self {
+impl StoreMachineLookup {
+    fn new(store: Arc<dyn Store>) -> Self {
         Self { store }
     }
 }
 
 #[async_trait]
-impl HardwareLookup for StoreHardwareLookup {
-    async fn get_hardware_by_mac(&self, mac: &str) -> Option<Hardware> {
-        match self.store.get_hardware_by_mac(mac).await {
-            Ok(hw) => hw,
+impl MachineLookup for StoreMachineLookup {
+    async fn get_machine_by_mac(&self, mac: &str) -> Option<Machine> {
+        match self.store.get_machine_by_mac(mac).await {
+            Ok(m) => m,
             Err(e) => {
-                warn!(mac = %mac, error = %e, "Failed to lookup hardware");
+                warn!(mac = %mac, error = %e, "Failed to lookup machine");
                 None
             }
         }
@@ -339,7 +339,8 @@ pub enum ServiceError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::MemoryStore;
+    use crate::store::v1::MemoryStore;
+    use dragonfly_common::MachineIdentity;
 
     #[tokio::test]
     async fn test_memory_file_provider() {
@@ -376,22 +377,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_store_hardware_lookup() {
-        let store: Arc<dyn DragonflyStore> = Arc::new(MemoryStore::new());
+    async fn test_store_machine_lookup() {
+        let store: Arc<dyn Store> = Arc::new(MemoryStore::new());
 
-        // Add hardware
-        let hw = Hardware::new("test-hw", dragonfly_crd::HardwareSpec::new("00:11:22:33:44:55"));
-        store.put_hardware(&hw).await.unwrap();
+        // Add machine
+        let identity = MachineIdentity::from_mac("00:11:22:33:44:55");
+        let machine = Machine::new(identity);
+        store.put_machine(&machine).await.unwrap();
 
-        let lookup = StoreHardwareLookup::new(store);
+        let lookup = StoreMachineLookup::new(store);
 
         // Should find by MAC
-        let found = lookup.get_hardware_by_mac("00:11:22:33:44:55").await;
+        let found = lookup.get_machine_by_mac("00:11:22:33:44:55").await;
         assert!(found.is_some());
-        assert_eq!(found.unwrap().metadata.name, "test-hw");
+        assert_eq!(found.unwrap().primary_mac(), "00:11:22:33:44:55");
 
         // Should not find unknown MAC
-        let not_found = lookup.get_hardware_by_mac("ff:ff:ff:ff:ff:ff").await;
+        let not_found = lookup.get_machine_by_mac("ff:ff:ff:ff:ff:ff").await;
         assert!(not_found.is_none());
     }
 

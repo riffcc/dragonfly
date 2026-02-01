@@ -15,7 +15,7 @@ use std::net::Ipv4Addr;
 use serde_json::json;
 
 use crate::AppState;
-use crate::db;
+use crate::store::conversions::{machine_from_register_request, machine_to_common};
 use dragonfly_common::models::{RegisterRequest, MachineStatus, ErrorResponse};
 
 // Define local structs needed by discover_proxmox_handler
@@ -37,6 +37,7 @@ pub struct ProxmoxDiscoverResponse {
 
 // New struct to receive connection details from request body
 #[derive(Deserialize, Debug)]
+#[allow(dead_code)]  // Fields are populated by deserialization but not all are read
 pub struct ProxmoxConnectRequest {
     host: String,
     port: Option<u16>,
@@ -57,58 +58,6 @@ pub struct ProxmoxConnectResponse {
     failed_vms: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     machines: Option<Vec<DiscoveredProxmox>>,
-}
-
-// Define Authid locally since we don't have the correct import
-#[derive(Debug, Clone)]
-struct Authid {
-    username: String,
-    realm: Option<String>,
-}
-
-impl Authid {
-    fn new(username: &str, realm: Option<&str>) -> Self {
-        Authid {
-            username: username.to_string(),
-            realm: realm.map(|s| s.to_string()),
-        }
-    }
-}
-
-impl std::fmt::Display for Authid {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if let Some(realm) = &self.realm {
-            write!(f, "{}@{}", self.username, realm)
-        } else {
-            write!(f, "{}", self.username)
-        }
-    }
-}
-
-// Structs matching Proxmox API documentation
-#[derive(Debug, Deserialize, Serialize)]
-struct CreateTicketRequest {
-    username: String,
-    password: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    realm: Option<String>,
-    #[serde(rename = "new-format")]
-    #[serde(skip_serializing_if = "Option::is_none")]
-    new_format: Option<bool>,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-struct CreateTicketResponse {
-    #[serde(rename = "CSRFPreventionToken")]
-    csrfprevention_token: Option<String>,
-    clustername: Option<String>,
-    ticket: Option<String>,
-    username: String,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-struct ApiResponse<T> {
-    data: Option<T>,
 }
 
 // Error types
@@ -990,45 +939,11 @@ pub async fn generate_proxmox_tokens_with_credentials(
     }
 }
 
-// Helper to handle Proxmox errors consistently
-fn handle_proxmox_error(e: ProxmoxClientError, skip_tls_verify: bool) -> ProxmoxResult<Json<ProxmoxConnectResponse>> {
-    // Check if the error might be related to TLS or authentication
-    let err_str = e.to_string();
-    if err_str.contains("certificate") || 
-       err_str.contains("SSL") || 
-       err_str.contains("TLS") || 
-       err_str.contains("self signed") || 
-       err_str.contains("unknown issuer") {
-        // If this appears to be a TLS issue and we haven't already tried with skip_tls_verify
-        if !skip_tls_verify {
-            Err(ProxmoxHandlerError::TlsValidationError(
-                "Could not verify SSL certificate. Try again with certificate validation disabled.".to_string()
-            ))
-        } else {
-            // We already tried with skip_tls_verify=true but still got an error
-            Err(ProxmoxHandlerError::ApiError(e))
-        }
-    } else if err_str.contains("unauthorized") || 
-              err_str.contains("authentication") || 
-              err_str.contains("401") {
-        // Authentication error
-        Err(ProxmoxHandlerError::LoginError(
-            Box::new(std::io::Error::new(
-                std::io::ErrorKind::PermissionDenied,
-                format!("Proxmox authentication failed: {}", e),
-            ))
-        ))
-    } else {
-        // Other API error
-        Err(ProxmoxHandlerError::ApiError(e))
-    }
-}
-
 // Helper function for discovery and registration
 async fn discover_and_register_proxmox_vms(
     client: &ProxmoxApiClient,
     cluster_name: &str,
-    _state: &AppState,
+    state: &AppState,
 ) -> ProxmoxResult<(usize, usize, Vec<DiscoveredProxmox>)> {
     info!("Discovering and registering Proxmox VMs for cluster: {}", cluster_name);
     
@@ -1152,12 +1067,14 @@ async fn discover_and_register_proxmox_vms(
                                     nameservers: Vec::new(),
                                     cpu_model: None,
                                 };
-            info!("Host req: {:?}, Attempting to register Proxmox host node with DB", host_req);
-            match db::register_machine(&host_req).await { 
-                                    Ok(machine_id) => {
+            info!("Host req: {:?}, Attempting to register Proxmox host node with v1 Store", host_req);
+            let machine = machine_from_register_request(&host_req);
+            let machine_id = machine.id;
+            match state.store.put_machine(&machine).await {
+                Ok(()) => {
                     info!("Successfully registered/updated Proxmox host node '{}' as machine ID {}", node_name, machine_id);
                 }
-                                    Err(e) => {
+                Err(e) => {
                     error!("Failed to register Proxmox host node '{}': {}", node_name, e);
                     // Log error but continue to VMs for this node
                 }
@@ -1545,32 +1462,24 @@ async fn discover_and_register_proxmox_vms(
             };
 
             // DEBUG: Log the request before attempting registration
-            info!("Register request: {:?}, Attempting to register VM with DB", register_request);
-            
-            // Register the VM
-            match db::register_machine(&register_request).await {
-                Ok(machine_id) => {
+            info!("Register request: {:?}, Attempting to register VM with v1 Store", register_request);
+
+            // Create v1 Machine from register request
+            let mut machine = machine_from_register_request(&register_request);
+            let machine_id = machine.id;
+
+            // Set the machine state based on VM status
+            use dragonfly_common::MachineState;
+            machine.status.state = match status {
+                "running" => MachineState::Provisioned,
+                "stopped" => MachineState::Offline,
+                _ => MachineState::Provisioned,
+            };
+
+            // Register the VM with v1 Store
+            match state.store.put_machine(&machine).await {
+                Ok(()) => {
                     info!("Successfully registered Proxmox VM {} as machine {}", vmid, machine_id);
-                    
-                    // Get the new machine to register with Tinkerbell
-                    if let Ok(Some(machine)) = db::get_machine_by_id(&machine_id).await {
-                        // Register with Tinkerbell (don't fail if this fails)
-                        // Assuming tinkerbell module is accessible via crate::tinkerbell
-                        if let Err(e) = crate::tinkerbell::register_machine(&machine).await {
-                            warn!("Failed to register machine with Tinkerbell (continuing anyway): {}", e);
-                        }
-                        
-                        // Update the machine status and OS - requires dbpool
-                        let machine_status = match status {
-                            "running" => MachineStatus::Ready,
-                            "stopped" => MachineStatus::Offline,
-                            _ => MachineStatus::ExistingOS,
-                        };
-                        
-                        let _ = db::update_status(&machine_id, machine_status).await;
-                        let _ = db::update_os_installed(&machine_id, &vm_os).await;
-                    }
-                    
                     registered_machines += 1;
                 },
                 Err(e) => {
@@ -1830,18 +1739,20 @@ pub async fn start_proxmox_sync_task(
                         }
                     }
                     
-                    // Get all machines with Proxmox information
-                    let machines = match db::get_all_machines().await {
+                    // Get all machines from v1 Store and filter for Proxmox machines
+                    use dragonfly_common::MachineSource;
+                    let machines = match state_clone.store.list_machines().await {
                         Ok(m) => m,
                         Err(e) => {
                             error!("Failed to get machines for Proxmox sync: {}", e);
                             continue;
                         }
                     };
-                    
-                    // Filter out machines with Proxmox info
-                    let proxmox_machines: Vec<_> = machines.into_iter()
-                        .filter(|m| m.proxmox_vmid.is_some() || m.is_proxmox_host)
+
+                    // Filter to only Proxmox-sourced machines and convert to common Machine type
+                    let proxmox_machines: Vec<dragonfly_common::models::Machine> = machines.iter()
+                        .filter(|m| matches!(m.metadata.source, MachineSource::Proxmox { .. }))
+                        .map(|m| machine_to_common(m))
                         .collect();
                     
                     if proxmox_machines.is_empty() {
@@ -1854,7 +1765,7 @@ pub async fn start_proxmox_sync_task(
                     match connect_to_proxmox(&state_clone, "sync").await {
                         Ok(client) => {
                             // Process each cluster and its machines
-                            if let Err(e) = sync_proxmox_machines(&client, &proxmox_machines).await {
+                            if let Err(e) = sync_proxmox_machines(&client, &proxmox_machines, &state_clone).await {
                                 error!("Error during Proxmox sync check: {}", e);
                             }
                         },
@@ -2028,7 +1939,8 @@ pub async fn connect_to_proxmox(
 // NEW function to handle both updates and pruning
 async fn sync_proxmox_machines(
     client: &ProxmoxApiClient,
-    db_machines: &[dragonfly_common::models::Machine]
+    db_machines: &[dragonfly_common::models::Machine],
+    state: &crate::AppState,
 ) -> Result<(), anyhow::Error> {
     info!("Starting Proxmox machine synchronization...");
 
@@ -2143,11 +2055,23 @@ async fn sync_proxmox_machines(
                         "Sync: Updating status for VM {} (ID: {}) from {:?} to {:?}",
                         vmid, db_machine.id, db_machine.status, new_db_status
                     );
-                    // Call the new db::update_machine_status function (to be created)
-                    if let Err(e) = db::update_machine_status(db_machine.id, new_db_status).await {
-                        error!("Sync: Failed to update status for VM {}: {}", vmid, e);
-                    } else {
-                        updated_status_count += 1;
+                    // Update via v1 Store
+                    if let Ok(Some(mut machine)) = state.store.get_machine(db_machine.id).await {
+                        use dragonfly_common::MachineState;
+                        machine.status.state = match new_db_status {
+                            MachineStatus::Ready => MachineState::Provisioned,
+                            MachineStatus::Offline => MachineState::Offline,
+                            MachineStatus::ExistingOS => MachineState::Provisioned,
+                            MachineStatus::AwaitingAssignment => MachineState::Discovered,
+                            MachineStatus::InstallingOS => MachineState::Provisioning,
+                            MachineStatus::Error(ref msg) => MachineState::Error { message: msg.clone() },
+                        };
+                        machine.metadata.updated_at = chrono::Utc::now();
+                        if let Err(e) = state.store.put_machine(&machine).await {
+                            error!("Sync: Failed to update status for VM {}: {}", vmid, e);
+                        } else {
+                            updated_status_count += 1;
+                        }
                     }
                 }
 
@@ -2179,27 +2103,14 @@ async fn sync_proxmox_machines(
                                         }
 
                                         if let Some(current_ip) = found_ip {
-                                            if db_machine.ip_address != current_ip {
-                                                info!(
-                                                    "Sync: Updating IP for VM {} (ID: {}) from {} to {} (via agent)",
-                                                    vmid, db_machine.id, db_machine.ip_address, current_ip
-                                                );
-                                                // Use the generic update function with just the IP field
-                                                let _update_payload = serde_json::json!({ "ip_address": current_ip });
-                                                
-                                                // Fetch the machine, update IP, then call db::update_machine
-                                                match db::get_machine_by_id(&db_machine.id).await {
-                                                    Ok(Some(mut machine_to_update)) => {
-                                                        machine_to_update.ip_address = current_ip;
-                                                        match db::update_machine(&machine_to_update).await {
-                                                            Ok(_) => updated_ip_count += 1,
-                                                            Err(e) => error!("Sync: Failed to update machine object for VM {}: {}", vmid, e),
-                                                        }
-                                                    }
-                                                    Ok(None) => error!("Sync: Machine {} disappeared while trying to update IP?", db_machine.id),
-                                                    Err(e) => error!("Sync: Failed to fetch machine {} for IP update: {}", db_machine.id, e),
-                                                }
-                                            }
+                                            // TODO: v1 Store doesn't track IP addresses yet
+                                            // When IP tracking is added to v1 schema, update here
+                                            info!(
+                                                "Sync: Found IP {} for VM {} (ID: {}) via agent (IP tracking not yet in v1 schema)",
+                                                current_ip, vmid, db_machine.id
+                                            );
+                                            // For now, just count it as seen but don't try to update
+                                            let _ = updated_ip_count; // Suppress unused warning
                                         }
                                     }
                                 }
@@ -2222,11 +2133,13 @@ async fn sync_proxmox_machines(
     if !machines_to_prune.is_empty() {
         info!("Sync: Pruning {} machines not found in Proxmox API...", machines_to_prune.len());
         for machine_id in machines_to_prune {
-            // Pass ID by reference
-            match db::delete_machine(&machine_id).await {
-                Ok(_) => {
+            match state.store.delete_machine(machine_id).await {
+                Ok(true) => {
                     info!("Sync: Successfully pruned machine {}", machine_id);
                     pruned_count += 1;
+                },
+                Ok(false) => {
+                    warn!("Sync: Machine {} was already deleted", machine_id);
                 },
                 Err(e) => {
                     error!("Sync: Failed to prune machine {}: {}", machine_id, e);
@@ -2241,90 +2154,6 @@ async fn sync_proxmox_machines(
     );
 
     Ok(())
-}
-
-// ... (Keep other existing helpers like register_machine_with_id if still needed)
-
-async fn create_api_client(
-    host: &str,
-    port: i32,
-    username: &str,
-    password: &str,
-    skip_tls_verify: bool,
-) -> Result<ProxmoxApiClient, ProxmoxClientError> {
-    info!("Creating Proxmox API client for host: {}, port: {}, username: {}", host, port, username);
-    
-    // Check if we're using an API token format (username@realm!tokenname)
-    let is_api_token = username.contains('!');
-
-    // Handle both API token authentication and regular username/password authentication
-    if is_api_token {
-        // For API token, parse the token format: username@realm!tokenname=TOKEN_UUID
-        // First, get the actual token value
-        if let Some(_token_value) = extract_token_value(username) {
-            info!("Using API token authentication");
-            // TODO: Implement API token authentication when proxmox-client supports it
-            // For now, return a basic client
-            let client = create_proxmox_client(host, port, skip_tls_verify).await?;
-            return Ok(client);
-                                                    } else {
-            return Err(ProxmoxClientError::Api(
-                hyper::StatusCode::BAD_REQUEST,
-                "Invalid API token format. Expected format: username@realm!tokenname=TOKEN_UUID".to_string()
-            ));
-                                                }
-                                            } else {
-        // Regular username/password authentication
-        info!("Using regular username/password authentication");
-        let client = create_proxmox_client(host, port, skip_tls_verify).await?;
-        
-        // Create login request
-        let login_builder = proxmox_login::Login::new(
-            &format!("https://{}:{}", host, port),
-            username.to_string(), 
-            password.to_string()
-        );
-        
-        // Attempt login
-        match client.login(login_builder).await {
-            Ok(None) => {
-                info!("Successfully authenticated with Proxmox API");
-                Ok(client)
-            },
-            Ok(Some(_)) => {
-                Err(ProxmoxClientError::Api(
-                    hyper::StatusCode::UNAUTHORIZED,
-                    "Two-factor authentication is required but not supported".to_string()
-                ))
-            },
-            Err(e) => {
-                error!("Failed to authenticate with Proxmox API: {}", e);
-                Err(e)
-            }
-        }
-    }
-}
-
-// Helper function to extract token value from API token string
-fn extract_token_value(token_str: &str) -> Option<String> {
-    token_str.split('=').nth(1).map(|s| s.to_string())
-}
-
-// Helper function to create a basic Proxmox client
-async fn create_proxmox_client(
-    host: &str,
-    port: i32,
-    skip_tls_verify: bool
-) -> Result<ProxmoxApiClient, ProxmoxClientError> {
-    let host_url = format!("https://{}:{}", host, port);
-    let uri = host_url.parse::<Uri>()
-        .map_err(|e| ProxmoxClientError::Api(
-            hyper::StatusCode::BAD_REQUEST,
-            format!("Invalid Proxmox URL: {}", e)
-        ))?;
-    
-    // TODO: Handle TLS verification properly when client supports it
-    Ok(ProxmoxApiClient::new(uri))
 }
 
 // Create a new struct for the token creation request
@@ -2383,95 +2212,6 @@ pub async fn create_proxmox_tokens_handler(
             })))
         }
     }
-}
-
-/// Creates specialized API tokens for different operations in Proxmox.
-/// 
-/// # Security
-/// This function uses root credentials provided by the user to create API tokens with minimal permissions,
-/// but NEVER stores the password. The password is only used transiently during token creation, and the
-/// resulting tokens are what get stored (encrypted) in the database.
-/// 
-/// # Returns
-/// A ProxmoxTokenSet containing the tokens and connection info
-async fn generate_proxmox_tokens(
-    client: &ProxmoxApiClient,
-    request: &ProxmoxTokensCreateRequest,
-) -> Result<ProxmoxTokenSet, String> {
-    info!("Generating specialized Proxmox API tokens");
-    
-    // Format: USER@REALM!TOKENID=UUID
-    let user_realm = match request.username.contains('@') {
-        true => request.username.clone(),
-        false => format!("{}@pam", request.username),
-    };
-    info!("DEBUG: Using user_realm: {} for token creation", user_realm);
-    
-    // Extract just the username part (without realm)
-    let username = if user_realm.contains('@') {
-        user_realm.split('@').next().unwrap_or(&user_realm)
-                    } else {
-        &user_realm
-    };
-    info!("DEBUG: Extracted username: {}", username);
-    
-    // Generate token IDs with dragonfly prefix for easy identification/cleanup
-    let create_token_id = "dragonfly-create";
-    let power_token_id = "dragonfly-power";
-    let config_token_id = "dragonfly-config";
-    let sync_token_id = "dragonfly-sync";
-    
-    // First, check if user has permission to create tokens
-    let user_permissions_path = format!("/api2/json/access/permissions");
-    info!("DEBUG: Checking user permissions at path: {}", user_permissions_path);
-    
-    match client.get(&user_permissions_path).await {
-        Ok(permissions_response) => {
-            let body_str = String::from_utf8_lossy(&permissions_response.body);
-            info!("DEBUG: User permissions response: {}", body_str);
-        },
-        Err(e) => {
-            info!("DEBUG: Failed to get user permissions: {}", e);
-        }
-    }
-    
-    // Create tokens using the Proxmox API
-    info!("DEBUG: Starting token creation process");
-    info!("DEBUG: Creating VM creation token...");
-    let vm_create_token = match create_token(client, &user_realm, create_token_id, &["VM.Create"]).await {
-        Ok(token) => token,
-        Err(e) => return Err(format!("Failed to create VM creation token: {}", e)),
-    };
-    
-    let vm_power_token = match create_token(client, &user_realm, power_token_id, &["VM.PowerMgmt"]).await {
-        Ok(token) => token,
-        Err(e) => return Err(format!("Failed to create VM power token: {}", e)),
-    };
-    
-    let vm_config_token = match create_token(client, &user_realm, config_token_id, &["VM.Config.Options"]).await {
-        Ok(token) => token,
-        Err(e) => return Err(format!("Failed to create VM config token: {}", e)),
-    };
-    
-    let vm_sync_token = match create_token(client, &user_realm, sync_token_id, &["VM.Audit", "VM.Monitor"]).await {
-        Ok(token) => token,
-        Err(e) => return Err(format!("Failed to create VM sync token: {}", e)),
-    };
-    
-    info!("Created tokens for VM operations with appropriate permissions");
-    
-    Ok(ProxmoxTokenSet {
-        create_token: vm_create_token,
-        power_token: vm_power_token,
-        config_token: vm_config_token,
-        sync_token: vm_sync_token,
-        connection_info: ProxmoxConnectionInfo {
-            host: request.host.clone(),
-            port: request.port,
-            username: request.username.clone(),
-            skip_tls_verify: request.skip_tls_verify,
-        }
-    })
 }
 
 /// Saves Proxmox API tokens to the database for future use.
@@ -2537,145 +2277,6 @@ pub async fn save_proxmox_tokens(state: &crate::AppState, token_set: ProxmoxToke
     
     Ok(())
 }
-
-/// Helper function to create an API token with specific privileges
-/// 
-/// # Security
-/// This function is part of the token creation process that allows us to avoid storing
-/// the root password. It creates a token with minimal permissions for specific operations.
-async fn create_token(
-    client: &ProxmoxApiClient,
-    user_realm: &str,
-    token_id: &str,
-    privileges: &[&str],
-) -> Result<String, String> {
-    // Prepare the API path
-    let path = format!("/api2/json/access/users/{}/token/{}", user_realm, token_id);
-    info!("DEBUG: Creating token at path: {}", path);
-    
-    // Prepare the request parameters - only use parameters shown in the API documentation:
-    // privsep, comment, expire (no privileges parameter)
-    let params = serde_json::json!({
-        "privsep": 1,  // Enable privilege separation
-        "comment": format!("Dragonfly automation token for {}", privileges.join(" ")),
-        "expire": 0,   // No expiration
-    });
-    info!("DEBUG: Token creation params: {:?}", params);
-    
-    // Make the API request to create the token
-    match client.post(&path, &params).await {
-        Ok(response) => {
-            info!("DEBUG: Token creation response status: {}", response.status);
-            if let Ok(body_str) = std::str::from_utf8(&response.body) {
-                info!("DEBUG: Token creation response body: {}", body_str);
-            }
-            
-            if response.status >= 200 && response.status < 300 {
-                // Parse the response to get the token value
-                match serde_json::from_slice::<serde_json::Value>(&response.body) {
-                    Ok(value) => {
-                        // Check if we got a token in the response
-                        if let Some(token_value) = value.get("data").and_then(|d| d.get("value")).and_then(|v| v.as_str()) {
-                            // Token created successfully, now set privileges for the token
-                            // Map our needed permissions to Proxmox's built-in roles
-                            // Instead of using privileges directly, use standard Proxmox roles
-                            let role_name = match privileges[0] {
-                                "VM.Create" => "PVEVMAdmin",      // Can create and manage VMs
-                                "VM.PowerMgmt" => "PVEVMUser",    // Can power on/off VMs
-                                "VM.Config.Options" => "PVEVMUser", // Can configure VMs
-                                "VM.Audit" | "VM.Monitor" => "PVEAuditor", // Read-only access
-                                _ => "PVEVMUser" // Default to basic VM user role
-                            };
-                            
-                            let acl_path = format!("/api2/json/access/acl");
-                            let acl_params = serde_json::json!({
-                                "path": "/",  // Base path for permissions
-                                "roles": role_name,  // Use standard Proxmox role
-                                "tokens": format!("{}!{}", user_realm, token_id),  // The token to assign privileges to
-                                "propagate": 1  // Allow propagation of privileges
-                            });
-                            
-                            info!("DEBUG: Setting ACL for token at path: {}", acl_path);
-                            info!("DEBUG: ACL params: {:?}", acl_params);
-                            
-                            // Make the ACL request to set privileges
-                            match client.put(&acl_path, &acl_params).await {
-                                Ok(acl_response) => {
-                                    info!("DEBUG: ACL response status: {}", acl_response.status);
-                                    if let Ok(acl_body) = std::str::from_utf8(&acl_response.body) {
-                                        info!("DEBUG: ACL response body: {}", acl_body);
-                                    }
-                                    
-                                    if acl_response.status >= 200 && acl_response.status < 300 {
-                                        // Format the token in the expected format: USER@REALM!TOKENID=VALUE
-                                        Ok(format!("{}!{}={}", user_realm, token_id, token_value))
-            } else {
-                                        // ACL assignment failed, but token was created
-                                        // Return token anyway with a warning
-                                        warn!("Failed to set privileges for token, but token was created");
-                                        Ok(format!("{}!{}={}", user_realm, token_id, token_value))
-                                    }
-                                },
-                                Err(e) => {
-                                    // ACL assignment failed, but token was created
-                                    // Return token anyway with a warning
-                                    warn!("Failed to set privileges for token: {}, but token was created", e);
-                                    Ok(format!("{}!{}={}", user_realm, token_id, token_value))
-                                }
-                            }
-                        } else {
-                            // In some versions of Proxmox, a 2-step process is needed where
-                            // the first call creates the token record and returns success, 
-                            // but we need a second call to get the value
-                            info!("Token created but value not returned, retrieving token value...");
-                            
-                            // Try to fetch the token value in a second step
-                            let token_get_path = format!("/api2/json/access/users/{}/token/{}", user_realm, token_id);
-                            
-                            match client.get(&token_get_path).await {
-                                Ok(token_response) => {
-                                    match serde_json::from_slice::<serde_json::Value>(&token_response.body) {
-                                        Ok(token_value) => {
-                                            if let Some(value) = token_value.get("data").and_then(|d| d.get("value")).and_then(|v| v.as_str()) {
-                                                Ok(format!("{}!{}={}", user_realm, token_id, value))
-                                            } else {
-                                                // No token value found, generate a UUID as fallback
-                                                let uuid = uuid::Uuid::new_v4().to_string();
-                                                Ok(format!("{}!{}={}", user_realm, token_id, uuid))
-                                            }
-                                        },
-                                        Err(_) => {
-                                            // Parsing failed, generate a UUID as fallback
-                                            let uuid = uuid::Uuid::new_v4().to_string();
-                                            Ok(format!("{}!{}={}", user_realm, token_id, uuid))
-                                        }
-                                    }
-                                },
-                                Err(_) => {
-                                    // Request failed, generate a UUID as fallback
-                                    let uuid = uuid::Uuid::new_v4().to_string();
-                                    Ok(format!("{}!{}={}", user_realm, token_id, uuid))
-                                }
-                            }
-                        }
-                    },
-                    Err(e) => Err(format!("Failed to parse token creation response: {}", e)),
-                }
-            } else {
-                // Handle error response
-                let error_msg = match serde_json::from_slice::<serde_json::Value>(&response.body) {
-                    Ok(val) => format!("Proxmox API error: {}", val),
-                    Err(_) => format!("Failed with status code: {}", response.status),
-                };
-                
-                Err(error_msg)
-            }
-        },
-        Err(e) => Err(format!("API request failed: {}", e)),
-    }
-}
-
-// After function save_proxmox_tokens but before generate_proxmox_tokens_with_credentials
 
 /// Loads Proxmox API tokens from the database and populates the in-memory token store.
 /// 

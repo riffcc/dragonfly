@@ -7,7 +7,7 @@ description = "DHCP server for Dragonfly bare metal provisioning with PXE suppor
 license = "AGPL-3.0"
 
 [dependencies]
-dragonfly-crd = { path = "../dragonfly-crd" }
+dragonfly-common = { path = "../dragonfly-common" }
 tokio = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }

@@ -212,12 +212,11 @@ impl Default for Settings {
 #[derive(Clone, Debug)]
 pub struct AdminBackend {
     db: sqlx::SqlitePool,
-    settings: Settings,
 }
 
 impl AdminBackend {
-    pub fn new(db: sqlx::SqlitePool, settings: Settings) -> Self {
-        Self { db, settings }
+    pub fn new(db: sqlx::SqlitePool) -> Self {
+        Self { db }
     }
     
     pub async fn update_credentials(&self, username: String, password: String) -> anyhow::Result<Credentials> {
@@ -575,32 +574,6 @@ pub async fn save_credentials(credentials: &Credentials) -> io::Result<()> {
     Ok(())
 }
 
-pub async fn load_settings() -> io::Result<Settings> {
-    match crate::db::get_app_settings().await {
-        Ok(settings) => {
-            info!("Loaded settings from database");
-            Ok(settings)
-        },
-        Err(e) => {
-            error!("Failed to load settings from database: {}", e);
-            Ok(Settings::default()) // Return default settings on error
-        }
-    }
-}
-
-pub async fn save_settings(settings: &Settings) -> io::Result<()> {
-    match crate::db::save_app_settings(settings).await {
-        Ok(_) => {
-            info!("Settings saved to database");
-            Ok(())
-        },
-        Err(e) => {
-            error!("Failed to save settings to database: {}", e);
-            Err(io::Error::new(io::ErrorKind::Other, format!("Database error: {}", e)))
-        }
-    }
-}
-
 pub fn require_admin(auth_session: &AuthSession) -> Result<(), Response> {
     match auth_session.user {
         Some(_) => Ok(()),
@@ -661,18 +634,6 @@ async fn login_test_handler(auth_session: AuthSession) -> impl IntoResponse {
     );
     
     Html(html)
-}
-
-pub async fn login(
-    State(_app_state): State<AppState>, // Mark as unused for now
-    mut _auth_session: AuthSession, // Mark as unused for now
-    Form(_creds): Form<Credentials>, // Mark as unused for now
-) -> Response {
-    // Placeholder implementation - This function likely needs to call
-    // auth_session.authenticate and auth_session.login similar to login_handler
-    // For now, return an error or redirect
-    warn!("/api/login endpoint hit, but not fully implemented yet");
-    (StatusCode::NOT_IMPLEMENTED, "Login endpoint not fully implemented").into_response()
 }
 
 #[cfg(test)]
@@ -748,7 +709,7 @@ mod tests {
             dbpool: pool,
             tokens: Arc::new(Mutex::new(std::collections::HashMap::new())),
             provisioning: None,
-            store: Arc::new(crate::store::MemoryStore::new()),
+            store: Arc::new(crate::store::v1::MemoryStore::new()),
             network_services_started: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
@@ -778,7 +739,7 @@ mod tests {
         let _user_id = create_test_user(&pool, "admin", "correctpassword").await;
 
         let settings = Settings::default();
-        let backend = AdminBackend::new(pool, settings);
+        let backend = AdminBackend::new(pool);
 
         let credentials = Credentials {
             username: "admin".to_string(),
@@ -800,7 +761,7 @@ mod tests {
         let _user_id = create_test_user(&pool, "admin", "correctpassword").await;
 
         let settings = Settings::default();
-        let backend = AdminBackend::new(pool, settings);
+        let backend = AdminBackend::new(pool);
 
         let credentials = Credentials {
             username: "admin".to_string(),
@@ -823,7 +784,7 @@ mod tests {
         // Don't create any user
 
         let settings = Settings::default();
-        let backend = AdminBackend::new(pool, settings);
+        let backend = AdminBackend::new(pool);
 
         let credentials = Credentials {
             username: "nonexistent".to_string(),
@@ -846,7 +807,7 @@ mod tests {
         let _user_id = create_test_user(&pool, "admin", "password").await;
 
         let settings = Settings::default();
-        let backend = AdminBackend::new(pool, settings);
+        let backend = AdminBackend::new(pool);
 
         let credentials = Credentials {
             username: "admin".to_string(),
@@ -866,7 +827,7 @@ mod tests {
         let user_id = create_test_user(&pool, "testadmin", "password123").await;
 
         let settings = Settings::default();
-        let backend = AdminBackend::new(pool, settings);
+        let backend = AdminBackend::new(pool);
 
         let result = backend.get_user(&user_id).await;
         assert!(result.is_ok());
@@ -883,7 +844,7 @@ mod tests {
         // Don't create any user
 
         let settings = Settings::default();
-        let backend = AdminBackend::new(pool, settings);
+        let backend = AdminBackend::new(pool);
 
         let result = backend.get_user(&999).await;
         assert!(result.is_ok());

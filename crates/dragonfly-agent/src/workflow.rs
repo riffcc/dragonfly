@@ -137,8 +137,17 @@ impl AgentWorkflowRunner {
             anyhow::bail!("Failed to fetch workflow: {} - {}", status, body);
         }
 
-        let workflow: Workflow = response.json().await?;
-        Ok(workflow)
+        let body = response.text().await?;
+        match serde_json::from_str::<Workflow>(&body) {
+            Ok(workflow) => Ok(workflow),
+            Err(e) => {
+                anyhow::bail!(
+                    "Failed to parse workflow response: {}\nResponse body: {}",
+                    e,
+                    body
+                )
+            }
+        }
     }
 
     /// Fetch template from server
@@ -162,7 +171,16 @@ impl AgentWorkflowRunner {
         let json_preview: String = body.chars().take(500).collect();
         info!(json_preview = %json_preview, "Template JSON preview");
 
-        let template: Template = serde_json::from_str(&body)?;
+        let template: Template = match serde_json::from_str(&body) {
+            Ok(t) => t,
+            Err(e) => {
+                anyhow::bail!(
+                    "Failed to parse template response: {}\nResponse body: {}",
+                    e,
+                    body
+                )
+            }
+        };
         info!(
             template = %template.metadata.name,
             actions_count = template.spec.actions.len(),
@@ -258,8 +276,10 @@ async fn report_event(
 /// Check-in response from the server
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct CheckInResponse {
-    /// Hardware ID assigned by server
-    pub hardware_id: String,
+    /// Machine ID assigned by server (UUIDv7)
+    pub machine_id: String,
+    /// Memorable name for display
+    pub memorable_name: String,
     /// Whether this is a new registration
     pub is_new: bool,
     /// Action the agent should take
@@ -304,6 +324,17 @@ pub async fn checkin_native(
         anyhow::bail!("Check-in failed: {} - {}", status, body);
     }
 
-    let checkin_response: CheckInResponse = response.json().await?;
-    Ok(checkin_response)
+    // Get the raw body first so we can show it if parsing fails
+    let body = response.text().await?;
+
+    match serde_json::from_str::<CheckInResponse>(&body) {
+        Ok(checkin_response) => Ok(checkin_response),
+        Err(e) => {
+            anyhow::bail!(
+                "Failed to parse check-in response: {}\nExpected CheckInResponse struct.\nActual response body: {}",
+                e,
+                body
+            )
+        }
+    }
 }
