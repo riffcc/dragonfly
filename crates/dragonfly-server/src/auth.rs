@@ -29,7 +29,7 @@ use urlencoding;
 // async_trait no longer needed for axum-login 0.18
 
 // Constants for the initial password file (not for loading, just for UX)
-const INITIAL_PASSWORD_FILE: &str = "initial_password.txt";
+const INITIAL_PASSWORD_FILE: &str = "/var/lib/dragonfly/initial_password.txt";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Credentials {
@@ -76,15 +76,15 @@ pub struct LoginForm {
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub struct AdminUser {
-    pub id: i64,
+    pub id: String,  // UUID as string
     pub username: String,
 }
 
 impl AuthUser for AdminUser {
-    type Id = i64;
+    type Id = String;
 
     fn id(&self) -> Self::Id {
-        self.id
+        self.id.clone()
     }
 
     fn session_auth_hash(&self) -> &[u8] {
@@ -101,8 +101,8 @@ pub enum AuthError {
     #[error("User not found: {0}")]
     UserNotFound(String),
 
-    #[error("Database error during authentication: {0}")]
-    DatabaseError(#[from] sqlx::Error),
+    #[error("Store error during authentication: {0}")]
+    StoreError(String),
 
     #[error("Password hashing error: {0}")]
     HashingError(PasswordHashError),
@@ -113,18 +113,8 @@ pub enum AuthError {
     #[error("Configuration error: {0}")]
     ConfigError(String),
 
-    // Wrap MiniJinjaError if needed, though it might not be strictly necessary
-    // depending on where errors originate
     #[error("Template/Rendering Error: {0}")]
     TemplateError(#[from] MiniJinjaError),
-
-    // Add variants for OAuth if/when re-enabled
-    // #[error("Missing OAuth parameter: {0}")]
-    // MissingParam(String),
-    // #[error("OAuth state mismatch")]
-    // StateMismatch,
-    // #[error("OAuth token exchange failed: {0}")]
-    // TokenExchangeFailed(String),
 }
 
 // Manually implement From for argon2::password_hash::Error
@@ -146,24 +136,16 @@ impl IntoResponse for AuthError {
             AuthError::InvalidCredentials | AuthError::UserNotFound(_) => {
                 (StatusCode::UNAUTHORIZED, "Invalid username or password.".to_string())
             }
-            AuthError::DatabaseError(_) | AuthError::HashingError(_) | AuthError::JoinError(_) => {
+            AuthError::StoreError(_) | AuthError::HashingError(_) | AuthError::JoinError(_) => {
                 (StatusCode::INTERNAL_SERVER_ERROR, "An internal server error occurred during login.".to_string())
             }
             AuthError::ConfigError(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg),
             AuthError::TemplateError(_) => (StatusCode::INTERNAL_SERVER_ERROR, "An internal error occurred.".to_string()),
-            // Add cases for OAuth errors if re-enabled
         };
-
-        // In a real application, you might redirect back to the login page
-        // with an error query parameter, or return a JSON error.
-        // For now, just return the status code and a simple message.
 
         // Redirect back to login page with an error message
         let redirect_url = format!("/login?error={}", urlencoding::encode(&user_message));
         (status, Redirect::to(&redirect_url)).into_response()
-
-        // Alternatively, return JSON:
-        // (status, Json(json!({ "error": self.to_string(), "message": user_message }))).into_response()
     }
 }
 
@@ -210,23 +192,49 @@ impl Default for Settings {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct AdminBackend {
-    db: sqlx::SqlitePool,
+    store: std::sync::Arc<dyn crate::store::v1::Store>,
+}
+
+impl std::fmt::Debug for AdminBackend {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AdminBackend").finish()
+    }
 }
 
 impl AdminBackend {
-    pub fn new(db: sqlx::SqlitePool) -> Self {
-        Self { db }
+    pub fn new(store: std::sync::Arc<dyn crate::store::v1::Store>) -> Self {
+        Self { store }
     }
-    
+
     pub async fn update_credentials(&self, username: String, password: String) -> anyhow::Result<Credentials> {
         // Create new credentials with hashed password
-        let new_credentials = Credentials::create(username, password)?;
-        
-        // Save to database
-        crate::db::save_admin_credentials(&new_credentials).await?;
-        
+        let new_credentials = Credentials::create(username.clone(), password)?;
+
+        // Find existing user by username or create new
+        let now = chrono::Utc::now().to_rfc3339();
+        let user = if let Ok(Some(existing)) = self.store.get_user_by_username(&username).await {
+            crate::store::v1::User {
+                id: existing.id,
+                username,
+                password_hash: new_credentials.password_hash.clone(),
+                created_at: existing.created_at,
+                updated_at: now,
+            }
+        } else {
+            crate::store::v1::User {
+                id: uuid::Uuid::now_v7(),
+                username,
+                password_hash: new_credentials.password_hash.clone(),
+                created_at: now.clone(),
+                updated_at: now,
+            }
+        };
+
+        self.store.put_user(&user).await
+            .map_err(|e| anyhow::anyhow!("Failed to save user: {}", e))?;
+
         Ok(new_credentials)
     }
 }
@@ -234,7 +242,7 @@ impl AdminBackend {
 impl AuthnBackend for AdminBackend {
     type User = AdminUser;
     type Credentials = Credentials;
-    type Error = AuthError; // Use the new AuthError type
+    type Error = AuthError;
 
     async fn authenticate(
         &self,
@@ -245,64 +253,50 @@ impl AuthnBackend for AdminBackend {
             Some(p) => p.into_bytes(),
             None => {
                 info!("Authentication attempt for user '{}' failed: No password provided", username);
-                return Ok(None); // No password, treat as invalid credentials for simplicity
+                return Ok(None);
             }
         };
 
-        // Fetch the stored hash from the database
-        let record = sqlx::query!(
-            "SELECT id, password_hash FROM admin_credentials WHERE username = ?",
-            username
-        )
-        .fetch_optional(&self.db)
-        .await?;
-
-        let (user_id, stored_hash) = match record {
-            Some(r) => (r.id, r.password_hash),
-            None => {
+        // Fetch the stored user from ReDB Store
+        let user = match self.store.get_user_by_username(&username).await {
+            Ok(Some(user)) => user,
+            Ok(None) => {
                 info!("Authentication failed: User '{}' not found", username);
-                // Instead of returning Ok(None), consider returning an error
-                // return Err(AuthError::UserNotFound(username)); 
-                // Or, to obscure whether user exists, return InvalidCredentials
-                 return Err(AuthError::InvalidCredentials); // More secure - doesn't reveal if user exists
+                return Err(AuthError::InvalidCredentials);
+            }
+            Err(e) => {
+                error!("Database error during authentication: {}", e);
+                return Err(AuthError::ConfigError(e.to_string()));
             }
         };
 
-        // Clone username *before* the move closure for later use
-        let username_for_log = username.clone(); 
+        let user_id = user.id.to_string();
+        let stored_hash = user.password_hash.clone();
+        let username_for_log = username.clone();
 
         // Verify the password using Argon2 within a blocking task
         let verification_result = tokio::task::spawn_blocking(move || {
-            // This closure now returns Result<bool, PasswordHashError>
             match PasswordHash::new(&stored_hash) {
                 Ok(parsed_hash) => {
-                    // verify_password returns Result<(), Error>
                     Ok(Argon2::default().verify_password(&password_bytes, &parsed_hash).is_ok())
                 }
                 Err(e) => {
-                    // Error parsing the stored hash
-                    // Use the original username moved into the closure here
                     error!("Error parsing stored password hash for user '{}': {}", username, e);
-                    Err(e) // Propagate the hash parsing error
+                    Err(e)
                 }
             }
-        }).await?; // First '?' handles the JoinError (converted via From)
+        }).await?;
 
-        // Check the inner Result from the blocking task
         let is_valid = match verification_result {
-            Ok(valid) => valid, // Successfully verified (or not)
+            Ok(valid) => valid,
             Err(hash_error) => {
-                // Handle the PasswordHashError from PasswordHash::new or potentially verify_password
-                // Convert it using the manual From impl we added
                 return Err(AuthError::from(hash_error));
             }
         };
 
         if is_valid {
             info!("Authentication successful for user '{}'", username_for_log);
-            // Return the minimal user info needed for the session
-            // Move the original username (if needed) or use the clone
-            Ok(Some(AdminUser { id: user_id, username: username_for_log })) 
+            Ok(Some(AdminUser { id: user_id, username: username_for_log }))
         } else {
             info!("Authentication failed: Invalid password for user '{}'", username_for_log);
             Err(AuthError::InvalidCredentials)
@@ -310,31 +304,26 @@ impl AuthnBackend for AdminBackend {
     }
 
     async fn get_user(&self, user_id: &UserId<Self>) -> Result<Option<Self::User>, Self::Error> {
-        // Fetch user details by ID
-        // The `?` propagates sqlx::Error, converted via #[from]
-        // The result of this expression is Option<AdminUser>
-        let user_option = sqlx::query_as!( 
-            AdminUser, 
-            "SELECT id, username FROM admin_credentials WHERE id = ?",
-            user_id
-        )
-        .fetch_optional(&self.db)
-        .await?;
+        // Parse UUID from string ID
+        let uuid = match uuid::Uuid::parse_str(user_id) {
+            Ok(id) => id,
+            Err(_) => return Ok(None),
+        };
 
-        // The match statement is no longer needed here as `?` handled the error
-        // and the result is directly the Option we need to return.
-        // If user_option is Some, return Ok(Some(user)). If None, return Ok(None).
-        Ok(user_option)
-        
-        /* // Old incorrect match:
-        {
-            Ok(user_opt) => Ok(user_opt),
+        // Fetch user details by ID from Store
+        let user_option = match self.store.get_user(uuid).await {
+            Ok(Some(user)) => Some(AdminUser {
+                id: user.id.to_string(),
+                username: user.username,
+            }),
+            Ok(None) => None,
             Err(e) => {
-                 error!("Database error fetching user by ID '{}': {}", user_id, e);
-                 Err(e.into())
+                error!("Database error fetching user by ID '{}': {}", user_id, e);
+                return Err(AuthError::ConfigError(e.to_string()));
             }
-        }
-        */
+        };
+
+        Ok(user_option)
     }
 }
 
@@ -420,9 +409,9 @@ async fn login_handler(
         // Create a simple admin user
         let username = if form.username.trim().is_empty() { "demo_user".to_string() } else { form.username.clone() };
 
-        // Create a demo admin user - use the same hash as lib.rs creates for demo credentials
+        // Create a demo admin user - use a deterministic UUID for demo mode
         let demo_user = AdminUser {
-            id: 1,
+            id: "00000000-0000-0000-0000-000000000001".to_string(),
             username,
         };
 
@@ -514,18 +503,22 @@ async fn logout(mut auth_session: AuthSession) -> Response {
     }
 }
 
-pub async fn generate_default_credentials() -> anyhow::Result<Credentials> {
+pub async fn generate_default_credentials(store: &std::sync::Arc<dyn crate::store::v1::Store>) -> anyhow::Result<Credentials> {
     // Check if an initial password file already exists
     if StdPath::new(INITIAL_PASSWORD_FILE).exists() {
-        info!("Initial password file exists - attempting to load existing credentials from database");
-        // Try to load credentials from database first
-        if let Ok(Some(creds)) = crate::db::get_admin_credentials().await {
-            info!("Found existing admin credentials in database - using those");
-            return Ok(creds);
+        info!("Initial password file exists - attempting to load existing credentials from store");
+        // Try to load credentials from store first
+        if let Ok(Some(user)) = store.get_user_by_username("admin").await {
+            info!("Found existing admin credentials in store - using those");
+            return Ok(Credentials {
+                username: user.username,
+                password: None,
+                password_hash: user.password_hash,
+            });
         } else {
-            // If we can't load from database but file exists, we should delete the file
+            // If we can't load from store but file exists, we should delete the file
             // as it's probably stale/outdated
-            info!("Failed to load admin credentials from database but initial password file exists - file may be stale");
+            info!("Failed to load admin credentials from store but initial password file exists - file may be stale");
             if let Err(e) = fs::remove_file(INITIAL_PASSWORD_FILE) {
                 error!("Failed to remove stale initial password file: {}", e);
             }
@@ -541,15 +534,24 @@ pub async fn generate_default_credentials() -> anyhow::Result<Credentials> {
         .collect();
 
     // Create new credentials with proper error handling
-    let credentials = Credentials::create(username, password.clone())
+    let credentials = Credentials::create(username.clone(), password.clone())
         .map_err(|e| anyhow::anyhow!("Failed to create admin credentials: {}", e))?;
-    
-    // Save to database
-    if let Err(e) = crate::db::save_admin_credentials(&credentials).await {
-        error!("Failed to save admin credentials to database: {}", e);
-        return Err(anyhow::anyhow!("Failed to save admin credentials to database: {}", e));
+
+    // Save to Store
+    let now = chrono::Utc::now().to_rfc3339();
+    let user = crate::store::v1::User {
+        id: uuid::Uuid::now_v7(),
+        username,
+        password_hash: credentials.password_hash.clone(),
+        created_at: now.clone(),
+        updated_at: now,
+    };
+
+    if let Err(e) = store.put_user(&user).await {
+        error!("Failed to save admin credentials to store: {}", e);
+        return Err(anyhow::anyhow!("Failed to save admin credentials to store: {}", e));
     }
-    
+
     // Save password to file for user convenience
     if let Err(e) = fs::write(INITIAL_PASSWORD_FILE, &password) {
         error!("Failed to save initial password to file: {}", e);
@@ -557,43 +559,66 @@ pub async fn generate_default_credentials() -> anyhow::Result<Credentials> {
     } else {
         info!("Initial admin password saved to {}", INITIAL_PASSWORD_FILE);
     }
-    
+
     info!("Generated default admin credentials. Username: admin, Password: {}", password);
     Ok(credentials)
 }
 
-pub async fn load_credentials() -> io::Result<Credentials> {
-    // Load only from database - no fallback to file credential loading
-    match crate::db::get_admin_credentials().await {
-        Ok(Some(creds)) => {
-            info!("Loaded admin credentials from database");
-            Ok(creds)
+pub async fn load_credentials(store: &std::sync::Arc<dyn crate::store::v1::Store>) -> io::Result<Credentials> {
+    // Load from Store - get the admin user
+    match store.get_user_by_username("admin").await {
+        Ok(Some(user)) => {
+            info!("Loaded admin credentials from store");
+            Ok(Credentials {
+                username: user.username,
+                password: None,
+                password_hash: user.password_hash,
+            })
         },
         Ok(None) => {
-            info!("No admin credentials found in database");
+            info!("No admin credentials found in store");
             Err(io::Error::new(
                 io::ErrorKind::NotFound,
-                "No admin credentials found in database",
+                "No admin credentials found in store",
             ))
         },
         Err(e) => {
-            error!("Error loading admin credentials from database: {}", e);
+            error!("Error loading admin credentials from store: {}", e);
             Err(io::Error::new(
                 io::ErrorKind::Other,
-                format!("Database error: {}", e),
+                format!("Store error: {}", e),
             ))
         }
     }
 }
 
-pub async fn save_credentials(credentials: &Credentials) -> io::Result<()> {
-    // Save to database only
-    if let Err(e) = crate::db::save_admin_credentials(credentials).await {
-        error!("Failed to save admin credentials to database: {}", e);
-        return Err(io::Error::new(io::ErrorKind::Other, format!("Database error: {}", e)));
+pub async fn save_credentials(store: &std::sync::Arc<dyn crate::store::v1::Store>, credentials: &Credentials) -> io::Result<()> {
+    // Get or create user
+    let now = chrono::Utc::now().to_rfc3339();
+    let user = if let Ok(Some(existing)) = store.get_user_by_username(&credentials.username).await {
+        crate::store::v1::User {
+            id: existing.id,
+            username: credentials.username.clone(),
+            password_hash: credentials.password_hash.clone(),
+            created_at: existing.created_at,
+            updated_at: now,
+        }
+    } else {
+        crate::store::v1::User {
+            id: uuid::Uuid::now_v7(),
+            username: credentials.username.clone(),
+            password_hash: credentials.password_hash.clone(),
+            created_at: now.clone(),
+            updated_at: now,
+        }
+    };
+
+    if let Err(e) = store.put_user(&user).await {
+        error!("Failed to save admin credentials to store: {}", e);
+        return Err(io::Error::new(io::ErrorKind::Other, format!("Store error: {}", e)));
     }
-    
-    info!("Saved admin credentials to database");
+
+    info!("Saved admin credentials to store");
     Ok(())
 }
 
@@ -662,79 +687,30 @@ async fn login_test_handler(auth_session: AuthSession) -> impl IntoResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sqlx::sqlite::SqlitePoolOptions;
     use std::sync::Arc;
-    use tokio::sync::Mutex;
-    use crate::{AppState, TemplateEnv, event_manager::EventManager};
-    use minijinja::Environment;
 
-    async fn create_test_db() -> sqlx::Pool<sqlx::Sqlite> {
-        let pool = SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect("sqlite::memory:")
-            .await
-            .expect("Failed to create test database");
+    /// Create a test store with a user
+    async fn create_test_store_with_user(username: &str, password: &str) -> (Arc<dyn crate::store::v1::Store>, String) {
+        let store: Arc<dyn crate::store::v1::Store> = Arc::new(crate::store::v1::MemoryStore::new());
 
-        // Create the admin_credentials table
-        sqlx::query(
-            r#"
-            CREATE TABLE IF NOT EXISTS admin_credentials (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                username TEXT NOT NULL UNIQUE,
-                password_hash TEXT NOT NULL,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-            )
-            "#,
-        )
-        .execute(&pool)
-        .await
-        .expect("Failed to create admin_credentials table");
-
-        pool
-    }
-
-    async fn create_test_user(pool: &sqlx::Pool<sqlx::Sqlite>, username: &str, password: &str) -> i64 {
         let salt = SaltString::generate(&mut OsRng);
         let password_hash = Argon2::default()
             .hash_password(password.as_bytes(), &salt)
             .expect("Failed to hash password")
             .to_string();
 
-        let result = sqlx::query(
-            "INSERT INTO admin_credentials (username, password_hash) VALUES (?, ?)"
-        )
-        .bind(username)
-        .bind(&password_hash)
-        .execute(pool)
-        .await
-        .expect("Failed to insert test user");
+        let user_id = uuid::Uuid::now_v7();
+        let now = chrono::Utc::now().to_rfc3339();
+        let user = crate::store::v1::User {
+            id: user_id,
+            username: username.to_string(),
+            password_hash,
+            created_at: now.clone(),
+            updated_at: now,
+        };
 
-        result.last_insert_rowid()
-    }
-
-    fn create_test_app_state(pool: sqlx::Pool<sqlx::Sqlite>) -> AppState {
-        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
-        let env = Environment::new();
-
-        AppState {
-            settings: Arc::new(Mutex::new(Settings::default())),
-            event_manager: Arc::new(EventManager::new()),
-            setup_mode: false,
-            first_run: false,
-            shutdown_tx,
-            shutdown_rx,
-            template_env: TemplateEnv::Static(Arc::new(env)),
-            is_installed: false,
-            is_demo_mode: true,
-            is_installation_server: false,
-            client_ip: Arc::new(Mutex::new(None)),
-            dbpool: pool,
-            tokens: Arc::new(Mutex::new(std::collections::HashMap::new())),
-            provisioning: None,
-            store: Arc::new(crate::store::v1::MemoryStore::new()),
-            network_services_started: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        }
+        store.put_user(&user).await.expect("Failed to create test user");
+        (store, user_id.to_string())
     }
 
     #[tokio::test]
@@ -758,11 +734,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_admin_backend_authenticate_success() {
-        let pool = create_test_db().await;
-        let _user_id = create_test_user(&pool, "admin", "correctpassword").await;
-
-        let settings = Settings::default();
-        let backend = AdminBackend::new(pool);
+        let (store, _user_id) = create_test_store_with_user("admin", "correctpassword").await;
+        let backend = AdminBackend::new(store);
 
         let credentials = Credentials {
             username: "admin".to_string(),
@@ -780,11 +753,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_admin_backend_authenticate_wrong_password() {
-        let pool = create_test_db().await;
-        let _user_id = create_test_user(&pool, "admin", "correctpassword").await;
-
-        let settings = Settings::default();
-        let backend = AdminBackend::new(pool);
+        let (store, _user_id) = create_test_store_with_user("admin", "correctpassword").await;
+        let backend = AdminBackend::new(store);
 
         let credentials = Credentials {
             username: "admin".to_string(),
@@ -803,11 +773,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_admin_backend_authenticate_user_not_found() {
-        let pool = create_test_db().await;
-        // Don't create any user
-
-        let settings = Settings::default();
-        let backend = AdminBackend::new(pool);
+        let store: Arc<dyn crate::store::v1::Store> = Arc::new(crate::store::v1::MemoryStore::new());
+        let backend = AdminBackend::new(store);
 
         let credentials = Credentials {
             username: "nonexistent".to_string(),
@@ -826,11 +793,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_admin_backend_authenticate_no_password() {
-        let pool = create_test_db().await;
-        let _user_id = create_test_user(&pool, "admin", "password").await;
-
-        let settings = Settings::default();
-        let backend = AdminBackend::new(pool);
+        let (store, _user_id) = create_test_store_with_user("admin", "password").await;
+        let backend = AdminBackend::new(store);
 
         let credentials = Credentials {
             username: "admin".to_string(),
@@ -846,11 +810,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_admin_backend_get_user() {
-        let pool = create_test_db().await;
-        let user_id = create_test_user(&pool, "testadmin", "password123").await;
-
-        let settings = Settings::default();
-        let backend = AdminBackend::new(pool);
+        let (store, user_id) = create_test_store_with_user("testadmin", "password123").await;
+        let backend = AdminBackend::new(store);
 
         let result = backend.get_user(&user_id).await;
         assert!(result.is_ok());
@@ -863,13 +824,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_admin_backend_get_user_not_found() {
-        let pool = create_test_db().await;
-        // Don't create any user
+        let store: Arc<dyn crate::store::v1::Store> = Arc::new(crate::store::v1::MemoryStore::new());
+        let backend = AdminBackend::new(store);
 
-        let settings = Settings::default();
-        let backend = AdminBackend::new(pool);
-
-        let result = backend.get_user(&999).await;
+        let nonexistent_id = uuid::Uuid::now_v7().to_string();
+        let result = backend.get_user(&nonexistent_id).await;
         assert!(result.is_ok());
         assert!(result.unwrap().is_none());
     }
@@ -877,11 +836,11 @@ mod tests {
     #[tokio::test]
     async fn test_admin_user_auth_user_impl() {
         let user = AdminUser {
-            id: 42,
+            id: "test-uuid-12345".to_string(),
             username: "testuser".to_string(),
         };
 
-        assert_eq!(user.id(), 42);
+        assert_eq!(user.id(), "test-uuid-12345");
         assert_eq!(user.session_auth_hash(), b"testuser");
     }
 
@@ -918,20 +877,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_require_admin_authenticated() {
-        // This test verifies the require_admin function logic
-        // In a real scenario, you'd need a full auth session, but we can test the logic
-
-        // The function checks auth_session.user.is_some()
-        // We can't easily mock AuthSession, but the logic is straightforward:
-        // - Some(user) -> Ok(())
-        // - None -> Err(Redirect to /login)
-
-        // This is more of a documentation test - the actual behavior
-        // is tested via integration tests with a full router setup
-    }
-
-    #[tokio::test]
     async fn test_login_template_serialization() {
         let template = LoginTemplate {
             is_demo_mode: true,
@@ -941,18 +886,6 @@ mod tests {
         let json = serde_json::to_string(&template).expect("Failed to serialize");
         assert!(json.contains("\"is_demo_mode\":true"));
         assert!(json.contains("\"error\":\"test error\""));
-    }
-
-    #[tokio::test]
-    async fn test_app_state_creation() {
-        let pool = create_test_db().await;
-        let app_state = create_test_app_state(pool);
-
-        assert!(!app_state.setup_mode);
-        assert!(!app_state.first_run);
-        assert!(!app_state.is_installed);
-        assert!(app_state.is_demo_mode);
-        assert!(!app_state.is_installation_server);
     }
 
     #[tokio::test]

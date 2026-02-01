@@ -18,10 +18,21 @@ pub use redb::RedbStore;
 use async_trait::async_trait;
 use dragonfly_common::{Machine, MachineState};
 use dragonfly_crd::{Template, Workflow};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use thiserror::Error;
 use uuid::Uuid;
+
+/// User account for authentication
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct User {
+    pub id: Uuid,
+    pub username: String,
+    pub password_hash: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
 
 /// Errors from storage operations
 #[derive(Debug, Error)]
@@ -127,6 +138,23 @@ pub trait Store: Send + Sync {
 
     /// List settings with prefix
     async fn list_settings(&self, prefix: &str) -> Result<HashMap<String, String>>;
+
+    // === User Operations ===
+
+    /// Get user by ID
+    async fn get_user(&self, id: Uuid) -> Result<Option<User>>;
+
+    /// Get user by username
+    async fn get_user_by_username(&self, username: &str) -> Result<Option<User>>;
+
+    /// Create or update user
+    async fn put_user(&self, user: &User) -> Result<()>;
+
+    /// List all users
+    async fn list_users(&self) -> Result<Vec<User>>;
+
+    /// Delete user
+    async fn delete_user(&self, id: Uuid) -> Result<bool>;
 }
 
 /// Storage configuration

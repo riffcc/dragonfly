@@ -447,10 +447,10 @@ pub async fn run() -> anyhow::Result<()> {
     let (shutdown_tx, shutdown_rx) = watch::channel(());
 
     // Load or generate admin credentials
-    let _credentials = match auth::load_credentials().await {
+    let _credentials = match auth::load_credentials(&store).await {
         Ok(cred) => cred,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            match auth::generate_default_credentials().await {
+            match auth::generate_default_credentials(&store).await {
                 Ok(creds) => creds,
                 Err(e) => return Err(anyhow!("Failed to initialize admin credentials: {}", e)),
             }
@@ -620,8 +620,8 @@ pub async fn run() -> anyhow::Result<()> {
         .with_http_only(false);  // Allow JavaScript access to cookies
 
     // Auth backend setup
-    // Pass the pool and settings directly from AppState
-    let backend = AdminBackend::new(app_state.dbpool.clone());
+    // Pass the store for authentication
+    let backend = AdminBackend::new(app_state.store.clone());
     
     // Build the auth layer
     let auth_layer = AuthManagerLayerBuilder::new(backend, session_layer)

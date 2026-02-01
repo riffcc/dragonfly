@@ -3,7 +3,7 @@
 //! Simple storage for testing and development.
 //! Uses RwLock for thread-safe access with minimal contention.
 
-use super::{Result, Store, StoreError};
+use super::{Result, Store, StoreError, User};
 use async_trait::async_trait;
 use dragonfly_common::{normalize_mac, Machine, MachineState};
 use dragonfly_crd::{Template, Workflow};
@@ -25,6 +25,7 @@ pub struct MemoryStore {
     templates: RwLock<HashMap<String, Template>>,
     workflows: RwLock<HashMap<Uuid, Workflow>>,
     settings: RwLock<HashMap<String, String>>,
+    users: RwLock<HashMap<Uuid, User>>,
 
     // Machine indices
     /// identity_hash -> machine UUID
@@ -41,6 +42,10 @@ pub struct MemoryStore {
     // Workflow indices
     /// machine_id -> set of workflow UUIDs
     workflow_by_machine: RwLock<HashMap<Uuid, HashSet<Uuid>>>,
+
+    // User indices
+    /// username -> user UUID
+    users_by_username: RwLock<HashMap<String, Uuid>>,
 }
 
 impl MemoryStore {
@@ -51,12 +56,14 @@ impl MemoryStore {
             templates: RwLock::new(HashMap::new()),
             workflows: RwLock::new(HashMap::new()),
             settings: RwLock::new(HashMap::new()),
+            users: RwLock::new(HashMap::new()),
             identity_index: RwLock::new(HashMap::new()),
             mac_index: RwLock::new(HashMap::new()),
             ip_index: RwLock::new(HashMap::new()),
             tag_index: RwLock::new(HashMap::new()),
             state_index: RwLock::new(HashMap::new()),
             workflow_by_machine: RwLock::new(HashMap::new()),
+            users_by_username: RwLock::new(HashMap::new()),
         }
     }
 
@@ -421,5 +428,90 @@ impl Store for MemoryStore {
             .filter(|(k, _)| k.starts_with(prefix))
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect())
+    }
+
+    // === User Operations ===
+
+    async fn get_user(&self, id: Uuid) -> Result<Option<User>> {
+        let guard = Self::read_lock(&self.users)?;
+        Ok(guard.get(&id).cloned())
+    }
+
+    async fn get_user_by_username(&self, username: &str) -> Result<Option<User>> {
+        let index = Self::read_lock(&self.users_by_username)?;
+        if let Some(&id) = index.get(username) {
+            drop(index); // Release index lock before acquiring users lock
+            let guard = Self::read_lock(&self.users)?;
+            Ok(guard.get(&id).cloned())
+        } else {
+            Ok(None)
+        }
+    }
+
+    async fn put_user(&self, user: &User) -> Result<()> {
+        // If updating existing user with changed username, remove old index
+        let old_username = {
+            let guard = Self::read_lock(&self.users)?;
+            guard.get(&user.id).and_then(|existing| {
+                if existing.username != user.username {
+                    Some(existing.username.clone())
+                } else {
+                    None
+                }
+            })
+        };
+
+        if let Some(old) = old_username {
+            let mut index = Self::write_lock(&self.users_by_username)?;
+            index.remove(&old);
+        }
+
+        // Insert/update the user
+        {
+            let mut guard = Self::write_lock(&self.users)?;
+            guard.insert(user.id, user.clone());
+        }
+
+        // Update username index
+        {
+            let mut index = Self::write_lock(&self.users_by_username)?;
+            index.insert(user.username.clone(), user.id);
+        }
+
+        Ok(())
+    }
+
+    async fn list_users(&self) -> Result<Vec<User>> {
+        let guard = Self::read_lock(&self.users)?;
+        let mut users: Vec<User> = guard.values().cloned().collect();
+        // Sort by created_at for consistent ordering
+        users.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+        Ok(users)
+    }
+
+    async fn delete_user(&self, id: Uuid) -> Result<bool> {
+        // Get the user first to clean up index
+        let user = {
+            let guard = Self::read_lock(&self.users)?;
+            guard.get(&id).cloned()
+        };
+
+        if let Some(user) = user {
+            // Remove from username index
+            {
+                let mut index = Self::write_lock(&self.users_by_username)?;
+                index.remove(&user.username);
+            }
+
+            // Remove from primary storage
+            {
+                let mut guard = Self::write_lock(&self.users)?;
+                guard.remove(&id);
+            }
+
+            Ok(true)
+        } else {
+            Ok(false)
+        }
     }
 }

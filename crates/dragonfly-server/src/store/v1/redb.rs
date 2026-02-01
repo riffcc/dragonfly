@@ -19,7 +19,7 @@
 //! settings          : key (string) -> value (string)
 //! ```
 
-use super::{Result, Store, StoreError};
+use super::{Result, Store, StoreError, User};
 use async_trait::async_trait;
 use dragonfly_common::{normalize_mac, Machine, MachineState};
 use dragonfly_crd::{Template, Workflow};
@@ -44,6 +44,9 @@ const WORKFLOWS_BY_MACHINE: MultimapTableDefinition<&[u8; 16], &[u8; 16]> = Mult
 
 const SETTINGS: TableDefinition<&str, &str> = TableDefinition::new("settings_v1");
 
+const USERS: TableDefinition<&[u8; 16], &str> = TableDefinition::new("users_v1");
+const USERS_BY_USERNAME: TableDefinition<&str, &[u8; 16]> = TableDefinition::new("users_by_username_v1");
+
 /// ReDB storage backend implementing the v0.1.0 schema.
 pub struct RedbStore {
     db: Arc<Database>,
@@ -67,6 +70,8 @@ impl RedbStore {
             let _ = write_txn.open_table(WORKFLOWS);
             let _ = write_txn.open_multimap_table(WORKFLOWS_BY_MACHINE);
             let _ = write_txn.open_table(SETTINGS);
+            let _ = write_txn.open_table(USERS);
+            let _ = write_txn.open_table(USERS_BY_USERNAME);
         }
         write_txn.commit().map_err(|e| StoreError::Database(e.to_string()))?;
 
@@ -804,6 +809,165 @@ impl Store for RedbStore {
             }
 
             Ok(settings)
+        })
+        .await
+        .map_err(|e| StoreError::Database(format!("Task join error: {}", e)))?
+    }
+
+    // === User Operations ===
+
+    async fn get_user(&self, id: Uuid) -> Result<Option<User>> {
+        let db = Arc::clone(&self.db);
+        let id_bytes = Self::uuid_to_bytes(id);
+
+        tokio::task::spawn_blocking(move || {
+            let read_txn = db.begin_read().map_err(|e| StoreError::Database(e.to_string()))?;
+            let table = read_txn.open_table(USERS).map_err(|e| StoreError::Database(e.to_string()))?;
+
+            match table.get(&id_bytes) {
+                Ok(Some(access)) => {
+                    let user: User = Self::from_json(access.value())?;
+                    Ok(Some(user))
+                }
+                Ok(None) => Ok(None),
+                Err(e) => Err(StoreError::Database(e.to_string())),
+            }
+        })
+        .await
+        .map_err(|e| StoreError::Database(format!("Task join error: {}", e)))?
+    }
+
+    async fn get_user_by_username(&self, username: &str) -> Result<Option<User>> {
+        let db = Arc::clone(&self.db);
+        let username = username.to_string();
+
+        tokio::task::spawn_blocking(move || {
+            let read_txn = db.begin_read().map_err(|e| StoreError::Database(e.to_string()))?;
+
+            // Look up UUID by username
+            let index = read_txn
+                .open_table(USERS_BY_USERNAME)
+                .map_err(|e| StoreError::Database(e.to_string()))?;
+
+            let id_bytes = match index.get(username.as_str()) {
+                Ok(Some(access)) => *access.value(),
+                Ok(None) => return Ok(None),
+                Err(e) => return Err(StoreError::Database(e.to_string())),
+            };
+
+            // Get the user
+            let table = read_txn.open_table(USERS).map_err(|e| StoreError::Database(e.to_string()))?;
+            match table.get(&id_bytes) {
+                Ok(Some(access)) => {
+                    let user: User = Self::from_json(access.value())?;
+                    Ok(Some(user))
+                }
+                Ok(None) => Ok(None),
+                Err(e) => Err(StoreError::Database(e.to_string())),
+            }
+        })
+        .await
+        .map_err(|e| StoreError::Database(format!("Task join error: {}", e)))?
+    }
+
+    async fn put_user(&self, user: &User) -> Result<()> {
+        let db = Arc::clone(&self.db);
+        let id_bytes = Self::uuid_to_bytes(user.id);
+        let json = Self::to_json(user)?;
+        let username = user.username.clone();
+
+        // Check if we need to remove old username index (for username changes)
+        let old_username = if let Ok(Some(existing)) = self.get_user(user.id).await {
+            if existing.username != username {
+                Some(existing.username)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        tokio::task::spawn_blocking(move || {
+            let write_txn = db.begin_write().map_err(|e| StoreError::Database(e.to_string()))?;
+
+            {
+                // Store user data
+                let mut table = write_txn.open_table(USERS).map_err(|e| StoreError::Database(e.to_string()))?;
+                table.insert(&id_bytes, json.as_str()).map_err(|e| StoreError::Database(e.to_string()))?;
+
+                // Update username index
+                let mut index = write_txn
+                    .open_table(USERS_BY_USERNAME)
+                    .map_err(|e| StoreError::Database(e.to_string()))?;
+
+                // Remove old username if it changed
+                if let Some(old) = old_username {
+                    let _ = index.remove(old.as_str());
+                }
+
+                index.insert(username.as_str(), &id_bytes).map_err(|e| StoreError::Database(e.to_string()))?;
+            }
+
+            write_txn.commit().map_err(|e| StoreError::Database(e.to_string()))?;
+            Ok(())
+        })
+        .await
+        .map_err(|e| StoreError::Database(format!("Task join error: {}", e)))?
+    }
+
+    async fn list_users(&self) -> Result<Vec<User>> {
+        let db = Arc::clone(&self.db);
+
+        tokio::task::spawn_blocking(move || {
+            let read_txn = db.begin_read().map_err(|e| StoreError::Database(e.to_string()))?;
+            let table = read_txn.open_table(USERS).map_err(|e| StoreError::Database(e.to_string()))?;
+
+            let mut users = Vec::new();
+            for entry in table.iter().map_err(|e| StoreError::Database(e.to_string()))? {
+                let (_, value) = entry.map_err(|e: redb::StorageError| StoreError::Database(e.to_string()))?;
+                let user: User = Self::from_json(value.value())?;
+                users.push(user);
+            }
+
+            // Sort by created_at
+            users.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+            Ok(users)
+        })
+        .await
+        .map_err(|e| StoreError::Database(format!("Task join error: {}", e)))?
+    }
+
+    async fn delete_user(&self, id: Uuid) -> Result<bool> {
+        let db = Arc::clone(&self.db);
+        let id_bytes = Self::uuid_to_bytes(id);
+
+        // Get the username to remove from index
+        let username = if let Ok(Some(user)) = self.get_user(id).await {
+            Some(user.username)
+        } else {
+            None
+        };
+
+        tokio::task::spawn_blocking(move || {
+            let write_txn = db.begin_write().map_err(|e| StoreError::Database(e.to_string()))?;
+
+            let deleted = {
+                let mut table = write_txn.open_table(USERS).map_err(|e| StoreError::Database(e.to_string()))?;
+                let existed = table.remove(&id_bytes).map_err(|e| StoreError::Database(e.to_string()))?.is_some();
+
+                // Remove username index
+                if let Some(username) = username {
+                    let mut index = write_txn
+                        .open_table(USERS_BY_USERNAME)
+                        .map_err(|e| StoreError::Database(e.to_string()))?;
+                    let _ = index.remove(username.as_str());
+                }
+
+                existed
+            };
+
+            write_txn.commit().map_err(|e| StoreError::Database(e.to_string()))?;
+            Ok(deleted)
         })
         .await
         .map_err(|e| StoreError::Database(format!("Task join error: {}", e)))?
