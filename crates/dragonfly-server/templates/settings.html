@@ -6,7 +6,7 @@
 <div class="px-4 sm:px-6 lg:px-8 py-6" x-data="settingsPanel()">
     <!-- Header -->
     <div class="flex items-center justify-between mb-6">
-        <h1 class="text-2xl font-bold text-gray-900 dark:text-white flex items-center gap-3">
+        <h1 class="text-2xl font-bold text-black dark:text-white flex items-center gap-3">
             <svg xmlns="http://www.w3.org/2000/svg" class="h-7 w-7 text-purple-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
@@ -23,11 +23,11 @@
                 <path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd" />
             </svg>
             <div>
-                <h3 class="text-base font-bold text-red-800 dark:text-red-400">Initial Password</h3>
-                <p class="mt-1 text-sm text-red-700 dark:text-red-300">
+                <h3 class="text-base font-bold text-black dark:text-white">Initial Password</h3>
+                <p class="mt-1 text-sm text-black dark:text-white">
                     <code class="font-mono font-bold bg-red-200 dark:bg-red-900 text-red-900 dark:text-red-200 px-2 py-0.5 rounded">{{ rendered_password }}</code>
                 </p>
-                <p class="mt-2 text-sm text-red-600 dark:text-red-400">Set your own password in the Security tab to dismiss this message.</p>
+                <p class="mt-2 text-sm text-black dark:text-white">Set your own password in the Security tab to dismiss this message.</p>
             </div>
         </div>
     </div>
@@ -37,10 +37,10 @@
     <div class="rounded-xl border border-purple-500 dark:border-purple-700 shadow overflow-hidden">
         <div class="flex">
             <!-- Left Sidebar - Tabs -->
-            <div class="w-48 bg-gray-50 dark:bg-black border-r border-purple-500/30 dark:border-purple-700/50 flex flex-col shrink-0">
+            <div class="w-48 bg-white dark:bg-black border-r border-purple-500 dark:border-purple-700 flex flex-col shrink-0">
                 <nav class="p-2 space-y-1">
                     <button type="button" @click="activeTab = 'general'"
-                            :class="activeTab === 'general' ? 'bg-purple-100 dark:bg-purple-900/40 text-purple-700 dark:text-purple-300' : 'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-purple-900/20'"
+                            :class="activeTab === 'general' ? 'bg-purple-600 text-white' : 'text-black dark:text-white hover:bg-purple-100 dark:hover:bg-purple-900/30'"
                             class="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition-colors">
                         <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4" />
@@ -50,7 +50,7 @@
 
                     {% if show_admin_settings %}
                     <button type="button" @click="activeTab = 'security'"
-                            :class="activeTab === 'security' ? 'bg-purple-100 dark:bg-purple-900/40 text-purple-700 dark:text-purple-300' : 'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-purple-900/20'"
+                            :class="activeTab === 'security' ? 'bg-purple-600 text-white' : 'text-black dark:text-white hover:bg-purple-100 dark:hover:bg-purple-900/30'"
                             class="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition-colors">
                         <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
@@ -59,7 +59,7 @@
                     </button>
 
                     <button type="button" @click="activeTab = 'provisioning'"
-                            :class="activeTab === 'provisioning' ? 'bg-purple-100 dark:bg-purple-900/40 text-purple-700 dark:text-purple-300' : 'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-purple-900/20'"
+                            :class="activeTab === 'provisioning' ? 'bg-purple-600 text-white' : 'text-black dark:text-white hover:bg-purple-100 dark:hover:bg-purple-900/30'"
                             class="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition-colors">
                         <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2m-2-4h.01M17 16h.01" />
@@ -77,37 +77,37 @@
 
                         <!-- General Tab -->
                         <div x-show="activeTab === 'general'" x-cloak>
-                            <h3 class="text-base font-semibold text-gray-900 dark:text-white mb-4">General</h3>
+                            <h3 class="text-base font-semibold text-black dark:text-white mb-4">General</h3>
 
                             <div class="space-y-4">
                                 <div>
-                                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Theme</label>
+                                    <label class="block text-sm font-medium text-black dark:text-white mb-2">Theme</label>
                                     <div class="flex gap-2">
                                         <label class="cursor-pointer">
                                             <input type="radio" name="theme" value="light" {% if theme == "light" %}checked{% endif %} class="peer sr-only">
-                                            <div class="flex items-center gap-2 px-4 py-2 rounded-lg border border-gray-300 dark:border-gray-700 peer-checked:border-purple-500 peer-checked:bg-purple-50 dark:peer-checked:bg-purple-900/30 transition-all">
+                                            <div class="flex items-center gap-2 px-4 py-2 rounded-lg border border-purple-300 dark:border-purple-700 peer-checked:border-purple-500 peer-checked:bg-purple-100 dark:peer-checked:bg-purple-900/50 transition-all">
                                                 <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-yellow-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z" />
                                                 </svg>
-                                                <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Light</span>
+                                                <span class="text-sm font-medium text-black dark:text-white">Light</span>
                                             </div>
                                         </label>
                                         <label class="cursor-pointer">
                                             <input type="radio" name="theme" value="dark" {% if theme == "dark" %}checked{% endif %} class="peer sr-only">
-                                            <div class="flex items-center gap-2 px-4 py-2 rounded-lg border border-gray-300 dark:border-gray-700 peer-checked:border-purple-500 peer-checked:bg-purple-50 dark:peer-checked:bg-purple-900/30 transition-all">
+                                            <div class="flex items-center gap-2 px-4 py-2 rounded-lg border border-purple-300 dark:border-purple-700 peer-checked:border-purple-500 peer-checked:bg-purple-100 dark:peer-checked:bg-purple-900/50 transition-all">
                                                 <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-purple-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" />
                                                 </svg>
-                                                <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Dark</span>
+                                                <span class="text-sm font-medium text-black dark:text-white">Dark</span>
                                             </div>
                                         </label>
                                         <label class="cursor-pointer">
                                             <input type="radio" name="theme" value="system" {% if theme == "system" %}checked{% endif %} class="peer sr-only">
-                                            <div class="flex items-center gap-2 px-4 py-2 rounded-lg border border-gray-300 dark:border-gray-700 peer-checked:border-purple-500 peer-checked:bg-purple-50 dark:peer-checked:bg-purple-900/30 transition-all">
-                                                <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                            <div class="flex items-center gap-2 px-4 py-2 rounded-lg border border-purple-300 dark:border-purple-700 peer-checked:border-purple-500 peer-checked:bg-purple-100 dark:peer-checked:bg-purple-900/50 transition-all">
+                                                <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-purple-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
                                                 </svg>
-                                                <span class="text-sm font-medium text-gray-700 dark:text-gray-300">System</span>
+                                                <span class="text-sm font-medium text-black dark:text-white">System</span>
                                             </div>
                                         </label>
                                     </div>
@@ -118,64 +118,64 @@
                         {% if show_admin_settings %}
                         <!-- Security Tab -->
                         <div x-show="activeTab === 'security'" x-cloak>
-                            <h3 class="text-base font-semibold text-gray-900 dark:text-white mb-4">Security</h3>
+                            <h3 class="text-base font-semibold text-black dark:text-white mb-4">Security</h3>
 
                             <div class="space-y-6">
                                 <!-- Always Require Login -->
                                 <label class="flex items-start gap-3 cursor-pointer">
                                     <input type="checkbox" name="require_login" {% if require_login %}checked{% endif %}
-                                           class="mt-0.5 h-4 w-4 rounded border-gray-300 dark:border-gray-600 text-purple-600 focus:ring-purple-500 dark:bg-black">
+                                           class="mt-0.5 h-4 w-4 rounded border-purple-500 text-purple-600 focus:ring-purple-500 dark:bg-black">
                                     <div>
-                                        <span class="text-sm font-medium text-gray-900 dark:text-white">Always require login</span>
-                                        <p class="text-xs text-gray-500 dark:text-gray-400">Entire site requires admin login. API endpoints remain open for machine registration.</p>
+                                        <span class="text-sm font-medium text-black dark:text-white">Always require login</span>
+                                        <p class="text-xs text-black/70 dark:text-white/70">Entire site requires admin login. API endpoints remain open for machine registration.</p>
                                     </div>
                                 </label>
 
                                 <!-- Admin Credentials -->
-                                <div class="border-t border-gray-200 dark:border-purple-800/30 pt-6">
-                                    <h4 class="text-sm font-medium text-gray-900 dark:text-white mb-3">Admin Credentials</h4>
+                                <div class="border-t border-purple-500/30 dark:border-purple-700/50 pt-6">
+                                    <h4 class="text-sm font-medium text-black dark:text-white mb-3">Admin Credentials</h4>
                                     <div class="grid grid-cols-2 gap-4">
                                         <div>
-                                            <label for="username" class="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Username</label>
+                                            <label for="username" class="block text-xs font-medium text-black dark:text-white mb-1">Username</label>
                                             <input type="text" name="username" id="username" value="{{ admin_username }}"
-                                                   class="w-full rounded-lg border-gray-300 dark:border-gray-700 dark:bg-black dark:text-white text-sm focus:border-purple-500 focus:ring-purple-500">
+                                                   class="w-full rounded-lg border-purple-300 dark:border-purple-700 bg-white dark:bg-black text-black dark:text-white text-sm focus:border-purple-500 focus:ring-purple-500">
                                         </div>
                                         <div>
-                                            <label for="old_password" class="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Current Password</label>
+                                            <label for="old_password" class="block text-xs font-medium text-black dark:text-white mb-1">Current Password</label>
                                             <input type="password" name="old_password" id="old_password" placeholder="Required to change"
-                                                   class="w-full rounded-lg border-gray-300 dark:border-gray-700 dark:bg-black dark:text-white text-sm focus:border-purple-500 focus:ring-purple-500">
+                                                   class="w-full rounded-lg border-purple-300 dark:border-purple-700 bg-white dark:bg-black text-black dark:text-white text-sm focus:border-purple-500 focus:ring-purple-500">
                                         </div>
                                         <div>
-                                            <label for="password" class="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">New Password</label>
+                                            <label for="password" class="block text-xs font-medium text-black dark:text-white mb-1">New Password</label>
                                             <input type="password" name="password" id="password" placeholder="Leave blank to keep"
-                                                   class="w-full rounded-lg border-gray-300 dark:border-gray-700 dark:bg-black dark:text-white text-sm focus:border-purple-500 focus:ring-purple-500">
+                                                   class="w-full rounded-lg border-purple-300 dark:border-purple-700 bg-white dark:bg-black text-black dark:text-white text-sm focus:border-purple-500 focus:ring-purple-500">
                                         </div>
                                         <div>
-                                            <label for="password_confirm" class="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Confirm Password</label>
+                                            <label for="password_confirm" class="block text-xs font-medium text-black dark:text-white mb-1">Confirm Password</label>
                                             <input type="password" name="password_confirm" id="password_confirm" placeholder="Leave blank to keep"
-                                                   class="w-full rounded-lg border-gray-300 dark:border-gray-700 dark:bg-black dark:text-white text-sm focus:border-purple-500 focus:ring-purple-500">
+                                                   class="w-full rounded-lg border-purple-300 dark:border-purple-700 bg-white dark:bg-black text-black dark:text-white text-sm focus:border-purple-500 focus:ring-purple-500">
                                         </div>
                                     </div>
                                 </div>
 
                                 <!-- API Tokens -->
-                                <div class="border-t border-gray-200 dark:border-purple-800/30 pt-6">
-                                    <h4 class="text-sm font-medium text-gray-900 dark:text-white mb-3">API Tokens</h4>
-                                    <p class="text-sm text-gray-500 dark:text-gray-400">Token management coming soon.</p>
+                                <div class="border-t border-purple-500/30 dark:border-purple-700/50 pt-6">
+                                    <h4 class="text-sm font-medium text-black dark:text-white mb-3">API Tokens</h4>
+                                    <p class="text-sm text-black/70 dark:text-white/70">Token management coming soon.</p>
                                 </div>
                             </div>
                         </div>
 
                         <!-- Provisioning Tab -->
                         <div x-show="activeTab === 'provisioning'" x-cloak>
-                            <h3 class="text-base font-semibold text-gray-900 dark:text-white mb-4">Provisioning</h3>
+                            <h3 class="text-base font-semibold text-black dark:text-white mb-4">Provisioning</h3>
 
                             <div class="space-y-6">
                                 <!-- Default OS -->
                                 <div>
-                                    <label for="default_os" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Default OS</label>
+                                    <label for="default_os" class="block text-sm font-medium text-black dark:text-white mb-1">Default OS</label>
                                     <select name="default_os" id="default_os"
-                                            class="w-full max-w-xs rounded-lg border-gray-300 dark:border-gray-700 dark:bg-black dark:text-white text-sm focus:border-purple-500 focus:ring-purple-500">
+                                            class="w-full max-w-xs rounded-lg border-purple-300 dark:border-purple-700 bg-white dark:bg-black text-black dark:text-white text-sm focus:border-purple-500 focus:ring-purple-500">
                                         <option value="" {% if default_os_none %}selected{% endif %}>None</option>
                                         <option value="ubuntu-2204" {% if default_os_ubuntu2204 %}selected{% endif %}>Ubuntu 22.04</option>
                                         <option value="ubuntu-2404" {% if default_os_ubuntu2404 %}selected{% endif %}>Ubuntu 24.04</option>
@@ -184,68 +184,68 @@
                                         <option value="proxmox" {% if default_os_proxmox %}selected{% endif %}>Proxmox VE</option>
                                         <option value="talos" {% if default_os_talos %}selected{% endif %}>Talos</option>
                                     </select>
-                                    <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">Auto-assigned to new machines.</p>
+                                    <p class="mt-1 text-xs text-black/70 dark:text-white/70">Auto-assigned to new machines.</p>
                                 </div>
 
                                 <!-- SSH Keys -->
-                                <div class="border-t border-gray-200 dark:border-purple-800/30 pt-6">
-                                    <label for="ssh_keys" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">SSH Authorized Keys</label>
+                                <div class="border-t border-purple-500/30 dark:border-purple-700/50 pt-6">
+                                    <label for="ssh_keys" class="block text-sm font-medium text-black dark:text-white mb-1">SSH Authorized Keys</label>
                                     <textarea name="ssh_keys" id="ssh_keys" rows="3" placeholder="ssh-ed25519 AAAA... user@host"
-                                              class="w-full rounded-lg border-gray-300 dark:border-gray-700 dark:bg-black dark:text-white text-sm font-mono focus:border-purple-500 focus:ring-purple-500">{{ ssh_keys|default('') }}</textarea>
-                                    <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">Added to root on all provisioned machines. One key per line.</p>
+                                              class="w-full rounded-lg border-purple-300 dark:border-purple-700 bg-white dark:bg-black text-black dark:text-white text-sm font-mono focus:border-purple-500 focus:ring-purple-500">{{ ssh_keys|default('') }}</textarea>
+                                    <p class="mt-1 text-xs text-black/70 dark:text-white/70">Added to root on all provisioned machines. One key per line.</p>
                                 </div>
 
                                 <!-- OS Templates -->
-                                <div class="border-t border-gray-200 dark:border-purple-800/30 pt-6">
+                                <div class="border-t border-purple-500/30 dark:border-purple-700/50 pt-6">
                                     <div class="flex items-center justify-between mb-3">
-                                        <h4 class="text-sm font-medium text-gray-900 dark:text-white">OS Templates</h4>
+                                        <h4 class="text-sm font-medium text-black dark:text-white">OS Templates</h4>
                                         <button type="button" class="text-xs px-2 py-1 rounded bg-purple-600 text-white hover:bg-purple-700">+ Add</button>
                                     </div>
 
-                                    <div class="border border-gray-200 dark:border-purple-800/30 rounded-lg overflow-hidden">
+                                    <div class="border border-purple-500 dark:border-purple-700 rounded-lg overflow-hidden">
                                         <table class="w-full text-sm">
-                                            <thead class="bg-gray-50 dark:bg-black border-b border-gray-200 dark:border-purple-800/30">
+                                            <thead class="bg-white dark:bg-black border-b border-purple-500 dark:border-purple-700">
                                                 <tr>
-                                                    <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-400">Template</th>
-                                                    <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-400">ID</th>
-                                                    <th class="px-3 py-2 text-center text-xs font-medium text-gray-500 dark:text-gray-400">Status</th>
+                                                    <th class="px-3 py-2 text-left text-xs font-medium text-black dark:text-white">Template</th>
+                                                    <th class="px-3 py-2 text-left text-xs font-medium text-black dark:text-white">ID</th>
+                                                    <th class="px-3 py-2 text-center text-xs font-medium text-black dark:text-white">Status</th>
                                                 </tr>
                                             </thead>
-                                            <tbody class="divide-y divide-gray-100 dark:divide-purple-800/20">
-                                                <tr class="hover:bg-gray-50 dark:hover:bg-purple-900/10">
-                                                    <td class="px-3 py-2 text-gray-900 dark:text-white">Ubuntu 24.04 LTS</td>
-                                                    <td class="px-3 py-2 text-gray-500 dark:text-gray-400 font-mono text-xs">ubuntu-2404</td>
+                                            <tbody class="divide-y divide-purple-500/30 dark:divide-purple-700/50">
+                                                <tr class="hover:bg-purple-50 dark:hover:bg-purple-900/20">
+                                                    <td class="px-3 py-2 text-black dark:text-white">Ubuntu 24.04 LTS</td>
+                                                    <td class="px-3 py-2 text-purple-600 dark:text-purple-400 font-mono text-xs">ubuntu-2404</td>
                                                     <td class="px-3 py-2 text-center"><span class="text-xs text-green-600 dark:text-green-400">✓</span></td>
                                                 </tr>
-                                                <tr class="hover:bg-gray-50 dark:hover:bg-purple-900/10">
-                                                    <td class="px-3 py-2 text-gray-900 dark:text-white">Ubuntu 22.04 LTS</td>
-                                                    <td class="px-3 py-2 text-gray-500 dark:text-gray-400 font-mono text-xs">ubuntu-2204</td>
+                                                <tr class="hover:bg-purple-50 dark:hover:bg-purple-900/20">
+                                                    <td class="px-3 py-2 text-black dark:text-white">Ubuntu 22.04 LTS</td>
+                                                    <td class="px-3 py-2 text-purple-600 dark:text-purple-400 font-mono text-xs">ubuntu-2204</td>
                                                     <td class="px-3 py-2 text-center"><span class="text-xs text-green-600 dark:text-green-400">✓</span></td>
                                                 </tr>
-                                                <tr class="hover:bg-gray-50 dark:hover:bg-purple-900/10">
-                                                    <td class="px-3 py-2 text-gray-900 dark:text-white">Debian 13 (Trixie)</td>
-                                                    <td class="px-3 py-2 text-gray-500 dark:text-gray-400 font-mono text-xs">debian-13</td>
+                                                <tr class="hover:bg-purple-50 dark:hover:bg-purple-900/20">
+                                                    <td class="px-3 py-2 text-black dark:text-white">Debian 13 (Trixie)</td>
+                                                    <td class="px-3 py-2 text-purple-600 dark:text-purple-400 font-mono text-xs">debian-13</td>
                                                     <td class="px-3 py-2 text-center"><span class="text-xs text-green-600 dark:text-green-400">✓</span></td>
                                                 </tr>
-                                                <tr class="hover:bg-gray-50 dark:hover:bg-purple-900/10">
-                                                    <td class="px-3 py-2 text-gray-900 dark:text-white">Debian 12 (Bookworm)</td>
-                                                    <td class="px-3 py-2 text-gray-500 dark:text-gray-400 font-mono text-xs">debian-12</td>
+                                                <tr class="hover:bg-purple-50 dark:hover:bg-purple-900/20">
+                                                    <td class="px-3 py-2 text-black dark:text-white">Debian 12 (Bookworm)</td>
+                                                    <td class="px-3 py-2 text-purple-600 dark:text-purple-400 font-mono text-xs">debian-12</td>
                                                     <td class="px-3 py-2 text-center"><span class="text-xs text-green-600 dark:text-green-400">✓</span></td>
                                                 </tr>
-                                                <tr class="hover:bg-gray-50 dark:hover:bg-purple-900/10">
-                                                    <td class="px-3 py-2 text-gray-900 dark:text-white">Proxmox VE</td>
-                                                    <td class="px-3 py-2 text-gray-500 dark:text-gray-400 font-mono text-xs">proxmox</td>
+                                                <tr class="hover:bg-purple-50 dark:hover:bg-purple-900/20">
+                                                    <td class="px-3 py-2 text-black dark:text-white">Proxmox VE</td>
+                                                    <td class="px-3 py-2 text-purple-600 dark:text-purple-400 font-mono text-xs">proxmox</td>
                                                     <td class="px-3 py-2 text-center"><span class="text-xs text-green-600 dark:text-green-400">✓</span></td>
                                                 </tr>
-                                                <tr class="hover:bg-gray-50 dark:hover:bg-purple-900/10">
-                                                    <td class="px-3 py-2 text-gray-900 dark:text-white">Talos Linux</td>
-                                                    <td class="px-3 py-2 text-gray-500 dark:text-gray-400 font-mono text-xs">talos</td>
+                                                <tr class="hover:bg-purple-50 dark:hover:bg-purple-900/20">
+                                                    <td class="px-3 py-2 text-black dark:text-white">Talos Linux</td>
+                                                    <td class="px-3 py-2 text-purple-600 dark:text-purple-400 font-mono text-xs">talos</td>
                                                     <td class="px-3 py-2 text-center"><span class="text-xs text-green-600 dark:text-green-400">✓</span></td>
                                                 </tr>
                                             </tbody>
                                         </table>
                                     </div>
-                                    <p class="mt-2 text-xs text-gray-500 dark:text-gray-400">Subscribe to custom template URLs or add your own.</p>
+                                    <p class="mt-2 text-xs text-black/70 dark:text-white/70">Subscribe to custom template URLs or add your own.</p>
                                 </div>
                             </div>
                         </div>
@@ -254,7 +254,7 @@
                     </div>
 
                     <!-- Footer -->
-                    <div class="px-6 py-3 bg-gray-50 dark:bg-black border-t border-gray-200 dark:border-purple-800/30 flex justify-end">
+                    <div class="px-6 py-3 bg-white dark:bg-black border-t border-purple-500 dark:border-purple-700 flex justify-end">
                         <button type="submit"
                                 class="px-4 py-2 text-sm font-medium text-white bg-purple-600 hover:bg-purple-700 rounded-lg transition-colors focus:outline-none focus:ring-2 focus:ring-purple-500 focus:ring-offset-2 dark:focus:ring-offset-black">
                             Save Settings
