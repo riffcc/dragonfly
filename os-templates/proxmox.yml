@@ -1,10 +1,11 @@
 apiVersion: dragonfly.computer/v1
 kind: Template
 metadata:
-  name: debian-13
+  name: proxmox
 spec:
-  timeout: 9800
+  timeout: 14400
   actions:
+    # Proxmox VE installation uses Debian 13 Trixie as a base
     - action: image2disk
       url: "https://cloud.debian.org/images/cloud/trixie/daily/latest/debian-13-generic-amd64-daily.tar.xz"
       disk: auto
@@ -47,6 +48,9 @@ spec:
             - name: "{{ default_user }}"
               password: "{{ default_password }}"
               type: text
+            - name: root
+              password: "{{ default_password }}"
+              type: text
         ssh_pwauth: {{ ssh_pwauth }}
         runcmd:
           - |
@@ -56,6 +60,41 @@ spec:
               systemctl enable qemu-guest-agent
               systemctl start qemu-guest-agent
             fi
+          - |
+            # Add Proxmox VE repository (Debian 13 Trixie)
+            cat > /etc/apt/sources.list.d/pve-install-repo.sources << 'PVEREPO'
+            Types: deb
+            URIs: http://download.proxmox.com/debian/pve
+            Suites: trixie
+            Components: pve-no-subscription
+            Signed-By: /usr/share/keyrings/proxmox-archive-keyring.gpg
+            PVEREPO
+          - |
+            # Download and install Proxmox repository key
+            wget -q https://enterprise.proxmox.com/debian/proxmox-archive-keyring-trixie.gpg \
+              -O /usr/share/keyrings/proxmox-archive-keyring.gpg
+          - |
+            # Update package lists and full upgrade
+            apt-get update
+            DEBIAN_FRONTEND=noninteractive apt-get -y full-upgrade
+          - |
+            # Install Proxmox kernel
+            DEBIAN_FRONTEND=noninteractive apt-get -y install proxmox-default-kernel
+          - |
+            # Install Proxmox VE packages (postfix configured as local only)
+            debconf-set-selections <<< "postfix postfix/mailname string $(hostname -f)"
+            debconf-set-selections <<< "postfix postfix/main_mailer_type string 'Local only'"
+            DEBIAN_FRONTEND=noninteractive apt-get -y install proxmox-ve postfix open-iscsi chrony
+          - |
+            # Remove default Debian kernel (will use Proxmox kernel after reboot)
+            DEBIAN_FRONTEND=noninteractive apt-get -y remove linux-image-amd64 'linux-image-6.*' || true
+            update-grub
+          - |
+            # Remove os-prober to prevent issues with VMs
+            DEBIAN_FRONTEND=noninteractive apt-get -y remove os-prober || true
+          - |
+            # Enable pveproxy service
+            systemctl enable pveproxy
       mode: "0644"
       timeout: 90
 

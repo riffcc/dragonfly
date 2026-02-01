@@ -11,36 +11,49 @@ spec:
       timeout: 9600
 
     - action: writefile
-      path: /etc/cloud/cloud.cfg.d/10_dragonfly.cfg
+      path: /etc/cloud/ds-identify.cfg
       partition: 1
       content: |
-        datasource:
-          Ec2:
-            metadata_urls: ["http://{{ server }}:50061"]
-            strict_id: false
+        datasource: NoCloud
+      mode: "0644"
+      timeout: 90
+
+    - action: writefile
+      path: /var/lib/cloud/seed/nocloud/meta-data
+      partition: 1
+      content: |
+        instance-id: {{ instance_id }}
+        local-hostname: {{ friendly_name }}
+      mode: "0644"
+      timeout: 90
+
+    - action: writefile
+      path: /var/lib/cloud/seed/nocloud/user-data
+      partition: 1
+      content: |
+        #cloud-config
         manage_etc_hosts: localhost
-        warnings:
-          dsid_missing_source: off
         users:
-          - default
-        disable_root: true
-        ssh_import_id:
-          - gh:zorlin
-          - gh:michatinkers
+          - name: "{{ default_user }}"
+            sudo: ALL=(ALL) NOPASSWD:ALL
+            shell: /bin/bash
+            lock_passwd: false
+            ssh_authorized_keys: {{ ssh_authorized_keys }}
+        disable_root: false
+        ssh_import_id: {{ ssh_import_id }}
+        chpasswd:
+          expire: false
+          users:
+            - name: "{{ default_user }}"
+              password: "{{ default_password }}"
+              type: text
+        ssh_pwauth: {{ ssh_pwauth }}
         packages:
           - qemu-guest-agent
         runcmd:
           - systemctl enable qemu-guest-agent
           - systemctl start qemu-guest-agent
-      mode: "0600"
-      timeout: 90
-
-    - action: writefile
-      path: /etc/cloud/ds-identify.cfg
-      partition: 1
-      content: |
-        datasource: Ec2
-      mode: "0600"
+      mode: "0644"
       timeout: 90
 
     - action: writefile
