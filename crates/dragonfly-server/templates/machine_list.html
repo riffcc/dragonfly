@@ -472,6 +472,42 @@
         const machineId = this.currentMachineId;
         const machineType = this.currentMachineType;
 
+        // First, save any pending changes for this machine (hostname, etc.)
+        const savePendingChanges = () => {
+            if (this.fieldChanges[machineId] && Object.keys(this.fieldChanges[machineId]).length > 0) {
+                const changes = this.fieldChanges[machineId];
+                const payload = {};
+                Object.keys(changes).forEach(field => {
+                    if (field !== 'os_choice') {
+                        payload[field] = changes[field];
+                    }
+                });
+
+                if (Object.keys(payload).length > 0) {
+                    console.log(`Saving pending changes before reimage:`, payload);
+                    return fetch(`/api/machines/${machineId}`, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    }).then(response => {
+                        if (!response.ok) {
+                            throw new Error('Failed to save pending changes');
+                        }
+                        // Clear saved changes
+                        Object.keys(payload).forEach(field => {
+                            delete this.fieldChanges[machineId][field];
+                        });
+                        if (Object.keys(this.fieldChanges[machineId]).length === 0) {
+                            delete this.fieldChanges[machineId];
+                        }
+                        this.pendingChanges = Object.keys(this.fieldChanges).length > 0;
+                        return response;
+                    });
+                }
+            }
+            return Promise.resolve(); // No changes to save
+        };
+
         let endpoint = '';
         let method = 'POST';
         let body = null;
@@ -491,7 +527,9 @@
             // No body needed for the default reimage endpoint? Adjust if necessary.
         }
 
-        fetch(endpoint, { method, headers, body })
+        // Save pending changes first, then trigger reimage
+        savePendingChanges()
+        .then(() => fetch(endpoint, { method, headers, body }))
         .then(response => {
             if (!response.ok) {
                 // Clone the response before attempting to read it as JSON
