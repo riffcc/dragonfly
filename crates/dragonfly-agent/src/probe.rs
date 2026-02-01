@@ -72,55 +72,91 @@ struct PartitionInfo {
     uuid: Option<String>,
 }
 
-/// List partitions with filesystems using lsblk
+/// List partitions with filesystems using /sys/block and blkid
+///
+/// This avoids requiring lsblk (util-linux) - uses only /sys and busybox blkid
 fn list_partitions() -> Result<Vec<PartitionInfo>> {
-    let output = Command::new("lsblk")
-        .args(["-J", "-o", "NAME,FSTYPE,UUID", "-p"])
-        .output()
-        .context("Failed to run lsblk")?;
-
-    if !output.status.success() {
-        anyhow::bail!("lsblk failed: {}", String::from_utf8_lossy(&output.stderr));
-    }
-
-    let json: serde_json::Value =
-        serde_json::from_slice(&output.stdout).context("Failed to parse lsblk JSON")?;
-
     let mut partitions = Vec::new();
 
-    if let Some(devices) = json.get("blockdevices").and_then(|v| v.as_array()) {
-        for device in devices {
-            collect_partitions(device, &mut partitions);
+    // Read /sys/block to find all block devices
+    let sys_block = Path::new("/sys/block");
+    if !sys_block.exists() {
+        anyhow::bail!("/sys/block not found - is /sys mounted?");
+    }
+
+    let entries = std::fs::read_dir(sys_block)
+        .context("Failed to read /sys/block")?;
+
+    for entry in entries.flatten() {
+        let device_name = entry.file_name().to_string_lossy().to_string();
+
+        // Skip loop devices, ram disks, etc
+        if device_name.starts_with("loop")
+            || device_name.starts_with("ram")
+            || device_name.starts_with("zram")
+            || device_name.starts_with("dm-")  // We'll handle LVM separately if needed
+        {
+            continue;
+        }
+
+        let device_path = format!("/dev/{}", device_name);
+
+        // Check if the device itself has a filesystem (e.g., /dev/sda formatted directly)
+        if let Some(info) = get_blkid_info(&device_path) {
+            partitions.push(info);
+        }
+
+        // Look for partitions (e.g., sda1, sda2) in /sys/block/sda/
+        let device_dir = entry.path();
+        if let Ok(sub_entries) = std::fs::read_dir(&device_dir) {
+            for sub_entry in sub_entries.flatten() {
+                let sub_name = sub_entry.file_name().to_string_lossy().to_string();
+                // Partition entries start with the device name (e.g., sda1 under sda/)
+                if sub_name.starts_with(&device_name) && sub_name != device_name {
+                    let partition_path = format!("/dev/{}", sub_name);
+                    if let Some(info) = get_blkid_info(&partition_path) {
+                        partitions.push(info);
+                    }
+                }
+            }
         }
     }
 
     Ok(partitions)
 }
 
-/// Recursively collect partitions from lsblk JSON
-fn collect_partitions(device: &serde_json::Value, partitions: &mut Vec<PartitionInfo>) {
-    let name = device.get("name").and_then(|v| v.as_str()).unwrap_or("");
-    let fstype = device
-        .get("fstype")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-    let uuid = device.get("uuid").and_then(|v| v.as_str()).map(String::from);
+/// Get filesystem type and UUID using blkid (available in busybox)
+fn get_blkid_info(device: &str) -> Option<PartitionInfo> {
+    // Run blkid on the device
+    let output = Command::new("blkid")
+        .arg(device)
+        .output()
+        .ok()?;
 
-    // Only add if it has a filesystem
-    if !fstype.is_empty() {
-        partitions.push(PartitionInfo {
-            device: name.to_string(),
-            fstype: fstype.to_string(),
-            uuid,
-        });
+    if !output.status.success() {
+        return None;
     }
 
-    // Check children (partitions)
-    if let Some(children) = device.get("children").and_then(|v| v.as_array()) {
-        for child in children {
-            collect_partitions(child, partitions);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // Parse blkid output format: /dev/sda1: UUID="xxx" TYPE="ext4"
+    let mut fstype = None;
+    let mut uuid = None;
+
+    for part in stdout.split_whitespace() {
+        if let Some(val) = part.strip_prefix("TYPE=\"").and_then(|s| s.strip_suffix('"')) {
+            fstype = Some(val.to_string());
+        } else if let Some(val) = part.strip_prefix("UUID=\"").and_then(|s| s.strip_suffix('"')) {
+            uuid = Some(val.to_string());
         }
     }
+
+    // Only return if we found a filesystem type
+    fstype.map(|ft| PartitionInfo {
+        device: device.to_string(),
+        fstype: ft,
+        uuid,
+    })
 }
 
 /// Probe a single partition for an OS

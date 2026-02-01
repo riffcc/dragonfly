@@ -222,29 +222,35 @@ pub fn ui_router() -> Router<crate::AppState> {
 // Count machines by status and return a HashMap
 fn count_machines_by_status(machines: &[Machine]) -> HashMap<String, usize> {
     let mut counts = HashMap::new();
-    
+
     // Initialize counts for all statuses to ensure they're present in the chart
+    counts.insert("Discovered".to_string(), 0);
+    counts.insert("Ready to Install".to_string(), 0);
+    counts.insert("Initializing".to_string(), 0);
+    counts.insert("Installing".to_string(), 0);
+    counts.insert("Writing".to_string(), 0);
+    counts.insert("Installed".to_string(), 0);
     counts.insert("Existing OS".to_string(), 0);
-    counts.insert("Awaiting OS Assignment".to_string(), 0);
-    counts.insert("Installing OS".to_string(), 0);
-    counts.insert("Ready".to_string(), 0);
     counts.insert("Offline".to_string(), 0);
-    counts.insert("Error".to_string(), 0);
-    
+    counts.insert("Failed".to_string(), 0);
+
     // Count actual statuses
     for machine in machines {
         let status_key = match &machine.status {
+            MachineStatus::Discovered => "Discovered",
+            MachineStatus::ReadyToInstall => "Ready to Install",
+            MachineStatus::Initializing => "Initializing",
+            MachineStatus::Installing => "Installing",
+            MachineStatus::Writing => "Writing",
+            MachineStatus::Installed => "Installed",
             MachineStatus::ExistingOS => "Existing OS",
-            MachineStatus::AwaitingAssignment => "Awaiting OS Assignment",
-            MachineStatus::InstallingOS => "Installing OS",
-            MachineStatus::Ready => "Ready",
             MachineStatus::Offline => "Offline",
-            MachineStatus::Error(_) => "Error",
+            MachineStatus::Failed(_) => "Failed",
         };
-        
+
         *counts.get_mut(status_key).unwrap() += 1;
     }
-    
+
     counts
 }
 
@@ -272,7 +278,7 @@ fn generate_demo_machines() -> Vec<Machine> {
             base_ip, 
             ip_suffix, 
             base_time.clone(), 
-            MachineStatus::Ready,
+            MachineStatus::Installed,
             Some(500), // 500GB disk
         ));
     }
@@ -289,7 +295,7 @@ fn generate_demo_machines() -> Vec<Machine> {
             base_ip, 
             ip_suffix, 
             base_time.clone(), 
-            MachineStatus::Ready,
+            MachineStatus::Installed,
             Some(2000), // 2TB disk
         ));
     }
@@ -306,7 +312,7 @@ fn generate_demo_machines() -> Vec<Machine> {
             base_ip, 
             ip_suffix, 
             base_time.clone(), 
-            MachineStatus::Ready,
+            MachineStatus::Installed,
             Some(500), // 500GB disk
         ));
     }
@@ -317,10 +323,10 @@ fn generate_demo_machines() -> Vec<Machine> {
         let mac_suffix = 30 + i as u8;
         let ip_suffix = 40 + i as u8;
         let status = if i <= 5 { 
-            MachineStatus::Ready 
+            MachineStatus::Installed 
         } else { 
             // Make one datanode show as "installing" for variety
-            MachineStatus::InstallingOS 
+            MachineStatus::Writing 
         };
         machines.push(create_demo_machine(
             &hostname, 
@@ -406,6 +412,7 @@ fn create_demo_machine(
         proxmox_node: None,
         proxmox_cluster: None, // Add the new field, initialize to None for demo
         is_proxmox_host: false, // Add the new field, default to false for demo data
+        reimage_requested: false, // Demo machines don't have pending reimages
     }
 }
 
@@ -659,7 +666,7 @@ pub async fn machine_details(
                     let updated_at_formatted = machine.updated_at.format("%Y-%m-%d %H:%M:%S UTC").to_string();
                     
                     // Create a mock workflow info if the machine is in installing status
-                    let workflow_info = if machine.status == MachineStatus::InstallingOS {
+                    let workflow_info = if machine.status == MachineStatus::Writing {
                         Some(WorkflowInfo {
                             state: "running".to_string(),
                             current_action: Some("Writing disk image".to_string()),

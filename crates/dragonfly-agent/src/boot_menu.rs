@@ -647,48 +647,65 @@ where
     terminal.draw(|frame| draw_splash(frame, existing_os))?;
 
     // Behavior depends on whether we have an existing OS:
-    // - Has OS: quick timeout, boot it if server is slow/dead
+    // - Has OS: check in with server, then decide based on response
+    //   - Execute: act immediately (server has deliberate intent to pave)
+    //   - LocalBoot/Wait/Error: give user full 3s timeout to interrupt
     // - No OS: wait indefinitely for server (we have nothing else to do)
     let result = if existing_os.is_some() {
-        // We have an existing OS - use quick timeout
+        // Start check-in immediately
         tokio::select! {
-            // User pressed a key
+            // User pressed a key - show menu immediately
             _ = key_rx.recv() => {
                 drop(key_handle);
                 info!("User interrupted - showing boot menu");
                 Ok(None)
             }
 
-            // Check-in with timeout (3s gives user time to react)
+            // Check-in completed (or timed out)
             result = tokio::time::timeout(DRAGONFLY_TIMEOUT, check_in_fn()) => {
-                drop(key_rx);
-
-                match result {
-                    Ok(Ok(response)) => {
-                        debug!(action = ?response.action, "Got Dragonfly response");
-                        Ok(Some(response))
-                    }
+                let response = match result {
+                    Ok(Ok(resp)) => resp,
                     Ok(Err(e)) => {
-                        // Server error - boot existing OS
-                        warn!(error = %e, "Check-in failed, booting existing OS");
-                        Ok(Some(CheckInResponse {
+                        warn!(error = %e, "Check-in failed");
+                        CheckInResponse {
                             machine_id: String::new(),
                             memorable_name: String::new(),
                             is_new: false,
                             action: AgentAction::LocalBoot,
                             workflow_id: None,
-                        }))
+                        }
                     }
                     Err(_) => {
-                        // Timeout - boot existing OS (invisible to user)
-                        info!("Server unreachable, booting existing OS");
-                        Ok(Some(CheckInResponse {
+                        info!("Server unreachable (timeout)");
+                        CheckInResponse {
                             machine_id: String::new(),
                             memorable_name: String::new(),
                             is_new: false,
                             action: AgentAction::LocalBoot,
                             workflow_id: None,
-                        }))
+                        }
+                    }
+                };
+
+                // If server says Execute, act immediately - server has deliberate intent
+                if response.action == AgentAction::Execute {
+                    debug!(action = ?response.action, "Server says Execute - acting immediately");
+                    drop(key_rx);
+                    Ok(Some(response))
+                } else {
+                    // For LocalBoot/Wait, give user remaining time to interrupt
+                    debug!(action = ?response.action, "Waiting for user interrupt opportunity");
+                    tokio::select! {
+                        _ = key_rx.recv() => {
+                            drop(key_handle);
+                            info!("User interrupted - showing boot menu");
+                            Ok(None)
+                        }
+                        _ = tokio::time::sleep(DRAGONFLY_TIMEOUT) => {
+                            drop(key_rx);
+                            debug!(action = ?response.action, "Timeout elapsed, proceeding");
+                            Ok(Some(response))
+                        }
                     }
                 }
             }

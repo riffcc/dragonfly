@@ -938,7 +938,7 @@ pub async fn configure_flight_mode(store: std::sync::Arc<dyn Store>) -> Result<(
         let agent_binary_url = "https://github.com/riffcc/dragonfly/releases/download/latest/dragonfly-agent-x86_64";
         
         // Generate the APK overlay
-        match crate::api::generate_agent_apkovl(&target_apkovl_path, &base_url, agent_binary_url).await {
+        match crate::api::generate_agent_apkovl(&target_apkovl_path, &base_url, crate::api::AgentSource::Url(agent_binary_url)).await {
             Ok(_) => {
                 info!("Successfully built Dragonfly Agent APK overlay at {:?}", target_apkovl_path);
                 Ok(())

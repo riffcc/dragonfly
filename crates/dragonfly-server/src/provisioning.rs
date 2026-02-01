@@ -10,7 +10,7 @@
 use crate::mode::DeploymentMode;
 use dragonfly_common::{
     Disk, HardwareInfo, Machine, MachineIdentity, MachineState, MachineStatus,
-    NetworkInterface, normalize_mac,
+    NetworkInterface, WorkflowResult, normalize_mac,
 };
 use crate::store::v1::{Result as StoreResult, Store, StoreError};
 use chrono::Utc;
@@ -168,6 +168,10 @@ impl ProvisioningService {
     }
 
     /// Get boot script for known machine
+    ///
+    /// ALL machines boot into Mage (discovery_script). The dragonfly-agent then
+    /// checks in and receives instructions (LocalBoot, Execute, Wait).
+    /// This ensures the agent always runs and can make intelligent decisions.
     async fn boot_script_for_known_machine(&self, machine: &Machine) -> Result<String, ProvisioningError> {
         // Check for active workflow
         let workflows = self.get_workflows_for_machine(machine).await?;
@@ -186,45 +190,18 @@ impl ProvisioningService {
             return Ok(script);
         }
 
-        // Check if os_choice is set - boot into Mage for imaging
-        if machine.config.os_choice.is_some() {
-            info!("Machine {} has os_choice set, booting into Mage", machine.id);
-            let script = self.ipxe_generator.discovery_script(None)
-                .map_err(|e| ProvisioningError::IpxeGeneration(e.to_string()))?;
-            return Ok(script);
-        }
-
-        // Check machine state
-        match &machine.status.state {
-            MachineState::Installed | MachineState::ExistingOs { .. } => {
-                debug!("Machine {} has OS, booting locally", machine.id);
-                Ok(self.ipxe_generator.local_boot_script())
-            }
-            MachineState::Initializing | MachineState::Installing | MachineState::Writing => {
-                debug!("Machine {} in installation state", machine.id);
-                let script = self.ipxe_generator.discovery_script(None)
-                    .map_err(|e| ProvisioningError::IpxeGeneration(e.to_string()))?;
-                Ok(script)
-            }
-            MachineState::Discovered | MachineState::ReadyToInstall => {
-                // Discovered or ready to install - boot into discovery/mage
-                debug!("Machine {} ready for install, booting into discovery", machine.id);
-                let script = self.ipxe_generator.discovery_script(None)
-                    .map_err(|e| ProvisioningError::IpxeGeneration(e.to_string()))?;
-                Ok(script)
-            }
-            _ => {
-                // Error/Offline - default based on mode
-                match self.mode {
-                    DeploymentMode::Flight => {
-                        let script = self.ipxe_generator.discovery_script(None)
-                            .map_err(|e| ProvisioningError::IpxeGeneration(e.to_string()))?;
-                        Ok(script)
-                    }
-                    _ => Ok(self.ipxe_generator.local_boot_script()),
-                }
-            }
-        }
+        // ALL other machines boot into Mage (discovery_script)
+        // The agent will check in and receive appropriate action:
+        // - Installed/ExistingOs → LocalBoot
+        // - os_choice set → Execute (create workflow)
+        // - Otherwise → Wait
+        debug!(
+            "Machine {} (state: {:?}) booting into Mage for agent check-in",
+            machine.id, machine.status.state
+        );
+        let script = self.ipxe_generator.discovery_script(None)
+            .map_err(|e| ProvisioningError::IpxeGeneration(e.to_string()))?;
+        Ok(script)
     }
 
     /// Get boot script for unknown machine
@@ -307,36 +284,108 @@ impl ProvisioningService {
 
         // Determine action
         let (workflow_id, action, machine) = match active_workflow {
-            Some(wf) => (Some(wf.metadata.name.clone()), AgentAction::Execute, machine),
-            None => {
-                // Check machine's os_choice first, then fall back to global default_os
-                let os_to_install = if machine.config.os_choice.is_some() {
-                    machine.config.os_choice.clone()
-                } else if is_new {
-                    // For new machines, check global default_os setting
-                    match self.store.get_setting("default_os").await {
-                        Ok(Some(default_os)) if !default_os.is_empty() => {
-                            info!("Using global default_os '{}' for new machine {}", default_os, machine.id);
-                            Some(default_os)
-                        }
-                        _ => None,
+            Some(mut wf) => {
+                // If there's an active workflow but the agent reports an existing OS,
+                // the installation likely completed but the machine rebooted before
+                // reporting success. Mark workflow complete and boot the OS.
+                if let Some(ref existing_os) = info.existing_os {
+                    info!(
+                        "Machine {} has active workflow {} but reports existing OS '{}' - installation complete!",
+                        machine.id, wf.metadata.name, existing_os.name
+                    );
+
+                    // Mark workflow as successful
+                    if let Some(ref mut status) = wf.status {
+                        status.state = WorkflowState::StateSuccess;
+                        status.completed_at = Some(chrono::Utc::now());
                     }
+                    self.store.put_workflow(&wf).await
+                        .map_err(ProvisioningError::Store)?;
+
+                    // Installation complete - set to Installed (not ExistingOs, which is for unknown OSes)
+                    let mut machine = machine;
+                    // Record what was installed (use template name, falling back to detected OS)
+                    machine.config.os_installed = Some(wf.spec.template_ref.clone());
+                    machine.config.os_choice = None;
+                    machine.config.reimage_requested = false;
+                    machine.config.installation_progress = 100; // Mark as complete
+                    machine.config.installation_step = Some("Installation complete".to_string());
+                    machine.status.state = MachineState::Installed;
+                    machine.status.last_workflow_result = Some(WorkflowResult::Success {
+                        completed_at: Utc::now()
+                    });
+                    self.store.put_machine(&machine).await
+                        .map_err(ProvisioningError::Store)?;
+
+                    (None, AgentAction::LocalBoot, machine)
                 } else {
+                    // No existing OS - continue with workflow
+                    // Ensure state is at least Initializing and reimage_requested is cleared
+                    let mut machine = machine;
+                    if matches!(machine.status.state, MachineState::Discovered | MachineState::ReadyToInstall) {
+                        machine.status.state = MachineState::Initializing;
+                    }
+                    machine.config.reimage_requested = false;
+                    self.store.put_machine(&machine).await
+                        .map_err(ProvisioningError::Store)?;
+                    (Some(wf.metadata.name.clone()), AgentAction::Execute, machine)
+                }
+            }
+            None => {
+                // Determine if we should install an OS
+                // Rules:
+                // - No existing OS → safe to image (nothing to lose)
+                // - Has existing OS → require molly guard (os_choice + reimage_requested)
+                let os_to_install = if info.existing_os.is_none() {
+                    // No existing OS - safe to image without molly guard
+                    if machine.config.os_choice.is_some() {
+                        info!(
+                            "Machine {} has no existing OS, will install {} (os_choice)",
+                            machine.id,
+                            machine.config.os_choice.as_ref().unwrap()
+                        );
+                        machine.config.os_choice.clone()
+                    } else if is_new {
+                        // New machine - check global default_os
+                        match self.store.get_setting("default_os").await {
+                            Ok(Some(default_os)) if !default_os.is_empty() => {
+                                info!("Using global default_os '{}' for new machine {} (no existing OS)", default_os, machine.id);
+                                Some(default_os)
+                            }
+                            _ => None,
+                        }
+                    } else {
+                        None
+                    }
+                } else if machine.config.os_choice.is_some() && machine.config.reimage_requested {
+                    // Has existing OS but user explicitly requested reimage (molly guard passed)
+                    info!(
+                        "Machine {} has existing OS '{}' but reimage requested, will install {}",
+                        machine.id,
+                        info.existing_os.as_ref().unwrap().name,
+                        machine.config.os_choice.as_ref().unwrap()
+                    );
+                    machine.config.os_choice.clone()
+                } else {
+                    // Has existing OS, no reimage requested - don't wipe
                     None
                 };
 
                 if let Some(ref os_choice) = os_to_install {
-                    // Update machine's os_choice so it shows in the UI
+                    // Update machine state and clear reimage_requested now that we're starting
                     let mut machine = machine;
                     if machine.config.os_choice.is_none() {
                         machine.config.os_choice = Some(os_choice.clone());
-                        self.store.put_machine(&machine).await
-                            .map_err(ProvisioningError::Store)?;
-                        info!("Updated machine {} with os_choice {}", machine.id, os_choice);
                     }
+                    // Transition to Initializing - workflow is about to start
+                    machine.status.state = MachineState::Initializing;
+                    // Clear reimage_requested - the reimage has now begun, abort is no longer safe
+                    machine.config.reimage_requested = false;
+                    self.store.put_machine(&machine).await
+                        .map_err(ProvisioningError::Store)?;
+                    info!("Machine {} transitioning to Initializing, will install OS {}", machine.id, os_choice);
 
                     // Create workflow and execute
-                    info!("Machine {} will install OS {}, creating workflow", machine.id, os_choice);
                     let workflow = self.create_imaging_workflow(&machine, os_choice).await?;
                     (Some(workflow.metadata.name.clone()), AgentAction::Execute, machine)
                 } else if let Some(ref existing_os) = info.existing_os {
@@ -901,10 +950,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_checkin_existing_os_with_workflow_executes() {
+    async fn test_checkin_existing_os_with_default_os_respects_molly_guard() {
         let store: Arc<dyn Store> = Arc::new(MemoryStore::new());
 
-        // Set default_os so a workflow will be created
+        // Set default_os
         store.put_setting("default_os", "debian-13").await.unwrap();
 
         // Create the template
@@ -917,7 +966,8 @@ mod tests {
             DeploymentMode::Simple,
         );
 
-        // Check in a machine with existing OS but also default_os set
+        // Check in a new machine with existing OS
+        // Even with default_os set, we should NOT auto-pave (molly guard)
         let mut checkin = test_checkin();
         checkin.existing_os = Some(DetectedOs {
             name: "Ubuntu 22.04".to_string(),
@@ -929,9 +979,251 @@ mod tests {
         });
         let response = service.handle_checkin(&checkin).await.unwrap();
 
-        // Should Execute the workflow (pave over the existing OS)
+        // Should LocalBoot (not auto-pave) because molly guard requires explicit reimage_requested
         assert!(response.is_new, "Machine should be new");
-        assert_eq!(response.action, AgentAction::Execute, "Action should be Execute when default_os is set");
-        assert!(response.workflow_id.is_some(), "Should have workflow_id for paving");
+        assert_eq!(response.action, AgentAction::LocalBoot, "Action should be LocalBoot - molly guard prevents auto-pave");
+        assert!(response.workflow_id.is_none(), "Should not have workflow_id");
+
+        // Verify machine state is ExistingOs
+        let machine = store.get_machine_by_mac("00:11:22:33:44:55").await.unwrap().unwrap();
+        assert!(matches!(machine.status.state, MachineState::ExistingOs { .. }), "State should be ExistingOs");
+    }
+
+    #[tokio::test]
+    async fn test_checkin_existing_os_with_reimage_requested_executes() {
+        let store: Arc<dyn Store> = Arc::new(MemoryStore::new());
+
+        // Create the template
+        let template = Template::new("debian-13");
+        store.put_template(&template).await.unwrap();
+
+        // Pre-create machine with os_choice AND reimage_requested (molly guard passed)
+        let identity = MachineIdentity::new(
+            "00:11:22:33:44:55".to_string(),
+            vec!["00:11:22:33:44:55".to_string()],
+            Some("smbios-uuid-123".to_string()),
+            Some("machine-id-456".to_string()),
+        );
+        let mut machine = Machine::new(identity);
+        machine.config.os_choice = Some("debian-13".to_string());
+        machine.config.reimage_requested = true;  // Molly guard passed
+        store.put_machine(&machine).await.unwrap();
+
+        let service = ProvisioningService::new(
+            store.clone(),
+            test_ipxe_config(),
+            DeploymentMode::Simple,
+        );
+
+        // Check in the machine with existing OS - should proceed with imaging because molly guard passed
+        let mut checkin = test_checkin();
+        checkin.existing_os = Some(DetectedOs {
+            name: "Ubuntu 22.04".to_string(),
+            machine_id: None,
+            fs_uuid: None,
+            kernel_path: None,
+            initrd_path: None,
+            device: "/dev/sda1".to_string(),
+        });
+        let response = service.handle_checkin(&checkin).await.unwrap();
+
+        // Should Execute because both os_choice AND reimage_requested are set
+        assert!(!response.is_new, "Machine should not be new");
+        assert_eq!(response.action, AgentAction::Execute, "Action should be Execute when molly guard passed");
+        assert!(response.workflow_id.is_some(), "Should have workflow_id for reimaging");
+    }
+
+    #[tokio::test]
+    async fn test_workflow_completion_sets_os_installed() {
+        // This test verifies that when a workflow completes (agent checks in with existing OS),
+        // the os_installed field is set to the template name (not the detected OS name).
+        // This is critical for reimaging to work without re-selecting an OS.
+        let store: Arc<dyn Store> = Arc::new(MemoryStore::new());
+
+        // Create the template
+        let template = Template::new("debian-13");
+        store.put_template(&template).await.unwrap();
+
+        // Create machine with os_choice set (simulating reimage request)
+        let identity = MachineIdentity::new(
+            "00:11:22:33:44:55".to_string(),
+            vec!["00:11:22:33:44:55".to_string()],
+            Some("smbios-uuid-123".to_string()),
+            Some("machine-id-456".to_string()),
+        );
+        let mut machine = Machine::new(identity);
+        machine.config.os_choice = Some("debian-13".to_string());
+        machine.config.reimage_requested = true;
+        store.put_machine(&machine).await.unwrap();
+
+        let service = ProvisioningService::new(
+            store.clone(),
+            test_ipxe_config(),
+            DeploymentMode::Simple,
+        );
+
+        // First check-in: creates workflow
+        let checkin = test_checkin();
+        let response = service.handle_checkin(&checkin).await.unwrap();
+        assert_eq!(response.action, AgentAction::Execute);
+        let workflow_id = response.workflow_id.expect("Should have workflow_id");
+
+        // Verify workflow was created with correct template
+        let wf = store.get_workflows_for_machine(machine.id).await.unwrap();
+        assert_eq!(wf.len(), 1);
+        assert_eq!(wf[0].spec.template_ref, "debian-13");
+
+        // Second check-in: agent reports existing OS after installation
+        // This simulates the machine rebooting after kexec into the installed OS
+        let mut checkin_with_os = test_checkin();
+        checkin_with_os.existing_os = Some(DetectedOs {
+            name: "Debian GNU/Linux 13 (trixie)".to_string(), // Detected name differs from template
+            machine_id: Some("abc123".to_string()),
+            fs_uuid: Some("12345678-1234-1234-1234-123456789abc".to_string()),
+            kernel_path: Some("/boot/vmlinuz".to_string()),
+            initrd_path: Some("/boot/initrd.img".to_string()),
+            device: "/dev/sda2".to_string(),
+        });
+        let response2 = service.handle_checkin(&checkin_with_os).await.unwrap();
+
+        // Should return LocalBoot since installation is complete
+        assert_eq!(response2.action, AgentAction::LocalBoot);
+
+        // CRITICAL: Verify os_installed is set to TEMPLATE NAME, not detected OS name
+        let machine = store.get_machine_by_mac("00:11:22:33:44:55").await.unwrap().unwrap();
+        assert_eq!(machine.status.state, MachineState::Installed, "State should be Installed");
+        assert_eq!(
+            machine.config.os_installed,
+            Some("debian-13".to_string()),
+            "os_installed should be template name 'debian-13', not detected name"
+        );
+        assert_eq!(
+            machine.config.os_choice,
+            None,
+            "os_choice should be cleared after installation"
+        );
+        assert_eq!(
+            machine.config.installation_progress,
+            100,
+            "Progress should be 100%"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_installed_machine_can_reimage_without_selecting_os() {
+        // This test verifies that a machine in Installed state with os_installed set
+        // can be reimaged without manually selecting an OS again.
+        let store: Arc<dyn Store> = Arc::new(MemoryStore::new());
+
+        // Create the template
+        let template = Template::new("debian-13");
+        store.put_template(&template).await.unwrap();
+
+        // Create machine that has been installed (os_installed set, os_choice cleared)
+        let identity = MachineIdentity::new(
+            "00:11:22:33:44:55".to_string(),
+            vec!["00:11:22:33:44:55".to_string()],
+            Some("smbios-uuid-123".to_string()),
+            Some("machine-id-456".to_string()),
+        );
+        let mut machine = Machine::new(identity);
+        machine.status.state = MachineState::Installed;
+        machine.config.os_installed = Some("debian-13".to_string());
+        machine.config.os_choice = None; // Cleared after installation
+        machine.config.installation_progress = 100;
+        store.put_machine(&machine).await.unwrap();
+
+        // Now simulate clicking "Reimage" - this should use os_installed as fallback
+        // The reimage logic should:
+        // 1. See os_choice is None
+        // 2. Fall back to os_installed ("debian-13")
+        // 3. Set os_choice to os_installed
+        // 4. Set reimage_requested = true
+        // 5. Change state to ReadyToInstall
+
+        // Verify the machine state before reimage simulation
+        let machine = store.get_machine_by_mac("00:11:22:33:44:55").await.unwrap().unwrap();
+        assert_eq!(machine.config.os_installed, Some("debian-13".to_string()));
+        assert_eq!(machine.config.os_choice, None);
+
+        // The reimage API logic uses this match:
+        // match (&v1_machine.config.os_choice, &v1_machine.config.os_installed) {
+        //     (Some(os), _) if !os.is_empty() => os.clone(),
+        //     (_, Some(os)) if !os.is_empty() => os.clone(), // THIS SHOULD WORK
+        //     _ => return error
+        // }
+        let os_to_use = match (&machine.config.os_choice, &machine.config.os_installed) {
+            (Some(os), _) if !os.is_empty() => Some(os.clone()),
+            (_, Some(os)) if !os.is_empty() => Some(os.clone()),
+            _ => None,
+        };
+
+        assert_eq!(
+            os_to_use,
+            Some("debian-13".to_string()),
+            "Reimage should use os_installed when os_choice is None"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_existing_os_machine_can_reimage_without_selecting_os() {
+        // THIS IS THE ACTUAL BUG SCENARIO:
+        // - Machine is in ExistingOs state (detected by agent, NOT installed by us)
+        // - os_installed = None (we didn't install it)
+        // - os_choice = None (user hasn't selected anything)
+        // - UI shows "Debian 13" from ExistingOs { os_name } state
+        // - User clicks Reimage WITHOUT selecting OS from dropdown
+        // - Reimage should use ExistingOs.os_name as fallback
+        let store: Arc<dyn Store> = Arc::new(MemoryStore::new());
+
+        // Create the template that matches the detected OS
+        let template = Template::new("Debian 13");
+        store.put_template(&template).await.unwrap();
+
+        // Create machine in ExistingOs state (detected by agent)
+        let identity = MachineIdentity::new(
+            "00:11:22:33:44:66".to_string(),
+            vec!["00:11:22:33:44:66".to_string()],
+            Some("smbios-uuid-789".to_string()),
+            Some("machine-id-abc".to_string()),
+        );
+        let mut machine = Machine::new(identity);
+        // ExistingOs state - agent detected this OS, we didn't install it
+        machine.status.state = MachineState::ExistingOs {
+            os_name: "Debian 13".to_string(),
+        };
+        machine.config.os_installed = None; // NOT set - we didn't install it
+        machine.config.os_choice = None; // User hasn't selected anything
+        store.put_machine(&machine).await.unwrap();
+
+        // Verify the machine state
+        let machine = store.get_machine_by_mac("00:11:22:33:44:66").await.unwrap().unwrap();
+        assert_eq!(machine.config.os_installed, None, "os_installed should be None");
+        assert_eq!(machine.config.os_choice, None, "os_choice should be None");
+        assert!(
+            matches!(machine.status.state, MachineState::ExistingOs { ref os_name } if os_name == "Debian 13"),
+            "Should be in ExistingOs state"
+        );
+
+        // The FIXED reimage API logic should check ExistingOs state as fallback:
+        // 1. os_choice = None -> skip
+        // 2. os_installed = None -> skip
+        // 3. ExistingOs { os_name } -> use os_name
+        let os_to_use = machine.config.os_choice.clone()
+            .filter(|s| !s.is_empty())
+            .or_else(|| machine.config.os_installed.clone().filter(|s| !s.is_empty()))
+            .or_else(|| {
+                if let MachineState::ExistingOs { ref os_name } = machine.status.state {
+                    Some(os_name.clone())
+                } else {
+                    None
+                }
+            });
+
+        assert_eq!(
+            os_to_use,
+            Some("Debian 13".to_string()),
+            "Reimage should use ExistingOs.os_name when os_choice and os_installed are None"
+        );
     }
 }

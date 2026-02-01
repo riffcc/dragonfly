@@ -2044,7 +2044,7 @@ async fn sync_proxmox_machines(
             if let Some((_node_name, api_status, agent_running)) = current_vm_details.get(&vmid) {
                  // VM exists in API, update status and potentially IP
                 let new_db_status = match api_status.as_str() {
-                    "running" => MachineStatus::Ready, // Or maybe Online?
+                    "running" => MachineStatus::Installed,
                     "stopped" => MachineStatus::Offline,
                     _ => MachineStatus::ExistingOS, // Use ExistingOS as fallback instead of Unknown
                 };
@@ -2059,12 +2059,15 @@ async fn sync_proxmox_machines(
                     if let Ok(Some(mut machine)) = state.store.get_machine(db_machine.id).await {
                         use dragonfly_common::MachineState;
                         machine.status.state = match new_db_status {
-                            MachineStatus::Ready => MachineState::Installed,
+                            MachineStatus::Installed => MachineState::Installed,
                             MachineStatus::Offline => MachineState::Offline,
                             MachineStatus::ExistingOS => MachineState::ExistingOs { os_name: "Unknown".to_string() },
-                            MachineStatus::AwaitingAssignment => MachineState::Discovered,
-                            MachineStatus::InstallingOS => MachineState::Installing,
-                            MachineStatus::Error(ref msg) => MachineState::Failed { message: msg.clone() },
+                            MachineStatus::Discovered => MachineState::Discovered,
+                            MachineStatus::ReadyToInstall => MachineState::ReadyToInstall,
+                            MachineStatus::Initializing => MachineState::Initializing,
+                            MachineStatus::Installing => MachineState::Installing,
+                            MachineStatus::Writing => MachineState::Writing,
+                            MachineStatus::Failed(ref msg) => MachineState::Failed { message: msg.clone() },
                         };
                         machine.metadata.updated_at = chrono::Utc::now();
                         if let Err(e) = state.store.put_machine(&machine).await {

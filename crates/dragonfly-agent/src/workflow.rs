@@ -298,7 +298,11 @@ pub enum AgentAction {
     Execute,
     /// Reboot the machine
     Reboot,
+    /// Boot the existing local OS via kexec
+    LocalBoot,
 }
+
+use crate::probe::DetectedOs;
 
 /// Check in with the server using native provisioning endpoint
 pub async fn checkin_native(
@@ -307,6 +311,7 @@ pub async fn checkin_native(
     mac: &str,
     hostname: Option<&str>,
     ip_address: Option<&str>,
+    existing_os: Option<&DetectedOs>,
 ) -> Result<CheckInResponse> {
     let url = format!("{}/api/agent/checkin", server_url);
 
@@ -314,6 +319,7 @@ pub async fn checkin_native(
         "mac": mac,
         "hostname": hostname,
         "ip_address": ip_address,
+        "existing_os": existing_os,
     });
 
     let response = client.post(&url).json(&payload).send().await?;

@@ -304,8 +304,13 @@ pub struct NetworkInterface {
 pub struct MachineConfig {
     pub hostname: Option<String>,
     pub memorable_name: String,
+    /// OS to install (template name). Setting this alone doesn't trigger reimage.
     pub os_choice: Option<String>,
     pub os_installed: Option<String>,
+    /// Molly guard: must be true AND os_choice set to actually reimage.
+    /// Cleared automatically after imaging completes.
+    #[serde(default)]
+    pub reimage_requested: bool,
     pub tags: Vec<String>,
     pub bmc: Option<BmcConfig>,
     pub installation_progress: u8,
@@ -321,6 +326,7 @@ impl MachineConfig {
             memorable_name: crate::mac_to_words::mac_to_words_safe(mac),
             os_choice: None,
             os_installed: None,
+            reimage_requested: false,
             tags: Vec::new(),
             bmc: None,
             installation_progress: 0,
@@ -336,6 +342,7 @@ impl MachineConfig {
             memorable_name: crate::mac_to_words::mac_to_words_safe("00:00:00:00:00:00"),
             os_choice: None,
             os_installed: None,
+            reimage_requested: false,
             tags: Vec::new(),
             bmc: None,
             installation_progress: 0,

@@ -17,6 +17,9 @@ pub fn boot_local_os(os: &DetectedOs) -> Result<()> {
         "Preparing to kexec into local OS"
     );
 
+    // Check if kexec is available and enabled
+    check_kexec_prerequisites();
+
     let mount_point = "/mnt/localboot";
 
     // Create mount point
@@ -159,6 +162,53 @@ pub fn is_kexec_available() -> bool {
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false)
+}
+
+/// Check kexec prerequisites and log diagnostic info
+fn check_kexec_prerequisites() {
+    // Check kexec_load_disabled sysctl
+    if let Ok(content) = std::fs::read_to_string("/proc/sys/kernel/kexec_load_disabled") {
+        let value = content.trim();
+        if value == "1" {
+            warn!("kexec_load_disabled=1 - kexec is disabled by sysctl!");
+            // Try to enable it
+            if let Err(e) = std::fs::write("/proc/sys/kernel/kexec_load_disabled", "0") {
+                warn!("Failed to enable kexec_load: {} (this is a one-way toggle)", e);
+            }
+        } else {
+            info!("kexec_load_disabled={}", value);
+        }
+    } else {
+        warn!("Could not read /proc/sys/kernel/kexec_load_disabled - kexec may not be supported");
+    }
+
+    // Check kernel config (if available)
+    if let Ok(output) = Command::new("zcat").arg("/proc/config.gz").output() {
+        if output.status.success() {
+            let config = String::from_utf8_lossy(&output.stdout);
+            let kexec_enabled = config.lines().any(|l| l == "CONFIG_KEXEC=y");
+            let kexec_file_enabled = config.lines().any(|l| l == "CONFIG_KEXEC_FILE=y");
+            info!(
+                "Kernel config: CONFIG_KEXEC={}, CONFIG_KEXEC_FILE={}",
+                if kexec_enabled { "y" } else { "n" },
+                if kexec_file_enabled { "y" } else { "n" }
+            );
+            if !kexec_enabled && !kexec_file_enabled {
+                warn!("Kernel does not have kexec support compiled in!");
+            }
+        }
+    }
+
+    // Check if running as root
+    if let Ok(uid) = std::env::var("EUID").or_else(|_| {
+        Command::new("id").arg("-u").output().ok().map(|o| {
+            String::from_utf8_lossy(&o.stdout).trim().to_string()
+        }).ok_or(std::env::VarError::NotPresent)
+    }) {
+        if uid != "0" {
+            warn!("Not running as root (uid={}), kexec requires CAP_SYS_BOOT", uid);
+        }
+    }
 }
 
 #[cfg(test)]

@@ -39,27 +39,75 @@ pub struct Machine {
     pub proxmox_cluster: Option<String>,
     // New flag for Proxmox hosts
     pub is_proxmox_host: bool, // Defaults to false if not specified in JSON
+    /// True if user explicitly requested reimage (molly guard passed)
+    #[serde(default)]
+    pub reimage_requested: bool,
 }
 
+/// Machine lifecycle status
+///
+/// Progress through states: Discovered → ReadyToInstall → Initializing → Installing → Writing → Installed
+///
+/// - `Discovered`: Just saw on network, no OS chosen yet
+/// - `ReadyToInstall`: OS chosen, waiting for next PXE boot
+/// - `Initializing`: Mage agent booted and checking in
+/// - `Installing`: Workflow started, executing actions
+/// - `Writing`: Image being written to disk (progress tracked in installation_progress)
+/// - `Installed`: Successfully completed installation
+/// - `ExistingOS`: Detected existing OS on disk, not wiping
+/// - `Failed`: Something went wrong
+/// - `Offline`: Machine is offline (can be WoL'd)
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub enum MachineStatus {
-    ExistingOS,             // Foreign existing OS (name stored in os_installed field)
-    AwaitingAssignment,    // Blank machine ready for OS assignment
-    InstallingOS,          // Installing an OS via tinkerbell
-    Ready,                 // Part of the cluster, serving K8s workloads
-    Offline,               // Machine is offline (can be WoL'd)
-    Error(String),         // Error state with message
+    Discovered,           // Just saw on network, no OS chosen
+    ReadyToInstall,       // OS chosen, waiting for next PXE boot
+    Initializing,         // Mage agent booted, checking in
+    Installing,           // Workflow started, executing actions
+    Writing,              // Image being written to disk
+    Installed,            // Successfully completed (was Ready)
+    ExistingOS,           // Has an OS already, not wiping
+    Failed(String),       // Something went wrong
+    Offline,              // Machine is offline (can be WoL'd)
+}
+
+impl MachineStatus {
+    /// Machine-readable status string for APIs/templates
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            MachineStatus::Discovered => "Discovered",
+            MachineStatus::ReadyToInstall => "ReadyToInstall",
+            MachineStatus::Initializing => "Initializing",
+            MachineStatus::Installing => "Installing",
+            MachineStatus::Writing => "Writing",
+            MachineStatus::Installed => "Installed",
+            MachineStatus::ExistingOS => "ExistingOS",
+            MachineStatus::Failed(_) => "Failed",
+            MachineStatus::Offline => "Offline",
+        }
+    }
+
+    /// Whether this status represents an active installation
+    pub fn is_installing(&self) -> bool {
+        matches!(self,
+            MachineStatus::Initializing |
+            MachineStatus::Installing |
+            MachineStatus::Writing
+        )
+    }
 }
 
 impl fmt::Display for MachineStatus {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            MachineStatus::Discovered => write!(f, "Discovered"),
+            MachineStatus::ReadyToInstall => write!(f, "Ready to Install"),
+            MachineStatus::Initializing => write!(f, "Initializing"),
+            MachineStatus::Installing => write!(f, "Installing"),
+            MachineStatus::Writing => write!(f, "Writing"),
+            MachineStatus::Installed => write!(f, "Installed"),
             MachineStatus::ExistingOS => write!(f, "Existing OS"),
-            MachineStatus::AwaitingAssignment => write!(f, "Awaiting OS Assignment"),
-            MachineStatus::InstallingOS => write!(f, "InstallingOS"),
-            MachineStatus::Ready => write!(f, "Ready"),
+            MachineStatus::Failed(msg) => write!(f, "Failed: {}", msg),
             MachineStatus::Offline => write!(f, "Offline"),
-            MachineStatus::Error(msg) => write!(f, "Error: {}", msg),
         }
     }
 }

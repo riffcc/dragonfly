@@ -304,6 +304,8 @@ shell
         params.push("ip=dhcp".to_string());
         params.push("alpine_repo=http://dl-cdn.alpinelinux.org/alpine/v3.23/main".to_string());
         params.push("modules=loop,squashfs,sd-mod,usb-storage,virtio_net,virtio_blk,e1000,8139cp".to_string());
+        // Enable kexec for chainloading into existing OS (Alpine kernels disable by default)
+        params.push("kexec_load_disabled=0".to_string());
 
         // Console configuration
         if let Some(ref console) = self.config.console {

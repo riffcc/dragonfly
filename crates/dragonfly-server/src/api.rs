@@ -30,7 +30,6 @@ use crate::{
 use std::sync::Arc;
 use std::path::Path as FilePath;
 use tempfile::tempdir;
-use std::os::unix::fs::symlink as unix_symlink;
 use tokio::process::Command;
 use tokio::fs;
 use std::path::Path as StdPath;
@@ -56,6 +55,7 @@ pub fn api_router() -> Router<crate::AppState> {
         .route("/machines/install-status", get(get_install_status))
         .route("/machines/{id}/os", get(get_machine_os).post(assign_os))
         .route("/machines/{id}/reimage", post(reimage_machine)) // Add new reimage endpoint
+        .route("/machines/{id}/abort-reimage", post(abort_reimage)) // Cancel pending reimage
         .route("/machines/{id}/hostname", get(get_hostname_form).put(update_hostname))
         .route("/machines/{id}/status", put(update_status))
         .route("/machines/{id}/status-and-progress", get(get_machine_status_and_progress_partial))
@@ -116,13 +116,22 @@ libc-utils
 kexec-tools
 libgcc
 wget
+util-linux
 "#;
+
+/// Source for the dragonfly-agent binary in the APK overlay
+pub enum AgentSource<'a> {
+    /// Download from a URL
+    Url(&'a str),
+    /// Copy from a local filesystem path
+    LocalPath(&'a StdPath),
+}
 
 /// Generates the localhost.apkovl.tar.gz file needed by the Dragonfly Agent iPXE script.
 pub async fn generate_agent_apkovl(
     target_apkovl_path: &StdPath,
     base_url: &str,
-    agent_binary_url: &str,
+    agent_source: AgentSource<'_>,
 ) -> Result<(), dragonfly_common::Error> {
     info!("Generating agent APK overlay at: {:?}", target_apkovl_path);
     
@@ -166,59 +175,59 @@ pub async fn generate_agent_apkovl(
     fs::write(temp_path.join("etc/.default_boot_services"), "").await
         .map_err(|e| dragonfly_common::Error::Internal(format!("Failed to write .default_boot_services: {}", e)))?;
     
-    // 4. Write dynamic dragonfly-agent.start script
-    let start_script_path = temp_path.join("etc/local.d/dragonfly-agent.start");
+    // 4. Write agent wrapper script (called by inittab on tty1)
+    let wrapper_path = temp_path.join("usr/local/bin/dragonfly-wrapper");
+    let wrapper_content = format!(r#"#!/bin/sh
+# Wrapper for dragonfly-agent - runs on tty1 via inittab for proper terminal access
 
-    // Create script content - runs agent in background with logging
-    // The agent auto-detects native mode from kernel parameters (dragonfly.*)
-    let script_content = format!(r#"#!/bin/sh
-# Dragonfly Agent startup script
-# Log all output to /var/log/dragonfly/agent.log
-exec >>/var/log/dragonfly/agent.log 2>&1
+# Clear screen and show banner
+clear
+echo "=== Mage: Dragonfly Boot Environment ==="
+echo "Server: {}"
+echo ""
 
-echo "=== Dragonfly Agent starting ==="
-echo "Date: $(date)"
-echo "Kernel params: $(cat /proc/cmdline)"
-echo "Server URL: {}"
-
-# Verify agent binary exists
-if [ ! -x /usr/local/bin/dragonfly-agent ]; then
-    echo "ERROR: Agent binary not found or not executable"
-    ls -la /usr/local/bin/
-    exit 1
-fi
-
-# Run agent - it will detect native mode from kernel params
-echo "Starting dragonfly-agent..."
-/usr/local/bin/dragonfly-agent --server {} &
-AGENT_PID=$!
-echo "Agent started with PID: $AGENT_PID"
-exit 0
+# Run the agent (exec replaces this shell)
+exec /usr/local/bin/dragonfly-agent --server "{}"
 "#,
         base_url, base_url
     );
+    fs::write(&wrapper_path, wrapper_content).await
+        .map_err(|e| dragonfly_common::Error::Internal(format!("Failed to write wrapper script: {}", e)))?;
+    set_executable_permission(&wrapper_path).await?;
 
-    // Write the file
-    fs::write(&start_script_path, script_content).await
-        .map_err(|e| dragonfly_common::Error::Internal(format!("Failed to write start script: {}", e)))?;
+    // 5. Write custom inittab - runs agent on tty1 instead of getty
+    let inittab_content = r#"# Dragonfly Mage inittab
+::sysinit:/sbin/openrc sysinit
+::sysinit:/sbin/openrc boot
+::wait:/sbin/openrc default
+
+# Run dragonfly-agent on tty1 (respawn if it exits)
+tty1::respawn:/usr/local/bin/dragonfly-wrapper
+
+# Keep getty on other ttys for emergency access
+tty2::respawn:/sbin/getty 38400 tty2
+tty3::respawn:/sbin/getty 38400 tty3
+
+::ctrlaltdel:/sbin/reboot
+::shutdown:/sbin/openrc shutdown
+"#;
+    fs::write(temp_path.join("etc/inittab"), inittab_content).await
+        .map_err(|e| dragonfly_common::Error::Internal(format!("Failed to write inittab: {}", e)))?;
     
-    // Make it executable
-    set_executable_permission(&start_script_path).await?;
-    
-    // 5. Create the symlink (Unchanged, uses std::os::unix)
-    let link_target = "/etc/init.d/local";
-    let link_path = temp_path.join("etc/runlevels/default/local");
-    unix_symlink(link_target, &link_path)
-        .map_err(|e| dragonfly_common::Error::Internal(
-            format!("Failed to create symlink {:?} -> {}: {}", link_path, link_target, e)
-        ))?;
-    
-    // 6. Download the agent binary
-    let agent_binary_path = temp_path.join("usr/local/bin/dragonfly-agent");
-    download_file(agent_binary_url, &agent_binary_path).await?;
-    
-    // Make it executable
-    set_executable_permission(&agent_binary_path).await?;
+    // 6. Get the agent binary (download or copy based on source)
+    let dest_agent_path = temp_path.join("usr/local/bin/dragonfly-agent");
+    match agent_source {
+        AgentSource::Url(url) => {
+            download_file(url, &dest_agent_path).await?;
+        }
+        AgentSource::LocalPath(path) => {
+            fs::copy(path, &dest_agent_path).await
+                .map_err(|e| dragonfly_common::Error::Internal(
+                    format!("Failed to copy agent binary from {:?}: {}", path, e)
+                ))?;
+        }
+    }
+    set_executable_permission(&dest_agent_path).await?;
     
     // 7. Create the tar.gz archive
     info!("Creating tarball: {:?}", target_apkovl_path);
@@ -420,7 +429,7 @@ async fn get_all_machines(
                         let os_display = match &machine.os_installed {
                             Some(os) => os.clone(),
                             None => {
-                                if machine.status == MachineStatus::InstallingOS {
+                                if machine.status.is_installing() {
                                     if let Some(os) = &machine.os_choice {
                                         format!("🚧 {}", format_os_name(os))
                                     } else {
@@ -454,7 +463,7 @@ async fn get_all_machines(
                                 </button>
                             "#,
                             // Conditionally include the Assign OS button
-                            if machine.status == MachineStatus::AwaitingAssignment {
+                            if machine.status == MachineStatus::Discovered {
                                 format!(r#"
                                     <button
                                         @click="showOsModal('{}')"
@@ -513,16 +522,16 @@ async fn get_all_machines(
                         machine.mac_address,
                         machine.ip_address,
                         match machine.status {
-                            MachineStatus::Ready => "px-3 py-1 inline-flex text-sm leading-5 font-semibold rounded-full bg-green-100 text-green-800 dark:bg-green-400/10 dark:text-green-300 dark:border dark:border-green-500/20",
-                            MachineStatus::InstallingOS => "px-3 py-1 inline-flex text-sm leading-5 font-semibold rounded-full bg-yellow-100 text-yellow-800 dark:bg-yellow-400/10 dark:text-yellow-300 dark:border dark:border-yellow-500/20",
-                            MachineStatus::AwaitingAssignment => "px-3 py-1 inline-flex text-sm leading-5 font-semibold rounded-full bg-blue-100 text-blue-800 dark:bg-blue-400/10 dark:text-blue-300 dark:border dark:border-blue-500/20",
+                            MachineStatus::Installed => "px-3 py-1 inline-flex text-sm leading-5 font-semibold rounded-full bg-green-100 text-green-800 dark:bg-green-400/10 dark:text-green-300 dark:border dark:border-green-500/20",
+                            MachineStatus::Initializing | MachineStatus::Installing | MachineStatus::Writing => "px-3 py-1 inline-flex text-sm leading-5 font-semibold rounded-full bg-yellow-100 text-yellow-800 dark:bg-yellow-400/10 dark:text-yellow-300 dark:border dark:border-yellow-500/20",
+                            MachineStatus::Discovered | MachineStatus::ReadyToInstall => "px-3 py-1 inline-flex text-sm leading-5 font-semibold rounded-full bg-blue-100 text-blue-800 dark:bg-blue-400/10 dark:text-blue-300 dark:border dark:border-blue-500/20",
                             MachineStatus::ExistingOS => "px-3 py-1 inline-flex text-sm leading-5 font-semibold rounded-full bg-sky-100 text-sky-800 dark:bg-sky-400/10 dark:text-sky-300 dark:border dark:border-sky-500/20",
                             _ => "px-3 py-1 inline-flex text-sm leading-5 font-semibold rounded-full bg-red-100 text-red-800 dark:bg-red-400/10 dark:text-red-300 dark:border dark:border-red-500/20"
                         },
-                        match &machine.status { 
-                            MachineStatus::Ready => String::from("Ready for Adoption"),
-                            MachineStatus::InstallingOS => String::from("Installing OS"),
-                            MachineStatus::AwaitingAssignment => String::from("Choose OS"),
+                        match &machine.status {
+                            MachineStatus::Installed => String::from("Installed"),
+                            MachineStatus::Initializing | MachineStatus::Installing | MachineStatus::Writing => String::from("Installing"),
+                            MachineStatus::Discovered | MachineStatus::ReadyToInstall => String::from("Discovered"),
                             _ => machine.status.to_string()
                         },
                         os_display,
@@ -720,10 +729,11 @@ async fn update_status(
                 match form.0.get("status") {
                     Some(status_str) => {
                         match status_str.as_str() {
-                            "Ready" => Some(MachineStatus::Ready),
-                            "AwaitingAssignment" => Some(MachineStatus::AwaitingAssignment),
-                            "InstallingOS" => Some(MachineStatus::InstallingOS),
-                            "Error" => Some(MachineStatus::Error("Manual error state".to_string())),
+                            "Discovered" => Some(MachineStatus::Discovered),
+                            "ReadyToInstall" => Some(MachineStatus::ReadyToInstall),
+                            "Installed" => Some(MachineStatus::Installed),
+                            "Failed" => Some(MachineStatus::Failed("Manual error state".to_string())),
+                            "Offline" => Some(MachineStatus::Offline),
                             _ => None
                         }
                     },
@@ -773,17 +783,20 @@ async fn update_status(
     // Convert MachineStatus to v1 MachineState
     use dragonfly_common::MachineState;
     machine.status.state = match &status {
-        MachineStatus::Ready => MachineState::Installed,
-        MachineStatus::AwaitingAssignment => MachineState::Discovered,
-        MachineStatus::InstallingOS => MachineState::Installing,
-        MachineStatus::Error(msg) => MachineState::Failed { message: msg.clone() },
+        MachineStatus::Discovered => MachineState::Discovered,
+        MachineStatus::ReadyToInstall => MachineState::ReadyToInstall,
+        MachineStatus::Initializing => MachineState::Initializing,
+        MachineStatus::Installing => MachineState::Installing,
+        MachineStatus::Writing => MachineState::Writing,
+        MachineStatus::Installed => MachineState::Installed,
+        MachineStatus::Failed(msg) => MachineState::Failed { message: msg.clone() },
         MachineStatus::ExistingOS => MachineState::ExistingOs { os_name: "Unknown".to_string() },
         MachineStatus::Offline => MachineState::Offline,
     };
     machine.metadata.updated_at = chrono::Utc::now();
 
-    // If status is AwaitingAssignment, check for default OS
-    if status == MachineStatus::AwaitingAssignment {
+    // If status is Discovered, check for default OS
+    if status == MachineStatus::Discovered {
         if let Ok(settings) = db::get_app_settings().await {
             if let Some(default_os) = settings.default_os {
                 info!("Applying default OS '{}' to newly registered machine {}", default_os, id);
@@ -1290,11 +1303,14 @@ async fn update_machine(
     // Update status
     use dragonfly_common::MachineState;
     machine.status.state = match &machine_payload.status {
-        MachineStatus::Ready => MachineState::Installed,
-        MachineStatus::AwaitingAssignment => MachineState::Discovered,
-        MachineStatus::InstallingOS => MachineState::Installing,
-        MachineStatus::Error(msg) => MachineState::Failed { message: msg.clone() },
+        MachineStatus::Discovered => MachineState::Discovered,
+        MachineStatus::ReadyToInstall => MachineState::ReadyToInstall,
+        MachineStatus::Initializing => MachineState::Initializing,
+        MachineStatus::Installing => MachineState::Installing,
+        MachineStatus::Writing => MachineState::Writing,
+        MachineStatus::Installed => MachineState::Installed,
         MachineStatus::ExistingOS => MachineState::ExistingOs { os_name: "Unknown".to_string() },
+        MachineStatus::Failed(msg) => MachineState::Failed { message: msg.clone() },
         MachineStatus::Offline => MachineState::Offline,
     };
 
@@ -1383,8 +1399,8 @@ async fn machine_events(
                     (event_string.as_str(), None)
                 };
 
-                // Special handling for ip_download_progress to send raw JSON payload
-                if event_type == "ip_download_progress" {
+                // Special handling for ip_download_progress and workflow_progress to send raw JSON payload
+                if event_type == "ip_download_progress" || event_type == "workflow_progress" {
                     if let Some(payload_str) = event_payload_str {
                         // Directly use the JSON string as data for this specific event type
                 let sse_event = Event::default()
@@ -1392,9 +1408,9 @@ async fn machine_events(
                             .data(payload_str); // Use the payload string directly
                         Some((Ok(sse_event), rx))
                     } else {
-                         warn!("Received ip_download_progress event without payload: {}", event_string);
+                         warn!("Received {} event without payload: {}", event_type, event_string);
                          // Optionally send a comment or skip
-                         let comment_event = Event::default().comment("Warning: ip_download_progress event received without payload.");
+                         let comment_event = Event::default().comment(format!("Warning: {} event received without payload.", event_type));
                          Some((Ok(comment_event), rx))
                     }
                 } else {
@@ -1942,7 +1958,7 @@ pub async fn serve_ipxe_artifact(
 
             info!("Generating apkovl with base_url: {}", base_url);
 
-            match generate_agent_apkovl(&generation_target_path, &base_url, AGENT_BINARY_URL).await {
+            match generate_agent_apkovl(&generation_target_path, &base_url, AgentSource::Url(AGENT_BINARY_URL)).await {
                 Ok(()) => {
                     info!("Successfully generated {}, now serving...", generation_target_path.display());
                     // Save the base_url marker for cache invalidation
@@ -2514,6 +2530,12 @@ pub async fn agent_checkin_handler(
                 action = ?response.action,
                 "Agent check-in successful"
             );
+
+            // Emit machine_updated event to trigger UI refresh
+            // This is critical for auto-updating the UI when machines transition
+            // from Installing to Installed (or any other state change from agent check-in)
+            let _ = state.event_manager.send(format!("machine_updated:{}", response.machine_id));
+
             Json(response).into_response()
         }
         Err(e) => {
@@ -2650,46 +2672,193 @@ pub async fn workflow_events_handler(
         "Received workflow event from agent"
     );
 
-    // Build event message for SSE broadcast
+    // Look up the workflow to get the machine_id (hardware_ref)
+    let machine_id = if let Ok(wf_uuid) = uuid::Uuid::parse_str(&workflow_id) {
+        match state.store.get_workflow(wf_uuid).await {
+            Ok(Some(wf)) => Some(wf.spec.hardware_ref.clone()),
+            _ => None,
+        }
+    } else {
+        None
+    };
+
+    // Update machine's installation_progress if this is a progress event
+    if event.event_type == "action_progress" {
+        if let (Some(mid), Some(progress)) = (&machine_id, &event.progress) {
+            if let Ok(machine_uuid) = uuid::Uuid::parse_str(mid) {
+                if let Ok(Some(mut machine)) = state.store.get_machine(machine_uuid).await {
+                    // Normalize per-action progress to overall workflow progress
+                    let action_name = event.action.as_deref().unwrap_or("unknown");
+                    let normalized_progress = normalize_workflow_progress(action_name, progress.percent);
+
+                    // Only update if progress moved forward (ratchet - never go backwards)
+                    if normalized_progress >= machine.config.installation_progress {
+                        machine.config.installation_progress = normalized_progress;
+                        machine.config.installation_step = Some(progress.message.clone());
+                        machine.metadata.updated_at = chrono::Utc::now();
+
+                        // Transition from Initializing to Installing when we start receiving progress
+                        if matches!(machine.status.state, dragonfly_common::MachineState::Initializing) {
+                            machine.status.state = dragonfly_common::MachineState::Installing;
+                        }
+
+                        // If kexec is at high progress (>= 90%), mark as Installed NOW
+                        // The actual kexec will reboot the machine and no completion event will be sent
+                        if action_name == "kexec" && progress.percent >= 90 {
+                            info!(
+                                machine_id = %mid,
+                                kexec_progress = progress.percent,
+                                "kexec approaching reboot - marking machine as Installed"
+                            );
+                            machine.status.state = dragonfly_common::MachineState::Installed;
+                            machine.config.installation_progress = 100;
+                            machine.config.installation_step = Some("Installation complete".to_string());
+                            machine.config.reimage_requested = false;
+                            machine.config.os_installed = machine.config.os_choice.clone();
+                            machine.config.os_choice = None;
+                            // Emit machine_updated so UI refreshes
+                            let _ = state.event_manager.send(format!("machine_updated:{}", mid));
+                        }
+
+                        let _ = state.store.put_machine(&machine).await;
+                    }
+                }
+            }
+        }
+    }
+
+    // Build event message for SSE broadcast - include machine_id for UI updates
+    let mid_str = machine_id.as_deref().unwrap_or("unknown");
     let event_message = match event.event_type.as_str() {
         "action_progress" => {
             if let Some(progress) = &event.progress {
-                // Include full progress data for UI
-                format!(
-                    "workflow_progress:{}:{}:{}:{}:{}:{}",
-                    workflow_id,
-                    event.action.as_deref().unwrap_or("unknown"),
-                    progress.percent,
-                    progress.message,
-                    progress.bytes_transferred.unwrap_or(0),
-                    progress.bytes_total.unwrap_or(0)
-                )
+                // Normalize per-action progress to overall workflow progress for SSE too
+                let action_name = event.action.as_deref().unwrap_or("unknown");
+                let normalized_percent = normalize_workflow_progress(action_name, progress.percent);
+
+                // Send JSON payload with event_type: prefix for SSE handler
+                let json_payload = serde_json::json!({
+                    "workflow_id": workflow_id,
+                    "machine_id": mid_str,
+                    "action": action_name,
+                    "percent": normalized_percent,
+                    "message": progress.message,
+                    "bytes_transferred": progress.bytes_transferred.unwrap_or(0),
+                    "bytes_total": progress.bytes_total.unwrap_or(0)
+                });
+                format!("workflow_progress:{}", json_payload)
             } else {
-                format!("workflow_progress:{}:unknown:0:No progress data:0:0", workflow_id)
+                format!("workflow_progress:{{\"workflow_id\":\"{}\",\"machine_id\":\"{}\",\"action\":\"unknown\",\"percent\":0,\"message\":\"No progress data\",\"bytes_transferred\":0,\"bytes_total\":0}}", workflow_id, mid_str)
             }
         }
-        "started" => format!("workflow_started:{}", workflow_id),
-        "action_started" => format!(
-            "action_started:{}:{}",
-            workflow_id,
-            event.action.as_deref().unwrap_or("unknown")
-        ),
-        "action_completed" => format!(
-            "action_completed:{}:{}:{}",
-            workflow_id,
-            event.action.as_deref().unwrap_or("unknown"),
-            event.success.unwrap_or(false)
-        ),
+        "started" => format!("workflow_started:{}:{}", workflow_id, mid_str),
+        "action_started" => {
+            let action_name = event.action.as_deref().unwrap_or("unknown");
+
+            // When kexec action STARTS, mark machine as Installed immediately
+            // The machine WILL reboot and we may never get completion event
+            if action_name == "kexec" {
+                if let Some(mid) = &machine_id {
+                    if let Ok(machine_uuid) = uuid::Uuid::parse_str(mid) {
+                        if let Ok(Some(mut machine)) = state.store.get_machine(machine_uuid).await {
+                            info!(
+                                machine_id = %mid,
+                                "kexec action starting - marking machine as Installed NOW"
+                            );
+                            machine.status.state = dragonfly_common::MachineState::Installed;
+                            machine.config.installation_progress = 100;
+                            machine.config.installation_step = Some("Installation complete".to_string());
+                            machine.config.reimage_requested = false;
+                            machine.config.os_installed = machine.config.os_choice.clone();
+                            machine.config.os_choice = None;
+                            machine.metadata.updated_at = chrono::Utc::now();
+                            let _ = state.store.put_machine(&machine).await;
+                            let _ = state.event_manager.send(format!("machine_updated:{}", mid));
+                        }
+                    }
+                }
+            }
+
+            format!(
+                "action_started:{}:{}:{}",
+                workflow_id,
+                mid_str,
+                action_name
+            )
+        }
+        "action_completed" => {
+            let action_name = event.action.as_deref().unwrap_or("unknown");
+            let success = event.success.unwrap_or(false);
+
+            // If kexec completed successfully, mark machine as Installed NOW
+            // (the machine may never PXE boot again if it boots from local disk)
+            if action_name == "kexec" && success {
+                if let Some(mid) = &machine_id {
+                    if let Ok(machine_uuid) = uuid::Uuid::parse_str(mid) {
+                        if let Ok(Some(mut machine)) = state.store.get_machine(machine_uuid).await {
+                            info!(
+                                machine_id = %mid,
+                                "kexec completed - marking machine as Installed"
+                            );
+                            machine.status.state = dragonfly_common::MachineState::Installed;
+                            machine.config.installation_progress = 100;
+                            machine.config.installation_step = Some("Installation complete".to_string());
+                            machine.config.reimage_requested = false;
+                            machine.config.os_installed = machine.config.os_choice.clone();
+                            machine.config.os_choice = None;
+                            machine.metadata.updated_at = chrono::Utc::now();
+                            let _ = state.store.put_machine(&machine).await;
+                            // Emit machine_updated so UI refreshes
+                            let _ = state.event_manager.send(format!("machine_updated:{}", mid));
+                        }
+                    }
+                }
+            }
+
+            format!(
+                "action_completed:{}:{}:{}:{}",
+                workflow_id,
+                mid_str,
+                action_name,
+                success
+            )
+        }
         "completed" => {
             let success = event.success.unwrap_or(false);
             info!(
                 workflow_id = %workflow_id,
+                machine_id = %mid_str,
                 success = success,
                 "Workflow completed"
             );
-            format!("workflow_completed:{}:{}", workflow_id, success)
+
+            // Mark machine as Installed when workflow completes successfully
+            if success {
+                if let Some(mid) = &machine_id {
+                    if let Ok(machine_uuid) = uuid::Uuid::parse_str(mid) {
+                        if let Ok(Some(mut machine)) = state.store.get_machine(machine_uuid).await {
+                            info!(
+                                machine_id = %mid,
+                                "Workflow completed successfully - marking machine as Installed"
+                            );
+                            machine.status.state = dragonfly_common::MachineState::Installed;
+                            machine.config.installation_progress = 100;
+                            machine.config.installation_step = Some("Installation complete".to_string());
+                            machine.config.reimage_requested = false;
+                            machine.config.os_installed = machine.config.os_choice.clone();
+                            machine.config.os_choice = None;
+                            machine.metadata.updated_at = chrono::Utc::now();
+                            let _ = state.store.put_machine(&machine).await;
+                        }
+                    }
+                }
+            }
+
+            // Emit machine_updated so UI refreshes the machine row
+            let _ = state.event_manager.send(format!("machine_updated:{}", mid_str));
+            format!("workflow_completed:{}:{}:{}", workflow_id, mid_str, success)
         }
-        _ => format!("workflow_event:{}:{}", workflow_id, event.event_type),
+        _ => format!("workflow_event:{}:{}:{}", workflow_id, mid_str, event.event_type),
     };
 
     // Broadcast to SSE subscribers
@@ -2879,116 +3048,7 @@ pub async fn generate_mage_apkovl_arch(base_url: &str, arch: &str) -> Result<(),
     }
 
     // Generate APK overlay using local agent binary
-    generate_agent_apkovl_local(&target_path, base_url, &agent_binary_path).await
-}
-
-/// Generate APK overlay using a local agent binary (no network download)
-async fn generate_agent_apkovl_local(
-    target_apkovl_path: &StdPath,
-    base_url: &str,
-    agent_binary_path: &StdPath,
-) -> Result<(), dragonfly_common::Error> {
-    info!("Generating agent APK overlay at: {:?} (using local binary)", target_apkovl_path);
-
-    // 1. Create a temporary directory
-    let temp_dir = tempdir()
-        .map_err(|e| dragonfly_common::Error::Internal(format!("Failed to create temp directory: {}", e)))?;
-    let temp_path = temp_dir.path();
-
-    // 2. Create directory structure
-    fs::create_dir_all(temp_path.join("etc/local.d")).await
-        .map_err(|e| dragonfly_common::Error::Internal(format!("Failed to create dir: {}", e)))?;
-    fs::create_dir_all(temp_path.join("etc/apk/protected_paths.d")).await
-        .map_err(|e| dragonfly_common::Error::Internal(format!("Failed to create dir: {}", e)))?;
-    fs::create_dir_all(temp_path.join("etc/runlevels/default")).await
-        .map_err(|e| dragonfly_common::Error::Internal(format!("Failed to create dir: {}", e)))?;
-    fs::create_dir_all(temp_path.join("usr/local/bin")).await
-        .map_err(|e| dragonfly_common::Error::Internal(format!("Failed to create dir: {}", e)))?;
-    fs::create_dir_all(temp_path.join("var/log/dragonfly")).await
-        .map_err(|e| dragonfly_common::Error::Internal(format!("Failed to create dir: {}", e)))?;
-
-    // 3. Write static files
-    fs::write(temp_path.join("etc/hosts"), HOSTS_CONTENT).await
-        .map_err(|e| dragonfly_common::Error::Internal(format!("Failed to write: {}", e)))?;
-    fs::write(temp_path.join("etc/hostname"), HOSTNAME_CONTENT).await
-        .map_err(|e| dragonfly_common::Error::Internal(format!("Failed to write: {}", e)))?;
-    fs::write(temp_path.join("etc/apk/arch"), APK_ARCH_CONTENT).await
-        .map_err(|e| dragonfly_common::Error::Internal(format!("Failed to write: {}", e)))?;
-    fs::write(temp_path.join("etc/apk/protected_paths.d/lbu.list"), LBU_LIST_CONTENT).await
-        .map_err(|e| dragonfly_common::Error::Internal(format!("Failed to write: {}", e)))?;
-    fs::write(temp_path.join("etc/apk/repositories"), REPOSITORIES_CONTENT).await
-        .map_err(|e| dragonfly_common::Error::Internal(format!("Failed to write: {}", e)))?;
-    fs::write(temp_path.join("etc/apk/world"), WORLD_CONTENT).await
-        .map_err(|e| dragonfly_common::Error::Internal(format!("Failed to write: {}", e)))?;
-    fs::write(temp_path.join("etc/mtab"), "").await
-        .map_err(|e| dragonfly_common::Error::Internal(format!("Failed to write: {}", e)))?;
-    fs::write(temp_path.join("etc/.default_boot_services"), "").await
-        .map_err(|e| dragonfly_common::Error::Internal(format!("Failed to write: {}", e)))?;
-
-    // 4. Write start script - runs agent in background with logging
-    // The agent auto-detects native mode from kernel parameters (dragonfly.*)
-    let start_script_path = temp_path.join("etc/local.d/dragonfly-agent.start");
-    let script_content = format!(r#"#!/bin/sh
-# Dragonfly Agent startup script
-# Log all output to /var/log/dragonfly/agent.log
-exec >>/var/log/dragonfly/agent.log 2>&1
-
-echo "=== Dragonfly Agent starting ==="
-echo "Date: $(date)"
-echo "Kernel params: $(cat /proc/cmdline)"
-echo "Server URL: {}"
-
-# Verify agent binary exists
-if [ ! -x /usr/local/bin/dragonfly-agent ]; then
-    echo "ERROR: Agent binary not found or not executable"
-    ls -la /usr/local/bin/
-    exit 1
-fi
-
-# Run agent - it will detect native mode from kernel params
-echo "Starting dragonfly-agent..."
-/usr/local/bin/dragonfly-agent --server {} &
-AGENT_PID=$!
-echo "Agent started with PID: $AGENT_PID"
-exit 0
-"#,
-        base_url, base_url
-    );
-    fs::write(&start_script_path, script_content).await
-        .map_err(|e| dragonfly_common::Error::Internal(format!("Failed to write: {}", e)))?;
-    set_executable_permission(&start_script_path).await?;
-
-    // 5. Create symlink for local service
-    let link_target = "/etc/init.d/local";
-    let link_path = temp_path.join("etc/runlevels/default/local");
-    unix_symlink(link_target, &link_path)
-        .map_err(|e| dragonfly_common::Error::Internal(format!("Failed to create symlink: {}", e)))?;
-
-    // 6. Copy the local agent binary (no download!)
-    let dest_agent_path = temp_path.join("usr/local/bin/dragonfly-agent");
-    fs::copy(agent_binary_path, &dest_agent_path).await
-        .map_err(|e| dragonfly_common::Error::Internal(format!("Failed to copy agent binary: {}", e)))?;
-    set_executable_permission(&dest_agent_path).await?;
-
-    // 7. Create tar.gz archive
-    info!("Creating tarball: {:?}", target_apkovl_path);
-    let output = Command::new("tar")
-        .arg("-czf")
-        .arg(target_apkovl_path)
-        .arg("-C")
-        .arg(temp_path)
-        .arg(".")
-        .output()
-        .await
-        .map_err(|e| dragonfly_common::Error::Internal(format!("Failed to execute tar: {}", e)))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(dragonfly_common::Error::Internal(format!("tar failed: {}", stderr)));
-    }
-
-    info!("APK overlay generated at: {:?}", target_apkovl_path);
-    Ok(())
+    generate_agent_apkovl(&target_path, base_url, AgentSource::LocalPath(&agent_binary_path)).await
 }
 
 /// Handler for /boot/{arch}/{asset} routes - extracts path parameters
@@ -3289,6 +3349,33 @@ pub fn get_os_info(os: &str) -> OsInfo {
         name: format_os_name(os),
         icon: get_os_icon(os),
     }
+}
+
+/// Normalize per-action progress (0-100) to overall workflow progress (0-100)
+///
+/// The workflow runs actions in order, each getting a slice of the overall progress:
+/// - partition:   0% -  5% (quick disk setup)
+/// - image2disk:  5% - 90% (bulk of the work - download + write)
+/// - writefile:  90% - 95% (config file writes)
+/// - kexec:      95% - 99% (boot into installed OS - never reports 100%, system reboots)
+///
+/// This ensures progress always moves forward and kexec ends near 100%.
+pub fn normalize_workflow_progress(action_name: &str, action_progress: u8) -> u8 {
+    let (start, end) = match action_name {
+        "partition" => (0, 5),
+        "image2disk" => (5, 90),
+        "writefile" => (90, 95),
+        "kexec" => (95, 99),
+        _ => {
+            // Unknown action - just pass through, capped at 99
+            return action_progress.min(99);
+        }
+    };
+
+    // Map action's 0-100% to its slice of overall progress
+    let range = end - start;
+    let normalized = start + ((action_progress as u32 * range as u32) / 100) as u8;
+    normalized.min(99) // Never report 100% until workflow actually completes
 }
 
 async fn update_installation_progress(
@@ -3731,10 +3818,29 @@ async fn reimage_machine(
         }
     };
 
-    // Make sure there's an OS choice to reimage with
-    let os_choice = match v1_machine.config.os_choice {
-        Some(ref os) if !os.is_empty() => os.clone(),
-        _ => {
+    // Determine OS to install: prefer os_choice, fall back to os_installed, then ExistingOs state
+    // This matches the display logic in machine_to_common() so what the user sees is what reimages
+    let os_choice = v1_machine.config.os_choice.clone()
+        .filter(|s| !s.is_empty())
+        .or_else(|| v1_machine.config.os_installed.clone().filter(|s| !s.is_empty()))
+        .or_else(|| {
+            // Fall back to ExistingOs state (same as display logic)
+            if let dragonfly_common::MachineState::ExistingOs { ref os_name } = v1_machine.status.state {
+                Some(os_name.clone())
+            } else {
+                None
+            }
+        });
+
+    let os_choice = match os_choice {
+        Some(os) => {
+            if v1_machine.config.os_choice.is_none() {
+                info!("Using detected OS '{}' for reinstall", os);
+                v1_machine.config.os_choice = Some(os.clone());
+            }
+            os
+        }
+        None => {
             return (StatusCode::BAD_REQUEST, Json(json!({
                 "error": "Bad Request",
                 "message": "No OS choice set for this machine. Please assign an OS first."
@@ -3742,8 +3848,27 @@ async fn reimage_machine(
         }
     };
 
-    // Set the machine status to Installing
-    v1_machine.status.state = MachineState::Installing;
+    // Verify the template exists
+    match state.store.get_template(&os_choice).await {
+        Ok(Some(_)) => {}, // Template exists, proceed
+        Ok(None) => {
+            return (StatusCode::BAD_REQUEST, Json(json!({
+                "error": "Bad Request",
+                "message": format!("Template '{}' not found. Cannot reimage with unknown OS.", os_choice)
+            }))).into_response();
+        },
+        Err(e) => {
+            error!("Failed to check template {}: {}", os_choice, e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
+                "error": "Store Error",
+                "message": e.to_string()
+            }))).into_response();
+        }
+    }
+
+    // Set the machine status to ReadyToInstall and mark reimage requested
+    v1_machine.status.state = MachineState::ReadyToInstall;
+    v1_machine.config.reimage_requested = true;  // Molly guard: allows imaging even with existing OS
     v1_machine.config.installation_progress = 0;
     v1_machine.config.installation_step = None;
     v1_machine.metadata.updated_at = chrono::Utc::now();
@@ -3798,6 +3923,87 @@ async fn reimage_machine(
     "###, id, os_choice);
 
     (StatusCode::OK, [(axum::http::header::CONTENT_TYPE, "text/html")], response_html).into_response()
+}
+
+/// Abort a pending reimage - cancels before the machine actually starts installing
+#[axum::debug_handler]
+async fn abort_reimage(
+    auth_session: AuthSession,
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> Response {
+    use dragonfly_common::MachineState;
+
+    // Check if user is authenticated as admin
+    if auth_session.user.is_none() {
+        return (StatusCode::UNAUTHORIZED, Json(json!({
+            "error": "Unauthorized",
+            "message": "Admin authentication required for this operation"
+        }))).into_response();
+    }
+
+    info!("Aborting pending reimage for machine {}", id);
+
+    // Get the machine
+    let mut v1_machine = match state.store.get_machine(id).await {
+        Ok(Some(m)) => m,
+        Ok(None) => {
+            return (StatusCode::NOT_FOUND, Json(json!({
+                "error": "Not Found",
+                "message": format!("Machine with ID {} not found", id)
+            }))).into_response();
+        },
+        Err(e) => {
+            error!("Failed to get machine {}: {}", id, e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
+                "error": "Store Error",
+                "message": e.to_string()
+            }))).into_response();
+        }
+    };
+
+    // Only allow abort if machine is in ReadyToInstall state
+    if !matches!(v1_machine.status.state, MachineState::ReadyToInstall) {
+        return (StatusCode::CONFLICT, Json(json!({
+            "error": "Invalid State",
+            "message": format!("Cannot abort reimage - machine is in {:?} state, not ReadyToInstall", v1_machine.status.state)
+        }))).into_response();
+    }
+
+    // Clear the reimage request and reset state
+    v1_machine.config.reimage_requested = false;
+    v1_machine.config.installation_progress = 0;
+    v1_machine.config.installation_step = None;
+
+    // Determine what state to return to
+    // If os_installed is set, go to Installed; otherwise Discovered
+    v1_machine.status.state = if v1_machine.config.os_installed.is_some() {
+        MachineState::Installed
+    } else {
+        MachineState::Discovered
+    };
+
+    v1_machine.metadata.updated_at = chrono::Utc::now();
+
+    // Save the updated machine state
+    if let Err(e) = state.store.put_machine(&v1_machine).await {
+        error!("Failed to abort reimage for machine {}: {}", id, e);
+        return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
+            "error": "Store Error",
+            "message": e.to_string()
+        }))).into_response();
+    }
+
+    // Emit machine updated event
+    let _ = state.event_manager.send(format!("machine_updated:{}", id));
+
+    info!("Successfully aborted pending reimage for machine {}", id);
+
+    (StatusCode::OK, Json(json!({
+        "success": true,
+        "message": "Pending reimage cancelled",
+        "new_state": v1_machine.status.state.as_str()
+    }))).into_response()
 }
 
 // Add new endpoint to configure Proxmox API tokens

@@ -90,30 +90,57 @@ impl Action for KexecAction {
         ));
         cleanup_mount().await;
 
-        // Enable kexec - Alpine kernels harden it by default
+        // Check and enable kexec - Alpine kernels harden it by default
         reporter.report(Progress::new(
             self.name(),
             20,
-            "Enabling kexec syscall",
+            "Checking kexec availability",
         ));
 
-        // Poke sysctl to enable kexec (kernel param alone may not be enough)
-        let sysctl_result = Command::new("sysctl")
-            .args(["-w", "kernel.kexec_load_disabled=0"])
-            .output()
-            .await;
-
-        match &sysctl_result {
-            Ok(output) if !output.status.success() => {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                tracing::warn!("sysctl failed: {}", stderr);
-            }
-            Ok(_) => {
-                tracing::debug!("kexec syscall enabled via sysctl");
+        // Read current kexec_load_disabled value
+        let kexec_disabled_path = "/proc/sys/kernel/kexec_load_disabled";
+        let kexec_possible = match tokio::fs::read_to_string(kexec_disabled_path).await {
+            Ok(content) => {
+                let value = content.trim();
+                if value == "1" {
+                    // Try to enable it (write directly like the agent does)
+                    tracing::info!("kexec_load_disabled=1, attempting to enable");
+                    match tokio::fs::write(kexec_disabled_path, "0").await {
+                        Ok(()) => {
+                            tracing::info!("kexec enabled successfully");
+                            true
+                        }
+                        Err(e) => {
+                            // This is a one-way toggle - once set to 1, can't go back
+                            tracing::info!("Cannot enable kexec (one-way toggle): {}", e);
+                            false
+                        }
+                    }
+                } else {
+                    tracing::info!("kexec_load_disabled={}, kexec should work", value);
+                    true
+                }
             }
             Err(e) => {
-                tracing::warn!("Failed to run sysctl: {}", e);
+                tracing::info!("Cannot read {} - kexec may not be supported: {}", kexec_disabled_path, e);
+                // Try anyway - maybe the kernel just doesn't have this sysctl
+                true
             }
+        };
+
+        // If kexec is definitely disabled, skip straight to reboot
+        if !kexec_possible {
+            reporter.report(Progress::new(
+                self.name(),
+                100,
+                "Kexec disabled (one-way toggle), using regular reboot",
+            ));
+
+            let _ = Command::new("reboot").spawn();
+
+            return Ok(ActionResult::success("Reboot initiated (kexec disabled by kernel)")
+                .with_output("method", "reboot")
+                .with_output("reason", "kexec_load_disabled"));
         }
 
         // Create mount point
@@ -207,23 +234,21 @@ impl Action for KexecAction {
 
         if !kexec_available {
             // Unmount the filesystem since we're not using kexec
-            reporter.report(Progress::new(self.name(), 70, "Unmounting target filesystem"));
+            reporter.report(Progress::new(self.name(), 90, "Unmounting target filesystem"));
             let _ = Command::new("umount").arg(mount_point).output().await;
 
             reporter.report(Progress::new(
                 self.name(),
-                98,
-                "Kexec unavailable, using regular reboot",
+                100,
+                "Kexec load failed, using regular reboot",
             ));
 
             // Fall back to regular reboot
-            let _ = Command::new("reboot")
-                .spawn()
-                .map_err(|e| ActionError::ExecutionFailed(format!("Failed to execute reboot: {}", e)))?;
+            let _ = Command::new("reboot").spawn();
 
-            return Ok(ActionResult::success("Reboot initiated (kexec unavailable)")
+            return Ok(ActionResult::success("Reboot initiated (kexec load failed)")
                 .with_output("method", "reboot")
-                .with_output("reason", "kexec_failed"));
+                .with_output("reason", "kexec_load_failed"));
         }
 
         // Unmount the filesystem
@@ -232,19 +257,12 @@ impl Action for KexecAction {
         let _ = Command::new("umount").arg(mount_point).output().await;
 
         // Execute kexec
-        reporter.report(Progress::new(self.name(), 95, "Executing kexec - goodbye!"));
+        reporter.report(Progress::new(self.name(), 100, "Executing kexec - goodbye!"));
 
         // This is the point of no return - the system will reboot into the new kernel
         let _ = Command::new("kexec")
             .args(["-s", "-e"]) // Use kexec_file_load
-            .spawn()
-            .map_err(|e| {
-                tracing::warn!("kexec -e failed: {}", e);
-                ActionError::ExecutionFailed(format!("Failed to execute kexec: {}", e))
-            })?;
-
-        // Give kexec a moment to take over
-        tokio::time::sleep(Duration::from_secs(2)).await;
+            .spawn();
 
         // If we get here, kexec might have failed or not taken over
         Ok(ActionResult::success("Kexec initiated - system should be rebooting")

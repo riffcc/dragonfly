@@ -324,27 +324,36 @@ use dragonfly_common::models::{
 /// Convert v0.1.0 MachineState to common MachineStatus
 pub fn machine_state_to_common_status(state: &MachineState) -> CommonMachineStatus {
     match state {
-        MachineState::Discovered => CommonMachineStatus::AwaitingAssignment,
-        MachineState::ReadyToInstall => CommonMachineStatus::AwaitingAssignment,
-        MachineState::Initializing => CommonMachineStatus::InstallingOS,
-        MachineState::Installing => CommonMachineStatus::InstallingOS,
-        MachineState::Writing => CommonMachineStatus::InstallingOS,
-        MachineState::Installed => CommonMachineStatus::Ready,
+        MachineState::Discovered => CommonMachineStatus::Discovered,
+        MachineState::ReadyToInstall => CommonMachineStatus::ReadyToInstall,
+        MachineState::Initializing => CommonMachineStatus::Initializing,
+        MachineState::Installing => CommonMachineStatus::Installing,
+        MachineState::Writing => CommonMachineStatus::Writing,
+        MachineState::Installed => CommonMachineStatus::Installed,
         MachineState::ExistingOs { .. } => CommonMachineStatus::ExistingOS,
-        MachineState::Failed { message } => CommonMachineStatus::Error(message.clone()),
-        MachineState::Offline => CommonMachineStatus::Error("Offline".to_string()),
+        MachineState::Failed { message } => CommonMachineStatus::Failed(message.clone()),
+        MachineState::Offline => CommonMachineStatus::Offline,
     }
 }
 
 /// Convert v0.1.0 Machine to dragonfly_common::models::Machine for API compatibility
 pub fn machine_to_common(m: &Machine) -> CommonMachine {
+    // Determine os_installed: prefer config.os_installed, fall back to ExistingOs name
+    let os_installed = m.config.os_installed.clone().or_else(|| {
+        if let MachineState::ExistingOs { ref os_name } = m.status.state {
+            Some(os_name.clone())
+        } else {
+            None
+        }
+    });
+
     CommonMachine {
         id: m.id,
         mac_address: m.identity.primary_mac.clone(),
         ip_address: m.status.current_ip.clone().unwrap_or_default(),
         hostname: m.config.hostname.clone(),
         os_choice: m.config.os_choice.clone(),
-        os_installed: m.config.os_installed.clone(),
+        os_installed,
         status: machine_state_to_common_status(&m.status.state),
         disks: m.hardware.disks.iter().map(|d| CommonDiskInfo {
             device: d.device.clone(),
@@ -376,6 +385,7 @@ pub fn machine_to_common(m: &Machine) -> CommonMachine {
         proxmox_node: None,
         proxmox_cluster: None,
         is_proxmox_host: false,
+        reimage_requested: m.config.reimage_requested,
     }
 }
 
