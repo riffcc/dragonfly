@@ -126,6 +126,9 @@ impl Action for Image2DiskAction {
             ImageType::TarXz => {
                 stream_tar_compressed(img_url, dest_disk, Compression::Xz, reporter.as_ref(), self.name()).await
             }
+            ImageType::TarZst => {
+                stream_tar_compressed(img_url, dest_disk, Compression::Zstd, reporter.as_ref(), self.name()).await
+            }
             ImageType::Tar => {
                 stream_tar(img_url, dest_disk, reporter.as_ref(), self.name()).await
             }
@@ -182,6 +185,7 @@ enum ImageType {
     RawZst,
     TarGz,
     TarXz,
+    TarZst,
     Tar,
 }
 
@@ -201,6 +205,8 @@ fn detect_image_type(path: &str) -> ImageType {
         ImageType::TarGz
     } else if lower.ends_with(".tar.xz") || lower.ends_with(".txz") {
         ImageType::TarXz
+    } else if lower.ends_with(".tar.zst") || lower.ends_with(".tzst") {
+        ImageType::TarZst
     } else if lower.ends_with(".tar") {
         ImageType::Tar
     } else if lower.ends_with(".raw.gz") || lower.ends_with(".img.gz") || lower.ends_with(".gz") {
@@ -816,6 +822,10 @@ mod tests {
         assert!(matches!(
             detect_image_type("rootfs.tar.xz"),
             ImageType::TarXz
+        ));
+        assert!(matches!(
+            detect_image_type("ubuntu-2404.raw.tar.zst"),
+            ImageType::TarZst
         ));
         // Test .gz alone (common cloud image format)
         assert!(matches!(

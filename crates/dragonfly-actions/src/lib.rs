@@ -39,6 +39,7 @@ pub mod context;
 pub mod engine;
 pub mod error;
 pub mod progress;
+pub mod qcow2;
 pub mod traits;
 
 pub use actions::*;

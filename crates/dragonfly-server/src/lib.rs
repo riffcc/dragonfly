@@ -50,6 +50,7 @@ pub mod mode;
 pub mod store;
 pub mod provisioning;
 pub mod services;
+pub mod image_cache;
 
 // Expose status module for integration tests
 pub mod status;
@@ -247,6 +248,8 @@ pub struct AppState {
     pub store: Arc<dyn store::v1::Store>,
     // Track if network services (DHCP/TFTP) are running
     pub network_services_started: Arc<AtomicBool>,
+    // Image cache for JIT QCOW2 conversion
+    pub image_cache: Arc<image_cache::ImageCache>,
 }
 
 /// Start network services (DHCP/TFTP) for Flight mode
@@ -574,6 +577,16 @@ pub async fn run() -> anyhow::Result<()> {
     };
     // --- End Native Provisioning Setup ---
 
+    // --- Image Cache Setup ---
+    // JIT conversion of QCOW2 images (Ubuntu cloud images) to raw format
+    let image_cache_dir = PathBuf::from("/var/lib/dragonfly/image-cache");
+    let image_cache_url = mode::get_base_url(Some(store.as_ref())).await;
+    let image_cache = Arc::new(image_cache::ImageCache::new(image_cache_dir, image_cache_url));
+    if let Err(e) = image_cache.init().await {
+        warn!("Failed to initialize image cache: {}", e);
+    }
+    // --- End Image Cache Setup ---
+
     // Create application state
     let app_state = AppState {
         settings: Arc::new(Mutex::new(settings.clone())), // Clone settings here
@@ -599,6 +612,8 @@ pub async fn run() -> anyhow::Result<()> {
         store,
         // Track if network services (DHCP/TFTP) are running
         network_services_started: Arc::new(AtomicBool::new(false)),
+        // Image cache for JIT QCOW2 conversion
+        image_cache: image_cache.clone(),
     };
 
     // Load Proxmox API tokens from database to memory
@@ -639,6 +654,8 @@ pub async fn run() -> anyhow::Result<()> {
         // OS images (served during provisioning)
         .route("/os/debian-13/amd64", get(|| async { api::serve_os_image("debian-13", "amd64").await }))
         .route("/os/debian-13/arm64", get(|| async { api::serve_os_image("debian-13", "arm64").await }))
+        // Cached images (JIT-converted QCOW2 to raw)
+        .route("/images/{name}", get(api::serve_cached_image))
         // Legacy route for backwards compatibility
         .route("/{mac}", get(api::ipxe_script))
         .route("/ipxe/{*path}", get(api::serve_ipxe_artifact))

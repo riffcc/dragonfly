@@ -65,6 +65,12 @@ dragonfly-workflow = { path = "../dragonfly-workflow" }
 dragonfly-dhcp = { path = "../dragonfly-dhcp" }
 dragonfly-tftp = { path = "../dragonfly-tftp" }
 dragonfly-metadata = { path = "../dragonfly-metadata" }
+dragonfly-actions = { path = "../dragonfly-actions" }
+
+# Async compression and tar for image cache
+async-compression = { version = "0.4", features = ["tokio", "gzip", "zstd"] }
+tokio-tar = "0.3"
+tokio-util = { version = "0.7", features = ["io"] }
 
 # Storage
 redb = "3.1.0"
