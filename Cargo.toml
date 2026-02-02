@@ -13,6 +13,8 @@ members = [
     "crates/dragonfly-agent",
     "."  # Include the main package
 ]
+# Spark uses nightly + bare metal target, so it's built separately
+exclude = ["crates/dragonfly-spark"]
 resolver = "2"
 
 [workspace.dependencies]
