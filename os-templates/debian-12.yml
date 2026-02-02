@@ -6,7 +6,7 @@ spec:
   timeout: 9800
   actions:
     - action: image2disk
-      url: "https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-genericcloud-amd64.raw"
+      url: "https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-generic-amd64.tar.xz"
       disk: auto
       timeout: 9600
 
@@ -48,11 +48,14 @@ spec:
               password: "{{ default_password }}"
               type: text
         ssh_pwauth: {{ ssh_pwauth }}
-        packages:
-          - qemu-guest-agent
         runcmd:
-          - systemctl enable qemu-guest-agent
-          - systemctl start qemu-guest-agent
+          - |
+            # Only install qemu-guest-agent if virtio serial port exists (running on QEMU/KVM)
+            if [ -e /dev/virtio-ports/org.qemu.guest_agent.0 ]; then
+              apt-get install -y qemu-guest-agent
+              systemctl enable qemu-guest-agent
+              systemctl start qemu-guest-agent
+            fi
       mode: "0644"
       timeout: 90
 
