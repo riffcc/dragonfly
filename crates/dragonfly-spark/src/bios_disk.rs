@@ -1025,10 +1025,24 @@ unsafe fn build_jump_code(drive: u8) {
     *code.add(i) = 0x00; i += 1;
     *code.add(i) = 0x7C; i += 1;
 
-    // Output 'J' to serial
+    // Reset video to VGA text mode (mode 3) before chainload
+    // This fixes black screen when chainloading from graphical framebuffer mode
+    // INT 10h, AH=00h (set mode), AL=03h (80x25 16-color text)
+    *code.add(i) = 0xB8; i += 1;  // mov ax, 0x0003
+    *code.add(i) = 0x03; i += 1;
+    *code.add(i) = 0x00; i += 1;
+    *code.add(i) = 0xCD; i += 1;  // int 0x10
+    *code.add(i) = 0x10; i += 1;
+
+    // Output 'V' to serial (video mode set)
     *code.add(i) = 0xBA; i += 1;  // mov dx, 0x3F8
     *code.add(i) = 0xF8; i += 1;
     *code.add(i) = 0x03; i += 1;
+    *code.add(i) = 0xB0; i += 1;  // mov al, 'V'
+    *code.add(i) = 0x56; i += 1;
+    *code.add(i) = 0xEE; i += 1;  // out dx, al
+
+    // Output 'J' to serial (jumping to MBR)
     *code.add(i) = 0xB0; i += 1;  // mov al, 'J'
     *code.add(i) = 0x4A; i += 1;
     *code.add(i) = 0xEE; i += 1;  // out dx, al
