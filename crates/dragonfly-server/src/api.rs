@@ -881,8 +881,12 @@ async fn update_hostname(
         }
     };
 
-    // Update hostname
-    machine.config.hostname = Some(payload.hostname.clone());
+    // Update hostname - treat empty string as None (clear hostname)
+    machine.config.hostname = if payload.hostname.is_empty() {
+        None
+    } else {
+        Some(payload.hostname.clone())
+    };
     machine.metadata.updated_at = chrono::Utc::now();
 
     // Save to v1 Store
@@ -1530,7 +1534,7 @@ set idx:int32 0
 kernel ${{base-url}}/ipxe/hookos/vmlinuz-${{arch}} \
 syslog_host=${{syslog_host}} grpc_authority=${{grpc_authority}} tinkerbell_tls=${{tinkerbell_tls}} worker_id=${{worker_id}} hw_addr=${{mac}} \
 console=tty1 console=tty2 console=ttyAMA0,115200 console=ttyAMA1,115200 console=ttyS0,115200 console=ttyS1,115200 tink_worker_image=quay.io/tinkerbell/tink-worker:v0.12.1 \
-intel_iommu=on iommu=pt initrd=initramfs-${{arch}} && goto download_initrd || iseq ${{idx}} ${{retries}} && goto kernel-error || inc idx && echo retry in ${{retry_delay}} seconds ; sleep ${{retry_delay}} ; goto retry_kernel
+intel_iommu=on iommu=pt nomodeset initrd=initramfs-${{arch}} && goto download_initrd || iseq ${{idx}} ${{retries}} && goto kernel-error || inc idx && echo retry in ${{retry_delay}} seconds ; sleep ${{retry_delay}} ; goto retry_kernel
 
 :download_initrd
 set idx:int32 0
@@ -1588,6 +1592,9 @@ kernel {base_url}/boot/${{arch}}/kernel \
   modloop={base_url}/boot/${{arch}}/modloop \
   apkovl={base_url}/boot/${{arch}}/apkovl.tar.gz \
   kexec_load_disabled=0 \
+  console=tty1 \
+  console=ttyS0,115200 \
+  nomodeset \
   rw
 initrd {base_url}/boot/${{arch}}/initramfs
 boot
@@ -2735,6 +2742,16 @@ pub async fn get_template_handler(
                 }
             }
 
+            // JIT conversion: convert QCOW2 images to raw and rewrite URLs
+            // This blocks until conversion is complete (or returns cached URL immediately)
+            if let Err(e) = crate::image_cache::rewrite_template_urls(&mut template, &state.image_cache).await {
+                error!(template_name = %template_name, error = %e, "Failed to rewrite image URLs");
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({ "error": format!("Image conversion failed: {}", e) })),
+                ).into_response();
+            }
+
             info!(
                 template_name = %template_name,
                 actions_count = template.spec.actions.len(),
@@ -3002,6 +3019,15 @@ pub async fn workflow_events_handler(
                             machine.config.reimage_requested = false;
                             machine.config.os_installed = machine.config.os_choice.clone();
                             machine.config.os_choice = None;
+                            // Cloud-init will apply the hostname we set, so mark it as reported
+                            if let Some(ref hostname) = machine.config.hostname {
+                                info!(
+                                    machine_id = %mid,
+                                    hostname = %hostname,
+                                    "Marking hostname as applied (cloud-init will set it)"
+                                );
+                                machine.config.reported_hostname = Some(hostname.clone());
+                            }
                             machine.metadata.updated_at = chrono::Utc::now();
                             let _ = state.store.put_machine(&machine).await;
                         }
@@ -3430,6 +3456,55 @@ pub async fn serve_os_image(os: &str, arch: &str) -> Response {
         }
         Err(e) => {
             (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to read: {}", e)).into_response()
+        }
+    }
+}
+
+/// Serve cached image file (JIT-converted QCOW2 to raw)
+pub async fn serve_cached_image(
+    State(state): State<crate::AppState>,
+    Path(name): Path<String>,
+) -> Response {
+    let cache_dir = state.image_cache.cache_dir();
+    let path = cache_dir.join(&name);
+
+    // Security: ensure the path stays within cache directory
+    match path.canonicalize() {
+        Ok(canonical) if canonical.starts_with(cache_dir) => {
+            match tokio::fs::read(&canonical).await {
+                Ok(content) => {
+                    let content_type = if name.ends_with(".tar.zst") {
+                        "application/zstd"
+                    } else if name.ends_with(".tar.xz") {
+                        "application/x-xz"
+                    } else {
+                        "application/octet-stream"
+                    };
+                    (
+                        StatusCode::OK,
+                        [(axum::http::header::CONTENT_TYPE, content_type)],
+                        content,
+                    ).into_response()
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    (StatusCode::NOT_FOUND, format!("Cached image not found: {}", name)).into_response()
+                }
+                Err(e) => {
+                    error!(name = %name, error = %e, "Failed to read cached image");
+                    (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to read: {}", e)).into_response()
+                }
+            }
+        }
+        Ok(_) => {
+            warn!(name = %name, "Path traversal attempt detected");
+            (StatusCode::BAD_REQUEST, "Invalid path").into_response()
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            (StatusCode::NOT_FOUND, format!("Cached image not found: {}", name)).into_response()
+        }
+        Err(e) => {
+            error!(name = %name, error = %e, "Failed to resolve cached image path");
+            (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to resolve path: {}", e)).into_response()
         }
     }
 }

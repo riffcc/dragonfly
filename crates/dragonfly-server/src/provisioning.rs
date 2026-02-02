@@ -441,8 +441,10 @@ impl ProvisioningService {
     fn create_machine_from_checkin(&self, info: &HardwareCheckIn, identity: MachineIdentity) -> Machine {
         let mut machine = Machine::new(identity);
 
-        // Set hostname
-        machine.config.hostname = info.hostname.clone();
+        // Always store what the agent reports
+        machine.config.reported_hostname = info.hostname.clone();
+        // Only set user hostname if agent reports something meaningful (not "localhost")
+        machine.config.hostname = info.hostname.clone().filter(|h| !h.is_empty() && h != "localhost");
 
         // Populate hardware info
         machine.hardware = HardwareInfo {
@@ -483,9 +485,16 @@ impl ProvisioningService {
         // Update identity (may have more info now)
         machine.identity = identity.clone();
 
-        // Update hostname if provided
-        if let Some(hostname) = &info.hostname {
-            machine.config.hostname = Some(hostname.clone());
+        // Always update reported_hostname with what the agent reports
+        machine.config.reported_hostname = info.hostname.clone();
+
+        // Only set user hostname from agent if user hasn't set one AND agent reports something meaningful
+        if machine.config.hostname.is_none() {
+            if let Some(agent_hostname) = &info.hostname {
+                if !agent_hostname.is_empty() && agent_hostname != "localhost" {
+                    machine.config.hostname = Some(agent_hostname.clone());
+                }
+            }
         }
 
         // Update hardware info

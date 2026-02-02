@@ -271,4 +271,167 @@ mod tests {
             );
         }
     }
+
+    /// Test that template substitution uses hostname from machine when machine_id is provided
+    #[tokio::test]
+    async fn test_template_uses_hostname_substitution() {
+        use dragonfly_crd::{Template, ActionStep, WritefileConfig, ObjectMeta, TypeMeta, TemplateSpec};
+        use dragonfly_common::{Machine, MachineIdentity};
+
+        let state = create_test_app_state().await;
+
+        // Create a machine with a user-set hostname
+        let identity = MachineIdentity::from_mac("00:11:22:33:44:55");
+        let mut machine = Machine::new(identity);
+        machine.config.hostname = Some("vm1".to_string()); // User-set hostname
+        let machine_id = machine.id;
+
+        // Store the machine
+        state.store.put_machine(&machine.into()).await.unwrap();
+
+        // Create a template with {{ friendly_name }} in a writefile action
+        let template = Template {
+            type_meta: TypeMeta::template(),
+            metadata: ObjectMeta::new("test-template"),
+            spec: TemplateSpec {
+                actions: vec![
+                    ActionStep::Writefile(WritefileConfig {
+                        path: "/etc/cloud/cloud.cfg.d/99-hostname.cfg".to_string(),
+                        partition: Some(1),
+                        fs_type: None,
+                        content: Some("local-hostname: {{ friendly_name }}".to_string()),
+                        content_b64: None,
+                        mode: None,
+                        uid: None,
+                        gid: None,
+                        timeout: None,
+                    }),
+                ],
+                timeout: None,
+                version: None,
+            },
+        };
+
+        // Store the template
+        state.store.put_template(&template).await.unwrap();
+
+        // Build the router with our state
+        let app = crate::api::api_router().with_state(state);
+
+        // Request the template with machine_id
+        let uri = format!("/templates/test-template?machine_id={}", machine_id);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(&uri)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK, "Template request should succeed");
+
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let returned_template: Template = serde_json::from_slice(&body).unwrap();
+
+        // Verify the hostname was substituted
+        if let ActionStep::Writefile(cfg) = &returned_template.spec.actions[0] {
+            let content = cfg.content.as_ref().expect("Content should be present");
+            assert!(
+                content.contains("local-hostname: vm1"),
+                "Template should substitute hostname 'vm1' but got: {}",
+                content
+            );
+            assert!(
+                !content.contains("{{ friendly_name }}"),
+                "Template should NOT contain raw template variable: {}",
+                content
+            );
+        } else {
+            panic!("Expected Writefile action");
+        }
+    }
+
+    /// Test that memorable_name is used when hostname is not set
+    #[tokio::test]
+    async fn test_template_falls_back_to_memorable_name() {
+        use dragonfly_crd::{Template, ActionStep, WritefileConfig, ObjectMeta, TypeMeta, TemplateSpec};
+        use dragonfly_common::{Machine, MachineIdentity};
+
+        let state = create_test_app_state().await;
+
+        // Create a machine WITHOUT a user-set hostname
+        let identity = MachineIdentity::from_mac("00:11:22:33:44:66");
+        let machine = Machine::new(identity);
+        let machine_id = machine.id;
+        let memorable_name = machine.config.memorable_name.clone();
+
+        // Store the machine
+        state.store.put_machine(&machine.into()).await.unwrap();
+
+        // Create a template with {{ friendly_name }}
+        let template = Template {
+            type_meta: TypeMeta::template(),
+            metadata: ObjectMeta::new("test-template-fallback"),
+            spec: TemplateSpec {
+                actions: vec![
+                    ActionStep::Writefile(WritefileConfig {
+                        path: "/etc/cloud/cloud.cfg.d/99-hostname.cfg".to_string(),
+                        partition: Some(1),
+                        fs_type: None,
+                        content: Some("local-hostname: {{ friendly_name }}".to_string()),
+                        content_b64: None,
+                        mode: None,
+                        uid: None,
+                        gid: None,
+                        timeout: None,
+                    }),
+                ],
+                timeout: None,
+                version: None,
+            },
+        };
+
+        // Store the template
+        state.store.put_template(&template).await.unwrap();
+
+        // Build the router with our state
+        let app = crate::api::api_router().with_state(state);
+
+        // Request the template with machine_id
+        let uri = format!("/templates/test-template-fallback?machine_id={}", machine_id);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(&uri)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK, "Template request should succeed");
+
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let returned_template: Template = serde_json::from_slice(&body).unwrap();
+
+        // Verify the memorable_name was substituted
+        if let ActionStep::Writefile(cfg) = &returned_template.spec.actions[0] {
+            let content = cfg.content.as_ref().expect("Content should be present");
+            assert!(
+                content.contains(&format!("local-hostname: {}", memorable_name)),
+                "Template should substitute memorable_name '{}' but got: {}",
+                memorable_name,
+                content
+            );
+            assert!(
+                !content.contains("{{ friendly_name }}"),
+                "Template should NOT contain raw template variable: {}",
+                content
+            );
+        } else {
+            panic!("Expected Writefile action");
+        }
+    }
 }

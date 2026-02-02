@@ -394,6 +394,7 @@ fn create_demo_machine(
     Machine {
         id: uuid,
         hostname: Some(hostname.to_string()),
+        reported_hostname: Some(hostname.to_string()),
         mac_address: mac_string,
         ip_address: ip.to_string(), // No Option<> here, ip_address is a String
         status,

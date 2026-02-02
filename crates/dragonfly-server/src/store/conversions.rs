@@ -353,6 +353,7 @@ pub fn machine_to_common(m: &Machine) -> CommonMachine {
         mac_address: m.identity.primary_mac.clone(),
         ip_address: m.status.current_ip.clone().unwrap_or_default(),
         hostname: m.config.hostname.clone(),
+        reported_hostname: m.config.reported_hostname.clone(),
         os_choice: m.config.os_choice.clone(),
         os_installed,
         status: machine_state_to_common_status(&m.status.state),

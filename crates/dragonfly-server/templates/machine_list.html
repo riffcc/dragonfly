@@ -202,7 +202,31 @@
     
     // Validate a hostname (RFC-1123 compliant)
     validateHostname(hostname) {
-        return /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/i.test(hostname);
+        return hostname === '' || /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/i.test(hostname);
+    },
+
+    // Save hostname immediately to server (no pending state)
+    async saveHostname(machineId, hostname) {
+        try {
+            const response = await fetch(`/api/machines/${machineId}/hostname`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
+                body: JSON.stringify({ hostname: hostname })
+            });
+            if (!response.ok) {
+                throw new Error('Failed to save hostname');
+            }
+            showToast('Hostname saved', 'success');
+            // Update original value so display stays correct
+            if (!this.originalValues[machineId]) {
+                this.originalValues[machineId] = {};
+            }
+            this.originalValues[machineId].hostname = hostname;
+        } catch (error) {
+            console.error('Error saving hostname:', error);
+            showToast('Failed to save hostname', 'error');
+        }
     },
     
     // Validate an IP address
@@ -211,64 +235,68 @@
     },
     
     // Apply changes to a specific machine (excluding OS choice, handled by selectOs)
-    applyChanges(machineId) {
+    async applyChanges(machineId) {
         if (!this.fieldChanges[machineId]) return;
-        
-        const changes = this.fieldChanges[machineId];
-        const payload = {};
-        
-        // Build payload with non-OS changes
-        Object.keys(changes).forEach(field => {
-            if (field !== 'os_choice') { // Ensure os_choice is not included
-                payload[field] = changes[field];
-            }
-        });
 
-        // Only proceed if there are actual non-OS changes
-        if (Object.keys(payload).length === 0) {
-            console.warn('Apply called with no non-OS changes');
-            // Optionally clear the (empty) changes if needed
+        const changes = this.fieldChanges[machineId];
+        const promises = [];
+
+        // Hostname uses dedicated endpoint
+        if (changes.hostname !== undefined) {
+            promises.push(
+                fetch(`/api/machines/${machineId}/hostname`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'include',
+                    body: JSON.stringify({ hostname: changes.hostname })
+                }).then(response => {
+                    if (!response.ok) throw new Error('Failed to update hostname');
+                    delete this.fieldChanges[machineId].hostname;
+                    return response;
+                })
+            );
+        }
+
+        // Status uses dedicated endpoint
+        if (changes.status !== undefined) {
+            promises.push(
+                fetch(`/api/machines/${machineId}/status`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'include',
+                    body: JSON.stringify({ status: changes.status })
+                }).then(response => {
+                    if (!response.ok) throw new Error('Failed to update status');
+                    delete this.fieldChanges[machineId].status;
+                    return response;
+                })
+            );
+        }
+
+        if (promises.length === 0) {
             delete this.fieldChanges[machineId];
             this.pendingChanges = Object.keys(this.fieldChanges).length > 0;
             return;
         }
-        
-        // --- Apply Other Field Changes (Hostname, IP, MAC) --- 
-        fetch(`/api/machines/${machineId}`, {
-            method: 'PUT',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify(payload)
-        })
-        .then(response => {
-            if (!response.ok) {
-                // Assume JSON error for this endpoint
-                 return response.json().then(data => {
-                    throw new Error(data.message || `HTTP error! Status: ${response.status}`);
-                });
-            }
-            return response.json();
-        })
-        .then(data => {
-            // Clear applied changes
-            Object.keys(payload).forEach(field => {
-                delete this.fieldChanges[machineId][field];
-            });
-            if (Object.keys(this.fieldChanges[machineId]).length === 0) {
+
+        try {
+            await Promise.all(promises);
+
+            // Clean up fieldChanges for this machine
+            const remainingFields = Object.keys(this.fieldChanges[machineId] || {}).filter(k => k !== 'os_choice');
+            if (remainingFields.length === 0) {
                 delete this.fieldChanges[machineId];
             }
             this.pendingChanges = Object.keys(this.fieldChanges).length > 0;
-            
-            showToast(`Machine ${machineId} updated: ${data.message || 'Changes applied'}`, 'success');
+
+            showToast(`Machine ${machineId} updated successfully`, 'success');
             refreshMachineList();
-        })
-        .catch(error => {
-            console.error('Error applying other changes:', error);
+        } catch (error) {
+            console.error('Error applying changes:', error);
             showToast(`Failed to update machine: ${error.message}`, 'error');
-        });
+        }
     },
-    
+
     // Check if field has changes
     hasFieldChanged(machineId, fieldName) {
         return this.fieldChanges[machineId] && 
@@ -473,39 +501,56 @@
         const machineType = this.currentMachineType;
 
         // First, save any pending changes for this machine (hostname, etc.)
-        const savePendingChanges = () => {
-            if (this.fieldChanges[machineId] && Object.keys(this.fieldChanges[machineId]).length > 0) {
-                const changes = this.fieldChanges[machineId];
-                const payload = {};
-                Object.keys(changes).forEach(field => {
-                    if (field !== 'os_choice') {
-                        payload[field] = changes[field];
-                    }
-                });
+        const savePendingChanges = async () => {
+            if (!this.fieldChanges[machineId] || Object.keys(this.fieldChanges[machineId]).length === 0) {
+                return; // No changes to save
+            }
 
-                if (Object.keys(payload).length > 0) {
-                    console.log(`Saving pending changes before reimage:`, payload);
-                    return fetch(`/api/machines/${machineId}`, {
+            const changes = this.fieldChanges[machineId];
+            const promises = [];
+
+            // Save hostname using dedicated endpoint
+            if (changes.hostname !== undefined) {
+                console.log(`Saving hostname before reimage: ${changes.hostname}`);
+                promises.push(
+                    fetch(`/api/machines/${machineId}/hostname`, {
                         method: 'PUT',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(payload)
+                        credentials: 'include',
+                        body: JSON.stringify({ hostname: changes.hostname })
                     }).then(response => {
-                        if (!response.ok) {
-                            throw new Error('Failed to save pending changes');
-                        }
-                        // Clear saved changes
-                        Object.keys(payload).forEach(field => {
-                            delete this.fieldChanges[machineId][field];
-                        });
-                        if (Object.keys(this.fieldChanges[machineId]).length === 0) {
-                            delete this.fieldChanges[machineId];
-                        }
-                        this.pendingChanges = Object.keys(this.fieldChanges).length > 0;
+                        if (!response.ok) throw new Error('Failed to save hostname');
+                        delete this.fieldChanges[machineId].hostname;
                         return response;
-                    });
-                }
+                    })
+                );
             }
-            return Promise.resolve(); // No changes to save
+
+            // Save status using dedicated endpoint
+            if (changes.status !== undefined) {
+                promises.push(
+                    fetch(`/api/machines/${machineId}/status`, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        credentials: 'include',
+                        body: JSON.stringify({ status: changes.status })
+                    }).then(response => {
+                        if (!response.ok) throw new Error('Failed to save status');
+                        delete this.fieldChanges[machineId].status;
+                        return response;
+                    })
+                );
+            }
+
+            // os_choice is handled by selectOs(), not here
+
+            await Promise.all(promises);
+
+            // Clean up fieldChanges
+            if (Object.keys(this.fieldChanges[machineId]).filter(k => k !== 'os_choice').length === 0) {
+                delete this.fieldChanges[machineId];
+            }
+            this.pendingChanges = Object.keys(this.fieldChanges).length > 0;
         };
 
         let endpoint = '';
@@ -791,17 +836,15 @@
                                              :class="{'cursor-text': isAuthenticated}"
                                              class="hover:text-indigo-600 dark:hover:text-indigo-400">
                                             <span x-show="editingField !== '{{ machine.id }}-hostname'"
-                                                  :class="{'text-purple-700 dark:text-purple-400 font-medium': hasFieldChanged('{{ machine.id }}', 'hostname')}">
-                                                <span x-text="fieldChanges['{{ machine.id }}'] && fieldChanges['{{ machine.id }}'].hostname !== undefined ? 
-                                                             fieldChanges['{{ machine.id }}'].hostname : 
-                                                             '{% if machine.hostname %}{{ machine.hostname }}{% else %}Set hostname...{% endif %}'"></span>
+                                                  class="{% if machine.hostname and machine.hostname != 'localhost' and machine.hostname != machine.reported_hostname %}text-purple-700 dark:text-purple-400 font-medium{% endif %}">
+                                                {% if machine.hostname %}{{ machine.hostname }}{% else %}localhost{% endif %}
                                             </span>
                                             <input x-show="editingField === '{{ machine.id }}-hostname'"
                                                    x-ref="hostname{{ machine.id }}"
                                                    x-on:click.stop
-                                                   x-on:keydown.enter.stop="validateHostname($event.target.value) ? (updateField('{{ machine.id }}', 'hostname', $event.target.value), stopEditing()) : (showToast('Invalid hostname. Must follow RFC-1123 format.', 'error'), $event.target.value = originalValues['{{ machine.id }}']['hostname'], stopEditing())"
+                                                   x-on:keydown.enter.stop="validateHostname($event.target.value) ? (saveHostname('{{ machine.id }}', $event.target.value), stopEditing()) : (showToast('Invalid hostname. Must follow RFC-1123 format.', 'error'), stopEditing())"
                                                    x-on:keydown.escape.stop="stopEditing()"
-                                                   x-on:blur="validateHostname($event.target.value) ? (updateField('{{ machine.id }}', 'hostname', $event.target.value), stopEditing()) : (showToast('Invalid hostname. Must follow RFC-1123 format.', 'error'), $event.target.value = originalValues['{{ machine.id }}']['hostname'], stopEditing())"
+                                                   x-on:blur="validateHostname($event.target.value) ? (saveHostname('{{ machine.id }}', $event.target.value), stopEditing()) : (showToast('Invalid hostname. Must follow RFC-1123 format.', 'error'), stopEditing())"
                                                    x-effect="if(editingField === '{{ machine.id }}-hostname') setTimeout(() => $refs['hostname{{ machine.id }}'].focus(), 50)"
                                                    type="text"
                                                    value="{{ machine.hostname|default('') }}"
