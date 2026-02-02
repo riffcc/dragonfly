@@ -1,0 +1,26 @@
+[workspace]
+# Standalone workspace - not part of main dragonfly workspace
+# Uses nightly Rust + bare metal target
+
+[package]
+name = "dragonfly-spark"
+version = "0.1.0"
+edition = "2024"
+authors = ["Dragonfly Contributors"]
+description = "Tiny multiboot binary for OS detection and GRUB chainloading"
+license = "AGPL-3.0-or-later"
+
+[dependencies]
+spin = { version = "0.9", default-features = false, features = ["mutex", "spin_mutex"] }
+
+[features]
+default = []
+
+[profile.release]
+panic = "abort"
+opt-level = "z"
+lto = true
+codegen-units = 1
+
+[profile.dev]
+panic = "abort"
