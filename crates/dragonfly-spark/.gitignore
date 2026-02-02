@@ -1,0 +1,8 @@
+# Build artifacts
+spark.elf
+spark.iso
+iso/boot/spark.bin
+iso/boot/spark.elf
+
+# Rust build directory
+target/
