@@ -21,7 +21,7 @@ pub fn show_boot_menu(os: &OsInfo) -> Choice {
     vga::println("========================================");
     vga::println("");
     vga::print("  Detected: ");
-    vga::println(os.name);
+    vga::println(os.display_name());
     vga::println("");
     vga::println("  [1] Boot local OS (default)");
     vga::println("  [2] Reinstall / Imaging");

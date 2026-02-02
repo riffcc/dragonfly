@@ -50,9 +50,10 @@ pub fn draw_boot_screen(os: Option<&OsInfo>) -> Choice {
     if let Some(os_info) = os {
         let y = panel_y + 80;
         font::draw_string_centered(y, "Detected Operating System:", colors::TEXT_SECONDARY, width);
-        // OS name in larger text
-        let os_width = os_info.name.len() as u32 * 16;
-        font::draw_string_large((width - os_width) / 2, y + 30, os_info.name, colors::ACCENT_PURPLE_BRIGHT);
+        // OS name in larger text - use detected name if available
+        let os_name = os_info.display_name();
+        let os_width = os_name.len() as u32 * 16;
+        font::draw_string_large((width - os_width) / 2, y + 30, os_name, colors::ACCENT_PURPLE_BRIGHT);
     }
 
     // Menu options - bigger spacing

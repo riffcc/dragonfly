@@ -86,3 +86,8 @@ pub fn print_hex32(val: u32) {
         write_byte(HEX[nibble]);
     }
 }
+
+/// Print a single character
+pub fn print_char(c: u8) {
+    write_byte(c);
+}

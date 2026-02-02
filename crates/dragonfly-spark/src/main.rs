@@ -145,7 +145,7 @@ fn main_logic_text() -> ! {
     match detected_os {
         Some(os_info) => {
             vga::print("Found: ");
-            vga::println(os_info.name);
+            vga::println(os_info.display_name());
             vga::println("");
 
             // Show text menu
