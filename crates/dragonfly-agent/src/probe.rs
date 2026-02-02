@@ -14,6 +14,8 @@ use tracing::{debug, info, warn};
 pub struct DetectedOs {
     /// OS name from /etc/os-release PRETTY_NAME
     pub name: String,
+    /// Hostname from /etc/hostname
+    pub hostname: Option<String>,
     /// /etc/machine-id contents (for identity matching)
     pub machine_id: Option<String>,
     /// Filesystem UUID from blkid
@@ -204,6 +206,7 @@ fn probe_partition(partition: &PartitionInfo) -> Result<Option<DetectedOs>> {
     if Path::new(&windows_path).exists() {
         return Ok(Some(DetectedOs {
             name: "Windows".to_string(),
+            hostname: None,
             machine_id: None,
             fs_uuid: partition.uuid.clone(),
             kernel_path: None,
@@ -225,6 +228,13 @@ fn probe_linux(mount_point: &str, partition: &PartitionInfo) -> Result<Option<De
         .or_else(|| parse_os_release_field(&os_release, "NAME"))
         .unwrap_or_else(|| "Unknown Linux".to_string());
 
+    // Read /etc/hostname
+    let hostname_path = format!("{}/etc/hostname", mount_point);
+    let hostname = std::fs::read_to_string(&hostname_path)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty() && s != "localhost");
+
     // Read /etc/machine-id
     let machine_id_path = format!("{}/etc/machine-id", mount_point);
     let machine_id = std::fs::read_to_string(&machine_id_path)
@@ -245,6 +255,7 @@ fn probe_linux(mount_point: &str, partition: &PartitionInfo) -> Result<Option<De
 
     Ok(Some(DetectedOs {
         name,
+        hostname,
         machine_id,
         fs_uuid: partition.uuid.clone(),
         kernel_path,
@@ -377,7 +388,7 @@ fn find_newest_file(dir: &str, prefixes: &[&str]) -> Option<String> {
         let name_str = name.to_string_lossy();
 
         for prefix in prefixes {
-            if name_str.starts_with(prefix) {
+            if name_str.starts_with(prefix) && !name_str.ends_with(".old") {
                 if let Ok(metadata) = entry.metadata() {
                     candidates.push((name_str.to_string(), metadata));
                 }
@@ -429,7 +440,7 @@ fn find_matching_initrd(dir: &str, kernel_name: Option<&str>) -> Option<String> 
         let name_str = name.to_string_lossy();
 
         for prefix in &initrd_prefixes {
-            if name_str.starts_with(prefix) {
+            if name_str.starts_with(prefix) && !name_str.ends_with(".old") {
                 let version = extract_version(&name_str);
                 candidates.push((name_str.to_string(), version));
                 break;

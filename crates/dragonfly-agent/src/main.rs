@@ -396,11 +396,21 @@ async fn run_native_provisioning_loop(
         }
     };
 
+    // Use hostname from existing OS if available, otherwise use system hostname
+    let effective_hostname = existing_os.as_ref()
+        .and_then(|os| os.hostname.as_ref())
+        .map(|h| h.as_str())
+        .or(hostname);
+
+    if let Some(detected_hostname) = existing_os.as_ref().and_then(|os| os.hostname.as_ref()) {
+        info!(hostname = %detected_hostname, "Using hostname from existing OS");
+    }
+
     // Clone values for the async closure
     let client_clone = client.clone();
     let server_url_owned = server_url.to_string();
     let mac_owned = mac.to_string();
-    let hostname_owned = hostname.map(|s| s.to_string());
+    let hostname_owned = effective_hostname.map(|s| s.to_string());
     let ip_address_owned = ip_address.map(|s| s.to_string());
     let existing_os_clone = existing_os.clone();
 
@@ -464,7 +474,7 @@ async fn run_native_provisioning_loop(
         loop {
             tokio::time::sleep(checkin_interval).await;
 
-            match checkin_native(client, server_url, mac, hostname, ip_address, existing_os.as_ref()).await {
+            match checkin_native(client, server_url, mac, effective_hostname, ip_address, existing_os.as_ref()).await {
                 Ok(response) => {
                     debug!(action = ?response.action, "Check-in response");
                     handle_agent_action(

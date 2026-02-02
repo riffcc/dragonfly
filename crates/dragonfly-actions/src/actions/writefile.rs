@@ -331,17 +331,18 @@ async fn do_mount(disk: &str) -> Result<()> {
     let fs_type = detect_filesystem(disk);
 
     // Build mount command with filesystem type if detected
+    // Explicitly request rw mode to get a clear error if fs can't be mounted rw
     let output = if let Some(ref fstype) = fs_type {
-        tracing::info!("Mounting {} as {} to {}", disk, fstype, MOUNT_POINT);
+        tracing::info!("Mounting {} as {} to {} (rw)", disk, fstype, MOUNT_POINT);
         Command::new("mount")
-            .args(["-t", fstype, disk, MOUNT_POINT])
+            .args(["-t", fstype, "-o", "rw", disk, MOUNT_POINT])
             .output()
             .await
             .map_err(|e| ActionError::ExecutionFailed(format!("Failed to execute mount: {}", e)))?
     } else {
-        tracing::info!("Mounting {} to {} (auto-detect fs)", disk, MOUNT_POINT);
+        tracing::info!("Mounting {} to {} (auto-detect fs, rw)", disk, MOUNT_POINT);
         Command::new("mount")
-            .args([disk, MOUNT_POINT])
+            .args(["-o", "rw", disk, MOUNT_POINT])
             .output()
             .await
             .map_err(|e| ActionError::ExecutionFailed(format!("Failed to execute mount: {}", e)))?
