@@ -315,7 +315,11 @@ pub struct NetworkInterface {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct MachineConfig {
+    /// User-set hostname (desired). Persists across reboots.
     pub hostname: Option<String>,
+    /// Hostname reported by agent during last check-in.
+    #[serde(default)]
+    pub reported_hostname: Option<String>,
     pub memorable_name: String,
     /// OS to install (template name). Setting this alone doesn't trigger reimage.
     pub os_choice: Option<String>,
@@ -336,6 +340,7 @@ impl MachineConfig {
     pub fn with_mac(mac: &str) -> Self {
         Self {
             hostname: None,
+            reported_hostname: None,
             memorable_name: crate::mac_to_words::mac_to_words_safe(mac),
             os_choice: None,
             os_installed: None,
@@ -352,6 +357,7 @@ impl MachineConfig {
     pub fn new() -> Self {
         Self {
             hostname: None,
+            reported_hostname: None,
             memorable_name: crate::mac_to_words::mac_to_words_safe("00:00:00:00:00:00"),
             os_choice: None,
             os_installed: None,

@@ -262,14 +262,32 @@ impl ActionStep {
                 // Get the target disk for partition resolution
                 let disk = hardware_disks.first().cloned().unwrap_or_else(|| "/dev/sda".to_string());
 
-                // Resolve partition to device path
+                // Resolve partition to device path (boot partition where kernel lives)
                 let block_device = if let Some(part_num) = cfg.partition {
                     format_partition(&disk, part_num)
                 } else {
                     format_partition(&disk, 1) // Default to partition 1
                 };
 
+                // Resolve root partition device (for root= parameter)
+                let root_device = if let Some(ref root_part) = cfg.root_partition {
+                    if root_part.starts_with("/dev/") {
+                        root_part.clone()
+                    } else if let Ok(part_num) = root_part.parse::<u8>() {
+                        format_partition(&disk, part_num)
+                    } else {
+                        // LABEL= or UUID= - keep as-is but also need device for UUID lookup
+                        // Fall back to partition 1 for device
+                        format_partition(&disk, cfg.partition.unwrap_or(1))
+                    }
+                } else {
+                    // Fall back to partition number or default to 1
+                    let part_num = cfg.partition.unwrap_or(1);
+                    format_partition(&disk, part_num)
+                };
+
                 env.insert("BLOCK_DEVICE".to_string(), block_device);
+                env.insert("ROOT_DEVICE".to_string(), root_device.clone());
                 env.insert("FS_TYPE".to_string(), cfg.fs_type.clone().unwrap_or_else(|| "ext4".to_string()));
 
                 if let Some(kernel) = &cfg.kernel {
@@ -279,15 +297,9 @@ impl ActionStep {
                     env.insert("INITRD_PATH".to_string(), initrd.clone());
                 }
                 if let Some(cmdline) = &cfg.cmdline {
-                    // Substitute variables and add root device
-                    let disk = hardware_disks.first().cloned().unwrap_or_else(|| "/dev/sda".to_string());
-                    let root_part = if let Some(part_num) = cfg.partition {
-                        format_partition(&disk, part_num)
-                    } else {
-                        format_partition(&disk, 1)
-                    };
-                    let full_cmdline = format!("root={} {}", root_part, cmdline);
-                    env.insert("CMD_LINE".to_string(), full_cmdline);
+                    // Don't add root= here - the action will add it with UUID
+                    // Just pass the other cmdline options
+                    env.insert("CMDLINE".to_string(), cmdline.clone());
                 }
             }
             ActionStep::Partition(cfg) => {
@@ -385,9 +397,15 @@ pub struct WritefileConfig {
 /// Configuration for kexec action
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct KexecConfig {
-    /// Partition number containing the installed OS
+    /// Partition number to mount for finding kernel/initrd (e.g., boot partition)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub partition: Option<u8>,
+
+    /// Root device for kernel cmdline (defaults to partition device if not set)
+    /// Supports: partition number (e.g., "1"), label ("LABEL=cloudimg-rootfs"),
+    /// UUID ("UUID=..."), or device path ("/dev/sda1")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub root_partition: Option<String>,
 
     /// Filesystem type (defaults to ext4)
     #[serde(skip_serializing_if = "Option::is_none")]

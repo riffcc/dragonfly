@@ -9,6 +9,8 @@ pub struct Machine {
     pub mac_address: String,
     pub ip_address: String,
     pub hostname: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reported_hostname: Option<String>,
     pub os_choice: Option<String>,
     pub os_installed: Option<String>,
     pub status: MachineStatus,
