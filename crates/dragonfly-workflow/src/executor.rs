@@ -141,8 +141,20 @@ impl WorkflowExecutor {
                         ..Default::default()
                     });
                 }
-                WorkflowState::StateSuccess | WorkflowState::StateFailed => {
+                WorkflowState::StateSuccess => {
                     return Err(WorkflowError::AlreadyCompleted(workflow_name));
+                }
+                WorkflowState::StateFailed => {
+                    // Previous execution failed (download crash, network error).
+                    // The agent is retrying — reset and re-execute.
+                    warn!(
+                        workflow = %workflow_name,
+                        "Workflow previously failed - resetting to re-execute"
+                    );
+                    workflow.status = Some(WorkflowStatus {
+                        state: WorkflowState::StatePending,
+                        ..Default::default()
+                    });
                 }
                 _ => {}
             }

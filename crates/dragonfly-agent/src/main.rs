@@ -412,27 +412,47 @@ async fn run_native_provisioning_loop(
     // IMAGING MODE: Skip the 3s splash/timeout entirely.
     // The server told us to image this machine — we check in patiently with retries
     // until the server responds, then execute the workflow. No fake LocalBoot, no menu.
+    // If the workflow fails (download crash, network error), retry from check-in.
     if is_imaging {
-        info!("Imaging mode - will check in patiently until server responds");
-        let response = checkin_with_retry(
-            client, server_url, mac, effective_hostname, ip_address, existing_os.as_ref(),
-        ).await?;
+        let mut attempt: u32 = 0;
+        loop {
+            attempt += 1;
+            info!(attempt, "Imaging mode - checking in with server");
+            let response = checkin_with_retry(
+                client, server_url, mac, effective_hostname, ip_address, existing_os.as_ref(),
+            ).await?;
 
-        info!(
-            machine_id = %response.machine_id,
-            name = %response.memorable_name,
-            action = ?response.action,
-            "Imaging mode check-in successful"
-        );
+            info!(
+                machine_id = %response.machine_id,
+                name = %response.memorable_name,
+                action = ?response.action,
+                attempt,
+                "Imaging mode check-in successful"
+            );
 
-        return handle_agent_action(
-            &response,
-            &existing_os,
-            client,
-            server_url,
-            &hardware,
-            &action_filter,
-        ).await;
+            match handle_agent_action(
+                &response,
+                &existing_os,
+                client,
+                server_url,
+                &hardware,
+                &action_filter,
+            ).await {
+                Ok(()) => return Ok(()),
+                Err(e) => {
+                    // Workflow failed — retry from check-in. The server still has the
+                    // workflow assigned; it'll tell us to Execute again.
+                    let backoff = Duration::from_secs(5u64.min(attempt as u64 * 2));
+                    error!(
+                        error = %e,
+                        attempt,
+                        backoff_secs = backoff.as_secs(),
+                        "Workflow failed, will retry from check-in"
+                    );
+                    tokio::time::sleep(backoff).await;
+                }
+            }
+        }
     }
 
     // DISCOVERY MODE (or no mode): Use the interactive splash with timeout.
@@ -684,10 +704,8 @@ async fn handle_agent_action(
                     hw,
                 ).with_action_filter(action_filter.clone());
 
-                match runner.execute(workflow_id).await {
-                    Ok(()) => info!(workflow_id = %workflow_id, "Workflow completed successfully"),
-                    Err(e) => error!(workflow_id = %workflow_id, error = %e, "Workflow execution failed"),
-                }
+                runner.execute(workflow_id).await
+                    .context(format!("Workflow {} failed", workflow_id))?;
 
                 if action_filter.is_some() {
                     info!("Action filter specified - exiting");
