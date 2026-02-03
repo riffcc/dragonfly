@@ -131,6 +131,12 @@ pub enum ActionStep {
     Kexec(KexecConfig),
     /// Partition a disk
     Partition(PartitionConfig),
+    /// Configure UEFI boot order (set PXE first)
+    Efibootmgr(EfibootmgrConfig),
+    /// Configure SeaBIOS boot order via CMOS (QEMU/KVM)
+    Seabios(SeabiosConfig),
+    /// Reboot the machine
+    Reboot(RebootConfig),
 }
 
 impl ActionStep {
@@ -141,6 +147,9 @@ impl ActionStep {
             ActionStep::Writefile(_) => "writefile",
             ActionStep::Kexec(_) => "kexec",
             ActionStep::Partition(_) => "partition",
+            ActionStep::Efibootmgr(_) => "efibootmgr",
+            ActionStep::Seabios(_) => "seabios",
+            ActionStep::Reboot(_) => "reboot",
         }
     }
 
@@ -151,6 +160,9 @@ impl ActionStep {
             ActionStep::Writefile(cfg) => cfg.timeout,
             ActionStep::Kexec(cfg) => cfg.timeout,
             ActionStep::Partition(cfg) => cfg.timeout,
+            ActionStep::Efibootmgr(cfg) => cfg.timeout,
+            ActionStep::Seabios(cfg) => cfg.timeout,
+            ActionStep::Reboot(cfg) => cfg.timeout,
         }
     }
 
@@ -188,6 +200,9 @@ impl ActionStep {
                 }
                 Ok(())
             }
+            ActionStep::Efibootmgr(_) => Ok(()), // No validation needed
+            ActionStep::Seabios(_) => Ok(()), // No validation needed
+            ActionStep::Reboot(_) => Ok(()), // No validation needed
         }
     }
 
@@ -318,6 +333,23 @@ impl ActionStep {
                 }
                 if let Some(swap_size) = &cfg.swap_size {
                     env.insert("SWAP_SIZE".to_string(), swap_size.clone());
+                }
+            }
+            ActionStep::Efibootmgr(cfg) => {
+                env.insert("SET_PXE_FIRST".to_string(), cfg.set_pxe_first.to_string());
+                if let Some(label) = &cfg.pxe_boot_label {
+                    env.insert("PXE_BOOT_LABEL".to_string(), label.clone());
+                }
+            }
+            ActionStep::Seabios(cfg) => {
+                env.insert("SET_PXE_FIRST".to_string(), cfg.set_pxe_first.to_string());
+                if let Some(order) = &cfg.boot_order {
+                    env.insert("BOOT_ORDER".to_string(), order.clone());
+                }
+            }
+            ActionStep::Reboot(cfg) => {
+                if let Some(delay) = cfg.delay {
+                    env.insert("REBOOT_DELAY".to_string(), delay.to_string());
                 }
             }
         }
@@ -452,6 +484,55 @@ pub struct PartitionConfig {
     pub timeout: Option<u64>,
 }
 
+/// Configuration for efibootmgr action
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct EfibootmgrConfig {
+    /// Whether to set PXE as first boot option (default: true)
+    #[serde(default = "default_true")]
+    pub set_pxe_first: bool,
+
+    /// Custom label to search for in UEFI boot entries
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pxe_boot_label: Option<String>,
+
+    /// Action timeout in seconds
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timeout: Option<u64>,
+}
+
+/// Configuration for SeaBIOS boot order action (QEMU/KVM)
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct SeabiosConfig {
+    /// Whether to set PXE/BEV as first boot option (default: true)
+    #[serde(default = "default_true")]
+    pub set_pxe_first: bool,
+
+    /// Custom boot order as comma-separated list (e.g., "pxe,hdd,cdrom,floppy")
+    /// Valid values: pxe/bev/network, hdd/disk, cdrom/cd, floppy/fd
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub boot_order: Option<String>,
+
+    /// Action timeout in seconds
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timeout: Option<u64>,
+}
+
+/// Configuration for reboot action
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct RebootConfig {
+    /// Seconds to wait before rebooting (optional)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub delay: Option<u64>,
+
+    /// Action timeout in seconds
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timeout: Option<u64>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
 /// Predefined action types for native Dragonfly actions
 pub mod actions {
     /// Stream an image to disk
@@ -462,6 +543,12 @@ pub mod actions {
     pub const KEXEC: &str = "kexec";
     /// Partition a disk
     pub const PARTITION: &str = "partition";
+    /// Configure UEFI boot order
+    pub const EFIBOOTMGR: &str = "efibootmgr";
+    /// Configure SeaBIOS boot order (QEMU/KVM)
+    pub const SEABIOS: &str = "seabios";
+    /// Reboot the machine
+    pub const REBOOT: &str = "reboot";
 }
 
 #[cfg(test)]
