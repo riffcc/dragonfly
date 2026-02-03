@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Query, State, OriginalUri},
+    extract::{Path, Query, State, OriginalUri},
     http::{header, HeaderMap, StatusCode},
     response::{Html, IntoResponse, Redirect, Response},
     routing::{get, post},
@@ -136,6 +136,7 @@ pub struct SettingsTemplate {
     pub show_admin_settings: bool,
     pub error_message: Option<String>,
     pub current_path: String,
+    pub active_tab: String,
 }
 
 #[derive(Serialize)]
@@ -220,6 +221,7 @@ pub fn ui_router() -> Router<crate::AppState> {
         .route("/tags", get(tags_page))
         .route("/theme/toggle", get(toggle_theme))
         .route("/settings", get(settings_page))
+        .route("/settings/{section}", get(settings_page_section))
         .route("/settings", post(update_settings))
 }
 
@@ -985,8 +987,89 @@ pub async fn settings_page(
         show_admin_settings,
         error_message: None,
         current_path,
+        active_tab: "general".to_string(),
     };
     // Pass AppState to render_minijinja
+    render_minijinja(&app_state, "settings.html", context)
+}
+
+/// Handler for /settings/{section} deep links
+pub async fn settings_page_section(
+    State(app_state): State<crate::AppState>,
+    auth_session: AuthSession,
+    headers: HeaderMap,
+    uri: OriginalUri,
+    Path(section): Path<String>,
+) -> Response {
+    let valid_tabs = ["general", "users", "security", "provisioning", "license"];
+    let tab = if valid_tabs.contains(&section.as_str()) {
+        section
+    } else {
+        "general".to_string()
+    };
+
+    // Get current theme from cookie
+    let theme = get_theme_from_cookie(&headers);
+    let is_authenticated = auth_session.user.is_some();
+    let current_path = uri.path().to_string();
+
+    let store = &app_state.store;
+    let require_login = store.get_setting("require_login").await
+        .ok().flatten()
+        .map(|v| v == "true")
+        .unwrap_or(true);
+
+    if require_login && !is_authenticated {
+        return Redirect::to("/login").into_response();
+    }
+
+    let default_os = store.get_setting("default_os").await.ok().flatten();
+    let ssh_keys = store.get_setting("ssh_keys").await.ok().flatten().unwrap_or_default();
+    let ssh_key_subscriptions = store.get_setting("ssh_key_subscriptions").await
+        .ok().flatten().unwrap_or_else(|| "[]".to_string());
+    let default_user = store.get_setting("default_user").await
+        .ok().flatten().unwrap_or_else(|| "root".to_string());
+    let default_password = store.get_setting("default_password").await
+        .ok().flatten().unwrap_or_default();
+
+    let show_admin_settings = is_authenticated;
+    let admin_username = match &auth_session.user {
+        Some(user) => user.username.clone(),
+        None => "(Not logged in)".to_string(),
+    };
+
+    let (has_initial_password, rendered_password) = if is_authenticated {
+        match std::fs::read_to_string("/var/lib/dragonfly/initial_password.txt") {
+            Ok(password) => (true, password),
+            Err(_) => (false, String::new()),
+        }
+    } else {
+        (false, String::new())
+    };
+
+    let context = SettingsTemplate {
+        theme,
+        is_authenticated,
+        admin_username,
+        require_login,
+        default_os: default_os.clone().unwrap_or_default(),
+        default_os_none: default_os.is_none(),
+        default_os_ubuntu2204: default_os.as_deref() == Some("ubuntu-2204"),
+        default_os_ubuntu2404: default_os.as_deref() == Some("ubuntu-2404"),
+        default_os_debian12: default_os.as_deref() == Some("debian-12"),
+        default_os_debian13: default_os.as_deref() == Some("debian-13"),
+        default_os_proxmox: default_os.as_deref() == Some("proxmox"),
+        default_user,
+        default_password,
+        ssh_keys,
+        ssh_key_subscriptions,
+        has_initial_password,
+        rendered_password,
+        show_admin_settings,
+        error_message: None,
+        current_path,
+        active_tab: tab,
+    };
     render_minijinja(&app_state, "settings.html", context)
 }
 
@@ -1199,6 +1282,7 @@ pub async fn update_settings(
                                 show_admin_settings,
                                 error_message,
                                 current_path,
+                                active_tab: "security".to_string(),
                             };
 
                             // Return the error template
@@ -1264,6 +1348,7 @@ pub async fn update_settings(
                             show_admin_settings,
                             error_message,
                             current_path,
+                            active_tab: "security".to_string(),
                         };
 
                         // Return the error template
@@ -1328,6 +1413,7 @@ pub async fn update_settings(
                     show_admin_settings,
                     error_message,
                     current_path,
+                    active_tab: "security".to_string(),
                 };
 
                 // Return the error template

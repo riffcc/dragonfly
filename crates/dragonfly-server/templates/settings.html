@@ -1377,8 +1377,10 @@
     }
 
     function settingsPanel() {
+        const validTabs = ['general', 'users', 'security', 'provisioning', 'license'];
+
         return {
-            activeTab: 'general',
+            activeTab: '{{ active_tab }}',
             saving: false,
 
             // Auto-enroll with Spark state
@@ -1401,6 +1403,20 @@
             },
 
             async init() {
+                // Update URL when tab changes (client-side navigation)
+                this.$watch('activeTab', (tab) => {
+                    const path = tab === 'general' ? '/settings' : '/settings/' + tab;
+                    history.pushState(null, '', path);
+                });
+
+                // Back/forward button support
+                window.addEventListener('popstate', () => {
+                    const seg = location.pathname.replace('/settings', '').replace(/^\//, '') || 'general';
+                    if (validTabs.includes(seg)) {
+                        this.activeTab = seg;
+                    }
+                });
+
                 // Load auto-enroll setting on page load
                 try {
                     const response = await fetch('/api/settings', { credentials: 'include' });
