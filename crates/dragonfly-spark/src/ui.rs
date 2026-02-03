@@ -6,6 +6,8 @@ use crate::disk::OsInfo;
 use crate::font;
 use crate::framebuffer::{self, colors};
 use crate::bios;
+use crate::net::{self, NetworkStack};
+use smoltcp::wire::Ipv4Address;
 
 /// Menu choices
 pub enum Choice {
@@ -19,6 +21,11 @@ const BOOT_TIMEOUT: u32 = 10;
 
 /// Draw the Dragonfly splash screen and boot menu
 pub fn draw_boot_screen(os: Option<&OsInfo>) -> Choice {
+    draw_boot_screen_with_net(os, None)
+}
+
+/// Draw the Dragonfly splash screen and boot menu with network stack for async IP display
+pub fn draw_boot_screen_with_net(os: Option<&OsInfo>, net_stack: Option<NetworkStack<'static>>) -> Choice {
     let (width, height) = framebuffer::dimensions().unwrap_or((800, 600));
 
     // Clear to dark background
@@ -97,8 +104,8 @@ pub fn draw_boot_screen(os: Option<&OsInfo>) -> Choice {
     let timer_y = panel_y + panel_h - 70;
     draw_countdown(width, timer_y, BOOT_TIMEOUT);
 
-    // Wait for input with timeout
-    wait_for_choice(width, timer_y, os.is_some())
+    // Wait for input with timeout, polling network for IP display
+    wait_for_choice_with_net(width, height, timer_y, os.is_some(), net_stack)
 }
 
 /// Draw the header with logo
@@ -181,10 +188,11 @@ fn draw_number_large(x: u32, y: u32, n: u32, color: u32) {
 }
 
 
-/// Wait for user input with visual countdown
-fn wait_for_choice(width: u32, timer_y: u32, has_os: bool) -> Choice {
+/// Wait for user input with visual countdown and network polling
+fn wait_for_choice_with_net(width: u32, height: u32, timer_y: u32, has_os: bool, mut net_stack: Option<NetworkStack<'static>>) -> Choice {
     let iterations_per_second = 100000000u32; // Very high for fast QEMU
     let mut remaining = BOOT_TIMEOUT;
+    let mut ip_displayed = false;
 
     for i in 0..(BOOT_TIMEOUT * iterations_per_second) {
         // Check for keypress
@@ -212,6 +220,19 @@ fn wait_for_choice(width: u32, timer_y: u32, has_os: bool) -> Choice {
             }
         }
 
+        // Poll network for DHCP (every ~1000 iterations to avoid overhead)
+        if !ip_displayed && i % 1000 == 0 {
+            if let Some(ref mut stack) = net_stack {
+                stack.poll();
+                if stack.has_ip() {
+                    if let Some(ip) = stack.get_ip() {
+                        draw_ip_footer(width, height, ip);
+                        ip_displayed = true;
+                    }
+                }
+            }
+        }
+
         // Update countdown display every second
         if i % iterations_per_second == 0 && i > 0 {
             remaining = BOOT_TIMEOUT - (i / iterations_per_second);
@@ -229,5 +250,46 @@ fn wait_for_choice(width: u32, timer_y: u32, has_os: bool) -> Choice {
         Choice::BootLocal
     } else {
         Choice::Reinstall
+    }
+}
+
+/// Draw IP address in footer area (2x scale)
+fn draw_ip_footer(width: u32, height: u32, ip: Ipv4Address) {
+    let y = height - 45; // Adjust for 2x height
+
+    // Format IP address
+    let mut ip_buf = [0u8; 20];
+    let mut pos = 0;
+
+    // "IP: " prefix
+    ip_buf[pos] = b'I'; pos += 1;
+    ip_buf[pos] = b'P'; pos += 1;
+    ip_buf[pos] = b':'; pos += 1;
+    ip_buf[pos] = b' '; pos += 1;
+
+    // Format each octet
+    for (i, &octet) in ip.0.iter().enumerate() {
+        if i > 0 {
+            ip_buf[pos] = b'.';
+            pos += 1;
+        }
+        // Convert number to string
+        if octet >= 100 {
+            ip_buf[pos] = b'0' + (octet / 100);
+            pos += 1;
+        }
+        if octet >= 10 {
+            ip_buf[pos] = b'0' + ((octet / 10) % 10);
+            pos += 1;
+        }
+        ip_buf[pos] = b'0' + (octet % 10);
+        pos += 1;
+    }
+
+    if let Ok(ip_str) = core::str::from_utf8(&ip_buf[..pos]) {
+        // 2x scale: 16px per char width
+        let text_width = pos as u32 * 16;
+        let x = (width - text_width) / 2;
+        font::draw_string_large(x, y, ip_str, 0xFFFFFF);
     }
 }

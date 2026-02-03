@@ -25,6 +25,11 @@ echo "Finalizing ELF..."
 cp target/x86_64-spark/release/dragonfly-spark spark.elf
 strip spark.elf
 
+# Convert to ELF32 for iPXE multiboot compatibility
+# (iPXE doesn't handle ELF64 well, but the code is 32-bit at entry)
+echo "Converting to ELF32 for iPXE..."
+objcopy -O elf32-i386 spark.elf spark32.elf
+
 # Verify multiboot2
 echo ""
 if command -v grub-file &> /dev/null; then
@@ -69,6 +74,13 @@ SIZE_ELF=$(stat -c%s spark.elf)
 SIZE_ISO=$(stat -c%s spark.iso)
 echo "ELF: $SIZE_ELF bytes (~$(( SIZE_ELF / 1024 )) KB)"
 echo "ISO: $SIZE_ISO bytes (~$(( SIZE_ISO / 1024 / 1024 )) MB)"
+
+# Install to Dragonfly server directory
+echo ""
+echo "Installing to /var/lib/dragonfly/..."
+sudo mkdir -p /var/lib/dragonfly
+sudo cp spark32.elf /var/lib/dragonfly/spark.elf
+echo "✓ Installed spark32.elf as /var/lib/dragonfly/spark.elf (ELF32 for iPXE)"
 
 echo ""
 echo "To test: qemu-system-x86_64 -cdrom spark.iso"

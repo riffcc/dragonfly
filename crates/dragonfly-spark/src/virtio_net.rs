@@ -10,7 +10,9 @@ use core::cell::UnsafeCell;
 /// VirtIO vendor ID
 const VIRTIO_VENDOR: u16 = 0x1AF4;
 /// VirtIO network device ID (transitional)
-const VIRTIO_NET_DEVICE: u16 = 0x1000;
+const VIRTIO_NET_DEVICE_TRANSITIONAL: u16 = 0x1000;
+/// VirtIO network device ID (modern, non-transitional)
+const VIRTIO_NET_DEVICE_MODERN: u16 = 0x1041;
 
 /// VirtIO device status bits
 const VIRTIO_STATUS_ACKNOWLEDGE: u8 = 1;
@@ -27,8 +29,9 @@ const VIRTIO_NET_F_MAC: u32 = 1 << 5;        // Device has MAC address
 const VIRTIO_NET_F_STATUS: u32 = 1 << 16;    // Device has status field
 const VIRTIO_NET_F_MRG_RXBUF: u32 = 1 << 15; // Merge RX buffers
 
-/// Virtqueue size
-const QUEUE_SIZE: u16 = 256;
+/// Virtqueue sizes - must match device's queue sizes
+const RX_QUEUE_SIZE: usize = 1024;
+const TX_QUEUE_SIZE: usize = 256;
 
 /// Maximum Ethernet frame size (MTU 1500 + headers)
 const MAX_FRAME_SIZE: usize = 1514;
@@ -62,14 +65,6 @@ struct VirtqDesc {
 const VIRTQ_DESC_F_NEXT: u16 = 1;
 const VIRTQ_DESC_F_WRITE: u16 = 2;
 
-/// Virtqueue available ring
-#[repr(C)]
-struct VirtqAvail {
-    flags: u16,
-    idx: u16,
-    ring: [u16; QUEUE_SIZE as usize],
-}
-
 /// Virtqueue used element
 #[repr(C, packed)]
 #[derive(Clone, Copy)]
@@ -78,24 +73,58 @@ struct VirtqUsedElem {
     len: u32,
 }
 
-/// Virtqueue used ring
+// RX Queue structures (1024 entries)
 #[repr(C)]
-struct VirtqUsed {
+struct RxVirtqAvail {
     flags: u16,
     idx: u16,
-    ring: [VirtqUsedElem; QUEUE_SIZE as usize],
+    ring: [u16; RX_QUEUE_SIZE],
 }
 
-// Padding for queue alignment
-const QUEUE_PADDING: usize = 8192 - 4096 - (4 + 256 * 2);
+#[repr(C)]
+struct RxVirtqUsed {
+    flags: u16,
+    idx: u16,
+    ring: [VirtqUsedElem; RX_QUEUE_SIZE],
+}
 
-/// Page-aligned virtqueue
+// RX: desc = 1024*16 = 16384, avail = 4 + 2048 = 2052, total = 18436
+// Next page = 20480, padding = 2044
+const RX_QUEUE_PADDING: usize = 2044;
+
 #[repr(C, align(4096))]
-struct VirtioQueue {
-    desc: [VirtqDesc; QUEUE_SIZE as usize],
-    avail: VirtqAvail,
-    _padding: [u8; QUEUE_PADDING],
-    used: VirtqUsed,
+struct RxVirtioQueue {
+    desc: [VirtqDesc; RX_QUEUE_SIZE],
+    avail: RxVirtqAvail,
+    _padding: [u8; RX_QUEUE_PADDING],
+    used: RxVirtqUsed,
+}
+
+// TX Queue structures (256 entries)
+#[repr(C)]
+struct TxVirtqAvail {
+    flags: u16,
+    idx: u16,
+    ring: [u16; TX_QUEUE_SIZE],
+}
+
+#[repr(C)]
+struct TxVirtqUsed {
+    flags: u16,
+    idx: u16,
+    ring: [VirtqUsedElem; TX_QUEUE_SIZE],
+}
+
+// TX: desc = 256*16 = 4096, avail = 4 + 512 = 516, total = 4612
+// Next page = 8192, padding = 3580
+const TX_QUEUE_PADDING: usize = 3580;
+
+#[repr(C, align(4096))]
+struct TxVirtioQueue {
+    desc: [VirtqDesc; TX_QUEUE_SIZE],
+    avail: TxVirtqAvail,
+    _padding: [u8; TX_QUEUE_PADDING],
+    used: TxVirtqUsed,
 }
 
 /// RX/TX packet buffer (header + frame data)
@@ -120,18 +149,18 @@ impl<T> SyncUnsafeCell<T> {
 }
 
 // Static storage for virtqueues
-static RX_QUEUE: SyncUnsafeCell<VirtioQueue> = SyncUnsafeCell::new(VirtioQueue {
-    desc: [VirtqDesc { addr: 0, len: 0, flags: 0, next: 0 }; QUEUE_SIZE as usize],
-    avail: VirtqAvail { flags: 0, idx: 0, ring: [0; QUEUE_SIZE as usize] },
-    _padding: [0; QUEUE_PADDING],
-    used: VirtqUsed { flags: 0, idx: 0, ring: [VirtqUsedElem { id: 0, len: 0 }; QUEUE_SIZE as usize] },
+static RX_QUEUE: SyncUnsafeCell<RxVirtioQueue> = SyncUnsafeCell::new(RxVirtioQueue {
+    desc: [VirtqDesc { addr: 0, len: 0, flags: 0, next: 0 }; RX_QUEUE_SIZE],
+    avail: RxVirtqAvail { flags: 0, idx: 0, ring: [0; RX_QUEUE_SIZE] },
+    _padding: [0; RX_QUEUE_PADDING],
+    used: RxVirtqUsed { flags: 0, idx: 0, ring: [VirtqUsedElem { id: 0, len: 0 }; RX_QUEUE_SIZE] },
 });
 
-static TX_QUEUE: SyncUnsafeCell<VirtioQueue> = SyncUnsafeCell::new(VirtioQueue {
-    desc: [VirtqDesc { addr: 0, len: 0, flags: 0, next: 0 }; QUEUE_SIZE as usize],
-    avail: VirtqAvail { flags: 0, idx: 0, ring: [0; QUEUE_SIZE as usize] },
-    _padding: [0; QUEUE_PADDING],
-    used: VirtqUsed { flags: 0, idx: 0, ring: [VirtqUsedElem { id: 0, len: 0 }; QUEUE_SIZE as usize] },
+static TX_QUEUE: SyncUnsafeCell<TxVirtioQueue> = SyncUnsafeCell::new(TxVirtioQueue {
+    desc: [VirtqDesc { addr: 0, len: 0, flags: 0, next: 0 }; TX_QUEUE_SIZE],
+    avail: TxVirtqAvail { flags: 0, idx: 0, ring: [0; TX_QUEUE_SIZE] },
+    _padding: [0; TX_QUEUE_PADDING],
+    used: TxVirtqUsed { flags: 0, idx: 0, ring: [VirtqUsedElem { id: 0, len: 0 }; TX_QUEUE_SIZE] },
 });
 
 // RX buffers - pre-allocated for receiving packets
@@ -160,9 +189,35 @@ impl VirtioNet {
     /// Try to find and initialize a VirtIO-net device
     pub fn init() -> Option<Self> {
         serial::println("VirtIO-net: Scanning for controller...");
+        serial::print("VirtIO-net: Looking for vendor=0x");
+        serial::print_hex32(VIRTIO_VENDOR as u32);
+        serial::print(" device=0x");
+        serial::print_hex32(VIRTIO_NET_DEVICE_TRANSITIONAL as u32);
+        serial::println("");
 
-        // Find VirtIO-net device on PCI bus
-        let device = pci::find_device(VIRTIO_VENDOR, VIRTIO_NET_DEVICE)?;
+        // Find VirtIO-net device on PCI bus (try transitional first, then modern)
+        let device = match pci::find_device(VIRTIO_VENDOR, VIRTIO_NET_DEVICE_TRANSITIONAL) {
+            Some(d) => {
+                serial::println("VirtIO-net: Found transitional device!");
+                d
+            }
+            None => {
+                serial::println("VirtIO-net: Transitional not found, trying modern...");
+                serial::print("VirtIO-net: Looking for device=0x");
+                serial::print_hex32(VIRTIO_NET_DEVICE_MODERN as u32);
+                serial::println("");
+                match pci::find_device(VIRTIO_VENDOR, VIRTIO_NET_DEVICE_MODERN) {
+                    Some(d) => {
+                        serial::println("VirtIO-net: Found modern device!");
+                        d
+                    }
+                    None => {
+                        serial::println("VirtIO-net: No device found!");
+                        return None;
+                    }
+                }
+            }
+        };
 
         serial::print("VirtIO-net: Found at ");
         serial::print_dec(device.bus as u32);
@@ -184,21 +239,30 @@ impl VirtioNet {
         serial::print_hex32(io_base as u32);
         serial::println("");
 
+        if io_base == 0 {
+            serial::println("VirtIO-net: ERROR - I/O base is 0!");
+            return None;
+        }
+
+        serial::println("VirtIO-net: Resetting device...");
         // Reset device
         unsafe {
             outb(io_base + 18, 0); // Status = 0 (reset)
         }
 
+        serial::println("VirtIO-net: Setting ACKNOWLEDGE...");
         // Set ACKNOWLEDGE status
         unsafe {
             outb(io_base + 18, VIRTIO_STATUS_ACKNOWLEDGE);
         }
 
+        serial::println("VirtIO-net: Setting DRIVER...");
         // Set DRIVER status
         unsafe {
             outb(io_base + 18, VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER);
         }
 
+        serial::println("VirtIO-net: Reading features...");
         // Read and negotiate features
         let features = unsafe { inl(io_base + 0) };
         serial::print("VirtIO-net: Features = 0x");
@@ -224,6 +288,7 @@ impl VirtioNet {
             return None;
         }
 
+        serial::println("VirtIO-net: Reading MAC address...");
         // Read MAC address from device config (offset 20 in legacy mode)
         let mut mac = [0u8; 6];
         for i in 0..6 {
@@ -236,6 +301,7 @@ impl VirtioNet {
         }
         serial::println("");
 
+        serial::println("VirtIO-net: Setting up RX queue...");
         // Initialize RX queue
         unsafe {
             outw(io_base + 14, VIRTIO_NET_QUEUE_RX);
@@ -245,10 +311,14 @@ impl VirtioNet {
             serial::println("");
 
             let rx_queue = RX_QUEUE.get();
+            serial::print("VirtIO-net: RX queue addr = 0x");
+            serial::print_hex32(rx_queue as u32);
+            serial::println("");
             let rx_pfn = (rx_queue as u32) >> 12;
             outl(io_base + 8, rx_pfn);
         }
 
+        serial::println("VirtIO-net: Setting up TX queue...");
         // Initialize TX queue
         unsafe {
             outw(io_base + 14, VIRTIO_NET_QUEUE_TX);
@@ -258,11 +328,15 @@ impl VirtioNet {
             serial::println("");
 
             let tx_queue = TX_QUEUE.get();
+            serial::print("VirtIO-net: TX queue addr = 0x");
+            serial::print_hex32(tx_queue as u32);
+            serial::println("");
             let tx_pfn = (tx_queue as u32) >> 12;
             outl(io_base + 8, tx_pfn);
         }
 
-        // Populate RX queue with buffers
+        serial::println("VirtIO-net: Populating RX buffers...");
+        // Populate RX queue with buffers (but don't notify yet)
         unsafe {
             let rx_queue = &mut *RX_QUEUE.get();
             let rx_buffers = &mut *RX_BUFFERS.get();
@@ -278,16 +352,28 @@ impl VirtioNet {
                 rx_queue.avail.ring[i] = i as u16;
             }
             rx_queue.avail.idx = RX_BUFFER_COUNT as u16;
-
-            // Notify device about RX buffers
-            outw(io_base + 14, VIRTIO_NET_QUEUE_RX);
-            outw(io_base + 16, 0);
         }
 
         // Set DRIVER_OK to finish initialization
         unsafe {
             let status = inb(io_base + 18);
             outb(io_base + 18, status | VIRTIO_STATUS_DRIVER_OK);
+        }
+
+        // NOW notify device about RX buffers (after DRIVER_OK)
+        unsafe {
+            core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+            outw(io_base + 16, VIRTIO_NET_QUEUE_RX);
+        }
+
+        // Debug: show RX queue state
+        unsafe {
+            let rx_queue = &*RX_QUEUE.get();
+            serial::print("VirtIO-net: RX avail.idx=");
+            serial::print_dec(rx_queue.avail.idx as u32);
+            serial::print(" used.idx=");
+            serial::print_dec(rx_queue.used.idx as u32);
+            serial::println("");
         }
 
         serial::println("VirtIO-net: Initialized");
@@ -305,6 +391,22 @@ impl VirtioNet {
         self.mac_address
     }
 
+    /// Debug: print RX queue state
+    pub fn debug_rx_state(&self) {
+        unsafe {
+            let rx_queue = &*RX_QUEUE.get();
+            let avail = core::ptr::read_volatile(&rx_queue.avail.idx);
+            let used = core::ptr::read_volatile(&rx_queue.used.idx);
+            serial::print("RX: avail=");
+            serial::print_dec(avail as u32);
+            serial::print(" used=");
+            serial::print_dec(used as u32);
+            serial::print(" last=");
+            serial::print_dec(self.rx_last_used as u32);
+            serial::println("");
+        }
+    }
+
     /// Send an Ethernet frame
     pub fn send(&mut self, frame: &[u8]) -> bool {
         if frame.len() > MAX_FRAME_SIZE {
@@ -316,6 +418,7 @@ impl VirtioNet {
             let tx_queue = &mut *TX_QUEUE.get();
             let tx_buffer = &mut *TX_BUFFER.get();
 
+
             // Set up header (all zeros for simple send)
             tx_buffer.header = VirtioNetHeader::default();
 
@@ -324,16 +427,20 @@ impl VirtioNet {
 
             // Set up descriptor
             let desc_idx = self.tx_next_desc as usize;
+            let buf_addr = tx_buffer as *const _ as u64;
+            let total_len = (core::mem::size_of::<VirtioNetHeader>() + frame.len()) as u32;
+
+
             tx_queue.desc[desc_idx] = VirtqDesc {
-                addr: tx_buffer as *const _ as u64,
-                len: (core::mem::size_of::<VirtioNetHeader>() + frame.len()) as u32,
+                addr: buf_addr,
+                len: total_len,
                 flags: 0, // Device reads from this buffer
                 next: 0,
             };
 
             // Add to available ring
             let avail_idx = tx_queue.avail.idx;
-            tx_queue.avail.ring[avail_idx as usize % QUEUE_SIZE as usize] = desc_idx as u16;
+            tx_queue.avail.ring[avail_idx as usize % TX_QUEUE_SIZE] = desc_idx as u16;
 
             // Memory barrier
             core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
@@ -341,24 +448,32 @@ impl VirtioNet {
             // Update available index
             tx_queue.avail.idx = avail_idx.wrapping_add(1);
 
-            // Notify device
-            outw(self.io_base + 14, VIRTIO_NET_QUEUE_TX);
-            outw(self.io_base + 16, 0);
+            // Memory barrier before notify
+            core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
 
-            self.tx_next_desc = (self.tx_next_desc + 1) % QUEUE_SIZE;
-        }
+            // Notify device (write queue index to Queue Notify port)
+            outw(self.io_base + 16, VIRTIO_NET_QUEUE_TX);
 
-        // Wait for completion (simple polling)
-        for _ in 0..100000 {
-            unsafe {
-                let tx_queue = &*TX_QUEUE.get();
-                if tx_queue.used.idx != tx_queue.avail.idx.wrapping_sub(1) {
+            self.tx_next_desc = (self.tx_next_desc + 1) % TX_QUEUE_SIZE as u16;
+
+            // Wait for completion (simple polling)
+            let expected_used = avail_idx.wrapping_add(1);
+            for _ in 0..1000000u32 {
+                core::hint::spin_loop();
+                if core::ptr::read_volatile(&tx_queue.used.idx) == expected_used {
                     return true;
                 }
             }
         }
 
-        serial::println("VirtIO-net: TX timeout");
+        unsafe {
+            let tx_queue = &*TX_QUEUE.get();
+            serial::print("TX timeout: avail=");
+            serial::print_dec(tx_queue.avail.idx as u32);
+            serial::print(" used=");
+            serial::print_dec(core::ptr::read_volatile(&tx_queue.used.idx) as u32);
+            serial::println("");
+        }
         false
     }
 
@@ -370,12 +485,14 @@ impl VirtioNet {
             let rx_buffers = &*RX_BUFFERS.get();
 
             // Check if there's a new packet
-            if rx_queue.used.idx == self.rx_last_used {
+            let used_idx = core::ptr::read_volatile(&rx_queue.used.idx);
+            if used_idx == self.rx_last_used {
                 return 0; // No new packets
             }
 
+
             // Get the used element
-            let used_elem = rx_queue.used.ring[self.rx_last_used as usize % QUEUE_SIZE as usize];
+            let used_elem = rx_queue.used.ring[self.rx_last_used as usize % RX_QUEUE_SIZE];
             let desc_idx = used_elem.id as usize;
             let total_len = used_elem.len as usize;
 
@@ -394,12 +511,11 @@ impl VirtioNet {
 
             // Re-add buffer to available ring
             let avail_idx = rx_queue.avail.idx;
-            rx_queue.avail.ring[avail_idx as usize % QUEUE_SIZE as usize] = desc_idx as u16;
+            rx_queue.avail.ring[avail_idx as usize % RX_QUEUE_SIZE] = desc_idx as u16;
             rx_queue.avail.idx = avail_idx.wrapping_add(1);
 
-            // Notify device
-            outw(self.io_base + 14, VIRTIO_NET_QUEUE_RX);
-            outw(self.io_base + 16, 0);
+            // Notify device (write queue index to Queue Notify port)
+            outw(self.io_base + 16, VIRTIO_NET_QUEUE_RX);
 
             self.rx_last_used = self.rx_last_used.wrapping_add(1);
 

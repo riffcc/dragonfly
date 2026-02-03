@@ -4,11 +4,11 @@
 
 use crate::serial;
 use crate::virtio_net::VirtioNet;
-use smoltcp::iface::{Config, Interface, SocketSet};
+use smoltcp::iface::{Config, Interface, SocketSet, SocketHandle};
 use smoltcp::phy::{Device, DeviceCapabilities, Medium, RxToken, TxToken};
-use smoltcp::socket::dhcpv4;
+use smoltcp::socket::{dhcpv4, tcp};
 use smoltcp::time::Instant;
-use smoltcp::wire::{EthernetAddress, HardwareAddress, IpCidr, Ipv4Address};
+use smoltcp::wire::{EthernetAddress, HardwareAddress, IpCidr, IpEndpoint, Ipv4Address};
 
 /// Wrapper around VirtioNet that implements smoltcp's Device trait
 pub struct NetDevice {
@@ -70,6 +70,9 @@ impl<'a> RxToken for RxTokenImpl<'a> {
     where
         F: FnOnce(&mut [u8]) -> R,
     {
+        serial::print("RX: ");
+        serial::print_dec(self.buffer.len() as u32);
+        serial::println(" bytes");
         // smoltcp wants mutable access but we only have immutable
         // This is safe because smoltcp only reads the data
         let mut buf = [0u8; 1514];
@@ -90,20 +93,52 @@ impl<'a> TxToken for TxTokenImpl<'a> {
     {
         let mut buffer = [0u8; 1514];
         let result = f(&mut buffer[..len]);
+        serial::print("TX: ");
+        serial::print_dec(len as u32);
+        serial::println(" bytes");
         self.device.send(&buffer[..len]);
         result
     }
 }
 
-/// Simple monotonic clock based on CPU cycles (approximate)
-static mut TICK_COUNT: u64 = 0;
+/// Read CPU timestamp counter for actual time measurement
+fn rdtsc() -> u64 {
+    let lo: u32;
+    let hi: u32;
+    unsafe {
+        core::arch::asm!(
+            "rdtsc",
+            out("eax") lo,
+            out("edx") hi,
+            options(nomem, nostack)
+        );
+    }
+    ((hi as u64) << 32) | (lo as u64)
+}
+
+/// Starting timestamp (set on first call)
+static mut START_TSC: u64 = 0;
+
+/// Estimated CPU frequency in MHz (conservative estimate for VMs)
+const CPU_MHZ: u64 = 2000; // 2 GHz - adjust if needed
 
 pub fn now() -> Instant {
-    // Increment tick counter (very approximate timing)
-    unsafe {
-        TICK_COUNT += 1;
-    }
-    Instant::from_millis(unsafe { TICK_COUNT } as i64)
+    let tsc = rdtsc();
+
+    // Initialize start time on first call
+    let start = unsafe {
+        if START_TSC == 0 {
+            START_TSC = tsc;
+        }
+        START_TSC
+    };
+
+    // Convert cycles to milliseconds: (cycles / MHz) / 1000
+    // = cycles / (MHz * 1000) = cycles / (CPU_MHZ * 1000)
+    let elapsed_cycles = tsc.saturating_sub(start);
+    let elapsed_ms = elapsed_cycles / (CPU_MHZ * 1000);
+
+    Instant::from_millis(elapsed_ms as i64)
 }
 
 /// Network stack state
@@ -114,6 +149,8 @@ pub struct NetworkStack<'a> {
     pub dhcp_handle: Option<smoltcp::iface::SocketHandle>,
     pub ip_addr: Option<Ipv4Address>,
     pub gateway: Option<Ipv4Address>,
+    /// Boot server IP (siaddr from DHCP - this is the Dragonfly server)
+    pub boot_server: Option<Ipv4Address>,
 }
 
 impl<'a> NetworkStack<'a> {
@@ -124,9 +161,9 @@ impl<'a> NetworkStack<'a> {
     ) -> Option<Self> {
         let mac = device.mac_address();
         let hw_addr = HardwareAddress::Ethernet(EthernetAddress(mac));
-
         let config = Config::new(hw_addr);
-        let mut iface = Interface::new(config, &mut device, now());
+        let timestamp = now();
+        let mut iface = Interface::new(config, &mut device, timestamp);
 
         // Set a random IP address initially (will be replaced by DHCP)
         iface.update_ip_addrs(|addrs| {
@@ -135,11 +172,11 @@ impl<'a> NetworkStack<'a> {
 
         let mut sockets = SocketSet::new(socket_storage);
 
-        // Create DHCP socket (smoltcp 0.11 - no buffer arguments)
+        // Create DHCP socket
         let dhcp_socket = dhcpv4::Socket::new();
         let dhcp_handle = sockets.add(dhcp_socket);
 
-        serial::println("Network: Stack initialized, starting DHCP...");
+        serial::println("Network: Starting DHCP...");
 
         Some(NetworkStack {
             device,
@@ -148,6 +185,7 @@ impl<'a> NetworkStack<'a> {
             dhcp_handle: Some(dhcp_handle),
             ip_addr: None,
             gateway: None,
+            boot_server: None,
         })
     }
 
@@ -174,6 +212,40 @@ impl<'a> NetworkStack<'a> {
                         serial::println("");
 
                         self.ip_addr = Some(ip);
+
+                        // Extract boot server (siaddr) from DHCP packet
+                        if let Some(ref packet) = config.packet {
+                            let siaddr = packet.server_ip();
+                            if !siaddr.is_unspecified() {
+                                serial::print("DHCP: Boot server (siaddr) ");
+                                serial::print_dec(siaddr.0[0] as u32);
+                                serial::print(".");
+                                serial::print_dec(siaddr.0[1] as u32);
+                                serial::print(".");
+                                serial::print_dec(siaddr.0[2] as u32);
+                                serial::print(".");
+                                serial::print_dec(siaddr.0[3] as u32);
+                                serial::println("");
+                                self.boot_server = Some(siaddr);
+                            }
+                        }
+
+                        // Fallback: use DHCP server address if siaddr not set
+                        if self.boot_server.is_none() {
+                            let server = config.server.address;
+                            if !server.is_unspecified() {
+                                serial::print("DHCP: Using DHCP server ");
+                                serial::print_dec(server.0[0] as u32);
+                                serial::print(".");
+                                serial::print_dec(server.0[1] as u32);
+                                serial::print(".");
+                                serial::print_dec(server.0[2] as u32);
+                                serial::print(".");
+                                serial::print_dec(server.0[3] as u32);
+                                serial::println("");
+                                self.boot_server = Some(server);
+                            }
+                        }
 
                         // Update interface with DHCP-assigned address
                         self.iface.update_ip_addrs(|addrs| {
@@ -211,4 +283,134 @@ impl<'a> NetworkStack<'a> {
     pub fn has_ip(&self) -> bool {
         self.ip_addr.is_some()
     }
+
+    /// Get our IP address
+    pub fn get_ip(&self) -> Option<Ipv4Address> {
+        self.ip_addr
+    }
+
+    /// Create a TCP socket and return its handle
+    pub fn create_tcp_socket(&mut self, rx_buffer: &'a mut [u8], tx_buffer: &'a mut [u8]) -> SocketHandle {
+        let rx_buf = tcp::SocketBuffer::new(rx_buffer);
+        let tx_buf = tcp::SocketBuffer::new(tx_buffer);
+        let socket = tcp::Socket::new(rx_buf, tx_buf);
+        self.sockets.add(socket)
+    }
+
+    /// Connect a TCP socket to a remote endpoint
+    pub fn tcp_connect(&mut self, handle: SocketHandle, remote: IpEndpoint) -> bool {
+        let socket = self.sockets.get_mut::<tcp::Socket>(handle);
+        let local_port = 49152 + (now().total_millis() as u16 % 16384); // Ephemeral port
+        match socket.connect(self.iface.context(), remote, local_port) {
+            Ok(()) => {
+                serial::print("TCP: Connecting to ");
+                let ip = match remote.addr {
+                    smoltcp::wire::IpAddress::Ipv4(addr) => addr,
+                    _ => Ipv4Address::UNSPECIFIED,
+                };
+                serial::print_dec(ip.0[0] as u32);
+                serial::print(".");
+                serial::print_dec(ip.0[1] as u32);
+                serial::print(".");
+                serial::print_dec(ip.0[2] as u32);
+                serial::print(".");
+                serial::print_dec(ip.0[3] as u32);
+                serial::print(":");
+                serial::print_dec(remote.port as u32);
+                serial::println("");
+                true
+            }
+            Err(_) => {
+                serial::println("TCP: Connect failed");
+                false
+            }
+        }
+    }
+
+    /// Check if TCP socket is connected
+    pub fn tcp_is_connected(&mut self, handle: SocketHandle) -> bool {
+        let socket = self.sockets.get_mut::<tcp::Socket>(handle);
+        socket.is_active() && socket.may_send()
+    }
+
+    /// Check if TCP socket can send
+    pub fn tcp_can_send(&mut self, handle: SocketHandle) -> bool {
+        let socket = self.sockets.get_mut::<tcp::Socket>(handle);
+        socket.can_send()
+    }
+
+    /// Check if TCP socket can receive
+    pub fn tcp_can_recv(&mut self, handle: SocketHandle) -> bool {
+        let socket = self.sockets.get_mut::<tcp::Socket>(handle);
+        socket.can_recv()
+    }
+
+    /// Send data on TCP socket
+    pub fn tcp_send(&mut self, handle: SocketHandle, data: &[u8]) -> usize {
+        let socket = self.sockets.get_mut::<tcp::Socket>(handle);
+        match socket.send_slice(data) {
+            Ok(n) => n,
+            Err(_) => 0,
+        }
+    }
+
+    /// Receive data from TCP socket
+    pub fn tcp_recv(&mut self, handle: SocketHandle, buffer: &mut [u8]) -> usize {
+        let socket = self.sockets.get_mut::<tcp::Socket>(handle);
+        match socket.recv_slice(buffer) {
+            Ok(n) => n,
+            Err(_) => 0,
+        }
+    }
+
+    /// Close TCP socket
+    pub fn tcp_close(&mut self, handle: SocketHandle) {
+        let socket = self.sockets.get_mut::<tcp::Socket>(handle);
+        socket.close();
+    }
+}
+
+/// Format MAC address as colon-separated hex string
+pub fn format_mac(mac: &[u8; 6], buf: &mut [u8]) -> usize {
+    const HEX: &[u8] = b"0123456789abcdef";
+    let mut pos = 0;
+    for (i, &byte) in mac.iter().enumerate() {
+        if i > 0 && pos < buf.len() {
+            buf[pos] = b':';
+            pos += 1;
+        }
+        if pos < buf.len() {
+            buf[pos] = HEX[(byte >> 4) as usize];
+            pos += 1;
+        }
+        if pos < buf.len() {
+            buf[pos] = HEX[(byte & 0xf) as usize];
+            pos += 1;
+        }
+    }
+    pos
+}
+
+/// Format IPv4 address as dotted decimal string
+pub fn format_ip(ip: &Ipv4Address, buf: &mut [u8]) -> usize {
+    let mut pos = 0;
+    for (i, &byte) in ip.0.iter().enumerate() {
+        if i > 0 && pos < buf.len() {
+            buf[pos] = b'.';
+            pos += 1;
+        }
+        // Write decimal digits
+        if byte >= 100 {
+            buf[pos] = b'0' + byte / 100;
+            pos += 1;
+            buf[pos] = b'0' + (byte / 10) % 10;
+            pos += 1;
+        } else if byte >= 10 {
+            buf[pos] = b'0' + byte / 10;
+            pos += 1;
+        }
+        buf[pos] = b'0' + byte % 10;
+        pos += 1;
+    }
+    pos
 }

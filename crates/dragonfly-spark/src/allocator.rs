@@ -7,8 +7,8 @@ use core::cell::UnsafeCell;
 use core::ptr::null_mut;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-/// Size of the heap (64KB should be enough for networking)
-const HEAP_SIZE: usize = 64 * 1024;
+/// Size of the heap (256KB for networking with smoltcp)
+const HEAP_SIZE: usize = 256 * 1024;
 
 /// Simple bump allocator
 struct BumpAllocator {
@@ -68,8 +68,25 @@ static ALLOCATOR: BumpAllocator = BumpAllocator::new();
 
 /// Allocation error handler
 #[alloc_error_handler]
-fn alloc_error(_layout: Layout) -> ! {
-    // Can't use serial here easily due to potential deadlock
+fn alloc_error(layout: Layout) -> ! {
+    // Output to serial - simple inline to avoid any dependencies
+    unsafe {
+        // Output "ALLOC FAIL" directly to serial port 0x3F8
+        let msg = b"!!! ALLOC FAIL size=";
+        for &b in msg {
+            while (core::ptr::read_volatile(0x3F8u16 as *const u8 as *const u8).wrapping_add(5) & 0x20) == 0 {}
+            core::ptr::write_volatile(0x3F8 as *mut u8, b);
+        }
+        // Print size as hex
+        let size = layout.size();
+        for i in (0..8).rev() {
+            let nibble = ((size >> (i * 4)) & 0xF) as u8;
+            let c = if nibble < 10 { b'0' + nibble } else { b'a' + nibble - 10 };
+            core::ptr::write_volatile(0x3F8 as *mut u8, c);
+        }
+        core::ptr::write_volatile(0x3F8 as *mut u8, b'\n');
+    }
+
     loop {
         unsafe {
             core::arch::asm!("cli");
