@@ -7,8 +7,8 @@ use core::cell::UnsafeCell;
 use core::ptr::null_mut;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-/// Size of the heap (256KB for networking with smoltcp)
-const HEAP_SIZE: usize = 256 * 1024;
+/// Size of the heap (64KB - smoltcp needs more but disk scan runs first)
+const HEAP_SIZE: usize = 64 * 1024;
 
 /// Simple bump allocator
 struct BumpAllocator {
