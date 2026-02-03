@@ -294,71 +294,35 @@ impl ProvisioningService {
 
         // Determine action
         let (workflow_id, action, machine) = match active_workflow {
-            Some(mut wf) => {
-                // Check if workflow has actually started (StateRunning means actions are in progress)
-                let workflow_has_started = matches!(
-                    wf.status.as_ref().map(|s| &s.state),
-                    Some(WorkflowState::StateRunning)
+            Some(wf) => {
+                // Active workflow exists (Pending or Running) — always execute it.
+                //
+                // We do NOT check for existing OS here. An existing OS on disk during
+                // an active workflow is the OLD OS that hasn't been overwritten yet,
+                // not proof that installation succeeded. If installation truly completed,
+                // the workflow would be StateSuccess (set by the action_started handler
+                // for reboot/kexec), not Pending/Running, and wouldn't appear here.
+                //
+                // The workflow is idempotent: image2disk overwrites the disk, writefile
+                // overwrites files, reboot is harmless to repeat. So re-executing after
+                // an interrupted attempt is safe.
+                let state_desc = wf.status.as_ref()
+                    .map(|s| format!("{:?}", s.state))
+                    .unwrap_or_else(|| "no status".to_string());
+                info!(
+                    "Machine {} has active workflow {} ({}) - proceeding with imaging{}",
+                    machine.id, wf.metadata.name, state_desc,
+                    if info.existing_os.is_some() { " (will replace existing OS)" } else { "" }
                 );
 
-                // If workflow is RUNNING (not just pending) and agent reports an existing OS,
-                // the installation likely completed but the machine rebooted before
-                // reporting success. Mark workflow complete and boot the OS.
-                //
-                // If workflow is PENDING, we're about to reimage - proceed even if there's an existing OS.
-                if workflow_has_started {
-                    if let Some(ref existing_os) = info.existing_os {
-                        info!(
-                            "Machine {} has RUNNING workflow {} but reports existing OS '{}' - installation complete!",
-                            machine.id, wf.metadata.name, existing_os.name
-                        );
-
-                        // Mark workflow as successful
-                        if let Some(ref mut status) = wf.status {
-                            status.state = WorkflowState::StateSuccess;
-                            status.completed_at = Some(chrono::Utc::now());
-                        }
-                        self.store.put_workflow(&wf).await
-                            .map_err(ProvisioningError::Store)?;
-
-                        // Installation complete - set to Installed (not ExistingOs, which is for unknown OSes)
-                        let mut machine = machine;
-                        // Record what was installed (use template name, falling back to detected OS)
-                        machine.config.os_installed = Some(wf.spec.template_ref.clone());
-                        machine.config.os_choice = None;
-                        machine.config.reimage_requested = false;
-                        machine.config.installation_progress = 100; // Mark as complete
-                        machine.config.installation_step = Some("Installation complete".to_string());
-                        machine.status.state = MachineState::Installed;
-                        machine.status.last_workflow_result = Some(WorkflowResult::Success {
-                            completed_at: Utc::now()
-                        });
-                        self.store.put_machine(&machine).await
-                            .map_err(ProvisioningError::Store)?;
-
-                        (None, AgentAction::LocalBoot, machine)
-                    } else {
-                        // Running workflow, no OS yet - continue
-                        (Some(wf.metadata.name.clone()), AgentAction::Execute, machine)
-                    }
-                } else {
-                    // Workflow is PENDING - proceed with execution regardless of existing OS
-                    // This handles the reimage scenario where we WANT to wipe the existing OS
-                    info!(
-                        "Machine {} has PENDING workflow {} - proceeding with imaging{}",
-                        machine.id, wf.metadata.name,
-                        if info.existing_os.is_some() { " (will replace existing OS)" } else { "" }
-                    );
-
-                    let mut machine = machine;
-                    if matches!(machine.status.state, MachineState::Discovered | MachineState::ReadyToInstall) {
-                        machine.status.state = MachineState::Initializing;
-                    }
-                    machine.config.reimage_requested = false;
-                    self.store.put_machine(&machine).await
-                        .map_err(ProvisioningError::Store)?;
-                    (Some(wf.metadata.name.clone()), AgentAction::Execute, machine)
+                let mut machine = machine;
+                if matches!(machine.status.state, MachineState::Discovered | MachineState::ReadyToInstall) {
+                    machine.status.state = MachineState::Initializing;
                 }
+                machine.config.reimage_requested = false;
+                self.store.put_machine(&machine).await
+                    .map_err(ProvisioningError::Store)?;
+                (Some(wf.metadata.name.clone()), AgentAction::Execute, machine)
             }
             None => {
                 // Determine if we should install an OS
