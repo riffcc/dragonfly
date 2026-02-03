@@ -13,7 +13,7 @@ use dragonfly_crd::{
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::broadcast;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 /// Event emitted during workflow execution
 #[derive(Debug, Clone)]
@@ -129,7 +129,17 @@ impl WorkflowExecutor {
         if let Some(status) = &workflow.status {
             match status.state {
                 WorkflowState::StateRunning => {
-                    return Err(WorkflowError::AlreadyRunning(workflow_name));
+                    // Previous execution was interrupted (e.g. machine rebooted mid-install).
+                    // Workflows are idempotent: image2disk overwrites the disk, writefile
+                    // overwrites files, reboot is safe to repeat. Reset and re-execute.
+                    warn!(
+                        workflow = %workflow_name,
+                        "Workflow was previously interrupted (StateRunning) - resetting to re-execute"
+                    );
+                    workflow.status = Some(WorkflowStatus {
+                        state: WorkflowState::StatePending,
+                        ..Default::default()
+                    });
                 }
                 WorkflowState::StateSuccess | WorkflowState::StateFailed => {
                     return Err(WorkflowError::AlreadyCompleted(workflow_name));
@@ -560,7 +570,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_executor_already_running() {
+    async fn test_executor_resumes_interrupted_workflow() {
+        // A workflow in StateRunning means it was interrupted (e.g. machine rebooted).
+        // The executor should reset it to Pending and re-execute, not refuse.
         let (executor, store) = setup_executor().await;
 
         let mut workflow = Workflow::new("test-workflow", "test-hardware", "test-template");
@@ -570,8 +582,9 @@ mod tests {
         });
         store.put_workflow(&workflow).await.unwrap();
 
+        // Should succeed — reset to Pending and re-execute
         let result = executor.execute("test-workflow").await;
-        assert!(matches!(result, Err(WorkflowError::AlreadyRunning(_))));
+        assert!(result.is_ok(), "Interrupted workflow should be re-executed, got: {:?}", result);
     }
 
     #[tokio::test]
