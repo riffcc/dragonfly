@@ -651,4 +651,66 @@ mod tests {
             panic!("Expected Writefile action");
         }
     }
+
+    /// Test that duplicate SSH keys (same type+data, different comments) are deduplicated
+    #[tokio::test]
+    async fn test_template_ssh_keys_deduplicated() {
+        use dragonfly_crd::{Template, ActionStep, WritefileConfig, ObjectMeta, TypeMeta, TemplateSpec};
+
+        let state = create_test_app_state().await;
+
+        // Store keys with same type+base64 but different comments
+        state.store.put_setting("ssh_keys",
+            "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAItest1 wings@tealc\n\
+             ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAItest1 wings@desktop\n\
+             ssh-rsa AAAAB3NzaC1yc2EAAAAtest2 admin@server"
+        ).await.unwrap();
+
+        let template = Template {
+            type_meta: TypeMeta::template(),
+            metadata: ObjectMeta::new("test-dedup"),
+            spec: TemplateSpec {
+                actions: vec![
+                    ActionStep::Writefile(WritefileConfig {
+                        path: "/etc/cloud/cloud.cfg.d/99-users.cfg".to_string(),
+                        partition: Some(1),
+                        fs_type: None,
+                        content: Some("ssh_authorized_keys: {{ ssh_authorized_keys }}".to_string()),
+                        content_b64: None,
+                        mode: None,
+                        uid: None,
+                        gid: None,
+                        timeout: None,
+                    }),
+                ],
+                timeout: None,
+                version: None,
+            },
+        };
+        state.store.put_template(&template).await.unwrap();
+
+        let app = crate::api::api_router().with_state(state);
+        let response = app
+            .oneshot(Request::builder().uri("/templates/test-dedup").body(Body::empty()).unwrap())
+            .await.unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let returned: Template = serde_json::from_slice(&body).unwrap();
+
+        if let ActionStep::Writefile(cfg) = &returned.spec.actions[0] {
+            let content = cfg.content.as_ref().expect("Content should be present");
+
+            // First occurrence (wings@tealc) should be kept
+            assert!(content.contains("wings@tealc"), "Should keep first occurrence: {}", content);
+
+            // Duplicate (wings@desktop, same key data) should be removed
+            assert!(!content.contains("wings@desktop"), "Should deduplicate same key with different comment: {}", content);
+
+            // Unique key should still be present
+            assert!(content.contains("admin@server"), "Should keep unique key: {}", content);
+        } else {
+            panic!("Expected Writefile action");
+        }
+    }
 }

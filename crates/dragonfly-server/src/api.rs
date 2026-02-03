@@ -2719,13 +2719,23 @@ pub async fn get_template_handler(
     };
 
     // Format ssh_authorized_keys as YAML array value (templates have "ssh_authorized_keys: {{ ssh_authorized_keys }}")
-    let mut direct_keys: Vec<&str> = ssh_keys.lines()
-        .map(|l| l.trim())
-        .filter(|l| !l.is_empty() && !l.starts_with('#'))
-        .collect();
-    // Merge keys fetched from URL subscriptions
+    // Deduplicate by key identity (type + base64data), ignoring comment field
+    let mut seen_identities: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut direct_keys: Vec<&str> = Vec::new();
+    for line in ssh_keys.lines() {
+        let key = line.trim();
+        if key.is_empty() || key.starts_with('#') { continue; }
+        let identity: String = key.splitn(3, ' ').take(2).collect::<Vec<_>>().join(" ");
+        if seen_identities.insert(identity) {
+            direct_keys.push(key);
+        }
+    }
+    // Merge keys fetched from URL subscriptions (also deduplicated)
     for key in &url_subscription_keys {
-        direct_keys.push(key.as_str());
+        let identity: String = key.splitn(3, ' ').take(2).collect::<Vec<_>>().join(" ");
+        if seen_identities.insert(identity) {
+            direct_keys.push(key.as_str());
+        }
     }
     let ssh_authorized_keys_yaml = if direct_keys.is_empty() {
         "[]".to_string()

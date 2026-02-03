@@ -879,11 +879,11 @@
                     });
                 }
 
-                // Add direct keys
+                // Add direct keys (deduplicated by key content)
                 if (rawKeys.trim()) {
                     for (const line of rawKeys.split('\n')) {
                         const key = line.trim();
-                        if (key && !key.startsWith('#')) {
+                        if (key && !key.startsWith('#') && !this.hasDuplicateKey(key)) {
                             this.keys.push({
                                 type: 'direct',
                                 label: this.shortenKey(key),
@@ -892,6 +892,21 @@
                         }
                     }
                 }
+            },
+
+            // Extract key identity (type + base64data) ignoring comment
+            keyIdentity(key) {
+                const parts = key.split(' ');
+                if (parts.length >= 2) {
+                    return parts[0] + ' ' + parts[1];
+                }
+                return key;
+            },
+
+            // Check if a direct key already exists (by key content, ignoring comment)
+            hasDuplicateKey(newKey) {
+                const newId = this.keyIdentity(newKey);
+                return this.keys.some(k => k.type === 'direct' && this.keyIdentity(k.full) === newId);
             },
 
             shortenKey(key) {
@@ -991,18 +1006,20 @@
                         const keysText = data.keys || '';
 
                         if (keysText.trim()) {
+                            let imported = 0;
                             for (const line of keysText.split('\n')) {
                                 const key = line.trim();
-                                if (key && !key.startsWith('#')) {
+                                if (key && !key.startsWith('#') && !this.hasDuplicateKey(key)) {
                                     this.keys.push({
                                         type: 'direct',
                                         label: this.shortenKey(key),
                                         full: key
                                     });
+                                    imported++;
                                 }
                             }
                             this.saveKeys();
-                            showToast('Keys imported successfully', 'success');
+                            showToast(imported > 0 ? `Imported ${imported} key${imported > 1 ? 's' : ''}` : 'All keys already exist', imported > 0 ? 'success' : 'info');
                         } else {
                             showToast('No keys found', 'error');
                         }
@@ -1099,13 +1116,15 @@
                             // Invalid URL, treat as key
                         }
                     } else if (trimmed.startsWith('ssh-') || trimmed.startsWith('ecdsa-') || trimmed.startsWith('sk-')) {
-                        // Direct SSH key
-                        this.keys.push({
-                            type: 'direct',
-                            label: this.shortenKey(trimmed),
-                            full: trimmed
-                        });
-                        added++;
+                        // Direct SSH key — deduplicate by key content
+                        if (!this.hasDuplicateKey(trimmed)) {
+                            this.keys.push({
+                                type: 'direct',
+                                label: this.shortenKey(trimmed),
+                                full: trimmed
+                            });
+                            added++;
+                        }
                     }
                 }
 
