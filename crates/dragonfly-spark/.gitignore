@@ -1,6 +1,9 @@
 # Build artifacts
 spark.elf
+spark32.elf
 spark.iso
+core.img
+grub-spark.*
 iso/boot/spark.bin
 iso/boot/spark.elf
 

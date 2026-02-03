@@ -27,6 +27,7 @@ mod cmdline;
 mod disk;
 mod font;
 mod framebuffer;
+mod http;
 mod memory;
 mod menu;
 mod net;
@@ -117,6 +118,17 @@ pub extern "C" fn _start(multiboot_magic: u32, multiboot_info: u32) -> ! {
 }
 
 /// Main logic with graphical UI
+///
+/// Boot flow:
+/// 1. Detect OS on disk
+/// 2. Initialize network, get DHCP
+/// 3. Show boot screen with countdown
+/// 4. During countdown: poll for spacebar AND check in with server
+/// 5. If spacebar pressed: show menu, let user choose
+/// 6. If server responds: execute action (LocalBoot, Execute, Wait, Reboot)
+/// 7. If timeout/unreachable: auto-boot local OS (or imaging if none)
+///
+/// Design goal: Fast, unobtrusive. Server being down never blocks boot.
 fn main_logic_graphical() -> ! {
     serial::println("Entering graphical main_logic()");
 
@@ -125,18 +137,163 @@ fn main_logic_graphical() -> ! {
     let detected_os = disk::scan_for_os();
     serial::println("OS scan complete");
 
-    // Initialize network stack (non-blocking) for IP display during countdown
-    let net_stack = init_network_stack();
+    // Initialize network stack for DHCP and server check-in
+    let mut net_stack = init_network_stack();
 
-    // Show graphical boot menu - IP will appear async during countdown
-    let choice = ui::draw_boot_screen_with_net(detected_os, net_stack);
+    // Draw initial boot screen
+    let (width, height) = framebuffer::dimensions().unwrap_or((800, 600));
+    ui::draw_boot_screen_static(detected_os, width, height);
 
-    match choice {
-        ui::Choice::BootLocal => {
-            serial::println("User chose: Boot local OS");
-            // Reset VirtIO to try to restore BIOS compatibility
+    // Boot flow with server check-in and spacebar interrupt
+    let action = boot_flow_with_checkin(detected_os, &mut net_stack, width, height);
+
+    // Execute the decided action
+    execute_boot_action(action, detected_os);
+}
+
+/// Result of the boot flow decision
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum BootAction {
+    /// Boot the local OS (chainload MBR)
+    BootLocal,
+    /// Enter imaging mode (reboot to get Mage)
+    Imaging,
+    /// Show the full menu (user pressed spacebar)
+    ShowMenu,
+    /// Reboot the machine
+    Reboot,
+}
+
+/// Default server port for check-in
+const DEFAULT_SERVER_PORT: u16 = 8080;
+
+/// Boot timeout (seconds)
+/// Just long enough for DHCP + server check-in. User can hold spacebar to enter menu.
+const BOOT_TIMEOUT_SECS: u32 = 2;
+
+/// Perform boot flow with server check-in and spacebar interrupt
+fn boot_flow_with_checkin(
+    detected_os: Option<&disk::OsInfo>,
+    net_stack: &mut Option<net::NetworkStack<'static>>,
+    width: u32,
+    height: u32,
+) -> BootAction {
+    let mut ip_displayed = false;
+    let mut checkin_done = false;
+
+    // Get MAC address from network stack (if available)
+    let mac = net_stack.as_ref().map(|s| s.device.mac_address());
+
+    serial::println("Boot flow: Starting - press SPACE for menu");
+
+    // Use wall-clock time for timeout (1 second max wait for DHCP + checkin)
+    let start_time = net::now().total_millis();
+    let timeout_ms = (BOOT_TIMEOUT_SECS as i64) * 1000;
+
+    loop {
+        let elapsed = net::now().total_millis() - start_time;
+
+        // Check for spacebar (scancode 0x39)
+        if let Some(scancode) = bios::read_scancode() {
+            if scancode == 0x39 {
+                serial::println("Boot flow: Spacebar pressed - showing menu");
+                return BootAction::ShowMenu;
+            }
+        }
+
+        // Poll network
+        if let Some(stack) = net_stack.as_mut() {
+            stack.poll();
+
+            // Display IP once we have it
+            if !ip_displayed && stack.has_ip() {
+                if let Some(ip) = stack.get_ip() {
+                    ui::draw_ip_footer(width, height, ip);
+                    ip_displayed = true;
+                    serial::println("Boot flow: Got IP");
+                }
+            }
+
+            // Attempt server check-in once we have IP
+            if !checkin_done && stack.has_ip() {
+                if let Some(mac_addr) = mac.as_ref() {
+                    checkin_done = true;
+
+                    // Get server IP from DHCP boot server (siaddr) or fallback
+                    let server_ip = stack.boot_server.unwrap_or_else(|| {
+                        stack.gateway.unwrap_or(smoltcp::wire::Ipv4Address([10, 7, 1, 1]))
+                    });
+
+                    serial::print("Boot flow: Checking in with ");
+                    serial::print_dec(server_ip.0[0] as u32);
+                    serial::print(".");
+                    serial::print_dec(server_ip.0[1] as u32);
+                    serial::print(".");
+                    serial::print_dec(server_ip.0[2] as u32);
+                    serial::print(".");
+                    serial::print_dec(server_ip.0[3] as u32);
+                    serial::println("");
+
+                    // Perform check-in (has its own fast timeouts)
+                    if let Some(response) = http::checkin(
+                        stack,
+                        server_ip,
+                        DEFAULT_SERVER_PORT,
+                        mac_addr,
+                        detected_os,
+                    ) {
+                        serial::println("Boot flow: Server responded");
+                        // Execute server's directive
+                        return match response.action {
+                            http::AgentAction::LocalBoot => {
+                                serial::println("  -> LocalBoot");
+                                BootAction::BootLocal
+                            }
+                            http::AgentAction::Execute => {
+                                serial::println("  -> Execute (imaging)");
+                                BootAction::Imaging
+                            }
+                            http::AgentAction::Reboot => {
+                                serial::println("  -> Reboot");
+                                BootAction::Reboot
+                            }
+                            http::AgentAction::Wait => {
+                                serial::println("  -> Wait (show menu)");
+                                BootAction::ShowMenu
+                            }
+                        };
+                    } else {
+                        // Server unreachable - proceed to autoboot
+                        serial::println("Boot flow: Server unreachable, proceeding to autoboot");
+                        break;
+                    }
+                }
+            }
+        }
+
+        // Timeout - proceed to default action
+        if elapsed >= timeout_ms {
+            serial::println("Boot flow: Timeout, proceeding to autoboot");
+            break;
+        }
+    }
+
+    // Default: boot local OS if detected, otherwise imaging
+    serial::println("Boot flow: Autoboot");
+    if detected_os.is_some() {
+        BootAction::BootLocal
+    } else {
+        BootAction::Imaging
+    }
+}
+
+/// Execute the decided boot action
+fn execute_boot_action(action: BootAction, detected_os: Option<&disk::OsInfo>) -> ! {
+    match action {
+        BootAction::BootLocal => {
+            serial::println("Executing: Boot local OS");
+            // Reset VirtIO to restore BIOS compatibility
             virtio::reset_all();
-            // Use cached MBR from VirtIO detection
             if let Some(os) = detected_os {
                 bios_disk::chainload_mbr(&os.mbr, 0x80);
             } else {
@@ -144,25 +301,39 @@ fn main_logic_graphical() -> ! {
                 halt_silent();
             }
         }
-        ui::Choice::Reinstall => {
-            serial::println("User chose: Reinstall/Imaging");
+        BootAction::Imaging => {
+            serial::println("Executing: Imaging mode");
             chainload::boot_imaging();
         }
-        ui::Choice::Shell => {
-            serial::println("User chose: Network test");
-            serial::println("DBG: About to call vga::init()");
-            // Switch to VGA text mode for network test output
-            vga::init();
-            serial::println("DBG: vga::init() done");
-            vga::clear();
-            serial::println("DBG: vga::clear() done");
-            vga::println("=== Dragonfly Spark Network Test ===");
-            serial::println("DBG: First vga::println done");
-            vga::println("");
-            test_network();
-            vga::println("");
-            vga::println("Test complete. System halted.");
-            halt_silent();
+        BootAction::ShowMenu => {
+            serial::println("Executing: Show menu");
+            // Reinitialize network for menu use
+            let net_stack = init_network_stack();
+            let choice = ui::draw_boot_screen_with_net(detected_os, net_stack);
+            match choice {
+                ui::Choice::BootLocal => {
+                    virtio::reset_all();
+                    if let Some(os) = detected_os {
+                        bios_disk::chainload_mbr(&os.mbr, 0x80);
+                    } else {
+                        serial::println("ERROR: No OS detected");
+                        halt_silent();
+                    }
+                }
+                ui::Choice::Reinstall => chainload::boot_imaging(),
+                ui::Choice::Shell => {
+                    vga::init();
+                    vga::clear();
+                    vga::println("=== Dragonfly Spark Network Test ===");
+                    test_network();
+                    vga::println("Test complete. System halted.");
+                    halt_silent();
+                }
+            }
+        }
+        BootAction::Reboot => {
+            serial::println("Executing: Reboot");
+            bios::reboot();
         }
     }
 }

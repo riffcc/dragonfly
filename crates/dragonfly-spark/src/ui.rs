@@ -19,9 +19,81 @@ pub enum Choice {
 /// Boot timeout in seconds
 const BOOT_TIMEOUT: u32 = 10;
 
+/// Cached panel coordinates for update_countdown
+static mut PANEL_Y: u32 = 0;
+static mut PANEL_H: u32 = 0;
+
 /// Draw the Dragonfly splash screen and boot menu
 pub fn draw_boot_screen(os: Option<&OsInfo>) -> Choice {
     draw_boot_screen_with_net(os, None)
+}
+
+/// Draw the boot screen without starting countdown (for external countdown control)
+///
+/// This draws the splash, header, OS info, and menu options, but does NOT
+/// start the countdown or wait for input. Use update_countdown() to update
+/// the countdown display externally.
+pub fn draw_boot_screen_static(os: Option<&OsInfo>, width: u32, height: u32) {
+    // Clear to dark background
+    framebuffer::clear(colors::BG_DARK);
+
+    // Draw header area with gradient
+    let header_h = draw_header(width);
+
+    // Draw main content panel
+    let panel_w = 700.min(width - 100);
+    let panel_y = header_h + 20;
+    let panel_h = (height - panel_y - 60).min(400);
+    let panel_x = (width - panel_w) / 2;
+
+    // Store for update_countdown
+    unsafe {
+        PANEL_Y = panel_y;
+        PANEL_H = panel_h;
+    }
+
+    // Panel background with border
+    framebuffer::fill_rounded_rect(panel_x, panel_y, panel_w, panel_h, 12, colors::BG_PANEL);
+    framebuffer::draw_rounded_rect(panel_x, panel_y, panel_w, panel_h, 12, colors::ACCENT_PURPLE);
+
+    // Panel title
+    let title = match os {
+        Some(_) => "Dragonfly Spark",
+        None => "No OS Detected",
+    };
+    let title_width = title.len() as u32 * 16;
+    let title_x = (width - title_width) / 2;
+    font::draw_string_large(title_x, panel_y + 25, title, colors::TEXT_PRIMARY);
+
+    // Detected OS info
+    if let Some(os_info) = os {
+        let y = panel_y + 80;
+        font::draw_string_centered(y, "Detected Operating System:", colors::TEXT_SECONDARY, width);
+        let os_name = os_info.display_name();
+        let os_width = os_name.len() as u32 * 16;
+        font::draw_string_large((width - os_width) / 2, y + 30, os_name, colors::ACCENT_PURPLE_BRIGHT);
+    }
+
+    // Show "Press SPACE for menu" hint
+    let hint_y = panel_y + 160;
+    font::draw_string_centered(hint_y, "Press SPACE for boot menu", colors::TEXT_SECONDARY, width);
+
+    // Initial countdown display
+    let timer_y = panel_y + panel_h - 70;
+    draw_countdown(width, timer_y, 2); // 2 seconds - fast but not jarring
+}
+
+/// Update the countdown display (call from external countdown loop)
+pub fn update_countdown(width: u32, seconds: u32) {
+    let timer_y = unsafe { PANEL_Y + PANEL_H - 70 };
+
+    // Calculate position to clear and redraw
+    let msg_width = 26 * 16;
+    let num_x = (width - msg_width) / 2 + 13 * 16;
+
+    // Clear and redraw number (2x scale = 32 pixel height)
+    framebuffer::fill_rect(num_x, timer_y, 3 * 16, 32, colors::BG_PANEL);
+    draw_number_large(num_x, timer_y, seconds, colors::ACCENT_CYAN);
 }
 
 /// Draw the Dragonfly splash screen and boot menu with network stack for async IP display
@@ -254,7 +326,7 @@ fn wait_for_choice_with_net(width: u32, height: u32, timer_y: u32, has_os: bool,
 }
 
 /// Draw IP address in footer area (2x scale)
-fn draw_ip_footer(width: u32, height: u32, ip: Ipv4Address) {
+pub fn draw_ip_footer(width: u32, height: u32, ip: Ipv4Address) {
     let y = height - 45; // Adjust for 2x height
 
     // Format IP address
