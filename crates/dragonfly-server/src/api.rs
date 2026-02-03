@@ -2660,15 +2660,49 @@ pub async fn get_template_handler(
         default_password_raw
     };
 
-    // Parse subscriptions and build ssh_import_id list (gh:user, gl:user)
+    // Parse subscriptions: GitHub/GitLab → ssh_import_id, URL → fetch keys now
     let mut import_ids: Vec<String> = Vec::new();
+    let mut url_subscription_keys: Vec<String> = Vec::new();
     if let Ok(subs) = serde_json::from_str::<Vec<serde_json::Value>>(&ssh_key_subscriptions) {
         for sub in subs {
             if let (Some(sub_type), Some(value)) = (sub.get("type").and_then(|t| t.as_str()), sub.get("value").and_then(|v| v.as_str())) {
                 match sub_type {
                     "github" => import_ids.push(format!("gh:{}", value)),
                     "gitlab" => import_ids.push(format!("gl:{}", value)),
-                    // URL subscriptions will be fetched and added as direct keys at runtime
+                    "url" => {
+                        // Fetch keys from URL subscription at provisioning time
+                        let url = sub.get("url").and_then(|u| u.as_str()).unwrap_or(value);
+                        let client = reqwest::Client::builder()
+                            .timeout(std::time::Duration::from_secs(10))
+                            .build()
+                            .unwrap_or_default();
+                        match client.get(url).send().await {
+                            Ok(response) if response.status().is_success() => {
+                                match response.text().await {
+                                    Ok(keys_text) => {
+                                        let mut count = 0u32;
+                                        for line in keys_text.lines() {
+                                            let key = line.trim();
+                                            if !key.is_empty() && !key.starts_with('#') {
+                                                url_subscription_keys.push(key.to_string());
+                                                count += 1;
+                                            }
+                                        }
+                                        info!(url = %url, keys_count = count, "Fetched SSH keys from URL subscription");
+                                    }
+                                    Err(e) => {
+                                        warn!(url = %url, error = %e, "Failed to read SSH keys from URL subscription");
+                                    }
+                                }
+                            }
+                            Ok(response) => {
+                                warn!(url = %url, status = %response.status(), "URL subscription returned non-success status");
+                            }
+                            Err(e) => {
+                                warn!(url = %url, error = %e, "Failed to fetch SSH keys from URL subscription (will retry next provisioning)");
+                            }
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -2685,10 +2719,14 @@ pub async fn get_template_handler(
     };
 
     // Format ssh_authorized_keys as YAML array value (templates have "ssh_authorized_keys: {{ ssh_authorized_keys }}")
-    let direct_keys: Vec<&str> = ssh_keys.lines()
+    let mut direct_keys: Vec<&str> = ssh_keys.lines()
         .map(|l| l.trim())
         .filter(|l| !l.is_empty() && !l.starts_with('#'))
         .collect();
+    // Merge keys fetched from URL subscriptions
+    for key in &url_subscription_keys {
+        direct_keys.push(key.as_str());
+    }
     let ssh_authorized_keys_yaml = if direct_keys.is_empty() {
         "[]".to_string()
     } else {

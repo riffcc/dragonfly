@@ -895,8 +895,12 @@
             },
 
             shortenKey(key) {
-                // Format: "ssh-ed25519...b5fd" or "ecdsa-sha2...jGk="
                 const parts = key.split(' ');
+                // If there's a comment field (3rd part), use it as the label
+                if (parts.length >= 3) {
+                    return parts.slice(2).join(' ');
+                }
+                // Fallback: type...suffix fingerprint style
                 if (parts.length >= 2) {
                     const keyType = parts[0].replace('ssh-', '').replace('ecdsa-sha2-', 'ecdsa-');
                     const keyData = parts[1];
@@ -1017,7 +1021,8 @@
             },
 
             handlePaste(event) {
-                // Let paste happen, then process on blur
+                // Let paste content land in textarea, then process it into chiclets
+                requestAnimationFrame(() => this.processInput());
             },
 
             handleEnter(event) {
