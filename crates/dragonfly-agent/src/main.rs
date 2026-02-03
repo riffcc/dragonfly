@@ -510,9 +510,11 @@ async fn handle_menu_selection(
 
     match selection {
         MenuSelection::BootExistingOs => {
-            if let Some(os) = existing_os {
-                info!(name = %os.name, "User selected: boot existing OS");
-                kexec::boot_local_os(os)?;
+            if existing_os.is_some() {
+                info!("User selected: boot existing OS - rebooting to local disk");
+                std::process::Command::new("reboot")
+                    .status()
+                    .context("Failed to reboot")?;
             } else {
                 warn!("No existing OS to boot");
             }
@@ -642,8 +644,8 @@ async fn handle_agent_action(
         }
         AgentAction::LocalBoot => {
             if let Some(os) = existing_os {
-                info!(name = %os.name, "Booting into existing OS via kexec");
-                kexec::boot_local_os(os)?;
+                info!(name = %os.name, "Booting into existing OS via reboot");
+                Command::new("reboot").status().context("Failed to reboot")?;
             } else {
                 warn!("Server said LocalBoot but no existing OS detected");
             }

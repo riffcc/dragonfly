@@ -269,11 +269,30 @@ async fn report_event(
         }
     };
 
-    let response = client.post(&url).json(&event_data).send().await?;
+    // Retry with exponential backoff — the server may be temporarily busy
+    // Progress events get 2 attempts (they're frequent, losing one is OK)
+    // Lifecycle events (started, completed, action_started, action_completed)
+    // get more attempts since they're critical for state transitions
+    let is_progress = matches!(event, WorkflowEvent::ActionProgress { .. });
+    let max_attempts: u32 = if is_progress { 2 } else { 4 };
 
-    if !response.status().is_success() {
-        let status = response.status();
-        debug!(status = %status, "Server did not accept workflow event (may be OK)");
+    for attempt in 1..=max_attempts {
+        match client.post(&url).json(&event_data).send().await {
+            Ok(response) if response.status().is_success() => return Ok(()),
+            Ok(response) => {
+                debug!(status = %response.status(), attempt, "Server did not accept workflow event");
+            }
+            Err(e) => {
+                if attempt == max_attempts {
+                    return Err(e.into());
+                }
+                debug!(error = %e, attempt, max_attempts, "Failed to send event, retrying");
+            }
+        }
+        if attempt < max_attempts {
+            let backoff = std::time::Duration::from_millis(250 * 2u64.pow(attempt - 1));
+            tokio::time::sleep(backoff).await;
+        }
     }
 
     Ok(())

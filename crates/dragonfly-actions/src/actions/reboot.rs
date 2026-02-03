@@ -12,6 +12,12 @@ use std::time::Duration;
 use tokio::process::Command;
 use tracing::info;
 
+/// Maximum number of retry attempts for server notification
+const MAX_NOTIFY_RETRIES: u32 = 5;
+
+/// Base timeout for each HTTP attempt
+const NOTIFY_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// Native reboot action
 ///
 /// Environment variables:
@@ -74,25 +80,7 @@ impl Action for RebootAction {
                 "machine_id": ctx.env("MACHINE_ID").unwrap_or("")
             });
 
-            // Synchronous call - MUST complete before we reboot
-            match reqwest::Client::builder()
-                .timeout(Duration::from_secs(10))
-                .build()
-            {
-                Ok(client) => {
-                    match client.post(&url).json(&event_data).send().await {
-                        Ok(response) => {
-                            info!(status = %response.status(), "Server acknowledged reboot - workflow marked complete");
-                        }
-                        Err(e) => {
-                            tracing::error!(error = %e, "Failed to notify server of reboot - installation may appear stuck");
-                        }
-                    }
-                }
-                Err(e) => {
-                    tracing::error!(error = %e, "Failed to build HTTP client");
-                }
-            }
+            notify_server_with_retry(&url, &event_data).await;
         } else {
             tracing::warn!(
                 server_url = ?ctx.env("SERVER_URL"),
@@ -123,4 +111,64 @@ impl Action for RebootAction {
 
         Ok(ActionResult::success("Reboot initiated"))
     }
+}
+
+/// Notify the server with exponential backoff retry.
+///
+/// This is critical — if the server doesn't get this notification, the machine
+/// will appear stuck at "Installing" forever. We retry aggressively because
+/// the server may be temporarily busy handling other machines' events.
+async fn notify_server_with_retry(url: &str, event_data: &serde_json::Value) {
+    let client = match reqwest::Client::builder()
+        .timeout(NOTIFY_TIMEOUT)
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::error!(error = %e, "Failed to build HTTP client for server notification");
+            return;
+        }
+    };
+
+    for attempt in 1..=MAX_NOTIFY_RETRIES {
+        match client.post(url).json(event_data).send().await {
+            Ok(response) if response.status().is_success() => {
+                info!(
+                    status = %response.status(),
+                    attempt = attempt,
+                    "Server acknowledged reboot notification"
+                );
+                return;
+            }
+            Ok(response) => {
+                tracing::warn!(
+                    status = %response.status(),
+                    attempt = attempt,
+                    max = MAX_NOTIFY_RETRIES,
+                    "Server returned non-success status, retrying"
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    attempt = attempt,
+                    max = MAX_NOTIFY_RETRIES,
+                    "Failed to notify server, retrying"
+                );
+            }
+        }
+
+        // Exponential backoff: 500ms, 1s, 2s, 4s
+        if attempt < MAX_NOTIFY_RETRIES {
+            let backoff = Duration::from_millis(500 * 2u64.pow(attempt - 1));
+            tracing::info!(backoff_ms = backoff.as_millis() as u64, "Backing off before retry");
+            tokio::time::sleep(backoff).await;
+        }
+    }
+
+    tracing::error!(
+        url = %url,
+        attempts = MAX_NOTIFY_RETRIES,
+        "FAILED to notify server after all retries - machine may appear stuck at Installing"
+    );
 }
