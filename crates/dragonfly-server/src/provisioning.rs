@@ -1127,8 +1127,31 @@ mod tests {
         assert_eq!(wf.len(), 1);
         assert_eq!(wf[0].spec.template_ref, "debian-13");
 
+        // Simulate what the action_started handler does for reboot/kexec:
+        // Mark workflow as StateSuccess and machine as Installed.
+        // In production, this happens when the reboot action's server notification arrives.
+        {
+            use dragonfly_crd::{WorkflowState, WorkflowStatus};
+            let mut wf_to_complete = wf[0].clone();
+            wf_to_complete.status = Some(WorkflowStatus {
+                state: WorkflowState::StateSuccess,
+                progress: 100,
+                ..Default::default()
+            });
+            store.put_workflow(&wf_to_complete).await.unwrap();
+
+            // Mark machine as Installed with the template name
+            let mut m = store.get_machine_by_mac("00:11:22:33:44:55").await.unwrap().unwrap();
+            m.status.state = MachineState::Installed;
+            m.config.os_installed = Some("debian-13".to_string());
+            m.config.os_choice = None;
+            m.config.installation_progress = 100;
+            store.put_machine(&m).await.unwrap();
+        }
+
         // Second check-in: agent reports existing OS after installation
-        // This simulates the machine rebooting after kexec into the installed OS
+        // The workflow is now StateSuccess (completed), so the provisioning
+        // logic should recognize installation is done and return LocalBoot.
         let mut checkin_with_os = test_checkin();
         checkin_with_os.existing_os = Some(DetectedOs {
             name: "Debian GNU/Linux 13 (trixie)".to_string(), // Detected name differs from template
@@ -1140,7 +1163,7 @@ mod tests {
         });
         let response2 = service.handle_checkin(&checkin_with_os).await.unwrap();
 
-        // Should return LocalBoot since installation is complete
+        // Should return LocalBoot since workflow is StateSuccess (installation complete)
         assert_eq!(response2.action, AgentAction::LocalBoot);
 
         // CRITICAL: Verify os_installed is set to TEMPLATE NAME, not detected OS name

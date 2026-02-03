@@ -27,6 +27,8 @@ use redb::{Database, MultimapTableDefinition, ReadableDatabase, ReadableMultimap
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
+use tokio::sync::Mutex as AsyncMutex;
+use tracing::{debug, warn};
 use uuid::Uuid;
 
 // Table definitions
@@ -48,8 +50,18 @@ const USERS: TableDefinition<&[u8; 16], &str> = TableDefinition::new("users_v1")
 const USERS_BY_USERNAME: TableDefinition<&str, &[u8; 16]> = TableDefinition::new("users_by_username_v1");
 
 /// ReDB storage backend implementing the v0.1.0 schema.
+///
+/// ReDB only allows one write transaction at a time. Without coordination,
+/// concurrent `spawn_blocking` calls all compete for the write lock, blocking
+/// thread pool threads and starving the tokio runtime under load.
+///
+/// The `write_lock` serializes writes at the async level: tasks `.await` the
+/// lock instead of blocking a thread, keeping the rest of the server responsive.
 pub struct RedbStore {
     db: Arc<Database>,
+    /// Async-level write serializer. Prevents spawn_blocking thread pool
+    /// starvation under concurrent write load (e.g. 10 machines checking in).
+    write_lock: AsyncMutex<()>,
 }
 
 impl RedbStore {
@@ -75,7 +87,23 @@ impl RedbStore {
         }
         write_txn.commit().map_err(|e| StoreError::Database(e.to_string()))?;
 
-        Ok(Self { db: Arc::new(db) })
+        Ok(Self {
+            db: Arc::new(db),
+            write_lock: AsyncMutex::new(()),
+        })
+    }
+
+    /// Acquire the async write lock and log if contention is detected.
+    ///
+    /// Returns the guard (must be held until spawn_blocking completes).
+    async fn acquire_write_lock(&self, op: &str) -> tokio::sync::MutexGuard<'_, ()> {
+        let start = std::time::Instant::now();
+        let guard = self.write_lock.lock().await;
+        let waited = start.elapsed();
+        if waited.as_millis() > 5 {
+            warn!(op = %op, wait_ms = waited.as_millis() as u64, "Write lock contention");
+        }
+        guard
     }
 
     /// Helper to convert UUID to fixed byte array for storage
@@ -220,6 +248,7 @@ impl Store for RedbStore {
     }
 
     async fn put_machine(&self, machine: &Machine) -> Result<()> {
+        let _guard = self.acquire_write_lock("put_machine").await;
         let db = Arc::clone(&self.db);
         let machine = machine.clone();
 
@@ -416,6 +445,7 @@ impl Store for RedbStore {
     }
 
     async fn delete_machine(&self, id: Uuid) -> Result<bool> {
+        let _guard = self.acquire_write_lock("delete_machine").await;
         let db = Arc::clone(&self.db);
         let id_bytes = Self::uuid_to_bytes(id);
 
@@ -515,6 +545,7 @@ impl Store for RedbStore {
     }
 
     async fn put_template(&self, template: &Template) -> Result<()> {
+        let _guard = self.acquire_write_lock("put_template").await;
         let db = Arc::clone(&self.db);
         let template = template.clone();
 
@@ -555,6 +586,7 @@ impl Store for RedbStore {
     }
 
     async fn delete_template(&self, name: &str) -> Result<bool> {
+        let _guard = self.acquire_write_lock("delete_template").await;
         let db = Arc::clone(&self.db);
         let name = name.to_string();
 
@@ -627,6 +659,7 @@ impl Store for RedbStore {
     }
 
     async fn put_workflow(&self, workflow: &Workflow) -> Result<()> {
+        let _guard = self.acquire_write_lock("put_workflow").await;
         let db = Arc::clone(&self.db);
         let workflow = workflow.clone();
 
@@ -689,6 +722,7 @@ impl Store for RedbStore {
     }
 
     async fn delete_workflow(&self, id: Uuid) -> Result<bool> {
+        let _guard = self.acquire_write_lock("delete_workflow").await;
         let db = Arc::clone(&self.db);
         let id_bytes = Self::uuid_to_bytes(id);
 
@@ -752,6 +786,7 @@ impl Store for RedbStore {
     }
 
     async fn put_setting(&self, key: &str, value: &str) -> Result<()> {
+        let _guard = self.acquire_write_lock("put_setting").await;
         let db = Arc::clone(&self.db);
         let key = key.to_string();
         let value = value.to_string();
@@ -772,6 +807,7 @@ impl Store for RedbStore {
     }
 
     async fn delete_setting(&self, key: &str) -> Result<bool> {
+        let _guard = self.acquire_write_lock("delete_setting").await;
         let db = Arc::clone(&self.db);
         let key = key.to_string();
 
@@ -871,14 +907,9 @@ impl Store for RedbStore {
     }
 
     async fn put_user(&self, user: &User) -> Result<()> {
-        let db = Arc::clone(&self.db);
-        let id_bytes = Self::uuid_to_bytes(user.id);
-        let json = Self::to_json(user)?;
-        let username = user.username.clone();
-
-        // Check if we need to remove old username index (for username changes)
+        // NOTE: get_user read happens BEFORE acquiring write lock (reads don't contend)
         let old_username = if let Ok(Some(existing)) = self.get_user(user.id).await {
-            if existing.username != username {
+            if existing.username != user.username {
                 Some(existing.username)
             } else {
                 None
@@ -886,6 +917,12 @@ impl Store for RedbStore {
         } else {
             None
         };
+
+        let _guard = self.acquire_write_lock("put_user").await;
+        let db = Arc::clone(&self.db);
+        let id_bytes = Self::uuid_to_bytes(user.id);
+        let json = Self::to_json(user)?;
+        let username = user.username.clone();
 
         tokio::task::spawn_blocking(move || {
             let write_txn = db.begin_write().map_err(|e| StoreError::Database(e.to_string()))?;
@@ -938,15 +975,16 @@ impl Store for RedbStore {
     }
 
     async fn delete_user(&self, id: Uuid) -> Result<bool> {
-        let db = Arc::clone(&self.db);
-        let id_bytes = Self::uuid_to_bytes(id);
-
-        // Get the username to remove from index
+        // NOTE: get_user read happens BEFORE acquiring write lock (reads don't contend)
         let username = if let Ok(Some(user)) = self.get_user(id).await {
             Some(user.username)
         } else {
             None
         };
+
+        let _guard = self.acquire_write_lock("delete_user").await;
+        let db = Arc::clone(&self.db);
+        let id_bytes = Self::uuid_to_bytes(id);
 
         tokio::task::spawn_blocking(move || {
             let write_txn = db.begin_write().map_err(|e| StoreError::Database(e.to_string()))?;

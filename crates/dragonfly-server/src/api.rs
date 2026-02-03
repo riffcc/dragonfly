@@ -3144,31 +3144,41 @@ pub async fn workflow_events_handler(
             }
 
             // Mark machine as Installed when workflow completes successfully
+            // Guard: skip if already Installed (action_started for reboot/kexec already
+            // handled this). Without this guard, os_choice is already None (cleared by
+            // action_started), so os_installed gets overwritten with None → "no OS yet".
             if success {
                 if let Some(mid) = &machine_id {
                     if let Ok(machine_uuid) = uuid::Uuid::parse_str(mid) {
                         if let Ok(Some(mut machine)) = state.store.get_machine(machine_uuid).await {
-                            info!(
-                                machine_id = %mid,
-                                "Workflow completed successfully - marking machine as Installed"
-                            );
-                            machine.status.state = dragonfly_common::MachineState::Installed;
-                            machine.config.installation_progress = 100;
-                            machine.config.installation_step = Some("Installation complete".to_string());
-                            machine.config.reimage_requested = false;
-                            machine.config.os_installed = machine.config.os_choice.clone();
-                            machine.config.os_choice = None;
-                            // Cloud-init will apply the hostname we set, so mark it as reported
-                            if let Some(ref hostname) = machine.config.hostname {
+                            if matches!(machine.status.state, dragonfly_common::MachineState::Installed) {
+                                debug!(
+                                    machine_id = %mid,
+                                    "Machine already Installed - skipping duplicate completed event"
+                                );
+                            } else {
                                 info!(
                                     machine_id = %mid,
-                                    hostname = %hostname,
-                                    "Marking hostname as applied (cloud-init will set it)"
+                                    "Workflow completed successfully - marking machine as Installed"
                                 );
-                                machine.config.reported_hostname = Some(hostname.clone());
+                                machine.status.state = dragonfly_common::MachineState::Installed;
+                                machine.config.installation_progress = 100;
+                                machine.config.installation_step = Some("Installation complete".to_string());
+                                machine.config.reimage_requested = false;
+                                machine.config.os_installed = machine.config.os_choice.clone();
+                                machine.config.os_choice = None;
+                                // Cloud-init will apply the hostname we set, so mark it as reported
+                                if let Some(ref hostname) = machine.config.hostname {
+                                    info!(
+                                        machine_id = %mid,
+                                        hostname = %hostname,
+                                        "Marking hostname as applied (cloud-init will set it)"
+                                    );
+                                    machine.config.reported_hostname = Some(hostname.clone());
+                                }
+                                machine.metadata.updated_at = chrono::Utc::now();
+                                let _ = state.store.put_machine(&machine).await;
                             }
-                            machine.metadata.updated_at = chrono::Utc::now();
-                            let _ = state.store.put_machine(&machine).await;
                         }
                     }
                 }
