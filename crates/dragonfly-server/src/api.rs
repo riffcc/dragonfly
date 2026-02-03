@@ -679,19 +679,31 @@ async fn assign_os_internal(app_state: &AppState, id: Uuid, os_choice: String) -
         }
     };
 
-    // Update os_choice
-    machine.config.os_choice = Some(os_choice.clone());
+    // Update os_choice - empty string means "clear the choice"
+    if os_choice.is_empty() {
+        machine.config.os_choice = None;
+    } else {
+        machine.config.os_choice = Some(os_choice.clone());
+    }
     machine.metadata.updated_at = chrono::Utc::now();
 
     // Save back to store
     match app_state.store.put_machine(&machine).await {
         Ok(()) => {
-            let html = format!(r###"
+            let html = if os_choice.is_empty() {
+                format!(r###"
+                <div class="p-4 mb-4 text-sm text-green-700 bg-green-100 rounded-lg" role="alert">
+                    <span class="font-medium">Success!</span> OS choice cleared for machine {}. Keeping current OS.
+                </div>
+                "###, id)
+            } else {
+                format!(r###"
                 <div class="p-4 mb-4 text-sm text-green-700 bg-green-100 rounded-lg" role="alert">
                     <span class="font-medium">Success!</span> OS choice set to {} for machine {}.
                     <p>To apply this change, click the "Reimage" button.</p>
                 </div>
-            "###, os_choice, id);
+                "###, os_choice, id)
+            };
 
             (StatusCode::OK, [(axum::http::header::CONTENT_TYPE, "text/html")], html).into_response()
         },
@@ -2752,12 +2764,40 @@ pub async fn get_template_handler(
                 ).into_response();
             }
 
+            // Check if auto-enroll with Spark is enabled
+            // If so, append efibootmgr action to set PXE as first boot option
+            let auto_enroll = state.store.get_setting("auto_enroll_with_spark").await
+                .ok()
+                .flatten()
+                .map(|s| s == "true")
+                .unwrap_or(false);
+
+            if auto_enroll {
+                info!(template_name = %template_name, "Auto-enroll enabled: inserting boot order actions before final boot action");
+                // Find the position of the last kexec/reboot action and insert before it
+                let boot_action_idx = template.spec.actions.iter().rposition(|a| {
+                    matches!(a, dragonfly_crd::ActionStep::Kexec(_) | dragonfly_crd::ActionStep::Reboot(_))
+                });
+
+                let insert_pos = boot_action_idx.unwrap_or(template.spec.actions.len());
+
+                // Insert seabios first (it will end up after efibootmgr)
+                template.spec.actions.insert(insert_pos, dragonfly_crd::ActionStep::Seabios(
+                    dragonfly_crd::SeabiosConfig::default()
+                ));
+                // Insert efibootmgr before seabios
+                template.spec.actions.insert(insert_pos, dragonfly_crd::ActionStep::Efibootmgr(
+                    dragonfly_crd::EfibootmgrConfig::default()
+                ));
+            }
+
             info!(
                 template_name = %template_name,
                 actions_count = template.spec.actions.len(),
                 action_names = ?template.action_names(),
                 ssh_keys_count = direct_keys.len(),
                 ssh_import_ids = ?import_ids,
+                auto_enroll = auto_enroll,
                 "Returning template to agent with injected SSH config"
             );
             // Debug: log raw JSON being sent
@@ -2869,18 +2909,47 @@ pub async fn workflow_events_handler(
                                 machine.status.state = dragonfly_common::MachineState::Installing;
                             }
 
-                            // Re-check current state before saving to prevent race with kexec
-                            // kexec sets progress to 100 and state to Installed atomically
-                            let should_save = if let Ok(Some(current)) = state.store.get_machine(machine_uuid).await {
-                                // Only save if machine hasn't been marked Installed and progress hasn't advanced
-                                !matches!(current.status.state, dragonfly_common::MachineState::Installed)
-                                    && current.config.installation_progress <= normalized_progress
+                            // Re-check: is the workflow already completed?
+                            // The action_started handler for reboot/kexec marks the workflow
+                            // as StateSuccess BEFORE marking the machine as Installed.
+                            // So checking workflow state catches the race reliably — by the
+                            // time we get here, put_workflow has committed even if put_machine
+                            // hasn't yet. This prevents stale writefile progress events from
+                            // overwriting machine state back to Installing.
+                            let workflow_done = if let Ok(wf_uuid) = uuid::Uuid::parse_str(&workflow_id) {
+                                if let Ok(Some(wf)) = state.store.get_workflow(wf_uuid).await {
+                                    matches!(
+                                        wf.status.as_ref().map(|s| &s.state),
+                                        Some(dragonfly_crd::WorkflowState::StateSuccess)
+                                            | Some(dragonfly_crd::WorkflowState::StateFailed)
+                                    )
+                                } else {
+                                    false
+                                }
                             } else {
-                                true // If we can't re-check, try to save anyway
+                                false
                             };
+
+                            // Also re-check machine state as a secondary guard
+                            let machine_done = if let Ok(Some(current)) = state.store.get_machine(machine_uuid).await {
+                                matches!(current.status.state, dragonfly_common::MachineState::Installed)
+                                    || current.config.installation_progress > normalized_progress
+                            } else {
+                                false
+                            };
+
+                            let should_save = !workflow_done && !machine_done;
 
                             if should_save {
                                 let _ = state.store.put_machine(&machine).await;
+                            } else {
+                                debug!(
+                                    machine_id = %mid,
+                                    action = %action_name,
+                                    workflow_done = %workflow_done,
+                                    machine_done = %machine_done,
+                                    "Discarding stale progress event (installation already finalized)"
+                                );
                             }
                         }
                     }
@@ -2913,29 +2982,76 @@ pub async fn workflow_events_handler(
                 format!("workflow_progress:{{\"workflow_id\":\"{}\",\"machine_id\":\"{}\",\"action\":\"unknown\",\"percent\":0,\"message\":\"No progress data\",\"bytes_transferred\":0,\"bytes_total\":0}}", workflow_id, mid_str)
             }
         }
-        "started" => format!("workflow_started:{}:{}", workflow_id, mid_str),
+        "started" => {
+            // Update workflow state to Running in the store
+            if let Ok(wf_uuid) = uuid::Uuid::parse_str(&workflow_id) {
+                if let Ok(Some(mut wf)) = state.store.get_workflow(wf_uuid).await {
+                    if let Some(ref mut status) = wf.status {
+                        status.state = dragonfly_crd::WorkflowState::StateRunning;
+                        status.started_at = Some(chrono::Utc::now());
+                    } else {
+                        wf.status = Some(dragonfly_crd::WorkflowStatus {
+                            state: dragonfly_crd::WorkflowState::StateRunning,
+                            started_at: Some(chrono::Utc::now()),
+                            ..Default::default()
+                        });
+                    }
+                    let _ = state.store.put_workflow(&wf).await;
+                    debug!(workflow_id = %workflow_id, "Workflow state updated to Running");
+                }
+            }
+            format!("workflow_started:{}:{}", workflow_id, mid_str)
+        }
         "action_started" => {
             let action_name = event.action.as_deref().unwrap_or("unknown");
 
-            // When kexec action STARTS, mark machine as Installed immediately
+            // When kexec or reboot action STARTS, mark machine as Installed AND workflow as complete
             // The machine WILL reboot and we may never get completion event
-            if action_name == "kexec" {
+            if action_name == "kexec" || action_name == "reboot" {
+                // Mark workflow as complete in the store FIRST
+                // This prevents the reimage loop: without this, the workflow stays
+                // StatePending/Running and the next check-in would re-execute it
+                if let Ok(wf_uuid) = uuid::Uuid::parse_str(&workflow_id) {
+                    if let Ok(Some(mut wf)) = state.store.get_workflow(wf_uuid).await {
+                        if let Some(ref mut status) = wf.status {
+                            status.state = dragonfly_crd::WorkflowState::StateSuccess;
+                            status.completed_at = Some(chrono::Utc::now());
+                        }
+                        let _ = state.store.put_workflow(&wf).await;
+                        info!(workflow_id = %workflow_id, "Workflow marked as Success (final boot action starting)");
+                    }
+                }
+
+                // Mark machine as Installed
+                // Guard: skip if already Installed (duplicate event from async reporter
+                // after the synchronous notification from reboot.rs already processed this).
+                // Without this guard, the second event reads os_choice=None (already cleared)
+                // and overwrites os_installed with None, wiping the installed OS name.
                 if let Some(mid) = &machine_id {
                     if let Ok(machine_uuid) = uuid::Uuid::parse_str(mid) {
                         if let Ok(Some(mut machine)) = state.store.get_machine(machine_uuid).await {
-                            info!(
-                                machine_id = %mid,
-                                "kexec action starting - marking machine as Installed NOW"
-                            );
-                            machine.status.state = dragonfly_common::MachineState::Installed;
-                            machine.config.installation_progress = 100;
-                            machine.config.installation_step = Some("Installation complete".to_string());
-                            machine.config.reimage_requested = false;
-                            machine.config.os_installed = machine.config.os_choice.clone();
-                            machine.config.os_choice = None;
-                            machine.metadata.updated_at = chrono::Utc::now();
-                            let _ = state.store.put_machine(&machine).await;
-                            let _ = state.event_manager.send(format!("machine_updated:{}", mid));
+                            if matches!(machine.status.state, dragonfly_common::MachineState::Installed) {
+                                debug!(
+                                    machine_id = %mid,
+                                    action = %action_name,
+                                    "Machine already Installed - skipping duplicate action_started event"
+                                );
+                            } else {
+                                info!(
+                                    machine_id = %mid,
+                                    action = %action_name,
+                                    "Final boot action starting - marking machine as Installed NOW"
+                                );
+                                machine.status.state = dragonfly_common::MachineState::Installed;
+                                machine.config.installation_progress = 100;
+                                machine.config.installation_step = Some("Installation complete".to_string());
+                                machine.config.reimage_requested = false;
+                                machine.config.os_installed = machine.config.os_choice.clone();
+                                machine.config.os_choice = None;
+                                machine.metadata.updated_at = chrono::Utc::now();
+                                let _ = state.store.put_machine(&machine).await;
+                                let _ = state.event_manager.send(format!("machine_updated:{}", mid));
+                            }
                         }
                     }
                 }
@@ -2952,35 +3068,42 @@ pub async fn workflow_events_handler(
             let action_name = event.action.as_deref().unwrap_or("unknown");
             let success = event.success.unwrap_or(false);
 
-            // If kexec completed successfully, mark machine as Installed NOW
+            // If kexec/reboot completed successfully, mark machine as Installed NOW
             // (the machine may never PXE boot again if it boots from local disk)
-            if action_name == "kexec" && success {
-                info!(machine_id = ?machine_id, "Received kexec completion event");
+            // Guard: skip if already Installed (action_started already handled this)
+            if (action_name == "kexec" || action_name == "reboot") && success {
                 if let Some(mid) = &machine_id {
                     if let Ok(machine_uuid) = uuid::Uuid::parse_str(mid) {
                         match state.store.get_machine(machine_uuid).await {
                             Ok(Some(mut machine)) => {
-                                info!(
-                                    machine_id = %mid,
-                                    current_state = ?machine.status.state,
-                                    "kexec completed - marking machine as Installed"
-                                );
-                                machine.status.state = dragonfly_common::MachineState::Installed;
-                                machine.config.installation_progress = 100;
-                                machine.config.installation_step = Some("Installation complete".to_string());
-                                machine.config.reimage_requested = false;
-                                machine.config.os_installed = machine.config.os_choice.clone();
-                                machine.config.os_choice = None;
-                                machine.metadata.updated_at = chrono::Utc::now();
-                                let _ = state.store.put_machine(&machine).await;
-                                // Emit machine_updated so UI refreshes
-                                let _ = state.event_manager.send(format!("machine_updated:{}", mid));
+                                if matches!(machine.status.state, dragonfly_common::MachineState::Installed) {
+                                    debug!(
+                                        machine_id = %mid,
+                                        action = %action_name,
+                                        "Machine already Installed - skipping duplicate action_completed event"
+                                    );
+                                } else {
+                                    info!(
+                                        machine_id = %mid,
+                                        current_state = ?machine.status.state,
+                                        "Final boot action completed - marking machine as Installed"
+                                    );
+                                    machine.status.state = dragonfly_common::MachineState::Installed;
+                                    machine.config.installation_progress = 100;
+                                    machine.config.installation_step = Some("Installation complete".to_string());
+                                    machine.config.reimage_requested = false;
+                                    machine.config.os_installed = machine.config.os_choice.clone();
+                                    machine.config.os_choice = None;
+                                    machine.metadata.updated_at = chrono::Utc::now();
+                                    let _ = state.store.put_machine(&machine).await;
+                                    let _ = state.event_manager.send(format!("machine_updated:{}", mid));
+                                }
                             }
                             Ok(None) => {
-                                warn!(machine_id = %mid, "Machine not found when handling kexec completion");
+                                warn!(machine_id = %mid, "Machine not found when handling boot action completion");
                             }
                             Err(e) => {
-                                warn!(machine_id = %mid, error = %e, "Error getting machine for kexec completion");
+                                warn!(machine_id = %mid, error = %e, "Error getting machine for boot action completion");
                             }
                         }
                     }
@@ -3003,6 +3126,22 @@ pub async fn workflow_events_handler(
                 success = success,
                 "Workflow completed"
             );
+
+            // Update workflow state in the store
+            if let Ok(wf_uuid) = uuid::Uuid::parse_str(&workflow_id) {
+                if let Ok(Some(mut wf)) = state.store.get_workflow(wf_uuid).await {
+                    if let Some(ref mut status) = wf.status {
+                        status.state = if success {
+                            dragonfly_crd::WorkflowState::StateSuccess
+                        } else {
+                            dragonfly_crd::WorkflowState::StateFailed
+                        };
+                        status.completed_at = Some(chrono::Utc::now());
+                    }
+                    let _ = state.store.put_workflow(&wf).await;
+                    debug!(workflow_id = %workflow_id, success = success, "Workflow state updated in store");
+                }
+            }
 
             // Mark machine as Installed when workflow completes successfully
             if success {
@@ -3702,15 +3841,15 @@ pub fn get_os_info(os: &str) -> OsInfo {
 /// - partition:   0% -  5% (quick disk setup)
 /// - image2disk:  5% - 90% (bulk of the work - download + write)
 /// - writefile:  90% - 95% (config file writes)
-/// - kexec:      95% - 99% (boot into installed OS - never reports 100%, system reboots)
+/// - reboot/kexec: 95% - 99% (final boot - never reports 100%, system reboots)
 ///
-/// This ensures progress always moves forward and kexec ends near 100%.
+/// This ensures progress always moves forward and the final boot action ends near 100%.
 pub fn normalize_workflow_progress(action_name: &str, action_progress: u8) -> u8 {
     let (start, end) = match action_name {
         "partition" => (0, 5),
         "image2disk" => (5, 90),
         "writefile" => (90, 95),
-        "kexec" => (95, 99),
+        "kexec" | "reboot" => (95, 99),
         _ => {
             // Unknown action - just pass through, capped at 99
             return action_progress.min(99);
@@ -4213,6 +4352,7 @@ async fn reimage_machine(
 
     // Set the machine status to ReadyToInstall and mark reimage requested
     v1_machine.status.state = MachineState::ReadyToInstall;
+    v1_machine.config.os_choice = Some(os_choice.clone());  // Ensure os_choice is set for check-in
     v1_machine.config.reimage_requested = true;  // Molly guard: allows imaging even with existing OS
     v1_machine.config.installation_progress = 0;
     v1_machine.config.installation_step = None;
@@ -4226,6 +4366,60 @@ async fn reimage_machine(
             "message": e.to_string()
         }))).into_response();
     }
+
+    // Create workflow immediately so iPXE boot script returns Mage directly
+    // Cancel any existing active workflows first — user explicitly clicked Reimage,
+    // so any stale workflows (possibly for a different OS) should be replaced
+    let existing_workflows = match state.store.get_workflows_for_machine(id).await {
+        Ok(wfs) => wfs,
+        Err(e) => {
+            error!("Failed to check existing workflows for machine {}: {}", id, e);
+            Vec::new()
+        }
+    };
+
+    for wf in &existing_workflows {
+        let is_active = matches!(
+            wf.status.as_ref().map(|s| &s.state),
+            Some(dragonfly_crd::WorkflowState::StatePending) | Some(dragonfly_crd::WorkflowState::StateRunning)
+        );
+        if is_active {
+            if let Ok(wf_uuid) = uuid::Uuid::parse_str(&wf.metadata.name) {
+                info!(
+                    "Cancelling stale workflow {} (template: {}) for machine {} — replacing with {}",
+                    wf.metadata.name, wf.spec.template_ref, id, os_choice
+                );
+                let _ = state.store.delete_workflow(wf_uuid).await;
+            }
+        }
+    }
+
+    // Create fresh workflow with the correct OS
+    let workflow_id = uuid::Uuid::now_v7();
+    let mut workflow = dragonfly_crd::Workflow::new(
+        workflow_id.to_string(),
+        id.to_string(),
+        &os_choice,
+    );
+    workflow.status = Some(dragonfly_crd::WorkflowStatus {
+        state: dragonfly_crd::WorkflowState::StatePending,
+        current_action: None,
+        progress: 0,
+        global_timeout: None,
+        started_at: None,
+        completed_at: None,
+        error: None,
+        actions: Vec::new(),
+    });
+
+    if let Err(e) = state.store.put_workflow(&workflow).await {
+        error!("Failed to create workflow for machine {}: {}", id, e);
+        return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
+            "error": "Store Error",
+            "message": format!("Failed to create workflow: {}", e)
+        }))).into_response();
+    }
+    info!("Created imaging workflow {} for machine {} with OS {}", workflow_id, id, os_choice);
 
     // Convert to common Machine for Proxmox reboot
     let machine: Machine = crate::store::conversions::machine_to_common(&v1_machine);
@@ -4405,6 +4599,8 @@ pub struct SettingsResponse {
     pub deployment_mode: Option<String>,
     pub default_os: Option<String>,
     pub setup_completed: bool,
+    /// When true, efibootmgr sets PXE as first boot option after installation
+    pub auto_enroll_with_spark: bool,
 }
 
 /// Request for PUT /api/settings
@@ -4414,6 +4610,9 @@ pub struct SettingsUpdateRequest {
     pub deployment_mode: Option<String>,
     #[serde(default)]
     pub default_os: Option<String>,
+    /// When true, efibootmgr sets PXE as first boot option after installation
+    #[serde(default)]
+    pub auto_enroll_with_spark: Option<bool>,
 }
 
 /// Fetch SSH keys from an external URL (GitHub, GitLab, or custom URL)
@@ -4483,11 +4682,17 @@ pub async fn api_get_settings(
         .flatten()
         .map(|s| s == "true")
         .unwrap_or(false);
+    let auto_enroll_with_spark = state.store.get_setting("auto_enroll_with_spark").await
+        .ok()
+        .flatten()
+        .map(|s| s == "true")
+        .unwrap_or(false);
 
     Json(SettingsResponse {
         deployment_mode,
         default_os,
         setup_completed,
+        auto_enroll_with_spark,
     })
 }
 
@@ -4551,6 +4756,20 @@ pub async fn api_update_settings(
         }
         updated.push("default_os");
         info!("Updated default_os to: {}", os);
+    }
+
+    // Update auto_enroll_with_spark if provided
+    if let Some(enabled) = request.auto_enroll_with_spark {
+        let value = if enabled { "true" } else { "false" };
+        if let Err(e) = state.store.put_setting("auto_enroll_with_spark", value).await {
+            error!("Failed to update auto_enroll_with_spark: {}", e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
+                "error": "SETTINGS_UPDATE_FAILED",
+                "message": format!("Failed to update auto_enroll_with_spark: {}", e)
+            }))).into_response();
+        }
+        updated.push("auto_enroll_with_spark");
+        info!("Updated auto_enroll_with_spark to: {}", enabled);
     }
 
     (StatusCode::OK, Json(json!({

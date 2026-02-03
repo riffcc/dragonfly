@@ -295,42 +295,61 @@ impl ProvisioningService {
         // Determine action
         let (workflow_id, action, machine) = match active_workflow {
             Some(mut wf) => {
-                // If there's an active workflow but the agent reports an existing OS,
+                // Check if workflow has actually started (StateRunning means actions are in progress)
+                let workflow_has_started = matches!(
+                    wf.status.as_ref().map(|s| &s.state),
+                    Some(WorkflowState::StateRunning)
+                );
+
+                // If workflow is RUNNING (not just pending) and agent reports an existing OS,
                 // the installation likely completed but the machine rebooted before
                 // reporting success. Mark workflow complete and boot the OS.
-                if let Some(ref existing_os) = info.existing_os {
+                //
+                // If workflow is PENDING, we're about to reimage - proceed even if there's an existing OS.
+                if workflow_has_started {
+                    if let Some(ref existing_os) = info.existing_os {
+                        info!(
+                            "Machine {} has RUNNING workflow {} but reports existing OS '{}' - installation complete!",
+                            machine.id, wf.metadata.name, existing_os.name
+                        );
+
+                        // Mark workflow as successful
+                        if let Some(ref mut status) = wf.status {
+                            status.state = WorkflowState::StateSuccess;
+                            status.completed_at = Some(chrono::Utc::now());
+                        }
+                        self.store.put_workflow(&wf).await
+                            .map_err(ProvisioningError::Store)?;
+
+                        // Installation complete - set to Installed (not ExistingOs, which is for unknown OSes)
+                        let mut machine = machine;
+                        // Record what was installed (use template name, falling back to detected OS)
+                        machine.config.os_installed = Some(wf.spec.template_ref.clone());
+                        machine.config.os_choice = None;
+                        machine.config.reimage_requested = false;
+                        machine.config.installation_progress = 100; // Mark as complete
+                        machine.config.installation_step = Some("Installation complete".to_string());
+                        machine.status.state = MachineState::Installed;
+                        machine.status.last_workflow_result = Some(WorkflowResult::Success {
+                            completed_at: Utc::now()
+                        });
+                        self.store.put_machine(&machine).await
+                            .map_err(ProvisioningError::Store)?;
+
+                        (None, AgentAction::LocalBoot, machine)
+                    } else {
+                        // Running workflow, no OS yet - continue
+                        (Some(wf.metadata.name.clone()), AgentAction::Execute, machine)
+                    }
+                } else {
+                    // Workflow is PENDING - proceed with execution regardless of existing OS
+                    // This handles the reimage scenario where we WANT to wipe the existing OS
                     info!(
-                        "Machine {} has active workflow {} but reports existing OS '{}' - installation complete!",
-                        machine.id, wf.metadata.name, existing_os.name
+                        "Machine {} has PENDING workflow {} - proceeding with imaging{}",
+                        machine.id, wf.metadata.name,
+                        if info.existing_os.is_some() { " (will replace existing OS)" } else { "" }
                     );
 
-                    // Mark workflow as successful
-                    if let Some(ref mut status) = wf.status {
-                        status.state = WorkflowState::StateSuccess;
-                        status.completed_at = Some(chrono::Utc::now());
-                    }
-                    self.store.put_workflow(&wf).await
-                        .map_err(ProvisioningError::Store)?;
-
-                    // Installation complete - set to Installed (not ExistingOs, which is for unknown OSes)
-                    let mut machine = machine;
-                    // Record what was installed (use template name, falling back to detected OS)
-                    machine.config.os_installed = Some(wf.spec.template_ref.clone());
-                    machine.config.os_choice = None;
-                    machine.config.reimage_requested = false;
-                    machine.config.installation_progress = 100; // Mark as complete
-                    machine.config.installation_step = Some("Installation complete".to_string());
-                    machine.status.state = MachineState::Installed;
-                    machine.status.last_workflow_result = Some(WorkflowResult::Success {
-                        completed_at: Utc::now()
-                    });
-                    self.store.put_machine(&machine).await
-                        .map_err(ProvisioningError::Store)?;
-
-                    (None, AgentAction::LocalBoot, machine)
-                } else {
-                    // No existing OS - continue with workflow
-                    // Ensure state is at least Initializing and reimage_requested is cleared
                     let mut machine = machine;
                     if matches!(machine.status.state, MachineState::Discovered | MachineState::ReadyToInstall) {
                         machine.status.state = MachineState::Initializing;
@@ -528,6 +547,31 @@ impl ProvisioningService {
             .map_err(ProvisioningError::Store)
     }
 
+    /// Cancel any active (pending/running) workflows for a machine.
+    /// Enforces the invariant: one active workflow per machine at a time.
+    async fn cancel_active_workflows(&self, machine_id: Uuid) -> Result<(), ProvisioningError> {
+        let workflows = self.store.get_workflows_for_machine(machine_id).await
+            .map_err(ProvisioningError::Store)?;
+
+        for wf in &workflows {
+            let is_active = matches!(
+                wf.status.as_ref().map(|s| &s.state),
+                Some(WorkflowState::StatePending) | Some(WorkflowState::StateRunning)
+            );
+            if is_active {
+                if let Ok(wf_uuid) = Uuid::parse_str(&wf.metadata.name) {
+                    info!(
+                        "Cancelling active workflow {} (template: {}) for machine {}",
+                        wf.metadata.name, wf.spec.template_ref, machine_id
+                    );
+                    let _ = self.store.delete_workflow(wf_uuid).await;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     /// Assign a workflow to a machine
     pub async fn assign_workflow(
         &self,
@@ -543,6 +587,9 @@ impl ProvisioningService {
         let _template = self.store.get_template(template_name).await
             .map_err(ProvisioningError::Store)?
             .ok_or_else(|| ProvisioningError::NotFound(format!("template: {}", template_name)))?;
+
+        // Cancel any existing active workflows — one active workflow per machine
+        self.cancel_active_workflows(machine_id).await?;
 
         // Create workflow with UUIDv7 ID
         let workflow_id = Uuid::now_v7();
@@ -569,6 +616,9 @@ impl ProvisioningService {
 
     /// Create imaging workflow for machine
     async fn create_imaging_workflow(&self, machine: &Machine, os_choice: &str) -> Result<Workflow, ProvisioningError> {
+        // Cancel any existing active workflows — one active workflow per machine
+        self.cancel_active_workflows(machine.id).await?;
+
         let workflow_id = Uuid::now_v7();
         let mut workflow = Workflow::new(&workflow_id.to_string(), &machine.id.to_string(), os_choice);
 
