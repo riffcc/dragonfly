@@ -442,14 +442,17 @@ async fn run_native_provisioning_loop(
                 Err(e) => {
                     // Workflow failed — retry from check-in. The server still has the
                     // workflow assigned; it'll tell us to Execute again.
-                    let backoff = Duration::from_secs(5u64.min(attempt as u64 * 2));
+                    // Backoff: 0s, 1s, 2s, 4s, 8s (capped)
+                    let backoff_secs = if attempt <= 1 { 0 } else { 1u64 << (attempt - 2).min(3) };
                     error!(
                         error = %e,
                         attempt,
-                        backoff_secs = backoff.as_secs(),
+                        backoff_secs,
                         "Workflow failed, will retry from check-in"
                     );
-                    tokio::time::sleep(backoff).await;
+                    if backoff_secs > 0 {
+                        tokio::time::sleep(Duration::from_secs(backoff_secs)).await;
+                    }
                 }
             }
         }
