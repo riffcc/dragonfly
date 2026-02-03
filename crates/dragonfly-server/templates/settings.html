@@ -163,6 +163,30 @@
                                         </label>
                                     </div>
                                 </div>
+
+                                <!-- Auto-enroll with Spark -->
+                                <div class="pt-4 border-t border-purple-200 dark:border-purple-800">
+                                    <label class="flex items-center gap-3 cursor-pointer group">
+                                        <div class="relative flex-shrink-0">
+                                            <input type="checkbox"
+                                                   x-model="autoEnrollWithSpark"
+                                                   @change="saveAutoEnroll()"
+                                                   class="sr-only peer">
+                                            <div class="w-11 h-6 bg-gray-300 dark:bg-gray-600 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-purple-500 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-purple-600"></div>
+                                        </div>
+                                        <div class="flex-1">
+                                            <span class="text-sm font-medium text-black dark:text-white group-hover:text-purple-600 dark:group-hover:text-purple-400 transition-colors">
+                                                Automatically enroll machines with Spark
+                                            </span>
+                                            <p class="text-xs text-black/60 dark:text-white/60 mt-1">
+                                                After installation, set PXE as the first boot option so machines always check in with Dragonfly on boot.
+                                            </p>
+                                        </div>
+                                    </label>
+                                    <div x-show="autoEnrollSaving" class="mt-2 ml-14 text-xs text-purple-600 dark:text-purple-400">
+                                        Saving...
+                                    </div>
+                                </div>
                             </div>
                         </div>
 
@@ -1319,6 +1343,10 @@
             activeTab: 'general',
             saving: false,
 
+            // Auto-enroll with Spark state
+            autoEnrollWithSpark: false,
+            autoEnrollSaving: false,
+
             // User management state
             users: [],
             addUserModal: false,
@@ -1332,6 +1360,46 @@
                 if (!dateStr) return '-';
                 const date = new Date(dateStr);
                 return date.toLocaleDateString();
+            },
+
+            async init() {
+                // Load auto-enroll setting on page load
+                try {
+                    const response = await fetch('/api/settings', { credentials: 'include' });
+                    if (response.ok) {
+                        const settings = await response.json();
+                        this.autoEnrollWithSpark = settings.auto_enroll_with_spark || false;
+                    }
+                } catch (e) {
+                    console.error('Failed to load settings:', e);
+                }
+            },
+
+            async saveAutoEnroll() {
+                this.autoEnrollSaving = true;
+                try {
+                    const response = await fetch('/api/settings', {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        credentials: 'include',
+                        body: JSON.stringify({
+                            auto_enroll_with_spark: this.autoEnrollWithSpark
+                        })
+                    });
+                    if (response.ok) {
+                        showToast(this.autoEnrollWithSpark ? 'Auto-enrollment enabled' : 'Auto-enrollment disabled', 'success');
+                    } else {
+                        showToast('Failed to save setting', 'error');
+                        // Revert checkbox
+                        this.autoEnrollWithSpark = !this.autoEnrollWithSpark;
+                    }
+                } catch (e) {
+                    console.error('Failed to save auto-enroll setting:', e);
+                    showToast('Failed to save setting', 'error');
+                    this.autoEnrollWithSpark = !this.autoEnrollWithSpark;
+                } finally {
+                    this.autoEnrollSaving = false;
+                }
             },
 
             async loadUsers() {

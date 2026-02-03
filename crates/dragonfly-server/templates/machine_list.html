@@ -352,96 +352,111 @@
             showToast('Authentication required.', 'error');
             return;
         }
-        
+
         // Close the dropdown immediately
         this.osDropdowns[id] = false;
-        
-        // Immediately send API request to update os_choice
-        fetch(`/api/machines/${id}/os`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({ os_choice: os })
-        })
-        .then(response => {
-            if (!response.ok) {
-                // Handle potential HTML error response
-                 if (response.headers.get('content-type')?.includes('text/html')) {
-                    return response.text().then(html => { 
-                        const errorMatch = html.match(/<span class='font-medium'>Error!\s*<\/span>\s*(.*)/i);
-                        throw new Error(errorMatch ? errorMatch[1].trim() : `HTTP error! Status: ${response.status}`); 
-                    });
+
+        // Build list of machine IDs to update:
+        // If machines are selected via checkboxes, apply to all selected machines
+        // Otherwise just the one machine whose dropdown was clicked
+        const selectedIds = this.getSelectedIds();
+        const targetIds = (selectedIds.length > 0 && selectedIds.includes(id))
+            ? selectedIds
+            : [id];
+
+        // Send API requests for all target machines
+        const promises = targetIds.map(machineId =>
+            fetch(`/api/machines/${machineId}/os`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ os_choice: os })
+            }).then(response => {
+                if (!response.ok) {
+                    throw new Error(`Failed for ${machineId}: HTTP ${response.status}`);
+                }
+                return machineId;
+            })
+        );
+
+        Promise.allSettled(promises).then(results => {
+            const succeeded = results.filter(r => r.status === 'fulfilled').length;
+            const failed = results.filter(r => r.status === 'rejected').length;
+
+            if (targetIds.length === 1) {
+                if (failed === 0) {
+                    showToast(`OS choice updated to ${os}.`, 'success');
                 } else {
-                    return response.json().then(data => {
-                        throw new Error(data.message || `HTTP error! Status: ${response.status}`);
-                    });
+                    showToast(`Failed to set OS choice.`, 'error');
+                }
+            } else {
+                if (failed === 0) {
+                    showToast(`OS choice set to ${os} for ${succeeded} machine(s).`, 'success');
+                } else {
+                    showToast(`OS choice: ${succeeded} succeeded, ${failed} failed.`, 'warning');
                 }
             }
-            return response.text(); // Expecting HTML success response 
-        })
-        .then(() => {
-            showToast(`OS choice for ${id} updated to ${os}.`, 'success');
-            refreshMachineList(); // Refresh to show the updated choice visually
-        })
-        .catch(error => {
-            console.error('Error selecting OS:', error);
-            showToast(`Failed to set OS choice: ${error.message}`, 'error');
+            refreshMachineList();
         });
     },
     
-    // New function to cancel a pending OS choice
+    // Cancel pending OS choice - bulk-aware like selectOs
     cancelOsChoice(machineId) {
         if (!this.isAuthenticated) {
             showToast('Authentication required.', 'error');
             return;
         }
-        
-        // Send API request to clear os_choice
-        fetch(`/api/machines/${machineId}/os`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({ os_choice: '' }) // Send empty string to clear
-        })
-        .then(response => {
-            if (!response.ok) {
-                // Handle potential HTML error response
-                 if (response.headers.get('content-type')?.includes('text/html')) {
-                    return response.text().then(html => { 
-                        const errorMatch = html.match(/<span class='font-medium'>Error!\s*<\/span>\s*(.*)/i);
-                        throw new Error(errorMatch ? errorMatch[1].trim() : `HTTP error! Status: ${response.status}`); 
-                    });
+
+        // Close the dropdown immediately
+        this.osDropdowns[machineId] = false;
+
+        // Build list of machine IDs to clear:
+        // If machines are selected via checkboxes, apply to all selected machines
+        // Otherwise just the one machine whose dropdown was clicked
+        const selectedIds = this.getSelectedIds();
+        const targetIds = (selectedIds.length > 0 && selectedIds.includes(machineId))
+            ? selectedIds
+            : [machineId];
+
+        // Send API requests for all target machines
+        const promises = targetIds.map(id =>
+            fetch(`/api/machines/${id}/os`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ os_choice: '' })
+            }).then(response => {
+                if (!response.ok) {
+                    throw new Error(`Failed for ${id}: HTTP ${response.status}`);
+                }
+                // Clear local state
+                if (this.fieldChanges[id] && this.fieldChanges[id].os_choice) {
+                    delete this.fieldChanges[id].os_choice;
+                    if (Object.keys(this.fieldChanges[id]).length === 0) {
+                        delete this.fieldChanges[id];
+                    }
+                }
+                return id;
+            })
+        );
+
+        Promise.allSettled(promises).then(results => {
+            const succeeded = results.filter(r => r.status === 'fulfilled').length;
+            const failed = results.filter(r => r.status === 'rejected').length;
+            this.pendingChanges = Object.keys(this.fieldChanges).length > 0;
+
+            if (targetIds.length === 1) {
+                if (failed === 0) {
+                    showToast('OS choice cleared — keeping current OS.', 'success');
                 } else {
-                    return response.json().then(data => {
-                        throw new Error(data.message || `HTTP error! Status: ${response.status}`);
-                    });
+                    showToast('Failed to clear OS choice.', 'error');
+                }
+            } else {
+                if (failed === 0) {
+                    showToast(`OS choice cleared for ${succeeded} machine(s).`, 'success');
+                } else {
+                    showToast(`Clear OS: ${succeeded} succeeded, ${failed} failed.`, 'warning');
                 }
             }
-            return response.text(); // Expecting HTML success response 
-        })
-        .then(() => {
-            // Clear local state if needed (applyChanges might not have been hit yet)
-            if (this.fieldChanges[machineId] && this.fieldChanges[machineId].os_choice) {
-                delete this.fieldChanges[machineId].os_choice;
-                 if (Object.keys(this.fieldChanges[machineId]).length === 0) {
-                    delete this.fieldChanges[machineId];
-                }
-                this.pendingChanges = Object.keys(this.fieldChanges).length > 0;
-            }
-            
-            // Close dropdown
-            this.osDropdowns[machineId] = false;
-            
-            showToast(`Pending OS change for ${machineId} cancelled.`, 'success');
-            refreshMachineList(); // Refresh to reflect the cleared choice
-        })
-        .catch(error => {
-            console.error('Error cancelling OS choice:', error);
-            showToast(`Failed to cancel OS change: ${error.message}`, 'error');
-            // Optionally close dropdown on error too?
-            this.osDropdowns[machineId] = false;
+            refreshMachineList();
         });
     },
     
@@ -1008,14 +1023,16 @@
                                                  <i class="fas fa-arrow-right-arrow-left ml-1 text-xs"></i>
                                             </div>
                                         </template>
-                                        <!-- Secondary Display: Applied OS Choice different from Installed (and not currently pending change) -->
-                                        {% if machine.os_choice and machine.os_choice != machine.os_installed %}
+                                        <!-- Secondary Display: Applied OS Choice (pending reimage) -->
+                                        {% if machine.os_choice %}
                                         <template x-if="!(fieldChanges['{{ machine.id }}']?.hasOwnProperty('os_choice'))">
-                                             {# Ensure os_choice is not None/empty before applying filters - Jinja handles this now #}
-                                             <div class="mt-1 text-xs text-purple-600 dark:text-purple-400 italic font-thin flex items-center" title="OS choice {{ machine.os_choice }} applies on next reimage">
+                                             <div class="group/ostip relative mt-1 text-xs text-purple-600 dark:text-purple-400 italic font-thin flex items-center cursor-help">
                                                  {{ machine.os_choice | format_os_icon | safe }}
                                                  <span class="ml-1">{{ machine.os_choice | format_os }}</span>
                                                  <i class="fas fa-arrow-right-arrow-left ml-1 text-xs"></i>
+                                                 <span class="invisible group-hover/ostip:visible absolute left-0 bottom-full mb-1 w-max max-w-xs px-2 py-1 text-xs font-normal not-italic text-white bg-gray-900 dark:bg-gray-700 rounded shadow-lg z-50 pointer-events-none">
+                                                     This operating system will be applied on next boot, erasing all data.
+                                                 </span>
                                             </div>
                                         </template>
                                         {% endif %}
@@ -1041,13 +1058,15 @@
                                                     </a>
                                                     <div class="border-t border-gray-200 dark:border-gray-600 my-1"></div>
                                                 </template>
-                                                {# Cancel Applied OS Choice (from machine data, if not currently pending) #}
-                                                {% if machine.os_choice and machine.os_choice != machine.os_installed %}
+                                                {# Cancel Applied OS Choice (from machine data, if not currently pending in fieldChanges) #}
+                                                {% if machine.os_choice %}
                                                  <template x-if="!(fieldChanges['{{ machine.id }}']?.hasOwnProperty('os_choice'))">
+                                                    <div>
                                                      <a href="#" @click.prevent="cancelOsChoice('{{ machine.id }}')" class="block px-4 py-2 text-sm text-green-600 hover:bg-gray-100 hover:text-green-800 dark:text-green-400 dark:hover:bg-gray-700 dark:hover:text-green-300 flex items-center">
                                                         <i class="fas fa-times-circle mr-2"></i> Keep existing OS
                                                     </a>
                                                     <div class="border-t border-gray-200 dark:border-gray-600 my-1"></div>
+                                                    </div>
                                                 </template>
                                                 {% endif %}
 
