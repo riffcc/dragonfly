@@ -300,6 +300,7 @@ async fn main() -> Result<()> {
         hardware,
         Duration::from_secs(args.checkin_interval),
         args.action.clone(),
+        kernel_params.mode.as_deref(),
     ).await
 }
 
@@ -375,8 +376,10 @@ async fn run_native_provisioning_loop(
     hardware: Hardware,
     checkin_interval: Duration,
     action_filter: Option<Vec<usize>>,
+    boot_mode: Option<&str>,
 ) -> Result<()> {
-    info!("Starting native provisioning");
+    let is_imaging = boot_mode == Some("imaging");
+    info!("Starting native provisioning (mode={:?})", boot_mode);
 
     // Probe disks for existing OS FIRST (before any check-in)
     let existing_os = match probe::probe_for_existing_os() {
@@ -406,7 +409,35 @@ async fn run_native_provisioning_loop(
         info!(hostname = %detected_hostname, "Using hostname from existing OS");
     }
 
-    // Clone values for the async closure
+    // IMAGING MODE: Skip the 3s splash/timeout entirely.
+    // The server told us to image this machine — we check in patiently with retries
+    // until the server responds, then execute the workflow. No fake LocalBoot, no menu.
+    if is_imaging {
+        info!("Imaging mode - will check in patiently until server responds");
+        let response = checkin_with_retry(
+            client, server_url, mac, effective_hostname, ip_address, existing_os.as_ref(),
+        ).await?;
+
+        info!(
+            machine_id = %response.machine_id,
+            name = %response.memorable_name,
+            action = ?response.action,
+            "Imaging mode check-in successful"
+        );
+
+        return handle_agent_action(
+            &response,
+            &existing_os,
+            client,
+            server_url,
+            &hardware,
+            &action_filter,
+        ).await;
+    }
+
+    // DISCOVERY MODE (or no mode): Use the interactive splash with timeout.
+    // If there's an existing OS and the server is slow, boot into it.
+    // User can press ENTER/SPACEBAR for the menu.
     let client_clone = client.clone();
     let server_url_owned = server_url.to_string();
     let mac_owned = mac.to_string();
@@ -414,8 +445,6 @@ async fn run_native_provisioning_loop(
     let ip_address_owned = ip_address.map(|s| s.to_string());
     let existing_os_clone = existing_os.clone();
 
-    // Wait for check-in with user interrupt capability
-    // User can press ENTER/SPACEBAR to access the boot menu
     let checkin_result = boot_menu::wait_for_checkin_with_interrupt(
         || async move {
             checkin_native(
@@ -495,6 +524,38 @@ async fn run_native_provisioning_loop(
     }
 
     Ok(())
+}
+
+/// Check in with the server, retrying with exponential backoff until success.
+///
+/// Used in imaging mode where we MUST get a response — there's no fallback.
+/// The server assigned this workflow; we wait until it tells us what to do.
+async fn checkin_with_retry(
+    client: &Client,
+    server_url: &str,
+    mac: &str,
+    hostname: Option<&str>,
+    ip_address: Option<&str>,
+    existing_os: Option<&probe::DetectedOs>,
+) -> Result<workflow::CheckInResponse> {
+    let mut attempt: u32 = 0;
+    loop {
+        attempt += 1;
+        match checkin_native(client, server_url, mac, hostname, ip_address, existing_os).await {
+            Ok(response) => return Ok(response),
+            Err(e) => {
+                // Cap backoff at 10s — the server is local, retries should be quick
+                let backoff_ms = (1000u64 * 2u64.pow(attempt.min(4).saturating_sub(1))).min(10_000);
+                warn!(
+                    error = %e,
+                    attempt = attempt,
+                    backoff_ms = backoff_ms,
+                    "Imaging mode check-in failed, retrying"
+                );
+                tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
+            }
+        }
+    }
 }
 
 /// Handle a menu selection from the boot menu
