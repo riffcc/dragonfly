@@ -1125,15 +1125,29 @@
                 this.expandedKey = this.keys[index];
             },
 
-            copyKey(index) {
-                navigator.clipboard.writeText(this.keys[index].full);
+            copyToClipboard(text) {
+                if (navigator.clipboard && window.isSecureContext) {
+                    navigator.clipboard.writeText(text);
+                } else {
+                    const ta = document.createElement('textarea');
+                    ta.value = text;
+                    ta.style.position = 'fixed';
+                    ta.style.left = '-9999px';
+                    document.body.appendChild(ta);
+                    ta.select();
+                    document.execCommand('copy');
+                    document.body.removeChild(ta);
+                }
                 showToast('Copied to clipboard', 'success');
+            },
+
+            copyKey(index) {
+                this.copyToClipboard(this.keys[index].full);
             },
 
             copyExpandedKey() {
                 if (this.expandedKey) {
-                    navigator.clipboard.writeText(this.expandedKey.full);
-                    showToast('Copied to clipboard', 'success');
+                    this.copyToClipboard(this.expandedKey.full);
                 }
             },
 
