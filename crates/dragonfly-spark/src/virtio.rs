@@ -138,7 +138,13 @@ const NUM_QUEUES: usize = 3;
 struct VirtioReqBuffers {
     req_header: VirtioScsiReqHeader,
     resp: VirtioScsiResp,
-    data_buffer: [u8; 512],
+}
+
+// Separate DMA buffer - must be cache-line aligned (64 bytes) for reliable DMA
+#[repr(C, align(4096))]
+struct DmaBuffer {
+    data: [u8; 512],
+    _padding: [u8; 3584], // Pad to 4096 bytes for page alignment
 }
 
 struct SyncUnsafeCell<T>(UnsafeCell<T>);
@@ -175,6 +181,12 @@ static VIRTIO_QUEUE_REQ: SyncUnsafeCell<VirtioQueue> = SyncUnsafeCell::new(Virti
     used: VirtqUsed { flags: 0, idx: 0, ring: [VirtqUsedElem { id: 0, len: 0 }; QUEUE_SIZE as usize] },
 });
 
+// Page-aligned DMA buffer for data transfers
+static DMA_BUFFER: SyncUnsafeCell<DmaBuffer> = SyncUnsafeCell::new(DmaBuffer {
+    data: [0; 512],
+    _padding: [0; 3584],
+});
+
 // Request/response buffers (separate, don't need alignment)
 static VIRTIO_REQ: SyncUnsafeCell<VirtioReqBuffers> = SyncUnsafeCell::new(VirtioReqBuffers {
     req_header: VirtioScsiReqHeader {
@@ -193,7 +205,6 @@ static VIRTIO_REQ: SyncUnsafeCell<VirtioReqBuffers> = SyncUnsafeCell::new(Virtio
         response: 0,
         sense: [0; 96],
     },
-    data_buffer: [0; 512],
 });
 
 /// VirtIO SCSI device configuration (from device config space)
@@ -496,11 +507,17 @@ impl VirtioScsi {
             req.req_header.crn = 0;
 
             // SCSI TEST UNIT READY command
-            req.req_header.cdb = [0; 32];
-            req.req_header.cdb[0] = SCSI_CMD_TEST_UNIT_READY;
+            // NOTE: Cannot use array assignment on packed struct - causes alignment fault in 64-bit mode
+            for i in 0..32 {
+                core::ptr::write_unaligned(core::ptr::addr_of_mut!(req.req_header.cdb[i]), 0u8);
+            }
+            core::ptr::write_unaligned(core::ptr::addr_of_mut!(req.req_header.cdb[0]), SCSI_CMD_TEST_UNIT_READY);
 
-            // Clear response
-            req.resp = core::mem::zeroed();
+            // Clear response - use byte-by-byte copy to avoid alignment faults on packed struct
+            let resp_ptr = &mut req.resp as *mut VirtioScsiResp as *mut u8;
+            for i in 0..core::mem::size_of::<VirtioScsiResp>() {
+                core::ptr::write_unaligned(resp_ptr.add(i), 0u8);
+            }
 
             // Set up descriptor chain using volatile writes to packed struct
             // Desc 0: request header (device reads)
@@ -629,29 +646,31 @@ impl VirtioScsi {
             req.req_header.crn = 0;
 
             // SCSI READ(10) command
-            req.req_header.cdb = [0; 32];
-            req.req_header.cdb[0] = SCSI_CMD_READ_10;
-            req.req_header.cdb[2] = (lba >> 24) as u8;
-            req.req_header.cdb[3] = (lba >> 16) as u8;
-            req.req_header.cdb[4] = (lba >> 8) as u8;
-            req.req_header.cdb[5] = lba as u8;
-            req.req_header.cdb[7] = 0; // Transfer length (MSB)
-            req.req_header.cdb[8] = 1; // Transfer length = 1 sector
-
-            // Clear response and data buffer using volatile writes
-            core::ptr::write_volatile(&mut req.resp, core::mem::zeroed());
-            for i in 0..512 {
-                core::ptr::write_volatile(&mut req.data_buffer[i], 0);
+            // NOTE: Cannot use array assignment on packed struct - causes alignment fault in 64-bit mode
+            // Clear CDB byte-by-byte
+            for i in 0..32 {
+                core::ptr::write_unaligned(core::ptr::addr_of_mut!(req.req_header.cdb[i]), 0u8);
             }
+            core::ptr::write_unaligned(core::ptr::addr_of_mut!(req.req_header.cdb[0]), SCSI_CMD_READ_10);
+            core::ptr::write_unaligned(core::ptr::addr_of_mut!(req.req_header.cdb[2]), (lba >> 24) as u8);
+            core::ptr::write_unaligned(core::ptr::addr_of_mut!(req.req_header.cdb[3]), (lba >> 16) as u8);
+            core::ptr::write_unaligned(core::ptr::addr_of_mut!(req.req_header.cdb[4]), (lba >> 8) as u8);
+            core::ptr::write_unaligned(core::ptr::addr_of_mut!(req.req_header.cdb[5]), lba as u8);
+            core::ptr::write_unaligned(core::ptr::addr_of_mut!(req.req_header.cdb[7]), 0u8); // Transfer length (MSB)
+            core::ptr::write_unaligned(core::ptr::addr_of_mut!(req.req_header.cdb[8]), 1u8); // Transfer length = 1 sector
 
-            // Debug: verify buffer is cleared
-            serial::print("After clear, bytes 10-12: ");
-            serial::print_hex32(core::ptr::read_volatile(&req.data_buffer[10]) as u32);
-            serial::print(" ");
-            serial::print_hex32(core::ptr::read_volatile(&req.data_buffer[11]) as u32);
-            serial::print(" ");
-            serial::print_hex32(core::ptr::read_volatile(&req.data_buffer[12]) as u32);
-            serial::println("");
+            // Get page-aligned DMA buffer
+            let dma = &mut *DMA_BUFFER.get();
+
+            // Clear response - use byte-by-byte to avoid alignment faults
+            let resp_ptr = &mut req.resp as *mut VirtioScsiResp as *mut u8;
+            for i in 0..core::mem::size_of::<VirtioScsiResp>() {
+                core::ptr::write_volatile(resp_ptr.add(i), 0u8);
+            }
+            // Clear DMA buffer
+            for i in 0..512 {
+                core::ptr::write_volatile(&mut dma.data[i], 0);
+            }
 
             // Set up descriptor chain (3 descriptors for read) using volatile writes
             // Desc 0: request header (device reads - OUT)
@@ -670,16 +689,15 @@ impl VirtioScsi {
             core::ptr::write_volatile(core::ptr::addr_of_mut!((*desc1).flags), VIRTQ_DESC_F_WRITE | VIRTQ_DESC_F_NEXT);
             core::ptr::write_volatile(core::ptr::addr_of_mut!((*desc1).next), 2);
 
-            // Desc 2: data buffer (device writes - IN)
-            let data_addr = req.data_buffer.as_ptr() as u64;
+            // Desc 2: data buffer (device writes - IN) - use page-aligned DMA buffer
+            let data_addr = dma.data.as_ptr() as u64;
             let desc2 = &mut queue.desc[2] as *mut VirtqDesc;
             core::ptr::write_volatile(core::ptr::addr_of_mut!((*desc2).addr), data_addr);
             core::ptr::write_volatile(core::ptr::addr_of_mut!((*desc2).len), 512);
             core::ptr::write_volatile(core::ptr::addr_of_mut!((*desc2).flags), VIRTQ_DESC_F_WRITE);
             core::ptr::write_volatile(core::ptr::addr_of_mut!((*desc2).next), 0);
 
-            // Debug: print data buffer address
-            serial::print("VirtIO: data_buffer addr=0x");
+            serial::print("DMA buffer addr=0x");
             serial::print_hex32(data_addr as u32);
             serial::println("");
 
@@ -724,18 +742,18 @@ impl VirtioScsi {
                     serial::print_dec(resid);
                     serial::println("");
 
-                    // Debug: print first 16 bytes directly from data_buffer
-                    serial::print("data_buffer raw: ");
+                    // Debug: print first 16 bytes directly from DMA buffer
+                    serial::print("dma_buffer raw: ");
                     for i in 0..16 {
-                        serial::print_hex32(core::ptr::read_volatile(&req.data_buffer[i]) as u32);
+                        serial::print_hex32(core::ptr::read_volatile(&dma.data[i]) as u32);
                         serial::print(" ");
                     }
                     serial::println("");
 
                     if response == 0 && status == 0 {
-                        // Copy data using volatile reads
+                        // Copy data using volatile reads from DMA buffer
                         for i in 0..512 {
-                            buffer[i] = core::ptr::read_volatile(&req.data_buffer[i]);
+                            buffer[i] = core::ptr::read_volatile(&dma.data[i]);
                         }
                         return true;
                     }
@@ -744,7 +762,50 @@ impl VirtioScsi {
                 }
             }
 
-            serial::println("VirtIO SCSI: READ timeout");
+            serial::print("VirtIO SCSI: READ timeout - start_used=");
+            serial::print_dec(start_used_idx as u32);
+            serial::print(" current_used=");
+            serial::print_dec(core::ptr::read_volatile(&queue.used.idx) as u32);
+            serial::print(" LBA=");
+            serial::print_dec(lba);
+            serial::println("");
+
+            // Try resetting the queue state and retry once
+            serial::println("Attempting retry...");
+            core::arch::asm!("wbinvd", options(nostack, preserves_flags));
+            core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+
+            // Re-notify device
+            outw(self.io_base + VIRTIO_IO_QUEUE_NOTIFY, VIRTIO_SCSI_QUEUE_REQUEST);
+
+            // Wait again with shorter timeout
+            for _ in 0..500000 {
+                core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+                let current_used = core::ptr::read_volatile(&queue.used.idx);
+                if current_used != start_used_idx {
+                    self.last_used_idx = current_used;
+                    core::arch::asm!("wbinvd", options(nostack, preserves_flags));
+
+                    let status = core::ptr::read_volatile(core::ptr::addr_of!(req.resp.status));
+                    let response = core::ptr::read_volatile(core::ptr::addr_of!(req.resp.response));
+
+                    serial::print("VirtIO SCSI: Retry succeeded! response=");
+                    serial::print_dec(response as u32);
+                    serial::print(" status=");
+                    serial::print_dec(status as u32);
+                    serial::println("");
+
+                    if response == 0 && status == 0 {
+                        for i in 0..512 {
+                            buffer[i] = core::ptr::read_volatile(&dma.data[i]);
+                        }
+                        return true;
+                    }
+                    return false;
+                }
+            }
+
+            serial::println("VirtIO SCSI: Retry also failed");
             false
         }
     }

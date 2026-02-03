@@ -2,19 +2,20 @@
 //!
 //! To chainload GRUB/MBR, we need to:
 //! 1. Load the MBR (first 512 bytes) to 0x7C00
-//! 2. Switch from protected mode to real mode
+//! 2. Switch from long mode (64-bit) to real mode (16-bit)
 //! 3. Jump to 0x0000:0x7C00 with proper register setup
 //!
-//! The real mode transition is complex:
-//! - We're in 32-bit protected mode (from multiboot)
-//! - Need to transition to 16-bit protected mode first
+//! The real mode transition from 64-bit long mode is complex:
+//! - We're in 64-bit long mode (from our boot.s)
+//! - Need to disable paging and exit long mode (clear LME in EFER)
+//! - Transition to 32-bit protected mode
+//! - Then to 16-bit protected mode
 //! - Then disable protection and enter real mode
 //! - All while keeping code executing properly
 
 use crate::disk::{OsInfo, DiskType};
 use crate::vga;
 use crate::bios;
-use crate::virtio;
 use crate::serial;
 
 /// Buffer for MBR at the standard boot location
@@ -286,6 +287,28 @@ impl GdtEntry {
         Self { limit_low: 0, base_low: 0, base_middle: 0, access: 0, granularity: 0, base_high: 0 }
     }
 
+    const fn code64() -> Self {
+        Self {
+            limit_low: 0xFFFF,
+            base_low: 0,
+            base_middle: 0,
+            access: 0x9A,      // Present, Ring 0, Code, Executable, Readable
+            granularity: 0xAF, // 4KB granularity, 64-bit (L=1, D=0)
+            base_high: 0
+        }
+    }
+
+    const fn data64() -> Self {
+        Self {
+            limit_low: 0xFFFF,
+            base_low: 0,
+            base_middle: 0,
+            access: 0x92,      // Present, Ring 0, Data, Writable
+            granularity: 0xCF, // 4KB granularity, 32/64-bit data
+            base_high: 0
+        }
+    }
+
     const fn code32() -> Self {
         Self {
             limit_low: 0xFFFF,
@@ -331,24 +354,108 @@ impl GdtEntry {
     }
 }
 
-/// GDT pointer structure
+/// GDT pointer structure for 64-bit mode
 #[repr(C, packed)]
-struct GdtPtr {
+struct GdtPtr64 {
+    limit: u16,
+    base: u64,
+}
+
+/// GDT pointer structure for 32-bit mode (stored in low memory)
+#[repr(C, packed)]
+struct GdtPtr32 {
     limit: u16,
     base: u32,
 }
 
-/// Switch from 32-bit protected mode to 16-bit real mode and jump to 0x7C00
+/// 32-bit trampoline address - must be in low memory (below 1MB)
+const TRAMPOLINE_32BIT_ADDR: u32 = 0x0B00;
+
+/// 32-bit trampoline code
+/// This code runs after we exit long mode and enter 32-bit protected mode.
+/// It then transitions to 16-bit protected mode and finally to real mode.
+///
+/// Layout at TRAMPOLINE_32BIT_ADDR (0x0B00):
+/// - 32-bit protected mode code starts here
+/// - Transitions to 16-bit protected mode
+/// - Then to real mode
+/// - Finally jumps to 0x7C00
+static TRAMPOLINE_32BIT_CODE: [u8; 64] = [
+    // === 32-bit protected mode code ===
+    // At entry: DS/ES/SS = 0x20 (32-bit data), CS = 0x18 (32-bit code)
+    // DL contains boot drive number
+
+    // Load 16-bit data segments
+    // mov ax, 0x28  (16-bit data selector)
+    0x66, 0xB8, 0x28, 0x00,
+    // mov ds, ax
+    0x8E, 0xD8,
+    // mov es, ax
+    0x8E, 0xC0,
+    // mov ss, ax
+    0x8E, 0xD0,
+    // mov fs, ax
+    0x8E, 0xE0,
+    // mov gs, ax
+    0x8E, 0xE8,
+
+    // Far jump to 16-bit protected mode code (at offset 32 in this trampoline)
+    // jmp 0x30:0x0B20  (selector 0x30 = 16-bit code, offset = 0x0B00 + 32)
+    0xEA, 0x20, 0x0B, 0x00, 0x00, 0x30, 0x00,
+
+    // Padding to offset 32 (0x20)
+    0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90,
+    0x90, 0x90, 0x90,
+
+    // === 16-bit protected mode code (at offset 32 = 0x20) ===
+    // Now in 16-bit protected mode
+
+    // Clear PE bit in CR0 to enter real mode
+    // mov eax, cr0
+    0x0F, 0x20, 0xC0,
+    // and al, 0xFE  (clear PE bit)
+    0x24, 0xFE,
+    // mov cr0, eax
+    0x0F, 0x22, 0xC0,
+
+    // Far jump to flush prefetch and enter real mode
+    // jmp 0x0000:0x0B30 (real mode: segment 0, offset 0x0B00 + 48)
+    0xEA, 0x30, 0x0B, 0x00, 0x00,
+
+    // === Real mode code (at offset 48 = 0x30) ===
+    // xor ax, ax
+    0x31, 0xC0,
+    // mov ds, ax
+    0x8E, 0xD8,
+    // mov es, ax
+    0x8E, 0xC0,
+    // mov ss, ax
+    0x8E, 0xD0,
+    // mov sp, 0x7C00
+    0xBC, 0x00, 0x7C,
+
+    // DL already has boot drive
+    // jmp 0x0000:0x7C00
+    0xEA, 0x00, 0x7C, 0x00, 0x00,
+
+    // Padding to reach 64 bytes
+    0x90, 0x90, 0x90,
+];
+
+/// Switch from 64-bit long mode to 16-bit real mode and jump to 0x7C00
 ///
 /// Strategy:
-/// 1. Copy trampoline code to low memory (0x1000)
-/// 2. Set up GDT with 16-bit segments pointing to trampoline
-/// 3. Load GDT
-/// 4. Far jump to 16-bit protected mode (trampoline)
-/// 5. Trampoline disables PE and jumps to real mode
-/// 6. Trampoline sets up segments and jumps to 0x7C00
+/// 1. Copy 16-bit trampoline code to low memory (0x1000)
+/// 2. Copy 32-bit trampoline code to low memory (0x0B00)
+/// 3. Set up GDT with 64-bit, 32-bit, and 16-bit segments at known address
+/// 4. Disable paging (must be done before exiting long mode)
+/// 5. Clear LME bit in EFER MSR to exit long mode
+/// 6. Load GDT with 32-bit segments
+/// 7. Far jump to 32-bit protected mode trampoline
+/// 8. 32-bit trampoline transitions to 16-bit, then real mode
+/// 9. Real mode code jumps to 0x7C00
 fn switch_to_real_mode_and_jump(boot_drive: u8) -> ! {
-    // Copy trampoline to low memory
+    // Copy 16-bit trampoline to low memory (used by 16-bit protected mode)
     unsafe {
         core::ptr::copy_nonoverlapping(
             TRAMPOLINE_CODE.as_ptr(),
@@ -357,17 +464,38 @@ fn switch_to_real_mode_and_jump(boot_drive: u8) -> ! {
         );
     }
 
-    // Build GDT in memory
-    // We need it at a known location for the lgdt instruction
+    // Copy 32-bit trampoline to low memory
+    unsafe {
+        core::ptr::copy_nonoverlapping(
+            TRAMPOLINE_32BIT_CODE.as_ptr(),
+            TRAMPOLINE_32BIT_ADDR as *mut u8,
+            TRAMPOLINE_32BIT_CODE.len()
+        );
+    }
+
+    // Build GDT in low memory
+    // Layout:
+    // 0x00: Null
+    // 0x08: 64-bit code (current)
+    // 0x10: 64-bit data (current)
+    // 0x18: 32-bit code
+    // 0x20: 32-bit data
+    // 0x28: 16-bit data (base 0)
+    // 0x30: 16-bit code (base 0)
     const GDT_ADDR: u32 = 0x0800;
 
-    let gdt: [GdtEntry; 5] = [
-        GdtEntry::null(),
-        GdtEntry::code32(),
-        GdtEntry::data32(),
-        GdtEntry::code16(TRAMPOLINE_ADDR),  // Base points to trampoline
-        GdtEntry::data16(),
+    let gdt: [GdtEntry; 7] = [
+        GdtEntry::null(),           // 0x00
+        GdtEntry::code64(),         // 0x08
+        GdtEntry::data64(),         // 0x10
+        GdtEntry::code32(),         // 0x18
+        GdtEntry::data32(),         // 0x20
+        GdtEntry::data16(),         // 0x28
+        GdtEntry::code16(0),        // 0x30 (base 0 for real mode transition)
     ];
+
+    // GDT pointer for 32-bit mode (placed right after GDT)
+    const GDT_PTR_ADDR: u32 = 0x07E0;
 
     unsafe {
         // Copy GDT to known location
@@ -377,74 +505,89 @@ fn switch_to_real_mode_and_jump(boot_drive: u8) -> ! {
             core::mem::size_of_val(&gdt)
         );
 
-        // Set up GDT pointer
-        let gdt_ptr = GdtPtr {
+        // Set up 32-bit GDT pointer at known address
+        let gdt_ptr32 = GdtPtr32 {
             limit: (core::mem::size_of_val(&gdt) - 1) as u16,
             base: GDT_ADDR,
         };
-
-        // Set up far pointer for the jump to 16-bit protected mode
-        // This will be at a known location so we can use indirect far jump
-        const FAR_PTR_ADDR: u32 = 0x0700;
-
-        // Far pointer: offset (4 bytes) + segment selector (2 bytes)
-        // Offset 0 into the 16-bit code segment (which has base at TRAMPOLINE_ADDR)
-        // Segment selector 0x18 (16-bit code segment)
-        let far_ptr: [u8; 6] = [
-            0x00, 0x00, 0x00, 0x00,  // Offset 0
-            0x18, 0x00,              // Selector 0x18
-        ];
-
         core::ptr::copy_nonoverlapping(
-            far_ptr.as_ptr(),
-            FAR_PTR_ADDR as *mut u8,
-            6
+            &gdt_ptr32 as *const GdtPtr32 as *const u8,
+            GDT_PTR_ADDR as *mut u8,
+            core::mem::size_of::<GdtPtr32>()
         );
 
-        // Debug: output to serial before the jump
-        serial::println("Chainload: About to switch to real mode");
-        serial::print("Chainload: Trampoline at 0x");
-        serial::print_hex32(TRAMPOLINE_ADDR);
+        // Set up real mode IDT pointer (IVT at 0x0000, limit 0x3FF)
+        const IDT_PTR_ADDR: u32 = 0x07D8;
+        #[repr(C, packed)]
+        struct IdtPtr32 {
+            limit: u16,
+            base: u32,
+        }
+        let idt_ptr = IdtPtr32 {
+            limit: 0x03FF,
+            base: 0x0000,
+        };
+        core::ptr::copy_nonoverlapping(
+            &idt_ptr as *const IdtPtr32 as *const u8,
+            IDT_PTR_ADDR as *mut u8,
+            core::mem::size_of::<IdtPtr32>()
+        );
+
+        // Debug output
+        serial::println("Chainload: About to switch from 64-bit to real mode");
+        serial::print("Chainload: 32-bit trampoline at 0x");
+        serial::print_hex32(TRAMPOLINE_32BIT_ADDR);
         serial::print(", GDT at 0x");
         serial::print_hex32(GDT_ADDR);
         serial::print(", boot drive = 0x");
         serial::print_hex32(boot_drive as u32);
         serial::println("");
-        serial::println("Chainload: Jumping NOW...");
+        serial::println("Chainload: Exiting long mode NOW...");
 
-        // Set up real mode IDT pointer (IVT at 0x0000, limit 0x3FF)
-        // This needs to be loaded before entering real mode
-        #[repr(C, packed)]
-        struct IdtPtr {
-            limit: u16,
-            base: u32,
-        }
-        let idt_ptr = IdtPtr {
-            limit: 0x03FF,  // 256 entries * 4 bytes - 1
-            base: 0x0000,   // Real mode IVT starts at address 0
-        };
+        // Store boot drive in low memory where trampoline can access it
+        // We'll load it into DL in the trampoline
+        let drive_addr: *mut u8 = 0x0600 as *mut u8;
+        *drive_addr = boot_drive;
 
-        // Now execute the transition
+        // Execute the long mode exit and transition to 32-bit
+        // This is the critical sequence:
+        // 1. Disable interrupts
+        // 2. Load boot drive into DL
+        // 3. Disable paging (clear PG bit in CR0)
+        // 4. Clear LME bit in EFER MSR
+        // 5. Load 32-bit GDT
+        // 6. Load real mode IDT
+        // 7. Load 32-bit data segments
+        // 8. Far jump to 32-bit code segment
         core::arch::asm!(
             // Disable interrupts
             "cli",
 
-            // Save boot drive in DL (will survive through the transition)
-            "mov dl, {drive}",
+            // Load boot drive into DL (survives mode transitions)
+            "mov dl, [{drive_addr}]",
 
-            // Disable paging if enabled (probably not, but be safe)
-            "mov eax, cr0",
-            "and eax, 0x7FFFFFFF",  // Clear PG bit (bit 31)
-            "mov cr0, eax",
+            // Disable paging: clear PG bit (bit 31) in CR0
+            // Must use rax in 64-bit mode
+            "mov rax, cr0",
+            "and eax, 0x7FFFFFFF",
+            "mov cr0, rax",
 
-            // Load our GDT
-            "lgdt [{gdt_ptr}]",
+            // Clear LME bit in EFER MSR to exit long mode
+            // EFER MSR is at 0xC0000080, LME is bit 8
+            "mov ecx, 0xC0000080",
+            "rdmsr",
+            "and eax, 0xFFFFFEFF",  // Clear bit 8 (LME)
+            "wrmsr",
 
-            // Load real mode IDT (IVT at 0x0000)
-            "lidt [{idt_ptr}]",
+            // Now we're in compatibility mode (32-bit in a 64-bit world)
+            // Load 32-bit GDT
+            "lgdt [0x07E0]",
 
-            // Load 16-bit data segment into all data segment registers
-            // Selector 0x20 is our 16-bit data segment
+            // Load real mode IDT
+            "lidt [0x07D8]",
+
+            // Load 32-bit data segment into all data segment registers
+            // Selector 0x20 is our 32-bit data segment
             "mov ax, 0x20",
             "mov ds, ax",
             "mov es, ax",
@@ -452,20 +595,20 @@ fn switch_to_real_mode_and_jump(boot_drive: u8) -> ! {
             "mov gs, ax",
             "mov ss, ax",
 
-            // Set up a valid stack pointer in low memory
+            // Set up stack in low memory
             "mov esp, 0x7000",
 
-            // Far jump to 16-bit protected mode using push/retf technique
-            // Push segment selector (0x18 = 16-bit code segment)
+            // Far jump to 32-bit protected mode code
+            // Use push/retfq to do a far return which acts as far jump
+            // Push 32-bit code segment selector (0x18)
             "push 0x18",
-            // Push offset (0 = start of segment, which has base at TRAMPOLINE_ADDR)
-            "push 0",
-            // Far return pops offset and segment, effectively doing a far jump
-            "retf",
+            // Push 32-bit trampoline address
+            "push {tramp32}",
+            // Far return (pops RIP and CS)
+            "retfq",
 
-            drive = in(reg_byte) boot_drive,
-            gdt_ptr = in(reg) &gdt_ptr,
-            idt_ptr = in(reg) &idt_ptr,
+            drive_addr = in(reg) 0x0600u64,
+            tramp32 = in(reg) TRAMPOLINE_32BIT_ADDR as u64,
             options(noreturn)
         );
     }

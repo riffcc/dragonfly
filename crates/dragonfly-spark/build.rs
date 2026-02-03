@@ -15,7 +15,7 @@ fn main() {
     let boot_obj = Path::new(&out_dir).join("boot.o");
 
     let status = Command::new("nasm")
-        .args(["-f", "elf32", boot_asm.to_str().unwrap(), "-o", boot_obj.to_str().unwrap()])
+        .args(["-f", "elf64", boot_asm.to_str().unwrap(), "-o", boot_obj.to_str().unwrap()])
         .status()
         .expect("Failed to run nasm. Is it installed?");
 

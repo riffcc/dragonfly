@@ -28,6 +28,22 @@ const EFI_SYSTEM_GUID: [u8; 16] = [
 /// ext4 superblock magic number
 const EXT4_MAGIC: u16 = 0xEF53;
 
+/// Static buffer for OS name (avoid stack allocation issues in 64-bit mode)
+static mut OS_NAME_BUF: [u8; 64] = [0u8; 64];
+static mut OS_NAME_LEN: usize = 0;
+
+/// Static storage for OsInfo to avoid ~600 byte struct returns in 64-bit mode
+static mut OS_INFO: OsInfo = OsInfo {
+    name: "",
+    disk_type: DiskType::AtaPio,
+    partition: 0,
+    bootable: false,
+    mbr: [0u8; 512],
+    os_name_buf: [0u8; 64],
+    os_name_len: 0,
+};
+static mut OS_INFO_VALID: bool = false;
+
 /// FAT32 boot sector signature
 const FAT32_SIGNATURE: u16 = 0xAA55;
 
@@ -314,26 +330,354 @@ struct PartitionEntry {
 }
 
 /// Scan for bootable operating systems
-pub fn scan_for_os() -> Option<OsInfo> {
+/// Returns a reference to static storage to avoid ~600 byte struct returns
+pub fn scan_for_os() -> Option<&'static OsInfo> {
     serial::println("scan_for_os() starting");
 
     // Try ATA PIO first (legacy IDE)
-    if let Some(os) = scan_ata_pio() {
-        return Some(os);
+    if scan_ata_pio_into_static() {
+        serial::println("DBG: scan_for_os returning ATA PIO result");
+        return unsafe { Some(&*core::ptr::addr_of!(OS_INFO)) };
     }
 
     // Try AHCI (SATA)
-    if let Some(os) = scan_ahci() {
-        return Some(os);
+    if scan_ahci_into_static() {
+        serial::println("DBG: scan_for_os returning AHCI result");
+        return unsafe { Some(&*core::ptr::addr_of!(OS_INFO)) };
     }
 
     // Try VirtIO SCSI (VMs)
-    if let Some(os) = scan_virtio_scsi() {
-        return Some(os);
+    if scan_virtio_scsi_into_static() {
+        serial::println("DBG: scan_for_os returning VirtIO SCSI result");
+        return unsafe { Some(&*core::ptr::addr_of!(OS_INFO)) };
     }
 
     serial::println("No bootable drives found");
     None
+}
+
+/// Scan VirtIO SCSI and write directly to static storage (avoids struct return)
+fn scan_virtio_scsi_into_static() -> bool {
+    serial::println("Trying VirtIO SCSI...");
+
+    let init_result = virtio::init();
+    if init_result.is_none() {
+        return false;
+    }
+    let (mut controller, target, lun) = init_result.unwrap();
+
+    serial::print("VirtIO SCSI: Reading MBR from target ");
+    serial::print_dec(target as u32);
+    serial::println("");
+
+    // Read MBR directly into static storage
+    unsafe {
+        if !controller.read_sector(target, lun, 0, &mut (*core::ptr::addr_of_mut!(OS_INFO)).mbr) {
+            serial::println("VirtIO SCSI: MBR read failed");
+            return false;
+        }
+    }
+    serial::println("VirtIO SCSI: MBR read OK");
+
+    // Check for GPT - if so, do full OS detection
+    let first_entry = unsafe {
+        let mbr_ptr = core::ptr::addr_of!(OS_INFO).cast::<u8>().add(core::mem::offset_of!(OsInfo, mbr));
+        core::ptr::read_unaligned(mbr_ptr.add(446) as *const PartitionEntry)
+    };
+    if first_entry.partition_type == 0xEE {
+        serial::println("GPT detected - performing OS detection");
+        return detect_os_from_gpt_into_static(&mut controller, target, lun);
+    }
+
+    parse_mbr_into_static(DiskType::VirtioScsi { target, lun })
+}
+
+/// Scan ATA PIO and write directly to static storage
+fn scan_ata_pio_into_static() -> bool {
+    serial::println("Trying ATA PIO...");
+
+    // Check if drive exists
+    if !drive_exists(0) {
+        serial::println("ATA PIO: No drive found");
+        return false;
+    }
+    serial::println("ATA PIO: Drive found");
+
+    // Read MBR directly into static storage
+    unsafe {
+        if !read_sector_ata(0, 0, &mut (*core::ptr::addr_of_mut!(OS_INFO)).mbr) {
+            serial::println("ATA PIO: MBR read failed");
+            return false;
+        }
+    }
+
+    parse_mbr_into_static(DiskType::AtaPio)
+}
+
+/// Scan AHCI and write directly to static storage
+fn scan_ahci_into_static() -> bool {
+    serial::println("Trying AHCI...");
+
+    let init_result = ahci::init();
+    if init_result.is_none() {
+        return false;
+    }
+    let (controller, drive) = init_result.unwrap();
+
+    if drive.is_atapi {
+        serial::println("AHCI: Found ATAPI (CD/DVD), skipping");
+        return false;
+    }
+
+    serial::print("AHCI: Reading MBR from port ");
+    serial::print_dec(drive.port as u32);
+    serial::println("");
+
+    // Read MBR directly into static storage
+    unsafe {
+        if !controller.read_sector(drive.port, 0, &mut (*core::ptr::addr_of_mut!(OS_INFO)).mbr) {
+            serial::println("AHCI: MBR read failed");
+            return false;
+        }
+    }
+    serial::println("AHCI: MBR read OK");
+
+    parse_mbr_into_static(DiskType::Ahci { port: drive.port })
+}
+
+/// Parse MBR and write to static storage
+fn parse_mbr_into_static(disk_type: DiskType) -> bool {
+    unsafe {
+        let mbr = &(*core::ptr::addr_of!(OS_INFO)).mbr;
+
+        // Verify MBR signature
+        let signature = u16::from_le_bytes([mbr[510], mbr[511]]);
+        if signature != MBR_SIGNATURE {
+            serial::print("Invalid MBR signature: 0x");
+            serial::print_hex32(signature as u32);
+            serial::println("");
+            return false;
+        }
+
+        // Find bootable partition
+        for i in 0..4 {
+            let offset = 446 + (i * 16);
+            let entry = core::ptr::read_unaligned(mbr.as_ptr().add(offset) as *const PartitionEntry);
+
+            if entry.status == 0x80 && entry.partition_type != 0 {
+                serial::print("Found bootable partition ");
+                serial::print_dec(i as u32 + 1);
+                serial::print(" type 0x");
+                serial::print_hex32(entry.partition_type as u32);
+                serial::println("");
+
+                let os_info = &mut *core::ptr::addr_of_mut!(OS_INFO);
+                os_info.name = match entry.partition_type {
+                    0x07 => "Windows/NTFS",
+                    0x0B | 0x0C => "Windows/FAT32",
+                    0x83 => "Linux",
+                    0xEE => "GPT Protective",
+                    _ => "Unknown OS",
+                };
+                os_info.disk_type = disk_type;
+                os_info.partition = i as u8 + 1;
+                os_info.bootable = true;
+                // mbr is already in place
+                os_info.os_name_buf = [0; 64];
+                os_info.os_name_len = 0;
+                return true;
+            }
+        }
+
+        // No bootable partition, but valid MBR
+        let os_info = &mut *core::ptr::addr_of_mut!(OS_INFO);
+        os_info.name = "Unknown";
+        os_info.disk_type = disk_type;
+        os_info.partition = 0;
+        os_info.bootable = false;
+        os_info.os_name_buf = [0; 64];
+        os_info.os_name_len = 0;
+        true
+    }
+}
+
+/// Detect OS from GPT and write directly to static storage
+fn detect_os_from_gpt_into_static(controller: &mut virtio::VirtioScsi, target: u8, lun: u8) -> bool {
+    serial::println("Parsing GPT for OS detection...");
+
+    // Read GPT header at LBA 1
+    let mut gpt_sector = [0u8; 512];
+    if !controller.read_sector(target, lun, 1, &mut gpt_sector) {
+        serial::println("Failed to read GPT header - returning GPT System fallback");
+        unsafe {
+            let os_info = &mut *core::ptr::addr_of_mut!(OS_INFO);
+            os_info.name = "GPT System";
+            os_info.disk_type = DiskType::VirtioScsi { target, lun };
+            os_info.partition = 1;
+            os_info.bootable = true;
+            // mbr already in place from caller
+            os_info.os_name_buf = [0; 64];
+            os_info.os_name_len = 0;
+        }
+        return true;
+    }
+
+    let gpt_header = unsafe {
+        core::ptr::read_unaligned(gpt_sector.as_ptr() as *const GptHeader)
+    };
+
+    // Verify GPT signature
+    serial::print("GPT signature: 0x");
+    serial::print_hex32((gpt_header.signature >> 32) as u32);
+    serial::print_hex32(gpt_header.signature as u32);
+    serial::println("");
+
+    if gpt_header.signature != GPT_SIGNATURE {
+        serial::println("Invalid GPT signature - returning GPT System fallback");
+        unsafe {
+            let os_info = &mut *core::ptr::addr_of_mut!(OS_INFO);
+            os_info.name = "GPT System";
+            os_info.disk_type = DiskType::VirtioScsi { target, lun };
+            os_info.partition = 1;
+            os_info.bootable = true;
+            os_info.os_name_buf = [0; 64];
+            os_info.os_name_len = 0;
+        }
+        return true;
+    }
+    serial::println("GPT signature valid");
+
+    let num_entries = gpt_header.num_partition_entries.min(128) as usize;
+    let entry_size = gpt_header.partition_entry_size as usize;
+    let entries_per_sector = 512 / entry_size;
+
+    serial::print("GPT: ");
+    serial::print_dec(num_entries as u32);
+    serial::print(" partition entries, ");
+    serial::print_dec(entry_size as u32);
+    serial::println(" bytes each");
+
+    // Scan partition entries - look for both EFI System and Linux partitions
+    let mut esp_partition_lba: u64 = 0;
+    let mut linux_partition_lba: u64 = 0;
+    let mut linux_partition_num: u8 = 0;
+
+    // Cache the last read sector
+    let mut cached_sector_idx: i32 = -1;
+    let mut cached_sector = [0u8; 512];
+
+    let scan_limit = num_entries.min(20);
+    serial::print("Scanning first ");
+    serial::print_dec(scan_limit as u32);
+    serial::println(" partition entries...");
+
+    for entry_idx in 0..scan_limit {
+        let sector_idx = entry_idx / entries_per_sector;
+        let offset_in_sector = (entry_idx % entries_per_sector) * entry_size;
+
+        if sector_idx as i32 != cached_sector_idx {
+            let entry_lba = gpt_header.partition_entry_lba + sector_idx as u64;
+            if !controller.read_sector(target, lun, entry_lba as u32, &mut cached_sector) {
+                continue;
+            }
+            cached_sector_idx = sector_idx as i32;
+        }
+
+        let entry = unsafe {
+            core::ptr::read_unaligned(cached_sector.as_ptr().add(offset_in_sector) as *const GptPartitionEntry)
+        };
+
+        if entry.type_guid == [0u8; 16] {
+            continue;
+        }
+
+        serial::print("Entry ");
+        serial::print_dec(entry_idx as u32);
+        serial::print(" GUID: ");
+        for i in 0..4 {
+            serial::print_hex32(entry.type_guid[i] as u32);
+        }
+        serial::println("...");
+
+        if entry.type_guid == EFI_SYSTEM_GUID && esp_partition_lba == 0 {
+            serial::print("  -> EFI System Partition at LBA ");
+            serial::print_dec(entry.starting_lba as u32);
+            serial::println("");
+            esp_partition_lba = entry.starting_lba;
+        }
+
+        if entry.type_guid == LINUX_FS_GUID && linux_partition_lba == 0 {
+            serial::print("  -> Linux partition at LBA ");
+            serial::print_dec(entry.starting_lba as u32);
+            serial::println("");
+            linux_partition_lba = entry.starting_lba;
+            linux_partition_num = entry_idx as u8 + 1;
+        }
+
+        if esp_partition_lba != 0 && linux_partition_lba != 0 {
+            serial::println("Found both ESP and Linux partitions");
+            break;
+        }
+    }
+
+    serial::println("DBG: after partition loop (into_static)");
+
+    // Zero OS_NAME_BUF for reuse
+    unsafe {
+        for i in 0..64 {
+            core::ptr::write_volatile(&mut OS_NAME_BUF[i], 0);
+        }
+        OS_NAME_LEN = 0;
+    }
+
+    // Try FAT32 ESP first
+    if esp_partition_lba != 0 {
+        serial::println("Trying ESP (FAT32) for OS detection...");
+        if let Some((buf, len)) = detect_os_from_esp(controller, target, lun, esp_partition_lba) {
+            unsafe {
+                OS_NAME_BUF = buf;
+                OS_NAME_LEN = len;
+            }
+        }
+    }
+
+    // Fall back to ext4
+    if unsafe { OS_NAME_LEN } == 0 && linux_partition_lba != 0 {
+        serial::println("Falling back to ext4 for OS detection...");
+        detect_os_from_ext4(controller, target, lun, linux_partition_lba);
+    }
+
+    serial::println("DBG: writing final OsInfo to static");
+    serial::print("DBG: OS_NAME_LEN=");
+    serial::print_dec(unsafe { OS_NAME_LEN } as u32);
+    serial::println("");
+
+    // Write to static OS_INFO
+    unsafe {
+        let os_info = &mut *core::ptr::addr_of_mut!(OS_INFO);
+        if linux_partition_lba == 0 && esp_partition_lba == 0 {
+            os_info.name = "GPT System";
+            os_info.partition = 1;
+        } else {
+            os_info.name = "Linux";
+            os_info.partition = if linux_partition_num > 0 { linux_partition_num } else { 1 };
+        }
+        os_info.disk_type = DiskType::VirtioScsi { target, lun };
+        os_info.bootable = true;
+        // mbr already in place
+        // Copy os_name_buf byte by byte to avoid alignment issues
+        serial::println("DBG: copying os_name_buf byte by byte");
+        for i in 0..64 {
+            core::ptr::write_volatile(
+                &mut os_info.os_name_buf[i] as *mut u8,
+                core::ptr::read_volatile(&OS_NAME_BUF[i] as *const u8)
+            );
+        }
+        serial::println("DBG: os_name_buf copied");
+        os_info.os_name_len = OS_NAME_LEN;
+    }
+    serial::println("DBG: OsInfo written to static successfully");
+    true
 }
 
 /// Scan using VirtIO SCSI (common in VMs)
@@ -627,29 +971,44 @@ fn detect_os_from_gpt(controller: &mut virtio::VirtioScsi, target: u8, lun: u8, 
         }
     }
 
-    // Try to detect OS from bootloader config (FAT32 ESP) first
-    // This works for GRUB, systemd-boot, etc.
-    let (mut os_name_buf, mut os_name_len) = ([0u8; 64], 0usize);
+    serial::println("DBG: after partition loop");
+
+    // Use static buffers to avoid stack allocation issues in 64-bit mode
+    serial::println("DBG: zeroing static byte by byte");
+    unsafe {
+        for i in 0..64 {
+            core::ptr::write_volatile(&mut OS_NAME_BUF[i], 0);
+        }
+        OS_NAME_LEN = 0;
+    }
+    serial::println("DBG: static initialized");
 
     // Try FAT32 ESP first (GRUB/systemd-boot config)
     if esp_partition_lba != 0 {
         serial::println("Trying ESP (FAT32) for OS detection...");
         if let Some((buf, len)) = detect_os_from_esp(controller, target, lun, esp_partition_lba) {
-            os_name_buf = buf;
-            os_name_len = len;
+            unsafe {
+                OS_NAME_BUF = buf;
+                OS_NAME_LEN = len;
+            }
         }
     }
 
     // Fall back to ext4 /etc/os-release or volume label
-    if os_name_len == 0 && linux_partition_lba != 0 {
+    if unsafe { OS_NAME_LEN } == 0 && linux_partition_lba != 0 {
         serial::println("Falling back to ext4 for OS detection...");
-        let (buf, len) = detect_os_from_ext4(controller, target, lun, linux_partition_lba);
-        os_name_buf = buf;
-        os_name_len = len;
+        // detect_os_from_ext4 writes directly to OS_NAME_BUF and OS_NAME_LEN
+        detect_os_from_ext4(controller, target, lun, linux_partition_lba);
     }
+
+    serial::println("DBG: about to return OsInfo");
+    serial::print("DBG: OS_NAME_LEN=");
+    serial::print_dec(unsafe { OS_NAME_LEN } as u32);
+    serial::println("");
 
     if linux_partition_lba == 0 && esp_partition_lba == 0 {
         serial::println("No Linux or EFI partition found in GPT");
+        serial::println("DBG: returning GPT System");
         return Some(OsInfo {
             name: "GPT System",
             disk_type: DiskType::VirtioScsi { target, lun },
@@ -661,15 +1020,18 @@ fn detect_os_from_gpt(controller: &mut virtio::VirtioScsi, target: u8, lun: u8, 
         });
     }
 
-    Some(OsInfo {
-        name: "Linux",
-        disk_type: DiskType::VirtioScsi { target, lun },
-        partition: if linux_partition_num > 0 { linux_partition_num } else { 1 },
-        bootable: true,
-        mbr: *mbr,
-        os_name_buf,
-        os_name_len,
-    })
+    serial::println("DBG: returning Linux OsInfo");
+    unsafe {
+        Some(OsInfo {
+            name: "Linux",
+            disk_type: DiskType::VirtioScsi { target, lun },
+            partition: if linux_partition_num > 0 { linux_partition_num } else { 1 },
+            bootable: true,
+            mbr: *mbr,
+            os_name_buf: OS_NAME_BUF,
+            os_name_len: OS_NAME_LEN,
+        })
+    }
 }
 
 /// Detect OS from EFI System Partition by reading GRUB config
@@ -679,6 +1041,14 @@ fn detect_os_from_esp(
     lun: u8,
     partition_lba: u64
 ) -> Option<([u8; 64], usize)> {
+    // Debug: print stack pointer
+    let rsp: u64;
+    unsafe { core::arch::asm!("mov {}, rsp", out(reg) rsp); }
+    serial::print("DBG: RSP = 0x");
+    serial::print_hex32((rsp >> 32) as u32);
+    serial::print_hex32(rsp as u32);
+    serial::println("");
+
     serial::println("Reading FAT32 ESP for GRUB config...");
 
     // Read FAT32 boot sector
@@ -760,6 +1130,7 @@ fn detect_os_from_esp(
         }
         serial::println("");
 
+        serial::println("DBG: about to call read_fat32_file");
         if let Some(contents) = read_fat32_file(controller, target, lun, &fat32, root_cluster, path) {
             serial::println("Found GRUB config!");
 
@@ -813,6 +1184,7 @@ fn read_fat32_file(
     root_cluster: u32,
     path: &[&[u8]]
 ) -> Option<[u8; 512]> {
+    serial::println("DBG: entered read_fat32_file");
     let mut current_cluster = root_cluster;
 
     // Navigate through path components
@@ -822,9 +1194,25 @@ fn read_fat32_file(
         // Find component in current directory
         let entry = find_fat32_entry(controller, target, lun, fat32, current_cluster, component)?;
 
+        // Read packed struct fields safely using read_unaligned
+        let entry_ptr = &entry as *const Fat32DirEntry as *const u8;
+        let attr = unsafe { core::ptr::read_unaligned(entry_ptr.wrapping_add(11)) };
+        let cluster_hi = unsafe {
+            u16::from_le_bytes([
+                core::ptr::read_unaligned(entry_ptr.wrapping_add(20)),
+                core::ptr::read_unaligned(entry_ptr.wrapping_add(21)),
+            ])
+        };
+        let cluster_lo = unsafe {
+            u16::from_le_bytes([
+                core::ptr::read_unaligned(entry_ptr.wrapping_add(26)),
+                core::ptr::read_unaligned(entry_ptr.wrapping_add(27)),
+            ])
+        };
+
         if is_last {
             // This is the file - read first sector of its data
-            let file_cluster = ((entry.cluster_hi as u32) << 16) | (entry.cluster_lo as u32);
+            let file_cluster = ((cluster_hi as u32) << 16) | (cluster_lo as u32);
             let file_lba = cluster_to_lba(fat32, file_cluster);
 
             let mut contents = [0u8; 512];
@@ -834,10 +1222,10 @@ fn read_fat32_file(
             return Some(contents);
         } else {
             // This is a directory - descend into it
-            if entry.attr & FAT_ATTR_DIRECTORY == 0 {
+            if attr & FAT_ATTR_DIRECTORY == 0 {
                 return None; // Not a directory
             }
-            current_cluster = ((entry.cluster_hi as u32) << 16) | (entry.cluster_lo as u32);
+            current_cluster = ((cluster_hi as u32) << 16) | (cluster_lo as u32);
         }
     }
 
@@ -854,6 +1242,13 @@ fn find_fat32_entry(
     start_cluster: u32,
     name: &[u8]
 ) -> Option<Fat32DirEntry> {
+    // Debug RSP
+    let rsp: u64;
+    unsafe { core::arch::asm!("mov {}, rsp", out(reg) rsp); }
+    serial::print("find_fat32_entry RSP=0x");
+    serial::print_hex32(rsp as u32);
+    serial::println("");
+
     let entries_per_sector = fat32.bytes_per_sector / 32;
     let mut current_cluster = start_cluster;
     let mut chain_depth = 0;
@@ -875,22 +1270,34 @@ fn find_fat32_entry(
 
             for entry_idx in 0..entries_per_sector {
                 let offset = (entry_idx * 32) as usize;
-                let entry = unsafe {
-                    core::ptr::read_unaligned(sector.as_ptr().add(offset) as *const Fat32DirEntry)
-                };
+
+                // Read entry bytes directly to avoid packed struct alignment issues
+                let entry_ptr = sector.as_ptr().wrapping_add(offset);
+
+                // Read first byte (name[0]) - check for end or deleted
+                let first_byte = unsafe { core::ptr::read_unaligned(entry_ptr) };
 
                 // End of directory
-                if entry.name[0] == 0x00 {
+                if first_byte == 0x00 {
                     return None;
                 }
 
+                // Read attr byte (offset 11 in the entry)
+                let attr_byte = unsafe { core::ptr::read_unaligned(entry_ptr.wrapping_add(11)) };
+
                 // Deleted entry or LFN entry
-                if entry.name[0] == 0xE5 || entry.attr == FAT_ATTR_LFN {
+                if first_byte == 0xE5 || attr_byte == FAT_ATTR_LFN {
                     continue;
                 }
 
+                // Copy name to aligned buffer for comparison
+                let mut entry_name = [0u8; 11];
+                for i in 0..11 {
+                    entry_name[i] = unsafe { core::ptr::read_unaligned(entry_ptr.wrapping_add(i)) };
+                }
+
                 // Compare name (8.3 format, case-insensitive)
-                if fat32_name_match(&entry.name, name) {
+                if fat32_name_match(&entry_name, name) {
                     serial::print("FAT32: Found '");
                     for &c in name {
                         serial::print_char(c);
@@ -898,6 +1305,11 @@ fn find_fat32_entry(
                     serial::print("' in cluster ");
                     serial::print_dec(current_cluster);
                     serial::println("");
+
+                    // Read the full entry with read_unaligned
+                    let entry = unsafe {
+                        core::ptr::read_unaligned(entry_ptr as *const Fat32DirEntry)
+                    };
                     return Some(entry);
                 }
             }
@@ -1041,7 +1453,8 @@ fn parse_grub_config(contents: &[u8; 512]) -> GrubParseResult {
 }
 
 /// Detect OS from ext4 filesystem by reading /etc/os-release
-fn detect_os_from_ext4(controller: &mut virtio::VirtioScsi, target: u8, lun: u8, partition_lba: u64) -> ([u8; 64], usize) {
+/// Detect OS from ext4. Writes to OS_NAME_BUF and OS_NAME_LEN globals. Returns true on success.
+fn detect_os_from_ext4(controller: &mut virtio::VirtioScsi, target: u8, lun: u8, partition_lba: u64) -> bool {
     serial::println("Reading ext4 filesystem for OS detection...");
 
     // ext4 superblock is at offset 1024 (byte 1024-2047 of the partition)
@@ -1051,7 +1464,7 @@ fn detect_os_from_ext4(controller: &mut virtio::VirtioScsi, target: u8, lun: u8,
     let mut sb_sector = [0u8; 512];
     if !controller.read_sector(target, lun, superblock_lba as u32, &mut sb_sector) {
         serial::println("Failed to read ext4 superblock");
-        return ([0; 64], 0);
+        return false;
     }
 
     let superblock = unsafe {
@@ -1063,7 +1476,7 @@ fn detect_os_from_ext4(controller: &mut virtio::VirtioScsi, target: u8, lun: u8,
         serial::print("Not ext4 (magic=0x");
         serial::print_hex32(superblock.s_magic as u32);
         serial::println(")");
-        return ([0; 64], 0);
+        return false;
     }
     serial::println("ext4 filesystem confirmed");
 
@@ -1077,43 +1490,54 @@ fn detect_os_from_ext4(controller: &mut virtio::VirtioScsi, target: u8, lun: u8,
     // First, find the root inode (inode 2)
     // Then navigate to /etc/os-release
 
-    if let Some((buf, len)) = read_os_release(controller, target, lun, partition_lba, &superblock) {
-        return (buf, len);
+    if read_os_release(controller, target, lun, partition_lba, &superblock) {
+        // OS info is now in OS_NAME_BUF and OS_NAME_LEN globals
+        serial::println("DBG: detect_os_from_ext4 success");
+        return true;
     }
 
-    // Fallback: check volume label
-    let mut name_buf = [0u8; 64];
-    let mut name_len = 0usize;
+    // Fallback: check volume label - write directly to globals
+    unsafe {
+        OS_NAME_LEN = 0;
+        for i in 0..64 {
+            OS_NAME_BUF[i] = 0;
+        }
+    }
 
     for (i, &c) in superblock.s_volume_name.iter().enumerate() {
         if c == 0 {
             break;
         }
         if i < 64 {
-            name_buf[i] = c;
-            name_len = i + 1;
+            unsafe {
+                OS_NAME_BUF[i] = c;
+                OS_NAME_LEN = i + 1;
+            }
         }
     }
 
+    let name_len = unsafe { OS_NAME_LEN };
     if name_len > 0 {
         serial::print("Volume label: ");
         for i in 0..name_len {
-            serial::print_char(name_buf[i]);
+            unsafe { serial::print_char(OS_NAME_BUF[i]); }
         }
         serial::println("");
+        return true;
     }
 
-    (name_buf, name_len)
+    false
 }
 
 /// Try to read OS info from ext4 - first /boot/grub/grub.cfg, then /etc/os-release
+/// Writes directly to OS_NAME_BUF and OS_NAME_LEN globals. Returns true on success.
 fn read_os_release(
     controller: &mut virtio::VirtioScsi,
     target: u8,
     lun: u8,
     partition_lba: u64,
     superblock: &Ext4Superblock
-) -> Option<([u8; 64], usize)> {
+) -> bool {
     let block_size = 1024u32 << superblock.s_log_block_size;
     let inode_size = superblock.s_inode_size as u32;
 
@@ -1126,7 +1550,7 @@ fn read_os_release(
     let mut bgdt_sector = [0u8; 512];
     if !controller.read_sector(target, lun, bgdt_lba as u32, &mut bgdt_sector) {
         serial::println("Failed to read block group descriptor");
-        return None;
+        return false;
     }
 
     // Block group descriptor is 32 bytes (or 64 for 64-bit features)
@@ -1138,34 +1562,72 @@ fn read_os_release(
     serial::println("");
 
     // Root inode is inode 2 (index 1 in 0-based)
-    let root_inode = read_inode(controller, target, lun, partition_lba, block_size, inode_table_block, inode_size, 2)?;
+    let root_inode = match read_inode(controller, target, lun, partition_lba, block_size, inode_table_block, inode_size, 2) {
+        Some(i) => i,
+        None => return false,
+    };
 
-    // Debug: show root inode info
+    // Debug: show root inode info - use read_unaligned for packed struct
+    let inode_ptr = &root_inode as *const Ext4Inode as *const u8;
+    let i_mode = unsafe {
+        u16::from_le_bytes([
+            core::ptr::read_unaligned(inode_ptr),
+            core::ptr::read_unaligned(inode_ptr.wrapping_add(1)),
+        ])
+    };
+    let i_flags = unsafe {
+        u32::from_le_bytes([
+            core::ptr::read_unaligned(inode_ptr.wrapping_add(32)),
+            core::ptr::read_unaligned(inode_ptr.wrapping_add(33)),
+            core::ptr::read_unaligned(inode_ptr.wrapping_add(34)),
+            core::ptr::read_unaligned(inode_ptr.wrapping_add(35)),
+        ])
+    };
+    let i_blocks_lo = unsafe {
+        u32::from_le_bytes([
+            core::ptr::read_unaligned(inode_ptr.wrapping_add(28)),
+            core::ptr::read_unaligned(inode_ptr.wrapping_add(29)),
+            core::ptr::read_unaligned(inode_ptr.wrapping_add(30)),
+            core::ptr::read_unaligned(inode_ptr.wrapping_add(31)),
+        ])
+    };
+
     serial::print("Root inode: mode=0x");
-    serial::print_hex32(root_inode.i_mode as u32);
+    serial::print_hex32(i_mode as u32);
     serial::print(" flags=0x");
-    serial::print_hex32(root_inode.i_flags);
+    serial::print_hex32(i_flags);
     serial::print(" blocks=");
-    serial::print_dec(root_inode.i_blocks_lo);
+    serial::print_dec(i_blocks_lo);
     serial::println("");
 
+    serial::print("DBG: inode_ptr=0x");
+    serial::print_hex32(inode_ptr as u32);
+    serial::println("");
+
+    // Use static buffer to avoid stack allocation issues
+    static mut ROOT_I_BLOCK: [u8; 60] = [0u8; 60];
+
+    serial::println("DBG: about to copy i_block");
+
     // Copy i_block to avoid packed struct alignment issues
-    let mut root_i_block_bytes = [0u8; 60];
-    unsafe {
-        let inode_ptr = &root_inode as *const Ext4Inode as *const u8;
-        // i_block is at offset 40 (0x28) in the inode struct
-        core::ptr::copy_nonoverlapping(
-            inode_ptr.add(40),
-            root_i_block_bytes.as_mut_ptr(),
-            60
-        );
+    // i_block is at offset 40 (0x28) in the inode struct
+    for i in 0..60 {
+        unsafe {
+            ROOT_I_BLOCK[i] = core::ptr::read_unaligned(inode_ptr.wrapping_add(40 + i));
+        }
     }
+
+    serial::println("DBG: copied i_block");
+
+    // Use static buffer directly - avoid stack copy
     serial::print("Root i_block[0..4]: ");
     for i in 0..4 {
-        let val = u32::from_le_bytes([
-            root_i_block_bytes[i*4], root_i_block_bytes[i*4+1],
-            root_i_block_bytes[i*4+2], root_i_block_bytes[i*4+3]
-        ]);
+        let val = unsafe {
+            u32::from_le_bytes([
+                ROOT_I_BLOCK[i*4], ROOT_I_BLOCK[i*4+1],
+                ROOT_I_BLOCK[i*4+2], ROOT_I_BLOCK[i*4+3]
+            ])
+        };
         serial::print_hex32(val);
         serial::print(" ");
     }
@@ -1173,13 +1635,26 @@ fn read_os_release(
 
     // Try /boot/grub/grub.cfg first (for GRUB menuentry)
     serial::println("Trying /boot/grub/grub.cfg...");
-    if let Some(result) = read_grub_cfg_from_ext4(controller, target, lun, partition_lba, block_size, inode_table_block, inode_size, &root_inode) {
-        return Some(result);
+    if let Some((buf, len)) = read_grub_cfg_from_ext4(controller, target, lun, partition_lba, block_size, inode_table_block, inode_size, &root_inode) {
+        // Copy grub result to globals
+        unsafe {
+            OS_NAME_LEN = len;
+            for i in 0..len.min(64) {
+                OS_NAME_BUF[i] = buf[i];
+            }
+        }
+        return true;
     }
 
     // Fall back to /etc/os-release
     serial::println("Trying /etc/os-release...");
-    read_etc_os_release(controller, target, lun, partition_lba, block_size, inode_table_block, inode_size, &root_inode)
+    serial::println("DBG: about to call read_etc_os_release");
+    let success = read_etc_os_release(controller, target, lun, partition_lba, block_size, inode_table_block, inode_size, &root_inode);
+    serial::print("DBG: read_etc_os_release returned ");
+    if success { serial::println("true"); } else { serial::println("false"); }
+
+    serial::println("DBG: returning from read_os_release");
+    success
 }
 
 /// Read /boot/grub/grub.cfg from ext4
@@ -1193,7 +1668,9 @@ fn read_grub_cfg_from_ext4(
     inode_size: u32,
     root_inode: &Ext4Inode
 ) -> Option<([u8; 64], usize)> {
+    serial::println("DBG: entered read_grub_cfg_from_ext4");
     // Find /boot directory
+    serial::println("DBG: calling find_dir_entry for 'boot'");
     let boot_inode_num = find_dir_entry(controller, target, lun, partition_lba, block_size, root_inode, b"boot")?;
     serial::print("Found /boot at inode ");
     serial::print_dec(boot_inode_num);
@@ -1221,13 +1698,13 @@ fn read_grub_cfg_from_ext4(
     let contents = read_file_contents(controller, target, lun, partition_lba, block_size, &cfg_inode)?;
 
     // Parse menuentry from grub.cfg
-    match parse_grub_config(&contents) {
+    match parse_grub_config(contents) {
         GrubParseResult::MenuEntry(buf, len) => Some((buf, len)),
         _ => None,
     }
 }
 
-/// Read /etc/os-release from ext4
+/// Read /etc/os-release from ext4. Returns true if OS was detected.
 fn read_etc_os_release(
     controller: &mut virtio::VirtioScsi,
     target: u8,
@@ -1237,41 +1714,63 @@ fn read_etc_os_release(
     inode_table_block: u32,
     inode_size: u32,
     root_inode: &Ext4Inode
-) -> Option<([u8; 64], usize)> {
+) -> bool {
     // Find /etc directory in root
-    let etc_inode_num = find_dir_entry(controller, target, lun, partition_lba, block_size, root_inode, b"etc")?;
+    let etc_inode_num = match find_dir_entry(controller, target, lun, partition_lba, block_size, root_inode, b"etc") {
+        Some(n) => n,
+        None => return false,
+    };
 
     serial::print("Found /etc at inode ");
     serial::print_dec(etc_inode_num);
     serial::println("");
 
     // Read /etc inode
-    let etc_inode = read_inode(controller, target, lun, partition_lba, block_size, inode_table_block, inode_size, etc_inode_num)?;
+    let etc_inode = match read_inode(controller, target, lun, partition_lba, block_size, inode_table_block, inode_size, etc_inode_num) {
+        Some(i) => i,
+        None => return false,
+    };
 
     // Find os-release in /etc
-    let os_release_inode_num = find_dir_entry(controller, target, lun, partition_lba, block_size, &etc_inode, b"os-release")?;
+    let os_release_inode_num = match find_dir_entry(controller, target, lun, partition_lba, block_size, &etc_inode, b"os-release") {
+        Some(n) => n,
+        None => return false,
+    };
 
     serial::print("Found /etc/os-release at inode ");
     serial::print_dec(os_release_inode_num);
     serial::println("");
 
     // Read os-release inode
-    let os_release_inode = read_inode(controller, target, lun, partition_lba, block_size, inode_table_block, inode_size, os_release_inode_num)?;
+    let os_release_inode = match read_inode(controller, target, lun, partition_lba, block_size, inode_table_block, inode_size, os_release_inode_num) {
+        Some(i) => i,
+        None => return false,
+    };
 
     // Check if it's a symlink - if so, follow to /usr/lib/os-release
-    if (os_release_inode.i_mode & 0xF000) == 0xA000 {
+    let os_release_inode_ptr = &os_release_inode as *const Ext4Inode as *const u8;
+    let os_release_mode = unsafe {
+        u16::from_le_bytes([
+            core::ptr::read_unaligned(os_release_inode_ptr),
+            core::ptr::read_unaligned(os_release_inode_ptr.wrapping_add(1)),
+        ])
+    };
+    if (os_release_mode & 0xF000) == 0xA000 {
         serial::println("os-release is symlink, trying /usr/lib/os-release");
         return read_usr_lib_os_release(controller, target, lun, partition_lba, block_size, inode_table_block, inode_size, root_inode);
     }
 
     // Read file contents
-    let contents = read_file_contents(controller, target, lun, partition_lba, block_size, &os_release_inode)?;
+    let contents = match read_file_contents(controller, target, lun, partition_lba, block_size, &os_release_inode) {
+        Some(c) => c,
+        None => return false,
+    };
 
-    // Parse PRETTY_NAME from os-release
-    parse_pretty_name(&contents)
+    // Parse PRETTY_NAME from os-release (writes to global OS_NAME_BUF/LEN)
+    parse_pretty_name(contents)
 }
 
-/// Read /usr/lib/os-release from ext4 (symlink target)
+/// Read /usr/lib/os-release from ext4 (symlink target). Returns true if OS was detected.
 fn read_usr_lib_os_release(
     controller: &mut virtio::VirtioScsi,
     target: u8,
@@ -1281,36 +1780,57 @@ fn read_usr_lib_os_release(
     inode_table_block: u32,
     inode_size: u32,
     root_inode: &Ext4Inode
-) -> Option<([u8; 64], usize)> {
+) -> bool {
     // Find /usr directory
-    let usr_inode_num = find_dir_entry(controller, target, lun, partition_lba, block_size, root_inode, b"usr")?;
+    let usr_inode_num = match find_dir_entry(controller, target, lun, partition_lba, block_size, root_inode, b"usr") {
+        Some(n) => n,
+        None => return false,
+    };
     serial::print("Found /usr at inode ");
     serial::print_dec(usr_inode_num);
     serial::println("");
 
-    let usr_inode = read_inode(controller, target, lun, partition_lba, block_size, inode_table_block, inode_size, usr_inode_num)?;
+    let usr_inode = match read_inode(controller, target, lun, partition_lba, block_size, inode_table_block, inode_size, usr_inode_num) {
+        Some(i) => i,
+        None => return false,
+    };
 
     // Find /usr/lib directory
-    let lib_inode_num = find_dir_entry(controller, target, lun, partition_lba, block_size, &usr_inode, b"lib")?;
+    let lib_inode_num = match find_dir_entry(controller, target, lun, partition_lba, block_size, &usr_inode, b"lib") {
+        Some(n) => n,
+        None => return false,
+    };
     serial::print("Found /usr/lib at inode ");
     serial::print_dec(lib_inode_num);
     serial::println("");
 
-    let lib_inode = read_inode(controller, target, lun, partition_lba, block_size, inode_table_block, inode_size, lib_inode_num)?;
+    let lib_inode = match read_inode(controller, target, lun, partition_lba, block_size, inode_table_block, inode_size, lib_inode_num) {
+        Some(i) => i,
+        None => return false,
+    };
 
     // Find os-release in /usr/lib
-    let os_release_inode_num = find_dir_entry(controller, target, lun, partition_lba, block_size, &lib_inode, b"os-release")?;
+    let os_release_inode_num = match find_dir_entry(controller, target, lun, partition_lba, block_size, &lib_inode, b"os-release") {
+        Some(n) => n,
+        None => return false,
+    };
     serial::print("Found /usr/lib/os-release at inode ");
     serial::print_dec(os_release_inode_num);
     serial::println("");
 
-    let os_release_inode = read_inode(controller, target, lun, partition_lba, block_size, inode_table_block, inode_size, os_release_inode_num)?;
+    let os_release_inode = match read_inode(controller, target, lun, partition_lba, block_size, inode_table_block, inode_size, os_release_inode_num) {
+        Some(i) => i,
+        None => return false,
+    };
 
     // Read file contents
-    let contents = read_file_contents(controller, target, lun, partition_lba, block_size, &os_release_inode)?;
+    let contents = match read_file_contents(controller, target, lun, partition_lba, block_size, &os_release_inode) {
+        Some(c) => c,
+        None => return false,
+    };
 
-    // Parse PRETTY_NAME from os-release
-    parse_pretty_name(&contents)
+    // Parse PRETTY_NAME from os-release (writes to global OS_NAME_BUF/LEN)
+    parse_pretty_name(contents)
 }
 
 /// Read an inode from the filesystem
@@ -1357,23 +1877,49 @@ fn read_inode(
     Some(inode)
 }
 
+// Static buffer for i_block data in get_first_data_block
+static mut IBLOCK_BYTES: [u8; 60] = [0u8; 60];
+
 /// Get the first data block from an inode (handles both extents and direct blocks)
 fn get_first_data_block(dir_inode: &Ext4Inode) -> Option<u64> {
-    // Copy i_block to avoid packed struct alignment issues
-    let mut i_block_bytes = [0u8; 60];
-    unsafe {
-        let inode_ptr = dir_inode as *const Ext4Inode as *const u8;
-        // i_block is at offset 40 (0x28) in the inode struct
-        core::ptr::copy_nonoverlapping(
-            inode_ptr.add(40),
-            i_block_bytes.as_mut_ptr(),
-            60
-        );
-    }
+    serial::println("DBG: entered get_first_data_block");
 
-    let mode = dir_inode.i_mode;
-    let flags = dir_inode.i_flags;
-    let size = dir_inode.i_size_lo;
+    let inode_ptr = dir_inode as *const Ext4Inode as *const u8;
+    serial::print("DBG: inode_ptr=0x");
+    serial::print_hex32(inode_ptr as u32);
+    serial::println("");
+
+    // Copy i_block byte by byte to avoid alignment issues
+    // i_block is at offset 40 (0x28) in the inode struct
+    let i_block_bytes = unsafe { &mut *core::ptr::addr_of_mut!(IBLOCK_BYTES) };
+    for i in 0..60 {
+        i_block_bytes[i] = unsafe { core::ptr::read_unaligned(inode_ptr.wrapping_add(40 + i)) };
+    }
+    serial::println("DBG: copied i_block_bytes");
+
+    // Read packed struct fields safely
+    let mode = unsafe {
+        u16::from_le_bytes([
+            core::ptr::read_unaligned(inode_ptr),
+            core::ptr::read_unaligned(inode_ptr.wrapping_add(1)),
+        ])
+    };
+    let flags = unsafe {
+        u32::from_le_bytes([
+            core::ptr::read_unaligned(inode_ptr.wrapping_add(32)),
+            core::ptr::read_unaligned(inode_ptr.wrapping_add(33)),
+            core::ptr::read_unaligned(inode_ptr.wrapping_add(34)),
+            core::ptr::read_unaligned(inode_ptr.wrapping_add(35)),
+        ])
+    };
+    let size = unsafe {
+        u32::from_le_bytes([
+            core::ptr::read_unaligned(inode_ptr.wrapping_add(4)),
+            core::ptr::read_unaligned(inode_ptr.wrapping_add(5)),
+            core::ptr::read_unaligned(inode_ptr.wrapping_add(6)),
+            core::ptr::read_unaligned(inode_ptr.wrapping_add(7)),
+        ])
+    };
 
     serial::print("  inode mode=0x");
     serial::print_hex32(mode as u32);
@@ -1398,40 +1944,44 @@ fn get_first_data_block(dir_inode: &Ext4Inode) -> Option<u64> {
 
     // Check if extents are used (i_flags & EXT4_EXTENTS_FL)
     if flags & EXT4_EXTENTS_FL != 0 {
-        // Parse extent header from i_block
-
-        let eh = unsafe {
-            core::ptr::read_unaligned(i_block_bytes.as_ptr() as *const Ext4ExtentHeader)
-        };
+        // Parse extent header from i_block - read fields directly to avoid packed struct issues
+        // Ext4ExtentHeader layout: magic(2) entries(2) max(2) depth(2) generation(4) = 12 bytes
+        let eh_magic = u16::from_le_bytes([i_block_bytes[0], i_block_bytes[1]]);
+        let eh_entries = u16::from_le_bytes([i_block_bytes[2], i_block_bytes[3]]);
+        let eh_depth = u16::from_le_bytes([i_block_bytes[6], i_block_bytes[7]]);
 
         serial::print("Extent header: magic=0x");
-        serial::print_hex32(eh.eh_magic as u32);
+        serial::print_hex32(eh_magic as u32);
         serial::print(" entries=");
-        serial::print_dec(eh.eh_entries as u32);
+        serial::print_dec(eh_entries as u32);
         serial::print(" depth=");
-        serial::print_dec(eh.eh_depth as u32);
+        serial::print_dec(eh_depth as u32);
         serial::println("");
 
-        if eh.eh_magic != EXT4_EXTENT_MAGIC {
+        if eh_magic != EXT4_EXTENT_MAGIC {
             serial::println("Bad extent magic!");
             return None;
         }
 
-        if eh.eh_entries == 0 {
+        if eh_entries == 0 {
             serial::println("No extent entries!");
             return None;
         }
 
-        if eh.eh_depth == 0 {
-            // Leaf node - extent directly follows header
-            let extent = unsafe {
-                core::ptr::read_unaligned(i_block_bytes.as_ptr().add(12) as *const Ext4Extent)
-            };
-            let block = ((extent.ee_start_hi as u64) << 32) | (extent.ee_start_lo as u64);
+        if eh_depth == 0 {
+            // Leaf node - extent directly follows header at offset 12
+            // Ext4Extent layout: ee_block(4) ee_len(2) ee_start_hi(2) ee_start_lo(4) = 12 bytes
+            let ee_len = u16::from_le_bytes([i_block_bytes[16], i_block_bytes[17]]);
+            let ee_start_hi = u16::from_le_bytes([i_block_bytes[18], i_block_bytes[19]]);
+            let ee_start_lo = u32::from_le_bytes([
+                i_block_bytes[20], i_block_bytes[21], i_block_bytes[22], i_block_bytes[23]
+            ]);
+
+            let block = ((ee_start_hi as u64) << 32) | (ee_start_lo as u64);
             serial::print("Extent: block=");
             serial::print_dec(block as u32);
             serial::print(" len=");
-            serial::print_dec(extent.ee_len as u32);
+            serial::print_dec(ee_len as u32);
             serial::println("");
             return Some(block);
         } else {
@@ -1452,6 +2002,9 @@ fn get_first_data_block(dir_inode: &Ext4Inode) -> Option<u64> {
     }
 }
 
+// Static buffer for directory block reads - avoid 4KB stack allocation
+static mut DIR_BLOCK_DATA: [u8; 4096] = [0u8; 4096];
+
 /// Find a directory entry by name
 fn find_dir_entry(
     controller: &mut virtio::VirtioScsi,
@@ -1462,17 +2015,23 @@ fn find_dir_entry(
     dir_inode: &Ext4Inode,
     name: &[u8]
 ) -> Option<u32> {
+    serial::println("DBG: entered find_dir_entry");
+
     // Get the first data block (handling extents)
+    serial::println("DBG: calling get_first_data_block");
     let block_num = get_first_data_block(dir_inode)?;
+    serial::print("DBG: got block_num=");
+    serial::print_dec(block_num as u32);
+    serial::println("");
 
     let block_lba = partition_lba + (block_num * block_size as u64 / 512);
     serial::print("Reading dir block at LBA ");
     serial::print_dec(block_lba as u32);
     serial::println("");
 
-    // Read directory block (may span multiple sectors)
+    // Read directory block (may span multiple sectors) - use static buffer
     let sectors_per_block = block_size / 512;
-    let mut block_data = [0u8; 4096]; // Max 4K block
+    let block_data = unsafe { &mut *core::ptr::addr_of_mut!(DIR_BLOCK_DATA) };
 
     for i in 0..sectors_per_block.min(8) {
         let mut sector = [0u8; 512];
@@ -1490,22 +2049,40 @@ fn find_dir_entry(
     }
     serial::println("");
 
-    // Parse directory entries
+    // Parse directory entries - read fields directly to avoid packed struct issues
+    // Ext4DirEntry layout: inode(4) rec_len(2) name_len(1) file_type(1) name(variable)
     let mut offset = 0usize;
     while offset < block_size as usize {
-        let entry = unsafe {
-            core::ptr::read_unaligned(block_data.as_ptr().add(offset) as *const Ext4DirEntry)
-        };
-
-        if entry.inode == 0 || entry.rec_len == 0 {
+        // Ensure we have at least 8 bytes for the header
+        if offset + 8 > block_size as usize {
             break;
         }
 
-        let entry_name = &block_data[offset + 8..offset + 8 + entry.name_len as usize];
+        // Read fields directly from bytes
+        let entry_inode = u32::from_le_bytes([
+            block_data[offset], block_data[offset + 1],
+            block_data[offset + 2], block_data[offset + 3]
+        ]);
+        let entry_rec_len = u16::from_le_bytes([
+            block_data[offset + 4], block_data[offset + 5]
+        ]);
+        let entry_name_len = block_data[offset + 6];
+
+        if entry_inode == 0 || entry_rec_len == 0 {
+            break;
+        }
+
+        // Bounds check for name
+        let name_end = offset + 8 + entry_name_len as usize;
+        if name_end > block_size as usize {
+            break;
+        }
+
+        let entry_name = &block_data[offset + 8..name_end];
 
         // Debug: show entry
         serial::print("  Entry: inode=");
-        serial::print_dec(entry.inode);
+        serial::print_dec(entry_inode);
         serial::print(" name=");
         for &b in entry_name {
             serial::print_char(b);
@@ -1513,16 +2090,20 @@ fn find_dir_entry(
         serial::println("");
 
         if entry_name == name {
-            return Some(entry.inode);
+            return Some(entry_inode);
         }
 
-        offset += entry.rec_len as usize;
+        offset += entry_rec_len as usize;
     }
 
     None
 }
 
+// Static buffer for file contents - avoid 512-byte stack return
+static mut FILE_CONTENTS: [u8; 512] = [0u8; 512];
+
 /// Read file contents (first block only, up to 512 bytes)
+/// Returns a reference to a static buffer
 fn read_file_contents(
     controller: &mut virtio::VirtioScsi,
     target: u8,
@@ -1530,52 +2111,83 @@ fn read_file_contents(
     partition_lba: u64,
     block_size: u32,
     inode: &Ext4Inode
-) -> Option<[u8; 512]> {
+) -> Option<&'static [u8; 512]> {
+    serial::println("DBG: read_file_contents");
+
     // Get the first data block (handling extents)
     let block_num = get_first_data_block(inode)?;
+    serial::println("DBG: got block_num for file");
 
     let block_lba = partition_lba + (block_num * block_size as u64 / 512);
 
-    let mut sector = [0u8; 512];
-    if !controller.read_sector(target, lun, block_lba as u32, &mut sector) {
+    let contents = unsafe { &mut *core::ptr::addr_of_mut!(FILE_CONTENTS) };
+    if !controller.read_sector(target, lun, block_lba as u32, contents) {
         return None;
     }
 
-    Some(sector)
+    serial::println("DBG: read file sector OK");
+    Some(unsafe { &*core::ptr::addr_of!(FILE_CONTENTS) })
 }
 
-/// Parse PRETTY_NAME from os-release contents
-fn parse_pretty_name(contents: &[u8; 512]) -> Option<([u8; 64], usize)> {
+/// Parse PRETTY_NAME from os-release contents.
+/// Writes directly to global OS_NAME_BUF and OS_NAME_LEN to avoid stack returns.
+/// Returns true on success.
+fn parse_pretty_name(contents: &[u8; 512]) -> bool {
+    serial::println("DBG: parse_pretty_name");
+
     // Look for PRETTY_NAME="..."
     let pattern = b"PRETTY_NAME=\"";
 
-    let mut start = None;
-    for i in 0..contents.len() - pattern.len() {
-        if &contents[i..i + pattern.len()] == pattern {
-            start = Some(i + pattern.len());
+    let mut start_idx = 0usize;
+    let mut found = false;
+
+    for i in 0..(512 - 13) {
+        let mut matches = true;
+        for j in 0..13 {
+            if contents[i + j] != pattern[j] {
+                matches = false;
+                break;
+            }
+        }
+        if matches {
+            start_idx = i + 13;
+            found = true;
             break;
         }
     }
 
-    let start = start?;
-
-    // Find closing quote
-    let mut end = start;
-    while end < contents.len() && contents[end] != b'"' && contents[end] != 0 {
-        end += 1;
+    if !found {
+        serial::println("DBG: PRETTY_NAME not found");
+        return false;
     }
 
-    let name_len = (end - start).min(64);
-    let mut name_buf = [0u8; 64];
-    name_buf[..name_len].copy_from_slice(&contents[start..start + name_len]);
+    // Find closing quote
+    let mut end_idx = start_idx;
+    while end_idx < 512 && contents[end_idx] != b'"' && contents[end_idx] != 0 {
+        end_idx += 1;
+    }
+
+    let name_len = (end_idx - start_idx).min(64);
+
+    // Write directly to global statics (avoids returning arrays on stack)
+    unsafe {
+        OS_NAME_LEN = name_len;
+        for i in 0..64 {
+            OS_NAME_BUF[i] = 0;
+        }
+        for i in 0..name_len {
+            OS_NAME_BUF[i] = contents[start_idx + i];
+        }
+    }
 
     serial::print("Detected OS: ");
     for i in 0..name_len {
-        serial::print_char(name_buf[i]);
+        unsafe { serial::print_char(OS_NAME_BUF[i]); }
     }
     serial::println("");
 
-    Some((name_buf, name_len))
+    serial::println("DBG: parse_pretty_name done");
+    true
 }
 
 /// Check if ATA drive exists

@@ -8,10 +8,14 @@
 
 #![no_std]
 #![no_main]
+#![feature(alloc_error_handler)]
+
+extern crate alloc;
 
 use core::panic::PanicInfo;
 
 mod ahci;
+mod allocator;
 mod bios;
 mod bios_disk;
 mod block_logo;
@@ -21,12 +25,14 @@ mod font;
 mod framebuffer;
 mod memory;
 mod menu;
+mod net;
 mod pci;
 mod serial;
 mod ui;
 mod vector_font;
 mod vga;
 mod virtio;
+mod virtio_net;
 
 /// Multiboot2 header magic that bootloader passes to us
 const MULTIBOOT2_BOOTLOADER_MAGIC: u32 = 0x36d76289;
@@ -84,7 +90,7 @@ fn main_logic_graphical() -> ! {
     serial::println("OS scan complete");
 
     // Show graphical boot menu
-    let choice = ui::draw_boot_screen(detected_os.as_ref());
+    let choice = ui::draw_boot_screen(detected_os);
 
     match choice {
         ui::Choice::BootLocal => {
@@ -92,7 +98,7 @@ fn main_logic_graphical() -> ! {
             // Reset VirtIO to try to restore BIOS compatibility
             virtio::reset_all();
             // Use cached MBR from VirtIO detection
-            if let Some(ref os) = detected_os {
+            if let Some(os) = detected_os {
                 bios_disk::chainload_mbr(&os.mbr, 0x80);
             } else {
                 serial::println("ERROR: No OS detected, cannot boot");

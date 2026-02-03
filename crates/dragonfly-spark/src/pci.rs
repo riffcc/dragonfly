@@ -22,6 +22,18 @@ pub struct PciDevice {
     pub bar5: u32, // For AHCI, this is the ABAR
 }
 
+impl PciDevice {
+    /// Alias for slot (VirtIO driver compatibility)
+    pub fn device(&self) -> u8 {
+        self.slot
+    }
+
+    /// Alias for func (VirtIO driver compatibility)
+    pub fn function(&self) -> u8 {
+        self.func
+    }
+}
+
 /// Write 32-bit value to I/O port
 #[inline]
 unsafe fn outl(port: u16, value: u32) {
@@ -261,4 +273,21 @@ fn pci_write16(bus: u8, slot: u8, func: u8, offset: u8, value: u16) {
         outl(PCI_CONFIG_ADDRESS, address);
         outl(PCI_CONFIG_DATA, new_val);
     }
+}
+
+// ============== Public PCI config space access ==============
+
+/// Read a 16-bit value from PCI config space (public API)
+pub fn config_read_word(bus: u8, device: u8, function: u8, offset: u8) -> u16 {
+    pci_read16(bus, device, function, offset)
+}
+
+/// Write a 16-bit value to PCI config space (public API)
+pub fn config_write_word(bus: u8, device: u8, function: u8, offset: u8, value: u16) {
+    pci_write16(bus, device, function, offset, value);
+}
+
+/// Read a 32-bit value from PCI config space (public API)
+pub fn config_read_dword(bus: u8, device: u8, function: u8, offset: u8) -> u32 {
+    pci_read32(bus, device, function, offset)
 }

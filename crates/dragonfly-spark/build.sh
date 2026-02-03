@@ -15,13 +15,14 @@ if ! command -v nasm &> /dev/null; then
 fi
 
 # Build with cargo (build.rs handles assembly and linking)
+# Using x86_64 for native AtomicU64 support (required by networking stack)
 echo "Building..."
-cargo build --target i686-spark.json -Zbuild-std=core -Zbuild-std-features=compiler-builtins-mem -Zjson-target-spec --release
+cargo build --target x86_64-spark.json -Zbuild-std=core,alloc -Zbuild-std-features=compiler-builtins-mem -Zjson-target-spec --release
 
 # Copy and strip the result
 echo ""
 echo "Finalizing ELF..."
-cp target/i686-spark/release/dragonfly-spark spark.elf
+cp target/x86_64-spark/release/dragonfly-spark spark.elf
 strip spark.elf
 
 # Verify multiboot2
@@ -70,4 +71,4 @@ echo "ELF: $SIZE_ELF bytes (~$(( SIZE_ELF / 1024 )) KB)"
 echo "ISO: $SIZE_ISO bytes (~$(( SIZE_ISO / 1024 / 1024 )) MB)"
 
 echo ""
-echo "To test: qemu-system-i386 -cdrom spark.iso"
+echo "To test: qemu-system-x86_64 -cdrom spark.iso"
