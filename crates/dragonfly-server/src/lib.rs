@@ -552,6 +552,7 @@ pub async fn run() -> anyhow::Result<()> {
         // Build iPXE configuration
         let ipxe_config = dragonfly_ipxe::IpxeConfig {
             base_url: boot_server_url,
+            spark_url: std::env::var("DRAGONFLY_SPARK_URL").ok(),
             mage_kernel_url: std::env::var("DRAGONFLY_MAGE_KERNEL_URL").ok(),
             mage_initramfs_url: std::env::var("DRAGONFLY_MAGE_INITRAMFS_URL").ok(),
             kernel_params: vec![],
@@ -649,6 +650,14 @@ pub async fn run() -> anyhow::Result<()> {
         .route("/favicon.ico", get(handle_favicon))
         // Boot endpoints - /boot/{mac} for iPXE scripts, /boot/{arch}/{asset} for kernel/initramfs
         .route("/boot/{mac}", get(api::ipxe_script))
+        // Spark ELF - bare metal discovery agent (loaded by GRUB via multiboot2)
+        .route("/boot/spark.elf", get(api::serve_spark_elf))
+        // PXELINUX bootloader files
+        .route("/boot/lpxelinux.0", get(api::serve_lpxelinux))
+        .route("/boot/ldlinux.c32", get(api::serve_ldlinux))
+        .route("/boot/mboot.c32", get(api::serve_mboot))
+        .route("/boot/libcom32.c32", get(api::serve_libcom32))
+        .route("/boot/pxelinux.cfg/default", get(api::serve_pxelinux_config))
         // Dynamic boot assets - supports x86_64, aarch64, and arm64 (iPXE uses arm64)
         .route("/boot/{arch}/{asset}", get(api::serve_boot_asset_handler))
         // OS images (served during provisioning)

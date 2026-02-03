@@ -3050,6 +3050,123 @@ pub async fn workflow_events_handler(
 }
 
 // ============================================================================
+// Spark Boot Agent
+// ============================================================================
+
+/// Spark ELF path - bare metal discovery agent
+const SPARK_ELF_PATH: &str = "/var/lib/dragonfly/spark.elf";
+
+/// GRUB chainloader path - provides framebuffer support for iPXE boot
+const GRUB_CHAIN_PATH: &str = "/var/lib/dragonfly/grub-spark.0";
+
+/// Serve Spark ELF binary for iPXE multiboot
+///
+/// Spark is the bare-metal discovery agent that:
+/// - Detects hardware (CPU, memory, disks, NICs)
+/// - Checks for existing bootable OS
+/// - Reports to Dragonfly server
+/// - Chainloads to Mage for imaging when needed
+pub async fn serve_spark_elf() -> Response {
+    let spark_path = std::path::Path::new(SPARK_ELF_PATH);
+
+    if !spark_path.exists() {
+        warn!("404 /boot/spark.elf: File not found at {:?}", spark_path);
+        return (
+            StatusCode::NOT_FOUND,
+            "Spark ELF not found. Copy spark.elf to /var/lib/dragonfly/spark.elf",
+        ).into_response();
+    }
+
+    match tokio::fs::read(spark_path).await {
+        Ok(content) => {
+            info!("200 /boot/spark.elf: Serving {} bytes", content.len());
+            (
+                StatusCode::OK,
+                [(axum::http::header::CONTENT_TYPE, "application/octet-stream")],
+                content,
+            ).into_response()
+        }
+        Err(e) => {
+            error!("500 /boot/spark.elf: Failed to read: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to read Spark ELF: {}", e),
+            ).into_response()
+        }
+    }
+}
+
+/// Serve PXELINUX bootloader
+pub async fn serve_lpxelinux() -> Response {
+    serve_static_file("/var/lib/dragonfly/lpxelinux.0", "lpxelinux.0").await
+}
+
+/// Serve ldlinux.c32 module
+pub async fn serve_ldlinux() -> Response {
+    serve_static_file("/var/lib/dragonfly/ldlinux.c32", "ldlinux.c32").await
+}
+
+/// Serve mboot.c32 multiboot module
+pub async fn serve_mboot() -> Response {
+    serve_static_file("/var/lib/dragonfly/mboot.c32", "mboot.c32").await
+}
+
+/// Serve libcom32.c32 library
+pub async fn serve_libcom32() -> Response {
+    serve_static_file("/var/lib/dragonfly/libcom32.c32", "libcom32.c32").await
+}
+
+async fn serve_static_file(file_path: &str, name: &str) -> Response {
+    let path = std::path::Path::new(file_path);
+
+    if !path.exists() {
+        warn!("404 {}: Not found", name);
+        return (StatusCode::NOT_FOUND, "File not found").into_response();
+    }
+
+    match tokio::fs::read(path).await {
+        Ok(content) => {
+            info!("200 {}: Serving {} bytes", name, content.len());
+            (
+                StatusCode::OK,
+                [(axum::http::header::CONTENT_TYPE, "application/octet-stream")],
+                content,
+            ).into_response()
+        }
+        Err(e) => {
+            error!("500 {}: Failed to read: {}", name, e);
+            (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed: {}", e)).into_response()
+        }
+    }
+}
+
+/// Serve PXELINUX config file
+pub async fn serve_pxelinux_config() -> Response {
+    let config_path = "/var/lib/dragonfly/pxelinux.cfg/default";
+    let path = std::path::Path::new(config_path);
+
+    if !path.exists() {
+        warn!("404 pxelinux.cfg/default: Not found");
+        return (StatusCode::NOT_FOUND, "PXELINUX config not found").into_response();
+    }
+
+    match tokio::fs::read(path).await {
+        Ok(content) => {
+            info!("200 pxelinux.cfg/default: Serving {} bytes", content.len());
+            (
+                StatusCode::OK,
+                [(axum::http::header::CONTENT_TYPE, "text/plain")],
+                content,
+            ).into_response()
+        }
+        Err(e) => {
+            error!("500 pxelinux.cfg/default: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed: {}", e)).into_response()
+        }
+    }
+}
+
+// ============================================================================
 // Mage Boot Environment
 // ============================================================================
 

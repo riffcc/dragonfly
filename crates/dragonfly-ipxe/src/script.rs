@@ -12,13 +12,23 @@
 //! # Script Types
 //!
 //! - **Local boot**: Machine has existing OS, boot from disk
-//! - **Discovery**: Boot into Mage, agent checks in and waits for user
-//! - **Imaging**: Boot into Mage, agent checks in and proceeds automatically
+//! - **Spark**: Boot into bare-metal Spark agent for hardware discovery
+//! - **Mage/Discovery**: Boot into Mage environment, agent waits for user
+//! - **Mage/Imaging**: Boot into Mage environment, agent proceeds automatically
 //! - **Menu**: Optional interactive menu (only when explicitly enabled)
 //!
-//! Discovery and imaging use the same Mage image - only the mode parameter
-//! differs. The agent reads `dragonfly.mode` and either waits (discovery)
-//! or proceeds with the assigned workflow (imaging).
+//! # Two-Stage Boot Process
+//!
+//! 1. **Spark** - Lightweight bare-metal agent (multiboot2 ELF):
+//!    - Detects hardware (CPU, memory, disks, NICs)
+//!    - Checks for existing bootable OS on disk
+//!    - Reports to Dragonfly server
+//!    - Server decides: LocalBoot, Wait, or chainload to Mage
+//!
+//! 2. **Mage** - Full Linux environment for imaging:
+//!    - Only booted when actual imaging work is needed
+//!    - Runs dragonfly-agent which executes workflows
+//!    - Handles partitioning, imaging, kexec into installed OS
 
 use crate::error::Result;
 use dragonfly_crd::Hardware;
@@ -29,7 +39,10 @@ pub struct IpxeConfig {
     /// Base URL for fetching resources (e.g., http://192.168.1.1:8080)
     pub base_url: String,
 
-    /// Mage kernel URL
+    /// Spark ELF URL (multiboot2 binary for initial boot)
+    pub spark_url: Option<String>,
+
+    /// Mage kernel URL (for imaging when Spark chainloads)
     pub mage_kernel_url: Option<String>,
 
     /// Mage initramfs URL
@@ -49,6 +62,7 @@ impl Default for IpxeConfig {
     fn default() -> Self {
         Self {
             base_url: String::new(),
+            spark_url: None,
             kernel_params: Vec::new(),
             console: None,
             verbose: false,
@@ -85,6 +99,12 @@ impl IpxeConfig {
         self
     }
 
+    /// Set Spark ELF URL (multiboot2 binary)
+    pub fn with_spark(mut self, url: impl Into<String>) -> Self {
+        self.spark_url = Some(url.into());
+        self
+    }
+
     /// Set Mage kernel URL
     pub fn with_mage_kernel(mut self, url: impl Into<String>) -> Self {
         self.mage_kernel_url = Some(url.into());
@@ -95,6 +115,12 @@ impl IpxeConfig {
     pub fn with_mage_initramfs(mut self, url: impl Into<String>) -> Self {
         self.mage_initramfs_url = Some(url.into());
         self
+    }
+
+    fn spark(&self) -> String {
+        self.spark_url
+            .clone()
+            .unwrap_or_else(|| format!("{}/boot/spark.elf", self.base_url))
     }
 
     fn mage_kernel(&self) -> String {
@@ -193,6 +219,37 @@ echo Boot failed
 shell
 "#
         .to_string()
+    }
+
+    /// Generate Spark boot script
+    ///
+    /// Boots into Spark - the bare-metal discovery agent. Spark:
+    /// - Detects hardware (CPU, memory, disks, NICs)
+    /// - Checks for existing bootable OS
+    /// - Reports to Dragonfly server
+    /// - Either boots local OS or chainloads into Mage for imaging
+    ///
+    /// Server returns this when:
+    /// - Machine is unknown (first PXE boot)
+    /// - Machine needs hardware re-discovery
+    ///
+    /// Spark boots in text mode via iPXE multiboot (fast), then switches
+    /// to VBE graphics mode itself using BIOS calls.
+    pub fn spark_script(&self) -> String {
+        let spark = self.config.spark();
+        let base = &self.config.base_url;
+        format!(
+            r#"#!ipxe
+# Dragonfly - Spark (bare-metal discovery)
+# Fast direct multiboot - Spark sets up VBE graphics itself
+kernel {spark} server={base}
+boot || goto failed
+
+:failed
+echo Failed to boot Spark
+shell
+"#
+        )
     }
 
     /// Generate discovery script
@@ -342,6 +399,7 @@ mod tests {
 
     fn test_config() -> IpxeConfig {
         IpxeConfig::new("http://192.168.1.1:8080")
+            .with_spark("http://192.168.1.1:8080/boot/spark.elf")
             .with_mage_kernel("http://192.168.1.1:8080/mage/vmlinuz")
             .with_mage_initramfs("http://192.168.1.1:8080/mage/initramfs")
     }
@@ -384,6 +442,19 @@ mod tests {
         assert!(script.starts_with("#!ipxe"));
         assert!(script.contains("Local Boot"));
         assert!(script.contains("sanboot"));
+        // No menu
+        assert!(!script.contains("menu"));
+    }
+
+    #[test]
+    fn test_spark_script() {
+        let generator = IpxeScriptGenerator::new(test_config());
+        let script = generator.spark_script();
+
+        assert!(script.starts_with("#!ipxe"));
+        assert!(script.contains("Spark"));
+        assert!(script.contains("kernel http://192.168.1.1:8080/boot/spark.elf"));
+        assert!(script.contains("server=http://192.168.1.1:8080"));
         // No menu
         assert!(!script.contains("menu"));
     }

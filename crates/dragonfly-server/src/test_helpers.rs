@@ -5,6 +5,7 @@
 use crate::{AppState, TemplateEnv};
 use crate::auth::Settings;
 use crate::event_manager::EventManager;
+use crate::image_cache::ImageCache;
 use crate::store::v1::MemoryStore;
 use minijinja::Environment;
 use std::collections::HashMap;
@@ -36,6 +37,10 @@ pub async fn create_test_app_state() -> AppState {
     let env = Environment::new();
     let template_env = TemplateEnv::Static(Arc::new(env));
 
+    // Create image cache (use temp dir for tests)
+    let cache_dir = std::env::temp_dir().join("dragonfly-test-cache");
+    let image_cache = Arc::new(ImageCache::new(cache_dir, "http://localhost:3000"));
+
     AppState {
         settings: Arc::new(Mutex::new(settings)),
         event_manager,
@@ -53,6 +58,7 @@ pub async fn create_test_app_state() -> AppState {
         provisioning: None,
         store,
         network_services_started: Arc::new(AtomicBool::new(false)),
+        image_cache,
     }
 }
 

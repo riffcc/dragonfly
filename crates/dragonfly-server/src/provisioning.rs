@@ -169,9 +169,14 @@ impl ProvisioningService {
 
     /// Get boot script for known machine
     ///
-    /// ALL machines boot into Mage (discovery_script). The dragonfly-agent then
-    /// checks in and receives instructions (LocalBoot, Execute, Wait).
-    /// This ensures the agent always runs and can make intelligent decisions.
+    /// Known machines boot into Spark (bare-metal discovery agent). Spark:
+    /// - Detects hardware (CPU, memory, disks, NICs)
+    /// - Checks for existing bootable OS
+    /// - Reports to Dragonfly server
+    /// - Either boots local OS or chainloads into Mage for imaging
+    ///
+    /// EXCEPTION: Machines with active imaging workflows boot directly into Mage
+    /// to continue the imaging process.
     async fn boot_script_for_known_machine(&self, machine: &Machine) -> Result<String, ProvisioningError> {
         // Check for active workflow
         let workflows = self.get_workflows_for_machine(machine).await?;
@@ -184,34 +189,31 @@ impl ProvisioningService {
         });
 
         if let Some(wf) = active_workflow {
-            info!("Machine {} has active workflow {}", machine.id, wf.metadata.name);
+            // Active imaging workflow - boot directly into Mage
+            info!("Machine {} has active workflow {}, booting Mage", machine.id, wf.metadata.name);
             let script = self.ipxe_generator.imaging_script(None, &wf.metadata.name)
                 .map_err(|e| ProvisioningError::IpxeGeneration(e.to_string()))?;
             return Ok(script);
         }
 
-        // ALL other machines boot into Mage (discovery_script)
-        // The agent will check in and receive appropriate action:
-        // - Installed/ExistingOs → LocalBoot
-        // - os_choice set → Execute (create workflow)
-        // - Otherwise → Wait
+        // No active workflow - boot into Spark for discovery
+        // Spark will check in and the server will tell it what to do:
+        // - LocalBoot (existing OS detected, no reimage)
+        // - Wait (no OS choice set)
+        // - Chainload to Mage (os_choice set, imaging needed)
         debug!(
-            "Machine {} (state: {:?}) booting into Mage for agent check-in",
+            "Machine {} (state: {:?}) booting into Spark for discovery",
             machine.id, machine.status.state
         );
-        let script = self.ipxe_generator.discovery_script(None)
-            .map_err(|e| ProvisioningError::IpxeGeneration(e.to_string()))?;
-        Ok(script)
+        Ok(self.ipxe_generator.spark_script())
     }
 
     /// Get boot script for unknown machine
     async fn boot_script_for_unknown_machine(&self, mac: &str) -> Result<String, ProvisioningError> {
         info!("Unknown MAC address: {}", mac);
 
-        // All modes boot into discovery for unknown machines
-        let script = self.ipxe_generator.discovery_script(None)
-            .map_err(|e| ProvisioningError::IpxeGeneration(e.to_string()))?;
-        Ok(script)
+        // Boot into Spark for discovery - it will detect hardware and report back
+        Ok(self.ipxe_generator.spark_script())
     }
 
     /// Handle machine check-in from agent
@@ -656,7 +658,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_unknown_mac_discovery() {
+    async fn test_unknown_mac_boots_spark() {
         let store: Arc<dyn Store> = Arc::new(MemoryStore::new());
 
         let service = ProvisioningService::new(
@@ -667,7 +669,8 @@ mod tests {
 
         let script = service.get_boot_script("aa:bb:cc:dd:ee:ff").await.unwrap();
         assert!(script.contains("#!ipxe"));
-        assert!(script.contains("Discovery Mode"));
+        assert!(script.contains("Spark"), "Should boot Spark for unknown machines");
+        assert!(script.contains("kernel"), "iPXE uses kernel command for multiboot");
     }
 
     #[tokio::test]
@@ -806,10 +809,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_machine_with_os_choice_boots_discovery() {
+    async fn test_machine_with_os_choice_boots_spark() {
         let store: Arc<dyn Store> = Arc::new(MemoryStore::new());
 
-        // Create machine with os_choice
+        // Create machine with os_choice (but no active workflow)
         let identity = MachineIdentity::from_mac("00:11:22:33:44:55");
         let mut machine = Machine::new(identity);
         machine.config.os_choice = Some("debian-13".to_string());
@@ -821,8 +824,10 @@ mod tests {
             DeploymentMode::Simple,
         );
 
+        // Known machine without active workflow boots Spark
+        // Spark checks in, server creates workflow, tells Spark to chainload Mage
         let script = service.get_boot_script("00:11:22:33:44:55").await.unwrap();
-        assert!(script.contains("Discovery Mode"));
+        assert!(script.contains("Spark"), "Should boot Spark for known machine without workflow");
     }
 
     #[tokio::test]
