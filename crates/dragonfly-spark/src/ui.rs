@@ -74,7 +74,7 @@ pub fn draw_boot_screen_static(os: Option<&OsInfo>, width: u32, height: u32) {
     };
     let title_width = title.len() as u32 * 16;
     let title_x = (width - title_width) / 2;
-    font::draw_string_large(title_x, panel_y + 25, title, colors::TEXT_PRIMARY);
+    font::draw_string_large(title_x, panel_y + 35, title, colors::TEXT_PRIMARY);
 
     if let Some(os_info) = os {
         let y = panel_y + 80;
@@ -106,17 +106,18 @@ pub fn update_countdown(width: u32, seconds: u32) {
 /// Returns the user's choice.
 pub fn draw_boot_screen_with_net(
     os: Option<&OsInfo>,
-    has_net: bool,
+    net_stack: &mut Option<crate::net::NetworkStack<'static>>,
 ) -> Choice {
     let (width, height) = framebuffer::dimensions().unwrap_or((800, 600));
     let has_os = os.is_some();
+    let has_net = net_stack.is_some();
 
     let mut screen = MenuScreen::Main;
 
     loop {
         let choice = match screen {
-            MenuScreen::Main => draw_main_menu(os, width, height, has_net),
-            MenuScreen::Advanced => draw_advanced_menu(width, height),
+            MenuScreen::Main => draw_main_menu(os, width, height, has_net, net_stack),
+            MenuScreen::Advanced => draw_advanced_menu(width, height, net_stack),
         };
 
         match choice {
@@ -124,7 +125,6 @@ pub fn draw_boot_screen_with_net(
             MenuChoice::EnterAdvanced => screen = MenuScreen::Advanced,
             MenuChoice::Back => screen = MenuScreen::Main,
             MenuChoice::Timeout => {
-                // Default action on timeout
                 return if has_os { Choice::BootLocal } else { Choice::Reboot };
             }
         }
@@ -140,7 +140,7 @@ enum MenuChoice {
 }
 
 /// Draw and handle the main menu
-fn draw_main_menu(os: Option<&OsInfo>, width: u32, height: u32, _has_net: bool) -> MenuChoice {
+fn draw_main_menu(os: Option<&OsInfo>, width: u32, height: u32, _has_net: bool, net_stack: &mut Option<crate::net::NetworkStack<'static>>) -> MenuChoice {
     framebuffer::clear(colors::BG_DARK);
     let header_h = draw_header(width);
 
@@ -155,7 +155,7 @@ fn draw_main_menu(os: Option<&OsInfo>, width: u32, height: u32, _has_net: bool) 
     // Title
     let title = if os.is_some() { "Boot Menu" } else { "No OS Detected" };
     let title_width = title.len() as u32 * 16;
-    font::draw_string_large((width - title_width) / 2, panel_y + 25, title, colors::TEXT_PRIMARY);
+    font::draw_string_large((width - title_width) / 2, panel_y + 35, title, colors::TEXT_PRIMARY);
 
     // OS info
     if let Some(os_info) = os {
@@ -186,29 +186,75 @@ fn draw_main_menu(os: Option<&OsInfo>, width: u32, height: u32, _has_net: bool) 
     let timer_y = panel_y + panel_h - 70;
     draw_countdown(width, timer_y, BOOT_TIMEOUT);
 
-    // Wait for input with countdown
-    wait_for_menu_input(width, timer_y, &|scancode| {
-        if let Some(c) = bios::scancode_to_ascii(scancode) {
-            match c {
-                '1' => {
-                    if has_os {
-                        Some(MenuChoice::Selected(Choice::BootLocal))
-                    } else {
-                        Some(MenuChoice::Selected(Choice::Reboot))
-                    }
-                }
-                '2' => Some(MenuChoice::EnterAdvanced),
-                '3' => Some(MenuChoice::Selected(Choice::BootIso)),
-                _ => None,
-            }
-        } else {
-            None
+    // Input loop with countdown and network polling
+    let mut last_count = read_pit_count();
+    let mut elapsed_ticks: u64 = 0;
+    let mut last_displayed_second = BOOT_TIMEOUT;
+    let mut ip_displayed = net_stack.as_ref().map_or(false, |s| s.has_ip());
+
+    // Draw IP footer if already known
+    if let Some(stack) = net_stack.as_ref() {
+        if let Some(ip) = stack.get_ip() {
+            draw_ip_footer(width, height, ip);
         }
-    }, true)
+    }
+
+    loop {
+        // Check for keypress
+        if let Some(scancode) = bios::read_scancode() {
+            if let Some(c) = bios::scancode_to_ascii(scancode) {
+                match c {
+                    '1' => return if has_os {
+                        MenuChoice::Selected(Choice::BootLocal)
+                    } else {
+                        MenuChoice::Selected(Choice::Reboot)
+                    },
+                    '2' => return MenuChoice::EnterAdvanced,
+                    '3' => return MenuChoice::Selected(Choice::BootIso),
+                    _ => {}
+                }
+            }
+        }
+
+        // Poll network — display IP as soon as DHCP completes
+        if !ip_displayed {
+            if let Some(stack) = net_stack.as_mut() {
+                stack.poll();
+                if let Some(ip) = stack.get_ip() {
+                    stack.freeze_dhcp();
+                    draw_ip_footer(width, height, ip);
+                    ip_displayed = true;
+                }
+            }
+        }
+
+        // PIT countdown
+        let count = read_pit_count();
+        if count <= last_count {
+            elapsed_ticks += (last_count - count) as u64;
+        } else {
+            elapsed_ticks += (last_count as u64) + (65536 - count as u64);
+        }
+        last_count = count;
+
+        let elapsed_seconds = (elapsed_ticks / PIT_FREQUENCY) as u32;
+        if elapsed_seconds >= BOOT_TIMEOUT {
+            return MenuChoice::Timeout;
+        }
+
+        let remaining = BOOT_TIMEOUT - elapsed_seconds;
+        if remaining != last_displayed_second {
+            last_displayed_second = remaining;
+            let msg_width = 26 * 16;
+            let num_x = (width - msg_width) / 2 + 13 * 16;
+            framebuffer::fill_rect(num_x, timer_y, 3 * 16, 32, colors::BG_PANEL);
+            draw_number_large(num_x, timer_y, remaining, colors::ACCENT_CYAN);
+        }
+    }
 }
 
 /// Draw and handle the advanced submenu
-fn draw_advanced_menu(width: u32, height: u32) -> MenuChoice {
+fn draw_advanced_menu(width: u32, height: u32, net_stack: &mut Option<crate::net::NetworkStack<'static>>) -> MenuChoice {
     framebuffer::clear(colors::BG_DARK);
     let header_h = draw_header(width);
 
@@ -223,7 +269,7 @@ fn draw_advanced_menu(width: u32, height: u32) -> MenuChoice {
     // Title
     let title = "Advanced";
     let title_width = title.len() as u32 * 16;
-    font::draw_string_large((width - title_width) / 2, panel_y + 25, title, colors::TEXT_PRIMARY);
+    font::draw_string_large((width - title_width) / 2, panel_y + 35, title, colors::TEXT_PRIMARY);
 
     // Build menu items
     let items: [MenuItem; 4] = [
@@ -240,7 +286,17 @@ fn draw_advanced_menu(width: u32, height: u32) -> MenuChoice {
     let esc_y = panel_y + panel_h - 50;
     font::draw_string_centered(esc_y, "[ESC] Back to main menu", colors::TEXT_SECONDARY, width);
 
-    // Wait for input (no countdown on advanced menu)
+    // Track whether IP is already displayed
+    let mut ip_displayed = net_stack.as_ref().map_or(false, |s| s.has_ip());
+
+    // Draw IP footer if already known
+    if let Some(stack) = net_stack.as_ref() {
+        if let Some(ip) = stack.get_ip() {
+            draw_ip_footer(width, height, ip);
+        }
+    }
+
+    // Wait for input (no countdown on advanced menu), poll network
     loop {
         if let Some(scancode) = bios::read_scancode() {
             // Check ESC first
@@ -255,6 +311,18 @@ fn draw_advanced_menu(width: u32, height: u32) -> MenuChoice {
                     '3' => return MenuChoice::Selected(Choice::Rescue),
                     '4' => return MenuChoice::Selected(Choice::RemoveFromDragonfly),
                     _ => {}
+                }
+            }
+        }
+
+        // Poll network — display IP as soon as DHCP completes
+        if !ip_displayed {
+            if let Some(stack) = net_stack.as_mut() {
+                stack.poll();
+                if let Some(ip) = stack.get_ip() {
+                    stack.freeze_dhcp();
+                    draw_ip_footer(width, height, ip);
+                    ip_displayed = true;
                 }
             }
         }
@@ -275,15 +343,15 @@ fn draw_menu_items(items: &[MenuItem], panel_x: u32, start_y: u32) {
         let badge_x = option_x;
         let badge_y = y;
         framebuffer::fill_rounded_rect(badge_x, badge_y, 40, 36, 6, colors::ACCENT_PURPLE);
-        font::draw_string_large(badge_x + 12, badge_y + 10, item.key, colors::TEXT_PRIMARY);
+        font::draw_string_large(badge_x + 12, badge_y + 3, item.key, colors::TEXT_PRIMARY);
 
-        // Label
-        font::draw_string_large(badge_x + 60, badge_y + 10, item.label, colors::TEXT_PRIMARY);
+        // Label — vertically aligned with badge text
+        font::draw_string_large(badge_x + 60, badge_y + 3, item.label, colors::TEXT_PRIMARY);
 
         // Hint
         if !item.hint.is_empty() {
             let hint_x = badge_x + 60 + (item.label.len() as u32 + 1) * 16;
-            font::draw_string_large(hint_x, badge_y + 10, item.hint, colors::TEXT_SECONDARY);
+            font::draw_string_large(hint_x, badge_y + 3, item.hint, colors::TEXT_SECONDARY);
         }
 
         visible_idx += 1;
@@ -393,7 +461,7 @@ pub fn draw_confirmation(width: u32, height: u32, title: &str, message: &str) ->
 
     // Title
     let title_width = title.len() as u32 * 16;
-    font::draw_string_large((width - title_width) / 2, panel_y + 20, title, colors::WARNING);
+    font::draw_string_large((width - title_width) / 2, panel_y + 30, title, colors::WARNING);
 
     // Message
     font::draw_string_centered(panel_y + 70, message, colors::TEXT_PRIMARY, width);
@@ -431,7 +499,7 @@ pub fn draw_status(width: u32, height: u32, title: &str, message: &str, color: u
     framebuffer::draw_rounded_rect(panel_x, panel_y, panel_w, panel_h, 12, color);
 
     let title_width = title.len() as u32 * 16;
-    font::draw_string_large((width - title_width) / 2, panel_y + 25, title, color);
+    font::draw_string_large((width - title_width) / 2, panel_y + 35, title, color);
     font::draw_string_centered(panel_y + 80, message, colors::TEXT_PRIMARY, width);
 }
 
@@ -477,7 +545,7 @@ pub fn draw_template_list(
     // Title
     let title = "Select OS Template";
     let title_width = title.len() as u32 * 16;
-    font::draw_string_large((width - title_width) / 2, panel_y + 20, title, colors::TEXT_PRIMARY);
+    font::draw_string_large((width - title_width) / 2, panel_y + 30, title, colors::TEXT_PRIMARY);
 
     // List templates
     let list_y = panel_y + 70;
@@ -493,12 +561,12 @@ pub fn draw_template_list(
         let badge_x = option_x;
         framebuffer::fill_rounded_rect(badge_x, y, 40, 36, 6, colors::ACCENT_PURPLE);
         if let Ok(s) = core::str::from_utf8(&key_str) {
-            font::draw_string_large(badge_x + 12, y + 10, s, colors::TEXT_PRIMARY);
+            font::draw_string_large(badge_x + 12, y + 3, s, colors::TEXT_PRIMARY);
         }
 
         // Template name
         if let Ok(name) = core::str::from_utf8(&names[i][..name_lens[i]]) {
-            font::draw_string_large(badge_x + 60, y + 10, name, colors::TEXT_PRIMARY);
+            font::draw_string_large(badge_x + 60, y + 3, name, colors::TEXT_PRIMARY);
         }
     }
 
@@ -546,7 +614,7 @@ pub fn draw_iso_list(
     // Title
     let title = "Boot from ISO";
     let title_width = title.len() as u32 * 16;
-    font::draw_string_large((width - title_width) / 2, panel_y + 20, title, colors::TEXT_PRIMARY);
+    font::draw_string_large((width - title_width) / 2, panel_y + 30, title, colors::TEXT_PRIMARY);
 
     // List ISOs
     let list_y = panel_y + 70;
@@ -562,12 +630,12 @@ pub fn draw_iso_list(
         let badge_x = option_x;
         framebuffer::fill_rounded_rect(badge_x, y, 40, 36, 6, colors::ACCENT_PURPLE);
         if let Ok(s) = core::str::from_utf8(&key_str) {
-            font::draw_string_large(badge_x + 12, y + 10, s, colors::TEXT_PRIMARY);
+            font::draw_string_large(badge_x + 12, y + 3, s, colors::TEXT_PRIMARY);
         }
 
         // ISO filename
         if let Ok(name) = core::str::from_utf8(&names[i][..name_lens[i]]) {
-            font::draw_string_large(badge_x + 60, y + 10, name, colors::TEXT_PRIMARY);
+            font::draw_string_large(badge_x + 60, y + 3, name, colors::TEXT_PRIMARY);
         }
     }
 

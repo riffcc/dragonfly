@@ -383,9 +383,7 @@ fn execute_boot_action(
         }
         BootAction::ShowMenu => {
             serial::println("Executing: Show menu");
-            let has_net = net_stack.is_some();
-            let choice = ui::draw_boot_screen_with_net(detected_os, has_net);
-            // Dispatch the choice — pass through the existing net_stack
+            let choice = ui::draw_boot_screen_with_net(detected_os, &mut net_stack);
             dispatch_menu_choice(choice, detected_os, &mut net_stack, width, height);
         }
         BootAction::InstallOs => {

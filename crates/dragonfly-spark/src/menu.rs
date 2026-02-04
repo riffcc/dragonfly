@@ -10,46 +10,50 @@ const BOOT_TIMEOUT: u32 = 10;
 
 /// Show the boot menu and wait for user input
 pub fn show_boot_menu(os: &OsInfo) -> Choice {
-    vga::println("========================================");
-    vga::println("         Dragonfly Boot Menu            ");
-    vga::println("========================================");
-    vga::println("");
-    vga::print("  Detected: ");
-    vga::println(os.display_name());
-    vga::println("");
-    vga::println("  [1] Boot local OS (default)");
-    vga::println("  [2] Advanced");
-    vga::println("  [3] Boot from ISO");
-    vga::println("");
-    vga::print("  Auto-boot in ");
-    vga::print_dec(BOOT_TIMEOUT);
-    vga::println(" seconds... Press a key to select.");
-    vga::println("");
+    loop {
+        vga::println("========================================");
+        vga::println("         Dragonfly Boot Menu            ");
+        vga::println("========================================");
+        vga::println("");
+        vga::print("  Detected: ");
+        vga::println(os.display_name());
+        vga::println("");
+        vga::println("  [1] Boot local OS (default)");
+        vga::println("  [2] Advanced");
+        vga::println("  [3] Boot from ISO");
+        vga::println("");
+        vga::print("  Auto-boot in ");
+        vga::print_dec(BOOT_TIMEOUT);
+        vga::println(" seconds... Press a key to select.");
+        vga::println("");
 
-    let choice = wait_for_choice(BOOT_TIMEOUT);
+        let choice = wait_for_choice(BOOT_TIMEOUT);
 
-    match choice {
-        Some('1') | None => {
-            vga::print_success("  Selected: Boot local OS");
-            Choice::BootLocal
-        }
-        Some('2') => {
-            // Show advanced submenu
-            show_advanced_menu()
-        }
-        Some('3') => {
-            vga::print_warning("  Selected: Boot from ISO");
-            Choice::BootIso
-        }
-        Some(_) => {
-            vga::println("  Invalid choice, defaulting to boot local");
-            Choice::BootLocal
+        match choice {
+            Some('1') | None => {
+                vga::print_success("  Selected: Boot local OS");
+                return Choice::BootLocal;
+            }
+            Some('2') => {
+                if let Some(c) = show_advanced_menu() {
+                    return c;
+                }
+                // ESC pressed — loop back to main menu
+            }
+            Some('3') => {
+                vga::print_warning("  Selected: Boot from ISO");
+                return Choice::BootIso;
+            }
+            Some(_) => {
+                vga::println("  Invalid choice, defaulting to boot local");
+                return Choice::BootLocal;
+            }
         }
     }
 }
 
-/// Show advanced options submenu
-fn show_advanced_menu() -> Choice {
+/// Show advanced options submenu. Returns None if user pressed ESC (go back).
+fn show_advanced_menu() -> Option<Choice> {
     vga::println("");
     vga::println("  === Advanced ===");
     vga::println("");
@@ -63,12 +67,10 @@ fn show_advanced_menu() -> Choice {
     loop {
         if let Some(scancode) = bios::read_scancode() {
             if scancode == bios::SCANCODE_ESC {
-                // Go back - but in text mode we just reboot
-                vga::println("  Rebooting...");
-                bios::reboot();
+                return None;
             }
             if let Some(c) = bios::scancode_to_ascii(scancode) {
-                return match c {
+                return Some(match c {
                     '1' => {
                         vga::print_warning("  Selected: Install OS");
                         Choice::InstallOs
@@ -86,7 +88,7 @@ fn show_advanced_menu() -> Choice {
                         Choice::RemoveFromDragonfly
                     }
                     _ => continue,
-                };
+                });
             }
         }
     }
@@ -94,37 +96,42 @@ fn show_advanced_menu() -> Choice {
 
 /// Simple menu for when no OS is detected
 pub fn show_no_os_menu() -> Choice {
-    vga::println("========================================");
-    vga::println("         Dragonfly Boot Menu            ");
-    vga::println("========================================");
-    vga::println("");
-    vga::print_warning("  No bootable OS detected!");
-    vga::println("");
-    vga::println("  [1] Reboot (default)");
-    vga::println("  [2] Advanced");
-    vga::println("  [3] Boot from ISO");
-    vga::println("");
-    vga::print("  Auto-reboot in ");
-    vga::print_dec(BOOT_TIMEOUT);
-    vga::println(" seconds...");
-    vga::println("");
+    loop {
+        vga::println("========================================");
+        vga::println("         Dragonfly Boot Menu            ");
+        vga::println("========================================");
+        vga::println("");
+        vga::print_warning("  No bootable OS detected!");
+        vga::println("");
+        vga::println("  [1] Reboot (default)");
+        vga::println("  [2] Advanced");
+        vga::println("  [3] Boot from ISO");
+        vga::println("");
+        vga::print("  Auto-reboot in ");
+        vga::print_dec(BOOT_TIMEOUT);
+        vga::println(" seconds...");
+        vga::println("");
 
-    let choice = wait_for_choice(BOOT_TIMEOUT);
+        let choice = wait_for_choice(BOOT_TIMEOUT);
 
-    match choice {
-        Some('1') | None => {
-            vga::println("  Rebooting...");
-            Choice::Reboot
-        }
-        Some('2') => {
-            show_advanced_menu()
-        }
-        Some('3') => {
-            vga::print_warning("  Selected: Boot from ISO");
-            Choice::BootIso
-        }
-        Some(_) => {
-            Choice::Reboot
+        match choice {
+            Some('1') | None => {
+                vga::println("  Rebooting...");
+                return Choice::Reboot;
+            }
+            Some('2') => {
+                if let Some(c) = show_advanced_menu() {
+                    return c;
+                }
+                // ESC pressed — loop back to main menu
+            }
+            Some('3') => {
+                vga::print_warning("  Selected: Boot from ISO");
+                return Choice::BootIso;
+            }
+            Some(_) => {
+                return Choice::Reboot;
+            }
         }
     }
 }
