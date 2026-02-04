@@ -43,9 +43,6 @@ struct MenuItem {
     visible: bool,
 }
 
-/// Boot timeout in seconds
-const BOOT_TIMEOUT: u32 = 10;
-
 /// Cached panel coordinates for update_countdown
 static mut PANEL_Y: u32 = 0;
 static mut PANEL_H: u32 = 0;
@@ -124,9 +121,6 @@ pub fn draw_boot_screen_with_net(
             MenuChoice::Selected(c) => return c,
             MenuChoice::EnterAdvanced => screen = MenuScreen::Advanced,
             MenuChoice::Back => screen = MenuScreen::Main,
-            MenuChoice::Timeout => {
-                return if has_os { Choice::BootLocal } else { Choice::Reboot };
-            }
         }
     }
 }
@@ -136,7 +130,6 @@ enum MenuChoice {
     Selected(Choice),
     EnterAdvanced,
     Back,
-    Timeout,
 }
 
 /// Draw and handle the main menu
@@ -182,14 +175,7 @@ fn draw_main_menu(os: Option<&OsInfo>, width: u32, height: u32, _has_net: bool, 
     let menu_y = panel_y + 160;
     draw_menu_items(&items, panel_x, menu_y);
 
-    // Countdown
-    let timer_y = panel_y + panel_h - 70;
-    draw_countdown(width, timer_y, BOOT_TIMEOUT);
-
-    // Input loop with countdown and network polling
-    let mut last_count = read_pit_count();
-    let mut elapsed_ticks: u64 = 0;
-    let mut last_displayed_second = BOOT_TIMEOUT;
+    // No countdown — user already pressed spacebar to enter menu, they're browsing
     let mut ip_displayed = net_stack.as_ref().map_or(false, |s| s.has_ip());
 
     // Draw IP footer if already known
@@ -226,29 +212,6 @@ fn draw_main_menu(os: Option<&OsInfo>, width: u32, height: u32, _has_net: bool, 
                     ip_displayed = true;
                 }
             }
-        }
-
-        // PIT countdown
-        let count = read_pit_count();
-        if count <= last_count {
-            elapsed_ticks += (last_count - count) as u64;
-        } else {
-            elapsed_ticks += (last_count as u64) + (65536 - count as u64);
-        }
-        last_count = count;
-
-        let elapsed_seconds = (elapsed_ticks / PIT_FREQUENCY) as u32;
-        if elapsed_seconds >= BOOT_TIMEOUT {
-            return MenuChoice::Timeout;
-        }
-
-        let remaining = BOOT_TIMEOUT - elapsed_seconds;
-        if remaining != last_displayed_second {
-            last_displayed_second = remaining;
-            let msg_width = 26 * 16;
-            let num_x = (width - msg_width) / 2 + 13 * 16;
-            framebuffer::fill_rect(num_x, timer_y, 3 * 16, 32, colors::BG_PANEL);
-            draw_number_large(num_x, timer_y, remaining, colors::ACCENT_CYAN);
         }
     }
 }
@@ -376,73 +339,6 @@ fn read_pit_count() -> u16 {
         let lo = bios::inb(0x40);
         let hi = bios::inb(0x40);
         (hi as u16) << 8 | lo as u16
-    }
-}
-
-/// Wait for menu input with optional PIT-based countdown timer.
-///
-/// Uses the x86 PIT hardware timer for accurate real-time countdown,
-/// independent of CPU speed.
-fn wait_for_menu_input<F>(
-    width: u32,
-    timer_y: u32,
-    handler: &F,
-    has_countdown: bool,
-) -> MenuChoice
-where
-    F: Fn(u8) -> Option<MenuChoice>,
-{
-    if !has_countdown {
-        // No timeout - just wait for input
-        loop {
-            if let Some(scancode) = bios::read_scancode() {
-                if let Some(result) = handler(scancode) {
-                    return result;
-                }
-            }
-        }
-    }
-
-    // PIT-based countdown: track elapsed ticks by reading the hardware counter
-    let mut last_count = read_pit_count();
-    let mut elapsed_ticks: u64 = 0;
-    let mut last_displayed_second = BOOT_TIMEOUT;
-
-    loop {
-        // Check for keypress
-        if let Some(scancode) = bios::read_scancode() {
-            if let Some(result) = handler(scancode) {
-                return result;
-            }
-        }
-
-        // Read PIT counter and accumulate elapsed ticks
-        let count = read_pit_count();
-        if count <= last_count {
-            // Normal countdown: counter decreased
-            elapsed_ticks += (last_count - count) as u64;
-        } else {
-            // Counter wrapped around (0 → 65535)
-            elapsed_ticks += (last_count as u64) + (65536 - count as u64);
-        }
-        last_count = count;
-
-        let elapsed_seconds = (elapsed_ticks / PIT_FREQUENCY) as u32;
-
-        // Timeout reached
-        if elapsed_seconds >= BOOT_TIMEOUT {
-            return MenuChoice::Timeout;
-        }
-
-        // Update countdown display when second changes
-        let remaining = BOOT_TIMEOUT - elapsed_seconds;
-        if remaining != last_displayed_second {
-            last_displayed_second = remaining;
-            let msg_width = 26 * 16;
-            let num_x = (width - msg_width) / 2 + 13 * 16;
-            framebuffer::fill_rect(num_x, timer_y, 3 * 16, 32, colors::BG_PANEL);
-            draw_number_large(num_x, timer_y, remaining, colors::ACCENT_CYAN);
-        }
     }
 }
 
