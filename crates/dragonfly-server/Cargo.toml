@@ -11,7 +11,7 @@ server-binary = []
 
 [dependencies]
 # Web Framework
-axum = { version = "0.8.3", features = ["macros", "ws", "http2"] }
+axum = { version = "0.8.3", features = ["macros", "ws", "http2", "multipart"] }
 # Authentication
 axum-login = "0.18"
 axum-extra = { version = "0.10.1", features = ["typed-header", "cookie", "cookie-signed"] }

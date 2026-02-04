@@ -652,6 +652,278 @@ mod tests {
         }
     }
 
+    // =============================================================================
+    // Agent self-service endpoint tests
+    // =============================================================================
+
+    /// Test POST /api/agent/request-install assigns OS and flags for reimage
+    #[tokio::test]
+    async fn test_agent_request_install() {
+        use dragonfly_common::{Machine, MachineIdentity};
+        use dragonfly_crd::{Template, ObjectMeta, TypeMeta, TemplateSpec};
+
+        let state = create_test_app_state().await;
+
+        // Create a machine
+        let identity = MachineIdentity::from_mac("AA:BB:CC:DD:EE:01");
+        let machine = Machine::new(identity);
+        let machine_id = machine.id.to_string();
+        state.store.put_machine(&machine.into()).await.unwrap();
+
+        // Create a template
+        let template = Template {
+            type_meta: TypeMeta::template(),
+            metadata: ObjectMeta::new("debian-13"),
+            spec: TemplateSpec { actions: vec![], timeout: None, version: None },
+        };
+        state.store.put_template(&template).await.unwrap();
+
+        let app = crate::api::api_router().with_state(state.clone());
+
+        let body = serde_json::json!({
+            "machine_id": machine_id,
+            "mac": "AA:BB:CC:DD:EE:01",
+            "template_name": "debian-13"
+        });
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/agent/request-install")
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let json: Value = serde_json::from_slice(&body_bytes).unwrap();
+        assert_eq!(json["success"], true);
+
+        // Verify machine was updated
+        let machine_uuid = uuid::Uuid::parse_str(&machine_id).unwrap();
+        let updated = state.store.get_machine(machine_uuid).await.unwrap().unwrap();
+        assert_eq!(updated.config.os_choice.as_deref(), Some("debian-13"));
+        assert!(updated.config.reimage_requested);
+    }
+
+    /// Test POST /api/agent/request-install rejects mismatched MAC
+    #[tokio::test]
+    async fn test_agent_request_install_mac_mismatch() {
+        use dragonfly_common::{Machine, MachineIdentity};
+
+        let state = create_test_app_state().await;
+
+        let identity = MachineIdentity::from_mac("AA:BB:CC:DD:EE:02");
+        let machine = Machine::new(identity);
+        let machine_id = machine.id.to_string();
+        state.store.put_machine(&machine.into()).await.unwrap();
+
+        let app = crate::api::api_router().with_state(state);
+
+        let body = serde_json::json!({
+            "machine_id": machine_id,
+            "mac": "FF:FF:FF:FF:FF:FF",
+            "template_name": "debian-13"
+        });
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/agent/request-install")
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    /// Test POST /api/agent/remove deletes the machine
+    #[tokio::test]
+    async fn test_agent_remove() {
+        use dragonfly_common::{Machine, MachineIdentity};
+
+        let state = create_test_app_state().await;
+
+        let identity = MachineIdentity::from_mac("AA:BB:CC:DD:EE:03");
+        let machine = Machine::new(identity);
+        let machine_id = machine.id.to_string();
+        state.store.put_machine(&machine.into()).await.unwrap();
+
+        let app = crate::api::api_router().with_state(state.clone());
+
+        let body = serde_json::json!({
+            "machine_id": machine_id,
+            "mac": "AA:BB:CC:DD:EE:03"
+        });
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/agent/remove")
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let json: Value = serde_json::from_slice(&body_bytes).unwrap();
+        assert_eq!(json["success"], true);
+
+        // Verify machine was deleted
+        let machine_uuid = uuid::Uuid::parse_str(&machine_id).unwrap();
+        let result = state.store.get_machine(machine_uuid).await.unwrap();
+        assert!(result.is_none());
+    }
+
+    /// Test GET /api/agent/diagnostics returns availability
+    #[tokio::test]
+    async fn test_agent_boot_mode_memtest() {
+        use dragonfly_common::{Machine, MachineIdentity};
+
+        let state = create_test_app_state().await;
+
+        let identity = MachineIdentity::from_mac("AA:BB:CC:DD:EE:04");
+        let machine = Machine::new(identity);
+        let machine_id = machine.id.to_string();
+        state.store.put_machine(&machine.into()).await.unwrap();
+
+        let app = crate::api::api_router().with_state(state.clone());
+
+        let body = serde_json::json!({
+            "machine_id": machine_id,
+            "mac": "AA:BB:CC:DD:EE:04",
+            "mode": "memtest"
+        });
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/agent/boot-mode")
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // Verify boot-mode tag was added
+        let machine_uuid = uuid::Uuid::parse_str(&machine_id).unwrap();
+        let updated = state.store.get_machine(machine_uuid).await.unwrap().unwrap();
+        assert!(updated.config.tags.iter().any(|t| t == "boot-mode:memtest"));
+    }
+
+    /// Test POST /api/agent/boot-mode with rescue mode
+    #[tokio::test]
+    async fn test_agent_boot_mode_rescue() {
+        use dragonfly_common::{Machine, MachineIdentity};
+
+        let state = create_test_app_state().await;
+
+        let identity = MachineIdentity::from_mac("AA:BB:CC:DD:EE:05");
+        let machine = Machine::new(identity);
+        let machine_id = machine.id.to_string();
+        state.store.put_machine(&machine.into()).await.unwrap();
+
+        let app = crate::api::api_router().with_state(state.clone());
+
+        let body = serde_json::json!({
+            "machine_id": machine_id,
+            "mac": "AA:BB:CC:DD:EE:05",
+            "mode": "rescue"
+        });
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/agent/boot-mode")
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let machine_uuid = uuid::Uuid::parse_str(&machine_id).unwrap();
+        let updated = state.store.get_machine(machine_uuid).await.unwrap().unwrap();
+        assert!(updated.config.tags.iter().any(|t| t == "boot-mode:rescue"));
+    }
+
+    /// Test POST /api/agent/boot-mode with invalid mode
+    #[tokio::test]
+    async fn test_agent_boot_mode_invalid() {
+        use dragonfly_common::{Machine, MachineIdentity};
+
+        let state = create_test_app_state().await;
+
+        let identity = MachineIdentity::from_mac("AA:BB:CC:DD:EE:06");
+        let machine = Machine::new(identity);
+        let machine_id = machine.id.to_string();
+        state.store.put_machine(&machine.into()).await.unwrap();
+
+        let app = crate::api::api_router().with_state(state);
+
+        let body = serde_json::json!({
+            "machine_id": machine_id,
+            "mac": "AA:BB:CC:DD:EE:06",
+            "mode": "bogus"
+        });
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/agent/boot-mode")
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    /// Test GET /api/agent/isos returns empty list when no ISOs
+    #[tokio::test]
+    async fn test_agent_list_isos_empty() {
+        let state = create_test_app_state().await;
+        let app = crate::api::api_router().with_state(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/agent/isos")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let json: Value = serde_json::from_slice(&body_bytes).unwrap();
+        // Agent endpoint returns a plain JSON array
+        assert!(json.is_array(), "Expected JSON array, got: {}", json);
+    }
+
     /// Test that duplicate SSH keys (same type+data, different comments) are deduplicated
     #[tokio::test]
     async fn test_template_ssh_keys_deduplicated() {

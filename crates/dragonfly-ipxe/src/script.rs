@@ -160,6 +160,11 @@ impl IpxeScriptGenerator {
         Self { config }
     }
 
+    /// Get the base URL
+    pub fn base_url(&self) -> &str {
+        &self.config.base_url
+    }
+
     /// Generate the initial chainload script
     ///
     /// This is what iPXE fetches first - it just chains to the server
@@ -352,6 +357,44 @@ shell
         ))
     }
 
+    /// Generate sanboot script for booting an ISO
+    ///
+    /// Uses iPXE's sanboot to boot an ISO served over HTTP.
+    /// Server returns this when a machine has a `boot-iso:{name}` tag.
+    pub fn sanboot_iso_script(&self, iso_url: &str) -> String {
+        format!(
+            r#"#!ipxe
+# Dragonfly - Boot ISO
+echo Booting ISO: {iso_url}
+sanboot {iso_url} || goto failed
+
+:failed
+echo Failed to boot ISO
+shell
+"#
+        )
+    }
+
+    /// Generate memtest86+ boot script
+    ///
+    /// Boots memtest86+ binary directly via iPXE.
+    /// Server returns this when a machine has a `boot-mode:memtest` tag.
+    pub fn memtest_script(&self) -> String {
+        let base = &self.config.base_url;
+        format!(
+            r#"#!ipxe
+# Dragonfly - Memory Test (memtest86+)
+echo Booting memtest86+...
+kernel {base}/boot/memtest86plus.bin
+boot || goto failed
+
+:failed
+echo Failed to boot memtest86+
+shell
+"#
+        )
+    }
+
     /// Build kernel parameters string
     fn kernel_params(&self, hardware: Option<&Hardware>, mode: &str) -> String {
         let mut params = self.config.kernel_params.clone();
@@ -515,6 +558,26 @@ mod tests {
         assert!(params.contains("console=ttyS0,115200"));
         assert!(params.contains("loglevel=7"));
         assert!(params.contains("dragonfly.mode=discovery"));
+    }
+
+    #[test]
+    fn test_sanboot_iso_script() {
+        let generator = IpxeScriptGenerator::new(test_config());
+        let script = generator.sanboot_iso_script("http://192.168.1.1:8080/isos/debian-13.iso");
+
+        assert!(script.starts_with("#!ipxe"));
+        assert!(script.contains("Boot ISO"));
+        assert!(script.contains("sanboot http://192.168.1.1:8080/isos/debian-13.iso"));
+    }
+
+    #[test]
+    fn test_memtest_script() {
+        let generator = IpxeScriptGenerator::new(test_config());
+        let script = generator.memtest_script();
+
+        assert!(script.starts_with("#!ipxe"));
+        assert!(script.contains("memtest86+"));
+        assert!(script.contains("kernel http://192.168.1.1:8080/boot/memtest86plus.bin"));
     }
 
     #[test]

@@ -178,6 +178,51 @@ impl ProvisioningService {
     /// EXCEPTION: Machines with active imaging workflows boot directly into Mage
     /// to continue the imaging process.
     async fn boot_script_for_known_machine(&self, machine: &Machine) -> Result<String, ProvisioningError> {
+        // Check for boot-mode override tags (one-shot: cleared after script generation)
+        let boot_mode = machine.config.tags.iter()
+            .find(|t| t.starts_with("boot-mode:"))
+            .map(|t| t.trim_start_matches("boot-mode:").to_string());
+
+        if let Some(ref mode) = boot_mode {
+            let script = match mode.as_str() {
+                "memtest" => {
+                    info!("Machine {} has boot-mode:memtest, booting memtest86+", machine.id);
+                    self.ipxe_generator.memtest_script()
+                }
+                "rescue" => {
+                    info!("Machine {} has boot-mode:rescue, booting Mage (discovery mode)", machine.id);
+                    self.ipxe_generator.discovery_script(None)
+                        .map_err(|e| ProvisioningError::IpxeGeneration(e.to_string()))?
+                }
+                "iso" => {
+                    let iso_name = machine.config.tags.iter()
+                        .find(|t| t.starts_with("boot-iso:"))
+                        .map(|t| t.trim_start_matches("boot-iso:").to_string());
+                    if let Some(name) = iso_name {
+                        let iso_url = format!("{}/isos/{}", self.ipxe_generator.base_url(), name);
+                        info!("Machine {} has boot-mode:iso, sanbooting {}", machine.id, iso_url);
+                        self.ipxe_generator.sanboot_iso_script(&iso_url)
+                    } else {
+                        warn!("Machine {} has boot-mode:iso but no boot-iso tag, falling back to Spark", machine.id);
+                        self.ipxe_generator.spark_script()
+                    }
+                }
+                _ => {
+                    warn!("Machine {} has unknown boot-mode:{}, falling back to Spark", machine.id, mode);
+                    self.ipxe_generator.spark_script()
+                }
+            };
+
+            // Clear boot-mode/boot-iso tags (one-shot)
+            let mut updated_machine = machine.clone();
+            updated_machine.config.tags.retain(|t| !t.starts_with("boot-mode:") && !t.starts_with("boot-iso:"));
+            if let Err(e) = self.store.put_machine(&updated_machine).await {
+                warn!("Failed to clear boot-mode tags for machine {}: {}", machine.id, e);
+            }
+
+            return Ok(script);
+        }
+
         // Check for active workflow
         let workflows = self.get_workflows_for_machine(machine).await?;
 

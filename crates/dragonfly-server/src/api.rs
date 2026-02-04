@@ -81,6 +81,14 @@ pub fn api_router() -> Router<crate::AppState> {
         .route("/tags/{tag_name}/machines", get(api_get_machines_by_tag))
         // --- Agent Routes ---
         .route("/agent/checkin", post(agent_checkin_handler))
+        .route("/agent/request-install", post(agent_request_install_handler))
+        .route("/agent/remove", post(agent_remove_handler))
+        .route("/agent/boot-mode", post(agent_boot_mode_handler))
+        .route("/agent/isos", get(agent_list_isos_handler))
+        // --- ISO Management Routes ---
+        .route("/isos", get(list_isos_handler))
+        .route("/isos/upload", post(upload_iso_handler).layer(DefaultBodyLimit::disable())) // No body limit for ISO uploads (streamed to disk)
+        .route("/isos/{filename}", delete(delete_iso_handler))
         // --- Settings Routes ---
         .route("/settings", get(api_get_settings).put(api_update_settings))
         .route("/settings/mode", get(api_get_mode).put(api_set_mode))
@@ -5456,4 +5464,469 @@ pub async fn update_template_content_handler(
 
     info!(template = %template_name, "Template updated");
     Json(json!({ "success": true, "name": template_name })).into_response()
+}
+
+// =============================================================================
+// Agent self-service endpoints (called from Spark bare-metal boot manager)
+//
+// These are unauthenticated but verify MAC matches the stored machine record.
+// =============================================================================
+
+/// Request body for agent install request
+#[derive(Debug, Deserialize)]
+struct AgentInstallRequest {
+    machine_id: String,
+    mac: String,
+    template_name: String,
+}
+
+/// Request body for agent remove/boot-iso
+#[derive(Debug, Deserialize)]
+struct AgentMachineRequest {
+    machine_id: String,
+    mac: String,
+}
+
+/// Request body for agent boot mode (memtest, rescue, iso)
+#[derive(Debug, Deserialize)]
+struct AgentBootModeRequest {
+    machine_id: String,
+    mac: String,
+    mode: String,
+    #[serde(default)]
+    iso_name: Option<String>,
+}
+
+/// Verify that the MAC in the request matches the MAC stored for the machine.
+/// Returns the machine if verification succeeds, or an error response.
+async fn verify_agent_mac(
+    store: &dyn crate::store::v1::Store,
+    machine_id_str: &str,
+    request_mac: &str,
+) -> Result<dragonfly_common::Machine, Response> {
+    let machine_uuid = Uuid::parse_str(machine_id_str).map_err(|_| {
+        (StatusCode::BAD_REQUEST, Json(json!({ "success": false, "message": "Invalid machine_id" }))).into_response()
+    })?;
+
+    let machine = store.get_machine(machine_uuid).await
+        .map_err(|e| {
+            error!("Store error looking up machine: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "success": false, "message": "Store error" }))).into_response()
+        })?
+        .ok_or_else(|| {
+            (StatusCode::NOT_FOUND, Json(json!({ "success": false, "message": "Machine not found" }))).into_response()
+        })?;
+
+    // Verify MAC matches
+    let normalized_request_mac = dragonfly_common::normalize_mac(request_mac);
+    let stored_mac = dragonfly_common::normalize_mac(&machine.identity.primary_mac);
+    if normalized_request_mac != stored_mac {
+        warn!(
+            machine_id = machine_id_str,
+            request_mac = %normalized_request_mac,
+            stored_mac = %stored_mac,
+            "Agent MAC verification failed"
+        );
+        return Err((StatusCode::FORBIDDEN, Json(json!({ "success": false, "message": "MAC mismatch" }))).into_response());
+    }
+
+    Ok(machine)
+}
+
+/// POST /api/agent/request-install
+///
+/// Called by Spark when user selects "Install OS" and picks a template.
+/// Assigns the OS template and flags the machine for reimage.
+pub async fn agent_request_install_handler(
+    State(state): State<crate::AppState>,
+    Json(req): Json<AgentInstallRequest>,
+) -> Response {
+    info!(machine_id = %req.machine_id, template = %req.template_name, "Agent install request");
+
+    let mut machine = match verify_agent_mac(state.store.as_ref(), &req.machine_id, &req.mac).await {
+        Ok(m) => m,
+        Err(resp) => return resp,
+    };
+
+    // Verify template exists
+    match state.store.get_template(&req.template_name).await {
+        Ok(Some(_)) => {}
+        Ok(None) => {
+            return (StatusCode::NOT_FOUND, Json(json!({
+                "success": false, "message": format!("Template '{}' not found", req.template_name)
+            }))).into_response();
+        }
+        Err(e) => {
+            error!("Store error checking template: {}", e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
+                "success": false, "message": "Store error"
+            }))).into_response();
+        }
+    }
+
+    // Assign OS and flag for reimage
+    machine.config.os_choice = Some(req.template_name.clone());
+    machine.config.reimage_requested = true;
+
+    if let Err(e) = state.store.put_machine(&machine).await {
+        error!("Failed to update machine: {}", e);
+        return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
+            "success": false, "message": "Failed to update machine"
+        }))).into_response();
+    }
+
+    info!(
+        machine_id = %req.machine_id,
+        template = %req.template_name,
+        "Machine flagged for reimage via agent request"
+    );
+
+    let _ = state.event_manager.send(format!("machine_updated:{}", req.machine_id));
+
+    Json(json!({ "success": true, "message": "Install requested" })).into_response()
+}
+
+/// POST /api/agent/remove
+///
+/// Called by Spark when user selects "Remove from Dragonfly".
+/// Deletes the machine from the store.
+pub async fn agent_remove_handler(
+    State(state): State<crate::AppState>,
+    Json(req): Json<AgentMachineRequest>,
+) -> Response {
+    info!(machine_id = %req.machine_id, "Agent remove request");
+
+    let machine = match verify_agent_mac(state.store.as_ref(), &req.machine_id, &req.mac).await {
+        Ok(m) => m,
+        Err(resp) => return resp,
+    };
+
+    match state.store.delete_machine(machine.id).await {
+        Ok(true) => {
+            info!(machine_id = %req.machine_id, "Machine removed via agent request");
+            let _ = state.event_manager.send(format!("machine_deleted:{}", req.machine_id));
+            Json(json!({ "success": true, "message": "Machine removed" })).into_response()
+        }
+        Ok(false) => {
+            (StatusCode::NOT_FOUND, Json(json!({ "success": false, "message": "Machine not found" }))).into_response()
+        }
+        Err(e) => {
+            error!("Failed to delete machine: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
+                "success": false, "message": "Failed to delete machine"
+            }))).into_response()
+        }
+    }
+}
+
+/// POST /api/agent/boot-mode
+///
+/// Called by Spark to request a special boot mode for the machine.
+/// Supported modes: "memtest", "rescue", "iso"
+/// For ISO mode, `iso_name` must be provided.
+///
+/// Stores boot-mode tags on the machine. On next PXE boot, the provisioning
+/// system checks these tags and generates the appropriate iPXE script:
+/// - memtest → boot memtest86+ directly
+/// - rescue → boot Mage in discovery mode
+/// - iso → iPXE sanboot of server-hosted ISO
+///
+/// Tags are one-shot: cleared after generating the boot script.
+pub async fn agent_boot_mode_handler(
+    State(state): State<crate::AppState>,
+    Json(req): Json<AgentBootModeRequest>,
+) -> Response {
+    info!(machine_id = %req.machine_id, mode = %req.mode, "Agent boot-mode request");
+
+    // Validate mode
+    match req.mode.as_str() {
+        "memtest" | "rescue" => {}
+        "iso" => {
+            if req.iso_name.as_ref().map_or(true, |n| n.is_empty()) {
+                return (StatusCode::BAD_REQUEST, Json(json!({
+                    "success": false, "message": "iso_name required for iso mode"
+                }))).into_response();
+            }
+            // Verify ISO exists on disk
+            let iso_name = req.iso_name.as_ref().unwrap();
+            let iso_path = std::path::Path::new("/var/lib/dragonfly/isos").join(iso_name);
+            if !iso_path.exists() || !iso_path.is_file() {
+                return (StatusCode::NOT_FOUND, Json(json!({
+                    "success": false, "message": format!("ISO '{}' not found on server", iso_name)
+                }))).into_response();
+            }
+        }
+        _ => {
+            return (StatusCode::BAD_REQUEST, Json(json!({
+                "success": false, "message": format!("Unknown boot mode: {}", req.mode)
+            }))).into_response();
+        }
+    }
+
+    let mut machine = match verify_agent_mac(state.store.as_ref(), &req.machine_id, &req.mac).await {
+        Ok(m) => m,
+        Err(resp) => return resp,
+    };
+
+    // Clear any existing boot-mode and boot-iso tags
+    machine.config.tags.retain(|t| !t.starts_with("boot-mode:") && !t.starts_with("boot-iso:"));
+
+    // Set boot-mode tag
+    machine.config.tags.push(format!("boot-mode:{}", req.mode));
+
+    // For ISO mode, also set boot-iso tag
+    if req.mode == "iso" {
+        if let Some(ref iso_name) = req.iso_name {
+            machine.config.tags.push(format!("boot-iso:{}", iso_name));
+        }
+    }
+
+    if let Err(e) = state.store.put_machine(&machine).await {
+        error!("Failed to update machine with boot mode: {}", e);
+        return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
+            "success": false, "message": "Failed to store boot mode"
+        }))).into_response();
+    }
+
+    info!(machine_id = %req.machine_id, mode = %req.mode, "Boot mode override set");
+    let _ = state.event_manager.send(format!("machine_updated:{}", req.machine_id));
+
+    Json(json!({ "success": true, "message": format!("Boot mode '{}' configured", req.mode) })).into_response()
+}
+
+/// GET /api/agent/isos
+///
+/// Returns a plain JSON array of ISO filenames available on the server.
+/// Uses a simple format (no object wrapper) for easy parsing by Spark's
+/// bare-metal no_std JSON parser.
+///
+/// Response format: `["debian-13.iso","ubuntu-24.04.iso"]`
+pub async fn agent_list_isos_handler() -> Response {
+    let iso_dir = std::path::Path::new("/var/lib/dragonfly/isos");
+
+    if !iso_dir.exists() {
+        return Json(json!([])).into_response();
+    }
+
+    let mut isos: Vec<String> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(iso_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_file() {
+                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                    if name.ends_with(".iso") || name.ends_with(".ISO") {
+                        isos.push(name.to_string());
+                    }
+                }
+            }
+        }
+    }
+    isos.sort();
+
+    Json(json!(isos)).into_response()
+}
+
+/// GET /api/isos
+///
+/// Returns detailed list of ISO files for the web UI.
+pub async fn list_isos_handler(
+    auth_session: AuthSession,
+) -> Response {
+    if auth_session.user.is_none() {
+        return (StatusCode::UNAUTHORIZED, Json(json!({
+            "error": "Unauthorized"
+        }))).into_response();
+    }
+
+    let iso_dir = std::path::Path::new("/var/lib/dragonfly/isos");
+
+    if !iso_dir.exists() {
+        return Json(json!({ "isos": serde_json::Value::Array(vec![]) })).into_response();
+    }
+
+    let mut isos = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(iso_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_file() {
+                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                    if name.ends_with(".iso") || name.ends_with(".ISO") {
+                        let metadata = std::fs::metadata(&path).ok();
+                        let size = metadata.as_ref().map(|m| m.len()).unwrap_or(0);
+                        let modified = metadata.as_ref()
+                            .and_then(|m| m.modified().ok())
+                            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                            .map(|d| d.as_secs())
+                            .unwrap_or(0);
+                        isos.push(json!({
+                            "name": name,
+                            "size": size,
+                            "modified": modified
+                        }));
+                    }
+                }
+            }
+        }
+    }
+    isos.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
+
+    Json(json!({ "isos": isos })).into_response()
+}
+
+/// POST /api/isos/upload
+///
+/// Upload an ISO file to /var/lib/dragonfly/isos/
+/// Streams data to disk to support large files (multi-GB ISOs).
+pub async fn upload_iso_handler(
+    auth_session: AuthSession,
+    mut multipart: axum::extract::Multipart,
+) -> Response {
+    use tokio::io::AsyncWriteExt;
+
+    if auth_session.user.is_none() {
+        return (StatusCode::UNAUTHORIZED, Json(json!({
+            "error": "Unauthorized"
+        }))).into_response();
+    }
+
+    let iso_dir = std::path::Path::new("/var/lib/dragonfly/isos");
+    if let Err(e) = tokio::fs::create_dir_all(iso_dir).await {
+        error!("Failed to create ISO directory: {}", e);
+        return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
+            "error": "Failed to create ISO directory"
+        }))).into_response();
+    }
+
+    let mut field = match multipart.next_field().await {
+        Ok(Some(field)) => field,
+        Ok(None) => {
+            return (StatusCode::BAD_REQUEST, Json(json!({
+                "error": "No file provided"
+            }))).into_response();
+        }
+        Err(e) => {
+            error!("Failed to parse multipart upload: {:?}", e);
+            return (StatusCode::BAD_REQUEST, Json(json!({
+                "error": "Failed to parse upload"
+            }))).into_response();
+        }
+    };
+
+    let file_name = match field.file_name() {
+        Some(name) => {
+            // Sanitize filename - only allow alphanumeric, dash, underscore, dot
+            let sanitized: String = name.chars()
+                .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_' || *c == '.')
+                .collect();
+            if sanitized.is_empty() || (!sanitized.ends_with(".iso") && !sanitized.ends_with(".ISO")) {
+                return (StatusCode::BAD_REQUEST, Json(json!({
+                    "error": "Invalid filename - must end with .iso"
+                }))).into_response();
+            }
+            sanitized
+        }
+        None => {
+            return (StatusCode::BAD_REQUEST, Json(json!({
+                "error": "No filename provided"
+            }))).into_response();
+        }
+    };
+
+    let dest = iso_dir.join(&file_name);
+
+    // Stream chunks to disk instead of buffering entire file in memory
+    let mut file = match tokio::fs::File::create(&dest).await {
+        Ok(f) => f,
+        Err(e) => {
+            error!("Failed to create ISO file {}: {}", file_name, e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
+                "error": "Failed to create file"
+            }))).into_response();
+        }
+    };
+
+    let mut total_bytes: u64 = 0;
+    loop {
+        match field.chunk().await {
+            Ok(Some(chunk)) => {
+                if let Err(e) = file.write_all(&chunk).await {
+                    error!("Failed to write chunk to {}: {}", file_name, e);
+                    // Clean up partial file
+                    drop(file);
+                    let _ = tokio::fs::remove_file(&dest).await;
+                    return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
+                        "error": "Failed to write file"
+                    }))).into_response();
+                }
+                total_bytes += chunk.len() as u64;
+            }
+            Ok(None) => break, // Upload complete
+            Err(e) => {
+                error!("Failed to read upload chunk for {}: {:?}", file_name, e);
+                // Clean up partial file
+                drop(file);
+                let _ = tokio::fs::remove_file(&dest).await;
+                return (StatusCode::BAD_REQUEST, Json(json!({
+                    "error": "Upload interrupted"
+                }))).into_response();
+            }
+        }
+    }
+
+    if let Err(e) = file.flush().await {
+        error!("Failed to flush ISO file {}: {}", file_name, e);
+    }
+
+    info!("ISO uploaded: {} ({} bytes)", file_name, total_bytes);
+    Json(json!({
+        "success": true,
+        "name": file_name,
+        "size": total_bytes
+    })).into_response()
+}
+
+/// DELETE /api/isos/{filename}
+///
+/// Delete an ISO file from /var/lib/dragonfly/isos/
+pub async fn delete_iso_handler(
+    auth_session: AuthSession,
+    Path(filename): Path<String>,
+) -> Response {
+    if auth_session.user.is_none() {
+        return (StatusCode::UNAUTHORIZED, Json(json!({
+            "error": "Unauthorized"
+        }))).into_response();
+    }
+
+    // Sanitize to prevent path traversal
+    let sanitized: String = filename.chars()
+        .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_' || *c == '.')
+        .collect();
+
+    if sanitized.is_empty() || sanitized.contains("..") {
+        return (StatusCode::BAD_REQUEST, Json(json!({
+            "error": "Invalid filename"
+        }))).into_response();
+    }
+
+    let path = std::path::Path::new("/var/lib/dragonfly/isos").join(&sanitized);
+
+    if !path.exists() {
+        return (StatusCode::NOT_FOUND, Json(json!({
+            "error": "ISO not found"
+        }))).into_response();
+    }
+
+    match std::fs::remove_file(&path) {
+        Ok(()) => {
+            info!("ISO deleted: {}", sanitized);
+            Json(json!({ "success": true })).into_response()
+        }
+        Err(e) => {
+            error!("Failed to delete ISO: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
+                "error": "Failed to delete file"
+            }))).into_response()
+        }
+    }
 }

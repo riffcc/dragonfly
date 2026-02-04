@@ -668,6 +668,8 @@ pub async fn run() -> anyhow::Result<()> {
         // Legacy route for backwards compatibility
         .route("/{mac}", get(api::ipxe_script))
         .route("/ipxe/{*path}", get(api::serve_ipxe_artifact))
+        // ISO images for sanboot (served during boot-from-ISO)
+        .nest_service("/isos", ServeDir::new("/var/lib/dragonfly/isos"))
         .nest("/api", api::api_router())
         .nest_service("/static", {
             #[cfg(debug_assertions)]
