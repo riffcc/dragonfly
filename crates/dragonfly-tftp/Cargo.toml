@@ -11,7 +11,7 @@ tokio = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 async-trait = "0.1"
-bytes = "1.0"
+bytes = "1.11"
 
 [dev-dependencies]
 tokio-test = "0.4"
