@@ -145,10 +145,10 @@ fn main_logic_graphical() -> ! {
     ui::draw_boot_screen_static(detected_os, width, height);
 
     // Boot flow with server check-in and spacebar interrupt
-    let action = boot_flow_with_checkin(detected_os, &mut net_stack, width, height);
+    let (action, net_stack) = boot_flow_with_checkin(detected_os, net_stack, width, height);
 
     // Execute the decided action
-    execute_boot_action(action, detected_os);
+    execute_boot_action(action, detected_os, net_stack);
 }
 
 /// Result of the boot flow decision
@@ -172,12 +172,13 @@ const DEFAULT_SERVER_PORT: u16 = 8080;
 const BOOT_TIMEOUT_SECS: u32 = 2;
 
 /// Perform boot flow with server check-in and spacebar interrupt
+/// Returns the decided action and the network stack (for reuse in menu)
 fn boot_flow_with_checkin(
     detected_os: Option<&disk::OsInfo>,
-    net_stack: &mut Option<net::NetworkStack<'static>>,
+    mut net_stack: Option<net::NetworkStack<'static>>,
     width: u32,
     height: u32,
-) -> BootAction {
+) -> (BootAction, Option<net::NetworkStack<'static>>) {
     let mut ip_displayed = false;
     let mut checkin_done = false;
 
@@ -190,6 +191,8 @@ fn boot_flow_with_checkin(
     let start_time = net::now().total_millis();
     let timeout_ms = (BOOT_TIMEOUT_SECS as i64) * 1000;
 
+    let mut decided_action: Option<BootAction> = None;
+
     loop {
         let elapsed = net::now().total_millis() - start_time;
 
@@ -197,7 +200,8 @@ fn boot_flow_with_checkin(
         if let Some(scancode) = bios::read_scancode() {
             if scancode == 0x39 {
                 serial::println("Boot flow: Spacebar pressed - showing menu");
-                return BootAction::ShowMenu;
+                decided_action = Some(BootAction::ShowMenu);
+                break;
             }
         }
 
@@ -243,8 +247,7 @@ fn boot_flow_with_checkin(
                         detected_os,
                     ) {
                         serial::println("Boot flow: Server responded");
-                        // Execute server's directive
-                        return match response.action {
+                        decided_action = Some(match response.action {
                             http::AgentAction::LocalBoot => {
                                 serial::println("  -> LocalBoot");
                                 BootAction::BootLocal
@@ -261,7 +264,8 @@ fn boot_flow_with_checkin(
                                 serial::println("  -> Wait (show menu)");
                                 BootAction::ShowMenu
                             }
-                        };
+                        });
+                        break;
                     } else {
                         // Server unreachable - proceed to autoboot
                         serial::println("Boot flow: Server unreachable, proceeding to autoboot");
@@ -278,17 +282,24 @@ fn boot_flow_with_checkin(
         }
     }
 
-    // Default: boot local OS if detected, otherwise imaging
-    serial::println("Boot flow: Autoboot");
-    if detected_os.is_some() {
-        BootAction::BootLocal
-    } else {
-        BootAction::Imaging
-    }
+    // Determine action (server response, spacebar, or default autoboot)
+    let action = decided_action.unwrap_or_else(|| {
+        serial::println("Boot flow: Autoboot");
+        if detected_os.is_some() {
+            BootAction::BootLocal
+        } else {
+            BootAction::Imaging
+        }
+    });
+    (action, net_stack)
 }
 
 /// Execute the decided boot action
-fn execute_boot_action(action: BootAction, detected_os: Option<&disk::OsInfo>) -> ! {
+fn execute_boot_action(
+    action: BootAction,
+    detected_os: Option<&disk::OsInfo>,
+    net_stack: Option<net::NetworkStack<'static>>,
+) -> ! {
     match action {
         BootAction::BootLocal => {
             serial::println("Executing: Boot local OS");
@@ -307,8 +318,7 @@ fn execute_boot_action(action: BootAction, detected_os: Option<&disk::OsInfo>) -
         }
         BootAction::ShowMenu => {
             serial::println("Executing: Show menu");
-            // Reinitialize network for menu use
-            let net_stack = init_network_stack();
+            // Reuse the existing network stack (preserves DHCP state and IP)
             let choice = ui::draw_boot_screen_with_net(detected_os, net_stack);
             match choice {
                 ui::Choice::BootLocal => {
