@@ -861,38 +861,79 @@ pub fn get_templates(
         count: 0,
     };
 
-    // Simple JSON array parsing: find each {"name":"...", entries
-    // Templates come as [{"name":"debian-13","display_name":"Debian 13",...}, ...]
+    // Parse JSON array of template objects.
+    // Each object has: "name", "display_name", "enabled" fields.
+    // We skip disabled templates (enabled:false).
+    //
+    // Strategy: find each object boundary { ... }, then extract fields within it.
     let body_slice = &body[..body_len];
     let mut search_start = 0;
 
     while list.count < 16 {
-        // Find next "name":" in the array
+        // Find next object start
         let remaining = &body_slice[search_start..];
-        if let Some(name_pos) = find_subsequence(remaining, b"\"name\":\"") {
-            let abs_pos = search_start + name_pos;
-            let val_start = abs_pos + 8;
-            if let Some(val_end) = find_byte(&body_slice[val_start..], b'"') {
-                let entry = &mut list.entries[list.count];
-                let len = val_end.min(entry.name.len());
-                entry.name[..len].copy_from_slice(&body_slice[val_start..val_start + len]);
-                entry.name_len = len;
+        let obj_start = match find_byte(remaining, b'{') {
+            Some(p) => search_start + p,
+            None => break,
+        };
+        // Find object end (no nested objects in TemplateInfo)
+        let obj_remaining = &body_slice[obj_start..];
+        let obj_end = match find_byte(obj_remaining, b'}') {
+            Some(p) => obj_start + p + 1,
+            None => break,
+        };
+        let obj = &body_slice[obj_start..obj_end];
 
-                // Also copy to display_name (server might not send display_name separately)
-                entry.display_name[..len].copy_from_slice(&body_slice[val_start..val_start + len]);
-                entry.display_name_len = len;
-
-                list.count += 1;
-                search_start = val_start + val_end + 1;
-            } else {
-                break;
-            }
-        } else {
-            break;
+        // Check enabled field — skip disabled templates
+        if find_subsequence(obj, b"\"enabled\":false").is_some() {
+            search_start = obj_end;
+            continue;
         }
+
+        // Extract "name" field
+        let (name_bytes, name_len) = extract_json_string(obj, b"\"name\":\"");
+
+        if name_len > 0 {
+            let entry = &mut list.entries[list.count];
+
+            // Copy name
+            let len = name_len.min(entry.name.len());
+            entry.name[..len].copy_from_slice(&name_bytes[..len]);
+            entry.name_len = len;
+
+            // Try to extract display_name; fall back to name
+            let (dn_bytes, dn_len) = extract_json_string(obj, b"\"display_name\":\"");
+            if dn_len > 0 {
+                let dl = dn_len.min(entry.display_name.len());
+                entry.display_name[..dl].copy_from_slice(&dn_bytes[..dl]);
+                entry.display_name_len = dl;
+            } else {
+                entry.display_name[..len].copy_from_slice(&name_bytes[..len]);
+                entry.display_name_len = len;
+            }
+
+            list.count += 1;
+        }
+
+        search_start = obj_end;
     }
 
     if list.count > 0 { Some(list) } else { None }
+}
+
+/// Extract a JSON string value given a key prefix like `"name":"`.
+/// Returns (buffer, length). Length is 0 if not found.
+fn extract_json_string(obj: &[u8], key_prefix: &[u8]) -> ([u8; 64], usize) {
+    let mut buf = [0u8; 64];
+    if let Some(kp) = find_subsequence(obj, key_prefix) {
+        let val_start = kp + key_prefix.len();
+        if let Some(val_end) = find_byte(&obj[val_start..], b'"') {
+            let len = val_end.min(buf.len());
+            buf[..len].copy_from_slice(&obj[val_start..val_start + len]);
+            return (buf, len);
+        }
+    }
+    (buf, 0)
 }
 
 /// Find subsequence in byte slice
