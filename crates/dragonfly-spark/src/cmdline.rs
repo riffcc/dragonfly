@@ -40,11 +40,40 @@ static mut BOOT_PARAMS: BootParams = BootParams {
 pub fn init(multiboot_info: u32) {
     let cmdline = parse_multiboot2_cmdline(multiboot_info);
     if let Some(cmd) = cmdline {
-        serial::print("Boot cmdline: ");
+        serial::print("MB2 cmdline: ");
         serial::println(cmd);
         parse_params(cmd);
     } else {
         serial::println("No boot command line found");
+    }
+}
+
+/// Parse multiboot1 info to extract command line
+///
+/// Multiboot1 info structure has cmdline pointer at offset 16.
+/// Flags bit 2 indicates the cmdline field is valid.
+pub fn init_mb1(multiboot_info: u32) {
+    unsafe {
+        let flags = *(multiboot_info as *const u32);
+        // Bit 2 = cmdline field is valid
+        if flags & (1 << 2) != 0 {
+            let cmdline_ptr = *((multiboot_info + 16) as *const u32);
+            if cmdline_ptr != 0 {
+                // Find string length (cap at 512 to avoid runaway)
+                let mut len = 0;
+                while len < 512 && *(cmdline_ptr as *const u8).add(len) != 0 {
+                    len += 1;
+                }
+                let slice = core::slice::from_raw_parts(cmdline_ptr as *const u8, len);
+                if let Ok(cmdline) = core::str::from_utf8(slice) {
+                    serial::print("MB1 cmdline: ");
+                    serial::println(cmdline);
+                    parse_params(cmdline);
+                }
+            }
+        } else {
+            serial::println("MB1: No cmdline in multiboot info");
+        }
     }
 }
 
@@ -95,7 +124,7 @@ fn parse_multiboot2_cmdline(info_addr: u32) -> Option<&'static str> {
 }
 
 /// Parse command line parameters
-/// Format: server=IP:PORT or server=IP (uses default port 3000)
+/// Format: server=http://IP:PORT or server=IP:PORT or server=IP (uses default port 3000)
 fn parse_params(cmdline: &str) {
     // Look for "server=" parameter
     if let Some(start) = cmdline.find("server=") {
@@ -105,7 +134,14 @@ fn parse_params(cmdline: &str) {
             .map(|i| value_start + i)
             .unwrap_or(cmdline.len());
 
-        let value = &cmdline[value_start..value_end];
+        let mut value = &cmdline[value_start..value_end];
+
+        // Strip http:// or https:// prefix (iPXE passes full URL)
+        if value.starts_with("http://") {
+            value = &value[7..];
+        } else if value.starts_with("https://") {
+            value = &value[8..];
+        }
 
         // Parse IP:PORT or just IP
         let (ip_str, port_str) = if let Some(colon) = value.rfind(':') {

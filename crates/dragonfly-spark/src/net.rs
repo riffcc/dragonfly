@@ -248,10 +248,16 @@ impl<'a> NetworkStack<'a> {
                         }
 
                         // Update interface with DHCP-assigned address
-                        self.iface.update_ip_addrs(|addrs| {
-                            addrs.clear();
-                            addrs.push(config.address.into()).ok();
-                        });
+                        // IMPORTANT: Don't clear+re-add if address unchanged —
+                        // clearing kills active TCP connections via smoltcp
+                        let new_cidr: IpCidr = config.address.into();
+                        let needs_update = self.iface.ip_addrs().iter().next() != Some(&new_cidr);
+                        if needs_update {
+                            self.iface.update_ip_addrs(|addrs| {
+                                addrs.clear();
+                                addrs.push(new_cidr).ok();
+                            });
+                        }
 
                         // Set gateway
                         if let Some(router) = config.router {
@@ -287,6 +293,21 @@ impl<'a> NetworkStack<'a> {
     /// Get our IP address
     pub fn get_ip(&self) -> Option<Ipv4Address> {
         self.ip_addr
+    }
+
+    /// Freeze DHCP — remove the DHCP socket from the set.
+    ///
+    /// Once we have an IP, DHCP has served its purpose. Keeping it active
+    /// causes ARP rate-limit interference with TCP connections (smoltcp's
+    /// global neighbor cache `silent_until` gets reset by DHCP ARP activity,
+    /// preventing TCP sockets from resolving the server's MAC address).
+    ///
+    /// A boot manager doesn't need lease renewal.
+    pub fn freeze_dhcp(&mut self) {
+        if let Some(handle) = self.dhcp_handle.take() {
+            self.sockets.remove(handle);
+            serial::println("DHCP: Frozen (socket removed, IP retained)");
+        }
     }
 
     /// Create a TCP socket and return its handle
@@ -363,10 +384,29 @@ impl<'a> NetworkStack<'a> {
         }
     }
 
-    /// Close TCP socket
+    /// Get TCP socket state as a debug string
+    pub fn tcp_state_str(&mut self, handle: SocketHandle) -> &'static str {
+        let socket = self.sockets.get_mut::<tcp::Socket>(handle);
+        match socket.state() {
+            tcp::State::Closed => "Closed",
+            tcp::State::Listen => "Listen",
+            tcp::State::SynSent => "SynSent",
+            tcp::State::SynReceived => "SynReceived",
+            tcp::State::Established => "Established",
+            tcp::State::FinWait1 => "FinWait1",
+            tcp::State::FinWait2 => "FinWait2",
+            tcp::State::CloseWait => "CloseWait",
+            tcp::State::Closing => "Closing",
+            tcp::State::LastAck => "LastAck",
+            tcp::State::TimeWait => "TimeWait",
+        }
+    }
+
+    /// Close and remove TCP socket, freeing the SocketSet slot
     pub fn tcp_close(&mut self, handle: SocketHandle) {
         let socket = self.sockets.get_mut::<tcp::Socket>(handle);
-        socket.close();
+        socket.abort(); // RST — immediate close, no TIME_WAIT
+        self.sockets.remove(handle); // Free the slot
     }
 }
 

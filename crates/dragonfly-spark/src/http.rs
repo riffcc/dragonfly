@@ -4,6 +4,7 @@
 //! Uses the existing TCP socket primitives from smoltcp.
 
 use crate::disk::OsInfo;
+use crate::hw;
 use crate::net::{self, format_ip, format_mac, NetworkStack};
 use crate::serial;
 use smoltcp::wire::{IpEndpoint, Ipv4Address};
@@ -97,10 +98,10 @@ pub fn checkin(
         return None;
     }
 
-    // Wait for connection (fast timeout - 300ms max)
+    // Wait for connection (2 second timeout)
     let mut connected = false;
     let start = net::now().total_millis();
-    while (net::now().total_millis() - start) < 300 {
+    while (net::now().total_millis() - start) < 2000 {
         stack.poll();
         if stack.tcp_is_connected(tcp_handle) {
             connected = true;
@@ -110,7 +111,8 @@ pub fn checkin(
     }
 
     if !connected {
-        serial::println("HTTP: Connection timeout (300ms)");
+        serial::print("HTTP: Connection timeout, state=");
+        serial::println(stack.tcp_state_str(tcp_handle));
         stack.tcp_close(tcp_handle);
         return None;
     }
@@ -170,13 +172,8 @@ pub fn checkin(
     serial::print_dec(response_len as u32);
     serial::println(" bytes");
 
-    // Close connection
+    // Close and remove socket
     stack.tcp_close(tcp_handle);
-
-    // Poll to process close
-    for _ in 0..1000 {
-        stack.poll();
-    }
 
     if response_len == 0 {
         serial::println("HTTP: No response from server");
@@ -218,6 +215,23 @@ fn build_checkin_json(
     // Is virtual (always true for now in QEMU testing)
     write_bytes(buf, &mut pos, b",\"is_virtual\":true");
 
+    // CPU model
+    let (brand, brand_len) = hw::cpu_brand();
+    if brand_len > 0 {
+        write_bytes(buf, &mut pos, b",\"cpu_model\":\"");
+        let copy_len = brand_len.min(buf.len().saturating_sub(pos + 20));
+        if copy_len > 0 && pos + copy_len <= buf.len() {
+            buf[pos..pos + copy_len].copy_from_slice(&brand[..copy_len]);
+            pos += copy_len;
+        }
+        write_bytes(buf, &mut pos, b"\"");
+    }
+
+    // CPU cores
+    let cores = hw::cpu_cores();
+    write_bytes(buf, &mut pos, b",\"cpu_cores\":");
+    pos += write_u32_decimal(&mut buf[pos..], cores);
+
     // Existing OS info if detected
     if let Some(os) = detected_os {
         write_bytes(buf, &mut pos, b",\"existing_os\":{\"name\":\"");
@@ -252,8 +266,8 @@ fn build_http_request(body: &[u8], server_ip: &Ipv4Address, port: u16, buf: &mut
         }
     }
 
-    // Request line (30 bytes)
-    write(buf, &mut pos, b"POST /agent/checkin HTTP/1.1\r\n");
+    // Request line
+    write(buf, &mut pos, b"POST /api/agent/checkin HTTP/1.1\r\n");
 
     // Host header
     write(buf, &mut pos, b"Host: ");
@@ -404,6 +418,481 @@ fn parse_checkin_response(response: &[u8]) -> Option<CheckInResponse> {
     }
 
     Some(result)
+}
+
+/// Write a u32 as decimal into a buffer, return bytes written
+fn write_u32_decimal(buf: &mut [u8], mut n: u32) -> usize {
+    if n == 0 {
+        if !buf.is_empty() {
+            buf[0] = b'0';
+        }
+        return 1;
+    }
+    // Write digits in reverse, then reverse
+    let mut tmp = [0u8; 10];
+    let mut len = 0;
+    while n > 0 {
+        tmp[len] = b'0' + (n % 10) as u8;
+        n /= 10;
+        len += 1;
+    }
+    let copy_len = len.min(buf.len());
+    for i in 0..copy_len {
+        buf[i] = tmp[len - 1 - i];
+    }
+    copy_len
+}
+
+/// Template entry parsed from server response
+#[derive(Debug)]
+pub struct TemplateEntry {
+    pub name: [u8; 64],
+    pub name_len: usize,
+    pub display_name: [u8; 64],
+    pub display_name_len: usize,
+}
+
+/// Template list from server
+pub struct TemplateList {
+    pub entries: [TemplateEntry; 16],
+    pub count: usize,
+}
+
+impl Default for TemplateEntry {
+    fn default() -> Self {
+        Self {
+            name: [0; 64],
+            name_len: 0,
+            display_name: [0; 64],
+            display_name_len: 0,
+        }
+    }
+}
+
+/// ISO entry parsed from server response
+#[derive(Debug)]
+pub struct IsoEntry {
+    pub name: [u8; 64],
+    pub name_len: usize,
+}
+
+/// ISO list from server
+pub struct IsoList {
+    pub entries: [IsoEntry; 16],
+    pub count: usize,
+}
+
+impl Default for IsoEntry {
+    fn default() -> Self {
+        Self {
+            name: [0; 64],
+            name_len: 0,
+        }
+    }
+}
+
+/// Static TCP buffers for agent API calls (reused, single-threaded)
+static mut AGENT_TCP_RX: [u8; 4096] = [0u8; 4096];
+static mut AGENT_TCP_TX: [u8; 4096] = [0u8; 4096];
+
+/// Helper: perform HTTP GET and return response body
+fn http_get(
+    stack: &mut NetworkStack<'_>,
+    server_ip: Ipv4Address,
+    server_port: u16,
+    path: &[u8],
+) -> Option<([u8; 4096], usize)> {
+    // Build GET request
+    let mut req_buf = [0u8; 512];
+    let mut pos = 0;
+
+    fn wr(buf: &mut [u8], pos: &mut usize, data: &[u8]) {
+        let end = *pos + data.len();
+        if end <= buf.len() {
+            buf[*pos..end].copy_from_slice(data);
+            *pos = end;
+        }
+    }
+
+    wr(&mut req_buf, &mut pos, b"GET ");
+    wr(&mut req_buf, &mut pos, path);
+    wr(&mut req_buf, &mut pos, b" HTTP/1.1\r\nHost: ");
+    pos += format_ip(&server_ip, &mut req_buf[pos..]);
+    wr(&mut req_buf, &mut pos, b"\r\nConnection: close\r\n\r\n");
+
+    // Create socket
+    #[allow(static_mut_refs)]
+    let tcp_handle = unsafe {
+        stack.create_tcp_socket(&mut AGENT_TCP_RX, &mut AGENT_TCP_TX)
+    };
+
+    let endpoint = IpEndpoint::new(server_ip.into(), server_port);
+    if !stack.tcp_connect(tcp_handle, endpoint) {
+        return None;
+    }
+
+    // Wait for connection (2s)
+    let start = net::now().total_millis();
+    let mut connected = false;
+    while (net::now().total_millis() - start) < 2000 {
+        stack.poll();
+        if stack.tcp_is_connected(tcp_handle) {
+            connected = true;
+            break;
+        }
+    }
+    if !connected {
+        serial::print("HTTP GET: Connection timeout, state=");
+        serial::println(stack.tcp_state_str(tcp_handle));
+        stack.tcp_close(tcp_handle);
+        return None;
+    }
+
+    // Send request
+    let mut sent = 0;
+    let send_start = net::now().total_millis();
+    while sent < pos && (net::now().total_millis() - send_start) < 200 {
+        stack.poll();
+        if stack.tcp_can_send(tcp_handle) {
+            let n = stack.tcp_send(tcp_handle, &req_buf[sent..pos]);
+            sent += n;
+        }
+    }
+
+    // Receive response
+    let mut resp_buf = [0u8; 4096];
+    let mut resp_len = 0;
+    let recv_start = net::now().total_millis();
+    while (net::now().total_millis() - recv_start) < 500 {
+        stack.poll();
+        if stack.tcp_can_recv(tcp_handle) {
+            let n = stack.tcp_recv(tcp_handle, &mut resp_buf[resp_len..]);
+            resp_len += n;
+            if n == 0 { break; }
+        }
+    }
+
+    stack.tcp_close(tcp_handle);
+
+    if resp_len == 0 { return None; }
+
+    // Check for 200 OK
+    if !resp_buf.starts_with(b"HTTP/1.1 200") && !resp_buf.starts_with(b"HTTP/1.0 200") {
+        return None;
+    }
+
+    // Find body
+    if let Some(body_start) = find_subsequence(&resp_buf[..resp_len], b"\r\n\r\n") {
+        let start = body_start + 4;
+        let body_len = resp_len - start;
+        let mut body = [0u8; 4096];
+        body[..body_len].copy_from_slice(&resp_buf[start..resp_len]);
+        Some((body, body_len))
+    } else {
+        None
+    }
+}
+
+/// Helper: perform HTTP POST with JSON body and return success
+fn http_post_json(
+    stack: &mut NetworkStack<'_>,
+    server_ip: Ipv4Address,
+    server_port: u16,
+    path: &[u8],
+    body: &[u8],
+) -> bool {
+    let mut req_buf = [0u8; 1024];
+    let mut pos = 0;
+
+    fn wr(buf: &mut [u8], pos: &mut usize, data: &[u8]) {
+        let end = *pos + data.len();
+        if end <= buf.len() {
+            buf[*pos..end].copy_from_slice(data);
+            *pos = end;
+        }
+    }
+
+    wr(&mut req_buf, &mut pos, b"POST ");
+    wr(&mut req_buf, &mut pos, path);
+    wr(&mut req_buf, &mut pos, b" HTTP/1.1\r\nHost: ");
+    pos += format_ip(&server_ip, &mut req_buf[pos..]);
+    wr(&mut req_buf, &mut pos, b"\r\nContent-Type: application/json\r\nContent-Length: ");
+    pos += write_u32_decimal(&mut req_buf[pos..], body.len() as u32);
+    wr(&mut req_buf, &mut pos, b"\r\nConnection: close\r\n\r\n");
+    // Append body
+    let body_end = pos + body.len();
+    if body_end <= req_buf.len() {
+        req_buf[pos..body_end].copy_from_slice(body);
+        pos = body_end;
+    }
+
+    // Create socket
+    #[allow(static_mut_refs)]
+    let tcp_handle = unsafe {
+        stack.create_tcp_socket(&mut AGENT_TCP_RX, &mut AGENT_TCP_TX)
+    };
+
+    let endpoint = IpEndpoint::new(server_ip.into(), server_port);
+    if !stack.tcp_connect(tcp_handle, endpoint) {
+        return false;
+    }
+
+    let start = net::now().total_millis();
+    let mut connected = false;
+    while (net::now().total_millis() - start) < 2000 {
+        stack.poll();
+        if stack.tcp_is_connected(tcp_handle) {
+            connected = true;
+            break;
+        }
+    }
+    if !connected {
+        serial::print("HTTP POST: Connection timeout, state=");
+        serial::println(stack.tcp_state_str(tcp_handle));
+        stack.tcp_close(tcp_handle);
+        return false;
+    }
+
+    let mut sent = 0;
+    let send_start = net::now().total_millis();
+    while sent < pos && (net::now().total_millis() - send_start) < 200 {
+        stack.poll();
+        if stack.tcp_can_send(tcp_handle) {
+            let n = stack.tcp_send(tcp_handle, &req_buf[sent..pos]);
+            sent += n;
+        }
+    }
+
+    // Read response status
+    let mut resp_buf = [0u8; 512];
+    let mut resp_len = 0;
+    let recv_start = net::now().total_millis();
+    while (net::now().total_millis() - recv_start) < 500 {
+        stack.poll();
+        if stack.tcp_can_recv(tcp_handle) {
+            let n = stack.tcp_recv(tcp_handle, &mut resp_buf[resp_len..]);
+            resp_len += n;
+            if n == 0 { break; }
+            if resp_len > 20 { break; } // Just need status line
+        }
+    }
+
+    stack.tcp_close(tcp_handle);
+
+    resp_buf[..resp_len].starts_with(b"HTTP/1.1 200") || resp_buf[..resp_len].starts_with(b"HTTP/1.0 200")
+}
+
+/// Request OS installation from server
+///
+/// Tells the server to assign the given template and flag for reimage.
+/// On success, Spark should reboot into imaging (Mage).
+pub fn request_install(
+    stack: &mut NetworkStack<'_>,
+    server_ip: Ipv4Address,
+    server_port: u16,
+    machine_id: &[u8],
+    machine_id_len: usize,
+    mac: &[u8; 6],
+    template_name: &[u8],
+    template_name_len: usize,
+) -> bool {
+    serial::println("HTTP: Requesting OS install");
+
+    let mut body = [0u8; 256];
+    let mut pos = 0;
+
+    fn wr(buf: &mut [u8], pos: &mut usize, data: &[u8]) {
+        let end = *pos + data.len();
+        if end <= buf.len() { buf[*pos..end].copy_from_slice(data); *pos = end; }
+    }
+
+    wr(&mut body, &mut pos, b"{\"machine_id\":\"");
+    let id_len = machine_id_len.min(body.len().saturating_sub(pos + 50));
+    body[pos..pos + id_len].copy_from_slice(&machine_id[..id_len]);
+    pos += id_len;
+    wr(&mut body, &mut pos, b"\",\"mac\":\"");
+    pos += format_mac(mac, &mut body[pos..]);
+    wr(&mut body, &mut pos, b"\",\"template_name\":\"");
+    let tpl_len = template_name_len.min(body.len().saturating_sub(pos + 10));
+    body[pos..pos + tpl_len].copy_from_slice(&template_name[..tpl_len]);
+    pos += tpl_len;
+    wr(&mut body, &mut pos, b"\"}");
+
+    http_post_json(stack, server_ip, server_port, b"/api/agent/request-install", &body[..pos])
+}
+
+/// Remove this machine from Dragonfly server
+pub fn remove_machine(
+    stack: &mut NetworkStack<'_>,
+    server_ip: Ipv4Address,
+    server_port: u16,
+    machine_id: &[u8],
+    machine_id_len: usize,
+    mac: &[u8; 6],
+) -> bool {
+    serial::println("HTTP: Requesting machine removal");
+
+    let mut body = [0u8; 256];
+    let mut pos = 0;
+
+    fn wr(buf: &mut [u8], pos: &mut usize, data: &[u8]) {
+        let end = *pos + data.len();
+        if end <= buf.len() { buf[*pos..end].copy_from_slice(data); *pos = end; }
+    }
+
+    wr(&mut body, &mut pos, b"{\"machine_id\":\"");
+    let id_len = machine_id_len.min(body.len().saturating_sub(pos + 30));
+    body[pos..pos + id_len].copy_from_slice(&machine_id[..id_len]);
+    pos += id_len;
+    wr(&mut body, &mut pos, b"\",\"mac\":\"");
+    pos += format_mac(mac, &mut body[pos..]);
+    wr(&mut body, &mut pos, b"\"}");
+
+    http_post_json(stack, server_ip, server_port, b"/api/agent/remove", &body[..pos])
+}
+
+/// Request a boot mode from server (memtest, rescue, or iso)
+///
+/// Sets a one-shot boot-mode tag on the machine. After rebooting,
+/// iPXE fetches the boot script from the server, which sees the tag
+/// and generates the appropriate script (memtest86+, rescue env, or sanboot).
+pub fn request_boot_mode(
+    stack: &mut NetworkStack<'_>,
+    server_ip: Ipv4Address,
+    server_port: u16,
+    machine_id: &[u8],
+    machine_id_len: usize,
+    mac: &[u8; 6],
+    mode: &[u8],
+    mode_len: usize,
+    iso_name: Option<(&[u8], usize)>,
+) -> bool {
+    serial::print("HTTP: Requesting boot mode: ");
+    if let Ok(s) = core::str::from_utf8(&mode[..mode_len]) {
+        serial::println(s);
+    }
+
+    let mut body = [0u8; 512];
+    let mut pos = 0;
+
+    fn wr(buf: &mut [u8], pos: &mut usize, data: &[u8]) {
+        let end = *pos + data.len();
+        if end <= buf.len() { buf[*pos..end].copy_from_slice(data); *pos = end; }
+    }
+
+    wr(&mut body, &mut pos, b"{\"machine_id\":\"");
+    let id_len = machine_id_len.min(body.len().saturating_sub(pos + 100));
+    body[pos..pos + id_len].copy_from_slice(&machine_id[..id_len]);
+    pos += id_len;
+    wr(&mut body, &mut pos, b"\",\"mac\":\"");
+    pos += format_mac(mac, &mut body[pos..]);
+    wr(&mut body, &mut pos, b"\",\"mode\":\"");
+    let m_len = mode_len.min(body.len().saturating_sub(pos + 50));
+    body[pos..pos + m_len].copy_from_slice(&mode[..m_len]);
+    pos += m_len;
+    wr(&mut body, &mut pos, b"\"");
+
+    // Include iso_name if provided
+    if let Some((name, name_len)) = iso_name {
+        wr(&mut body, &mut pos, b",\"iso_name\":\"");
+        let n_len = name_len.min(body.len().saturating_sub(pos + 10));
+        body[pos..pos + n_len].copy_from_slice(&name[..n_len]);
+        pos += n_len;
+        wr(&mut body, &mut pos, b"\"");
+    }
+
+    wr(&mut body, &mut pos, b"}");
+
+    http_post_json(stack, server_ip, server_port, b"/api/agent/boot-mode", &body[..pos])
+}
+
+/// Get list of available ISO images from server
+pub fn get_isos(
+    stack: &mut NetworkStack<'_>,
+    server_ip: Ipv4Address,
+    server_port: u16,
+) -> Option<IsoList> {
+    let (body, body_len) = http_get(stack, server_ip, server_port, b"/api/agent/isos")?;
+
+    let mut list = IsoList {
+        entries: core::array::from_fn(|_| IsoEntry::default()),
+        count: 0,
+    };
+
+    // Parse JSON array of strings: ["debian-13.iso", "ubuntu-24.04.iso", ...]
+    let body_slice = &body[..body_len];
+    let mut search_start = 0;
+
+    // Look for quoted strings inside the array
+    while list.count < 16 && search_start < body_len {
+        // Find next opening quote
+        if let Some(quote_pos) = find_byte(&body_slice[search_start..], b'"') {
+            let abs_start = search_start + quote_pos + 1;
+            if abs_start >= body_len { break; }
+            // Find closing quote
+            if let Some(end_pos) = find_byte(&body_slice[abs_start..], b'"') {
+                let entry = &mut list.entries[list.count];
+                let len = end_pos.min(entry.name.len());
+                entry.name[..len].copy_from_slice(&body_slice[abs_start..abs_start + len]);
+                entry.name_len = len;
+                list.count += 1;
+                search_start = abs_start + end_pos + 1;
+            } else {
+                break;
+            }
+        } else {
+            break;
+        }
+    }
+
+    if list.count > 0 { Some(list) } else { None }
+}
+
+/// Get list of OS templates from server
+pub fn get_templates(
+    stack: &mut NetworkStack<'_>,
+    server_ip: Ipv4Address,
+    server_port: u16,
+) -> Option<TemplateList> {
+    let (body, body_len) = http_get(stack, server_ip, server_port, b"/api/templates")?;
+
+    let mut list = TemplateList {
+        entries: core::array::from_fn(|_| TemplateEntry::default()),
+        count: 0,
+    };
+
+    // Simple JSON array parsing: find each {"name":"...", entries
+    // Templates come as [{"name":"debian-13","display_name":"Debian 13",...}, ...]
+    let body_slice = &body[..body_len];
+    let mut search_start = 0;
+
+    while list.count < 16 {
+        // Find next "name":" in the array
+        let remaining = &body_slice[search_start..];
+        if let Some(name_pos) = find_subsequence(remaining, b"\"name\":\"") {
+            let abs_pos = search_start + name_pos;
+            let val_start = abs_pos + 8;
+            if let Some(val_end) = find_byte(&body_slice[val_start..], b'"') {
+                let entry = &mut list.entries[list.count];
+                let len = val_end.min(entry.name.len());
+                entry.name[..len].copy_from_slice(&body_slice[val_start..val_start + len]);
+                entry.name_len = len;
+
+                // Also copy to display_name (server might not send display_name separately)
+                entry.display_name[..len].copy_from_slice(&body_slice[val_start..val_start + len]);
+                entry.display_name_len = len;
+
+                list.count += 1;
+                search_start = val_start + val_end + 1;
+            } else {
+                break;
+            }
+        } else {
+            break;
+        }
+    }
+
+    if list.count > 0 { Some(list) } else { None }
 }
 
 /// Find subsequence in byte slice

@@ -28,6 +28,7 @@ mod disk;
 mod font;
 mod framebuffer;
 mod http;
+mod hw;
 mod memory;
 mod menu;
 mod net;
@@ -93,9 +94,8 @@ pub extern "C" fn _start(multiboot_magic: u32, multiboot_info: u32) -> ! {
             framebuffer::init_mb1(multiboot_info);
         }
 
-        // MB1: cmdline parsing not implemented yet
-        // Server address will come from DHCP siaddr instead
-        serial::println("MB1: Using DHCP for server discovery");
+        // Parse MB1 cmdline for server= parameter
+        cmdline::init_mb1(multiboot_info);
     }
 
     if framebuffer::is_available() {
@@ -162,14 +162,65 @@ enum BootAction {
     ShowMenu,
     /// Reboot the machine
     Reboot,
+    /// Memory test (server boot-mode tag → iPXE boots memtest86+)
+    MemoryTest,
+    /// Install OS (show template list, request install, reboot to Mage)
+    InstallOs,
+    /// Boot rescue environment (server boot-mode tag → Mage discovery)
+    Rescue,
+    /// Boot from ISO (server-hosted, boot-mode tag → iPXE sanboot)
+    BootIso,
+    /// Remove from Dragonfly
+    RemoveFromDragonfly,
 }
 
-/// Default server port for check-in
-const DEFAULT_SERVER_PORT: u16 = 8080;
+/// Fallback server port (used only if cmdline and DHCP both fail)
+const DEFAULT_SERVER_PORT: u16 = 3000;
+
+/// Resolve the Dragonfly server address.
+///
+/// Priority:
+/// 1. Command line parameter (`server=http://IP:PORT` from iPXE script)
+/// 2. DHCP boot server (siaddr) with default port
+/// 3. DHCP gateway with default port
+/// 4. Hardcoded fallback (10.7.1.1:8080)
+fn resolve_server(stack: &net::NetworkStack) -> (smoltcp::wire::Ipv4Address, u16) {
+    let params = cmdline::params();
+    if params.has_server {
+        (smoltcp::wire::Ipv4Address(params.server_ip), params.server_port)
+    } else {
+        let ip = stack.boot_server.unwrap_or_else(|| {
+            stack.gateway.unwrap_or(smoltcp::wire::Ipv4Address([10, 7, 1, 1]))
+        });
+        (ip, DEFAULT_SERVER_PORT)
+    }
+}
+
+/// Ensure the network stack has an IP address (wait for DHCP if needed).
+/// Freezes DHCP once the IP is obtained.
+/// Returns false if no IP after timeout (5 seconds).
+fn ensure_ip(stack: &mut net::NetworkStack) -> bool {
+    if stack.has_ip() {
+        stack.freeze_dhcp();
+        return true;
+    }
+    serial::println("NET: Waiting for DHCP...");
+    let start = net::now().total_millis();
+    while (net::now().total_millis() - start) < 5000 {
+        stack.poll();
+        if stack.has_ip() {
+            stack.freeze_dhcp();
+            return true;
+        }
+    }
+    serial::println("NET: DHCP timeout - no IP address");
+    false
+}
 
 /// Boot timeout (seconds)
-/// Just long enough for DHCP + server check-in. User can hold spacebar to enter menu.
-const BOOT_TIMEOUT_SECS: u32 = 2;
+/// Must be long enough for DHCP + server check-in on slow networks.
+/// User can press spacebar to enter menu immediately.
+const BOOT_TIMEOUT_SECS: u32 = 8;
 
 /// Perform boot flow with server check-in and spacebar interrupt
 /// Returns the decided action and the network stack (for reuse in menu)
@@ -209,12 +260,18 @@ fn boot_flow_with_checkin(
         if let Some(stack) = net_stack.as_mut() {
             stack.poll();
 
-            // Display IP once we have it
+            // Display IP once we have it, and freeze DHCP
             if !ip_displayed && stack.has_ip() {
                 if let Some(ip) = stack.get_ip() {
                     ui::draw_ip_footer(width, height, ip);
                     ip_displayed = true;
                     serial::println("Boot flow: Got IP");
+
+                    // Freeze DHCP as soon as we have an IP. DHCP's ARP activity
+                    // triggers smoltcp's global neighbor cache rate limiter, which
+                    // blocks TCP from resolving the server's MAC address.
+                    // A boot manager doesn't need lease renewal.
+                    stack.freeze_dhcp();
                 }
             }
 
@@ -223,10 +280,7 @@ fn boot_flow_with_checkin(
                 if let Some(mac_addr) = mac.as_ref() {
                     checkin_done = true;
 
-                    // Get server IP from DHCP boot server (siaddr) or fallback
-                    let server_ip = stack.boot_server.unwrap_or_else(|| {
-                        stack.gateway.unwrap_or(smoltcp::wire::Ipv4Address([10, 7, 1, 1]))
-                    });
+                    let (server_ip, server_port) = resolve_server(stack);
 
                     serial::print("Boot flow: Checking in with ");
                     serial::print_dec(server_ip.0[0] as u32);
@@ -236,13 +290,15 @@ fn boot_flow_with_checkin(
                     serial::print_dec(server_ip.0[2] as u32);
                     serial::print(".");
                     serial::print_dec(server_ip.0[3] as u32);
+                    serial::print(":");
+                    serial::print_dec(server_port as u32);
                     serial::println("");
 
                     // Perform check-in (has its own fast timeouts)
                     if let Some(response) = http::checkin(
                         stack,
                         server_ip,
-                        DEFAULT_SERVER_PORT,
+                        server_port,
                         mac_addr,
                         detected_os,
                     ) {
@@ -298,12 +354,13 @@ fn boot_flow_with_checkin(
 fn execute_boot_action(
     action: BootAction,
     detected_os: Option<&disk::OsInfo>,
-    net_stack: Option<net::NetworkStack<'static>>,
+    mut net_stack: Option<net::NetworkStack<'static>>,
 ) -> ! {
+    let (width, height) = framebuffer::dimensions().unwrap_or((800, 600));
+
     match action {
         BootAction::BootLocal => {
             serial::println("Executing: Boot local OS");
-            // Reset VirtIO to restore BIOS compatibility
             virtio::reset_all();
             if let Some(os) = detected_os {
                 bios_disk::chainload_mbr(&os.mbr, 0x80);
@@ -313,39 +370,359 @@ fn execute_boot_action(
             }
         }
         BootAction::Imaging => {
-            serial::println("Executing: Imaging mode");
+            serial::println("Executing: Imaging mode (boot Mage)");
             chainload::boot_imaging();
+        }
+        BootAction::MemoryTest => {
+            serial::println("Executing: Memory test via server boot-mode tag");
+            handle_boot_mode_request(detected_os, &mut net_stack, width, height, b"memtest", 7, None);
+        }
+        BootAction::Rescue => {
+            serial::println("Executing: Rescue environment via server boot-mode tag");
+            handle_boot_mode_request(detected_os, &mut net_stack, width, height, b"rescue", 6, None);
         }
         BootAction::ShowMenu => {
             serial::println("Executing: Show menu");
-            // Reuse the existing network stack (preserves DHCP state and IP)
-            let choice = ui::draw_boot_screen_with_net(detected_os, net_stack);
-            match choice {
-                ui::Choice::BootLocal => {
-                    virtio::reset_all();
-                    if let Some(os) = detected_os {
-                        bios_disk::chainload_mbr(&os.mbr, 0x80);
-                    } else {
-                        serial::println("ERROR: No OS detected");
-                        halt_silent();
-                    }
-                }
-                ui::Choice::Reinstall => chainload::boot_imaging(),
-                ui::Choice::Shell => {
-                    vga::init();
-                    vga::clear();
-                    vga::println("=== Dragonfly Spark Network Test ===");
-                    test_network();
-                    vga::println("Test complete. System halted.");
-                    halt_silent();
-                }
-            }
+            let has_net = net_stack.is_some();
+            let choice = ui::draw_boot_screen_with_net(detected_os, has_net);
+            // Dispatch the choice — pass through the existing net_stack
+            dispatch_menu_choice(choice, detected_os, &mut net_stack, width, height);
+        }
+        BootAction::InstallOs => {
+            serial::println("Executing: Install OS");
+            handle_install_os(detected_os, &mut net_stack, width, height);
+        }
+        BootAction::BootIso => {
+            serial::println("Executing: Boot ISO");
+            handle_boot_iso(detected_os, &mut net_stack, width, height);
+        }
+        BootAction::RemoveFromDragonfly => {
+            serial::println("Executing: Remove from Dragonfly");
+            handle_remove_from_dragonfly(detected_os, &mut net_stack, width, height);
         }
         BootAction::Reboot => {
             serial::println("Executing: Reboot");
             bios::reboot();
         }
     }
+}
+
+/// Dispatch a menu choice to the appropriate action
+fn dispatch_menu_choice(
+    choice: ui::Choice,
+    detected_os: Option<&disk::OsInfo>,
+    net_stack: &mut Option<net::NetworkStack<'static>>,
+    width: u32,
+    height: u32,
+) -> ! {
+    match choice {
+        ui::Choice::BootLocal => {
+            virtio::reset_all();
+            if let Some(os) = detected_os {
+                bios_disk::chainload_mbr(&os.mbr, 0x80);
+            } else {
+                serial::println("ERROR: No OS detected");
+                halt_silent();
+            }
+        }
+        ui::Choice::InstallOs => {
+            handle_install_os(detected_os, net_stack, width, height);
+        }
+        ui::Choice::MemoryTest => {
+            handle_boot_mode_request(detected_os, net_stack, width, height, b"memtest", 7, None);
+        }
+        ui::Choice::Rescue => {
+            handle_boot_mode_request(detected_os, net_stack, width, height, b"rescue", 6, None);
+        }
+        ui::Choice::BootIso => {
+            handle_boot_iso(detected_os, net_stack, width, height);
+        }
+        ui::Choice::RemoveFromDragonfly => {
+            handle_remove_from_dragonfly(detected_os, net_stack, width, height);
+        }
+        ui::Choice::Reboot => {
+            bios::reboot();
+        }
+    }
+}
+
+/// Handle "Install OS" flow: fetch templates, show list, request install, reboot
+fn handle_install_os(
+    detected_os: Option<&disk::OsInfo>,
+    net_stack: &mut Option<net::NetworkStack<'static>>,
+    width: u32,
+    height: u32,
+) -> ! {
+    ui::draw_status(width, height, "Install OS", "Fetching available templates...", framebuffer::colors::ACCENT_PURPLE);
+
+    let stack = match net_stack.as_mut() {
+        Some(s) => s,
+        None => {
+            ui::draw_result_and_wait(width, height, "Error", "No network available", false);
+            bios::reboot();
+        }
+    };
+
+    if !ensure_ip(stack) {
+        ui::draw_result_and_wait(width, height, "Error", "No IP address (DHCP failed)", false);
+        bios::reboot();
+    }
+
+    let (server_ip, server_port) = resolve_server(stack);
+
+    // Fetch template list
+    let templates = http::get_templates(stack, server_ip, server_port);
+
+    match templates {
+        Some(list) if list.count > 0 => {
+            // Build arrays for the UI
+            let mut names = [[0u8; 64]; 16];
+            let mut name_lens = [0usize; 16];
+            for i in 0..list.count {
+                names[i] = list.entries[i].display_name;
+                name_lens[i] = list.entries[i].display_name_len;
+            }
+
+            if let Some(idx) = ui::draw_template_list(width, height, &names, &name_lens, list.count) {
+                // User selected a template - get the machine_id from a quick checkin
+                let mac = stack.device.mac_address();
+                ui::draw_status(width, height, "Install OS", "Requesting installation...", framebuffer::colors::ACCENT_PURPLE);
+
+                // Do a quick check-in to get our machine_id
+                if let Some(response) = http::checkin(stack, server_ip, server_port, &mac, detected_os) {
+                    let success = http::request_install(
+                        stack,
+                        server_ip,
+                        server_port,
+                        &response.machine_id,
+                        response.machine_id_len,
+                        &mac,
+                        &list.entries[idx].name,
+                        list.entries[idx].name_len,
+                    );
+
+                    if success {
+                        ui::draw_status(width, height, "Install OS", "Rebooting into imaging...", framebuffer::colors::SUCCESS);
+                        // Brief display then reboot into Mage
+                        let brief_start = net::now().total_millis();
+                        while (net::now().total_millis() - brief_start) < 1000 {}
+                        chainload::boot_imaging();
+                    } else {
+                        ui::draw_result_and_wait(width, height, "Error", "Server rejected install request", false);
+                        bios::reboot();
+                    }
+                } else {
+                    ui::draw_result_and_wait(width, height, "Error", "Could not reach server for check-in", false);
+                    bios::reboot();
+                }
+            } else {
+                // User cancelled - reboot to go back to menu
+                bios::reboot();
+            }
+        }
+        _ => {
+            ui::draw_result_and_wait(width, height, "No Templates", "No OS templates available on server", false);
+            bios::reboot();
+        }
+    }
+}
+
+/// Handle "Boot from ISO" flow: fetch ISO list from server, show selection, request boot mode
+fn handle_boot_iso(
+    detected_os: Option<&disk::OsInfo>,
+    net_stack: &mut Option<net::NetworkStack<'static>>,
+    width: u32,
+    height: u32,
+) -> ! {
+    ui::draw_status(width, height, "Boot from ISO", "Fetching available ISOs...", framebuffer::colors::ACCENT_PURPLE);
+
+    let stack = match net_stack.as_mut() {
+        Some(s) => s,
+        None => {
+            ui::draw_result_and_wait(width, height, "Error", "No network available", false);
+            bios::reboot();
+        }
+    };
+
+    if !ensure_ip(stack) {
+        ui::draw_result_and_wait(width, height, "Error", "No IP address (DHCP failed)", false);
+        bios::reboot();
+    }
+
+    let (server_ip, server_port) = resolve_server(stack);
+
+    // Fetch ISO list from server
+    let isos = http::get_isos(stack, server_ip, server_port);
+
+    match isos {
+        Some(list) if list.count > 0 => {
+            // Build arrays for the UI
+            let mut names = [[0u8; 64]; 16];
+            let mut name_lens = [0usize; 16];
+            for i in 0..list.count {
+                names[i] = list.entries[i].name;
+                name_lens[i] = list.entries[i].name_len;
+            }
+
+            if let Some(idx) = ui::draw_iso_list(width, height, &names, &name_lens, list.count) {
+                // User selected an ISO — request boot mode from server
+                let mac = stack.device.mac_address();
+                ui::draw_status(width, height, "Boot from ISO", "Requesting ISO boot...", framebuffer::colors::ACCENT_PURPLE);
+
+                if let Some(response) = http::checkin(stack, server_ip, server_port, &mac, detected_os) {
+                    let success = http::request_boot_mode(
+                        stack,
+                        server_ip,
+                        server_port,
+                        &response.machine_id,
+                        response.machine_id_len,
+                        &mac,
+                        b"iso",
+                        3,
+                        Some((&list.entries[idx].name, list.entries[idx].name_len)),
+                    );
+
+                    if success {
+                        ui::draw_status(width, height, "Boot from ISO", "Rebooting for iPXE sanboot...", framebuffer::colors::SUCCESS);
+                        let brief_start = net::now().total_millis();
+                        while (net::now().total_millis() - brief_start) < 1000 {}
+                        bios::reboot();
+                    } else {
+                        ui::draw_result_and_wait(width, height, "Error", "Server rejected ISO boot request", false);
+                        bios::reboot();
+                    }
+                } else {
+                    ui::draw_result_and_wait(width, height, "Error", "Could not reach server for check-in", false);
+                    bios::reboot();
+                }
+            } else {
+                // User cancelled - reboot to go back to menu
+                bios::reboot();
+            }
+        }
+        _ => {
+            ui::draw_result_and_wait(width, height, "No ISOs", "No ISO images available on server", false);
+            bios::reboot();
+        }
+    }
+}
+
+/// Handle a generic boot-mode request (memtest, rescue, etc.)
+///
+/// Checks in with server, sends boot-mode request, and reboots.
+/// The server sets a one-shot tag; iPXE fetches the appropriate boot script on next boot.
+fn handle_boot_mode_request(
+    detected_os: Option<&disk::OsInfo>,
+    net_stack: &mut Option<net::NetworkStack<'static>>,
+    width: u32,
+    height: u32,
+    mode: &[u8],
+    mode_len: usize,
+    iso_name: Option<(&[u8], usize)>,
+) -> ! {
+    let mode_str = core::str::from_utf8(&mode[..mode_len]).unwrap_or("unknown");
+    ui::draw_status(width, height, mode_str, "Contacting server...", framebuffer::colors::ACCENT_PURPLE);
+
+    let stack = match net_stack.as_mut() {
+        Some(s) => s,
+        None => {
+            ui::draw_result_and_wait(width, height, "Error", "No network available", false);
+            bios::reboot();
+        }
+    };
+
+    if !ensure_ip(stack) {
+        ui::draw_result_and_wait(width, height, "Error", "No IP address (DHCP timeout)", false);
+        bios::reboot();
+    }
+
+    let (server_ip, server_port) = resolve_server(stack);
+
+    let mac = stack.device.mac_address();
+    if let Some(response) = http::checkin(stack, server_ip, server_port, &mac, detected_os) {
+        let success = http::request_boot_mode(
+            stack,
+            server_ip,
+            server_port,
+            &response.machine_id,
+            response.machine_id_len,
+            &mac,
+            mode,
+            mode_len,
+            iso_name,
+        );
+
+        if success {
+            ui::draw_status(width, height, mode_str, "Rebooting...", framebuffer::colors::SUCCESS);
+            let brief_start = net::now().total_millis();
+            while (net::now().total_millis() - brief_start) < 1000 {}
+            bios::reboot();
+        } else {
+            ui::draw_result_and_wait(width, height, "Error", "Server rejected boot mode request", false);
+            bios::reboot();
+        }
+    } else {
+        ui::draw_result_and_wait(width, height, "Error", "Could not reach server", false);
+        bios::reboot();
+    }
+}
+
+/// Handle "Remove from Dragonfly" flow
+fn handle_remove_from_dragonfly(
+    detected_os: Option<&disk::OsInfo>,
+    net_stack: &mut Option<net::NetworkStack<'static>>,
+    width: u32,
+    height: u32,
+) -> ! {
+    // Confirmation dialog
+    if !ui::draw_confirmation(
+        width,
+        height,
+        "Remove from Dragonfly",
+        "This machine will be unregistered from the server.",
+    ) {
+        // User cancelled
+        bios::reboot();
+    }
+
+    let stack = match net_stack.as_mut() {
+        Some(s) => s,
+        None => {
+            ui::draw_result_and_wait(width, height, "Error", "No network available", false);
+            bios::reboot();
+        }
+    };
+
+    if !ensure_ip(stack) {
+        ui::draw_result_and_wait(width, height, "Error", "No IP address (DHCP timeout)", false);
+        bios::reboot();
+    }
+
+    let (server_ip, server_port) = resolve_server(stack);
+
+    ui::draw_status(width, height, "Removing", "Contacting server...", framebuffer::colors::WARNING);
+
+    let mac = stack.device.mac_address();
+    if let Some(response) = http::checkin(stack, server_ip, server_port, &mac, detected_os) {
+        let success = http::remove_machine(
+            stack,
+            server_ip,
+            server_port,
+            &response.machine_id,
+            response.machine_id_len,
+            &mac,
+        );
+
+        if success {
+            ui::draw_result_and_wait(width, height, "Removed", "Machine unregistered from Dragonfly", true);
+        } else {
+            ui::draw_result_and_wait(width, height, "Error", "Server rejected removal request", false);
+        }
+    } else {
+        ui::draw_result_and_wait(width, height, "Error", "Could not reach server", false);
+    }
+
+    bios::reboot();
 }
 
 /// Main logic with VGA text mode (fallback)
@@ -382,31 +759,32 @@ fn main_logic_text() -> ! {
             vga::println("");
 
             // Show text menu
-            match menu::show_boot_menu(&os_info) {
-                menu::Choice::BootLocal => {
+            let choice = menu::show_boot_menu(&os_info);
+            match choice {
+                ui::Choice::BootLocal => {
                     vga::println("Chainloading bootloader...");
                     chainload::boot_grub(&os_info);
                 }
-                menu::Choice::Reinstall => {
+                ui::Choice::Reboot => bios::reboot(),
+                ui::Choice::InstallOs => {
                     vga::println("Rebooting into imaging environment...");
                     chainload::boot_imaging();
                 }
-                menu::Choice::Shell => {
-                    vga::println("");
-                    test_network();
-                    vga::println("");
-                    vga::println("Test complete.");
+                ui::Choice::MemoryTest | ui::Choice::Rescue | ui::Choice::BootIso | ui::Choice::RemoveFromDragonfly => {
+                    vga::println("This feature requires graphical mode.");
                     halt();
                 }
             }
         }
         None => {
-            vga::println("");
-            vga::print_warning("No existing OS detected");
-            vga::println("");
-            vga::println("In production: would reboot into imaging environment");
-            vga::println("For testing: halting here so you can see the screen");
-            halt();
+            let choice = menu::show_no_os_menu();
+            match choice {
+                ui::Choice::BootLocal | ui::Choice::Reboot => bios::reboot(),
+                _ => {
+                    vga::println("Rebooting into imaging environment...");
+                    chainload::boot_imaging();
+                }
+            }
         }
     }
 }
