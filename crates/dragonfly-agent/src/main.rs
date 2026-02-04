@@ -290,6 +290,34 @@ async fn main() -> Result<()> {
         &disks,
     );
 
+    // Discovery mode = rescue shell. Print system info and exec into a shell.
+    if kernel_params.mode.as_deref() == Some("discovery") {
+        println!();
+        println!("=== Dragonfly Rescue Environment ===");
+        println!("MAC: {}", mac_address);
+        println!("IP:  {}", ip_address_str);
+        println!("Hostname: {}", hostname);
+        if let Some(ref cpu) = cpu_model {
+            println!("CPU: {} ({} cores)", cpu, cpu_cores.unwrap_or(0));
+        }
+        println!("RAM: {:.1} GiB", total_ram_bytes as f64 / (1024.0 * 1024.0 * 1024.0));
+        for disk in &disks {
+            println!("Disk: {} ({} bytes)", disk.device, disk.size_bytes);
+        }
+        println!("=========================================");
+        println!("Type 'reboot' to restart the machine.");
+        println!();
+
+        // Replace this process with a shell so the user gets an interactive console
+        use std::os::unix::process::CommandExt;
+        let err = std::process::Command::new("/bin/sh")
+            .arg("-l")
+            .exec();
+        // exec() only returns on error
+        eprintln!("Failed to exec shell: {}", err);
+        std::process::exit(1);
+    }
+
     // Run the provisioning check-in loop
     run_native_provisioning_loop(
         &client,
