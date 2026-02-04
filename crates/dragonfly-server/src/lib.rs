@@ -652,6 +652,8 @@ pub async fn run() -> anyhow::Result<()> {
         .route("/boot/{mac}", get(api::ipxe_script))
         // Spark ELF - bare metal discovery agent (loaded by GRUB via multiboot2)
         .route("/boot/spark.elf", get(api::serve_spark_elf))
+        // Memtest86+ binary for memory testing
+        .route("/boot/memtest86plus.bin", get(api::serve_memtest))
         // PXELINUX bootloader files
         .route("/boot/lpxelinux.0", get(api::serve_lpxelinux))
         .route("/boot/ldlinux.c32", get(api::serve_ldlinux))

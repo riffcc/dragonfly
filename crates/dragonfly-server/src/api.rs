@@ -3261,6 +3261,9 @@ pub async fn workflow_events_handler(
 /// Spark ELF path - bare metal discovery agent
 const SPARK_ELF_PATH: &str = "/var/lib/dragonfly/spark.elf";
 
+/// Memtest86+ binary path
+const MEMTEST_PATH: &str = "/var/lib/dragonfly/boot/memtest86plus.bin";
+
 /// GRUB chainloader path - provides framebuffer support for iPXE boot
 const GRUB_CHAIN_PATH: &str = "/var/lib/dragonfly/grub-spark.0";
 
@@ -3296,6 +3299,37 @@ pub async fn serve_spark_elf() -> Response {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("Failed to read Spark ELF: {}", e),
+            ).into_response()
+        }
+    }
+}
+
+/// Serve memtest86+ binary for iPXE kernel boot
+pub async fn serve_memtest() -> Response {
+    let path = std::path::Path::new(MEMTEST_PATH);
+
+    if !path.exists() {
+        warn!("404 /boot/memtest86plus.bin: File not found at {:?}", path);
+        return (
+            StatusCode::NOT_FOUND,
+            "memtest86plus.bin not found. Download from https://memtest.org and place in /var/lib/dragonfly/boot/",
+        ).into_response();
+    }
+
+    match tokio::fs::read(path).await {
+        Ok(content) => {
+            info!("200 /boot/memtest86plus.bin: Serving {} bytes", content.len());
+            (
+                StatusCode::OK,
+                [(axum::http::header::CONTENT_TYPE, "application/octet-stream")],
+                content,
+            ).into_response()
+        }
+        Err(e) => {
+            error!("500 /boot/memtest86plus.bin: Failed to read: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to read memtest86plus.bin: {}", e),
             ).into_response()
         }
     }
