@@ -6,7 +6,7 @@ mod workflow;
 use reqwest::Client;
 use anyhow::{Result, Context};
 use dragonfly_common::models::DiskInfo;
-use dragonfly_crd::Hardware;
+use dragonfly_crd::{Hardware, Workflow};
 use std::env;
 use std::fs;
 use std::path::Path;
@@ -23,10 +23,6 @@ use workflow::{AgentWorkflowRunner, AgentAction, checkin_native};
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
 struct Args {
-    /// Show the boot menu directly (for testing the TUI)
-    #[arg(long)]
-    menu: bool,
-
     /// Server URL (default: http://localhost:3000)
     #[arg(long)]
     server: Option<String>,
@@ -185,20 +181,7 @@ fn detect_disks() -> Vec<DiskInfo> {
 async fn main() -> Result<()> {
     let args = Args::parse();
 
-    // Initialize logger (but not for menu mode - it interferes with TUI)
-    if !args.menu {
-        tracing_subscriber::fmt::init();
-    }
-
-    // If --menu flag, show boot menu directly and exit
-    if args.menu {
-        // Probe for existing OS to show in menu
-        let existing_os = probe::probe_for_existing_os().ok().flatten();
-        let server_url = args.server.as_deref();
-        let selection = boot_menu::show_boot_menu(existing_os.as_ref(), server_url).await?;
-        println!("Selected: {:?}", selection);
-        return Ok(());
-    }
+    tracing_subscriber::fmt::init();
 
     // Parse kernel command line parameters (for Mage boot environment)
     let kernel_params = KernelParams::from_cmdline();
@@ -468,18 +451,45 @@ async fn run_native_provisioning_loop(
             ).await {
                 Ok(()) => return Ok(()),
                 Err(e) => {
-                    // Workflow failed — retry from check-in. The server still has the
-                    // workflow assigned; it'll tell us to Execute again.
-                    // Backoff: 0s, 1s, 2s, 4s, 8s (capped)
-                    let backoff_secs = if attempt <= 1 { 0 } else { 1u64 << (attempt - 2).min(3) };
-                    error!(
-                        error = %e,
-                        attempt,
-                        backoff_secs,
-                        "Workflow failed, will retry from check-in"
+                    let error_msg = format!("{:#}", e);
+                    error!(error = %e, attempt, "Workflow failed");
+
+                    // Get template name for recovery UI
+                    let template_name = match response.workflow_id.as_deref() {
+                        Some(wf_id) => {
+                            let url = format!("{}/api/workflows/{}", server_url, wf_id);
+                            match client.get(&url).send().await {
+                                Ok(resp) if resp.status().is_success() => {
+                                    resp.json::<Workflow>().await
+                                        .map(|wf| wf.spec.template_ref)
+                                        .unwrap_or_else(|_| response.memorable_name.clone())
+                                }
+                                _ => response.memorable_name.clone(),
+                            }
+                        }
+                        None => response.memorable_name.clone(),
+                    };
+
+                    // Persist error log for rescue shell
+                    let _ = std::fs::write(
+                        "/var/log/dragonfly-install.log",
+                        format!("Install failed (attempt {}): {}\n", attempt, error_msg),
                     );
-                    if backoff_secs > 0 {
-                        tokio::time::sleep(Duration::from_secs(backoff_secs)).await;
+
+                    // Show recovery UI — operator decides what to do
+                    match boot_menu::show_install_failure(&template_name, &error_msg)? {
+                        boot_menu::RecoveryAction::Retry => continue,
+                        boot_menu::RecoveryAction::RescueShell => {
+                            use std::os::unix::process::CommandExt;
+                            println!("\nLog at /var/log/dragonfly-install.log");
+                            println!("Type 'reboot' to restart.\n");
+                            let _ = Command::new("/bin/sh").arg("-l").exec();
+                            std::process::exit(1);
+                        }
+                        boot_menu::RecoveryAction::Reboot => {
+                            let _ = Command::new("reboot").status();
+                            std::process::exit(0);
+                        }
                     }
                 }
             }

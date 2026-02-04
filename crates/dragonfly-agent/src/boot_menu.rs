@@ -807,6 +807,179 @@ fn draw_splash(frame: &mut Frame, existing_os: Option<&DetectedOs>) {
     frame.render_widget(prompt, chunks[3]);
 }
 
+/// Action chosen by operator after an install failure
+#[derive(Debug, Clone, PartialEq)]
+pub enum RecoveryAction {
+    /// Retry the same install from check-in
+    Retry,
+    /// Drop to interactive rescue shell
+    RescueShell,
+    /// Reboot the machine
+    Reboot,
+}
+
+/// Display install failure recovery screen and let the operator choose what to do.
+///
+/// Shows the error, template name, and a recovery menu. Default selection is
+/// Rescue Shell so an unattended failure doesn't auto-retry into a loop.
+pub fn show_install_failure(
+    template_name: &str,
+    error_message: &str,
+) -> Result<RecoveryAction> {
+    // Setup terminal
+    terminal::enable_raw_mode()?;
+    let mut stdout = stdout();
+    execute!(stdout, EnterAlternateScreen)?;
+    let backend = CrosstermBackend::new(stdout);
+    let mut terminal = Terminal::new(backend)?;
+
+    let result = run_recovery_loop(&mut terminal, template_name, error_message);
+
+    // Restore terminal
+    terminal::disable_raw_mode()?;
+    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    terminal.show_cursor()?;
+
+    result
+}
+
+/// Run the recovery menu input loop
+fn run_recovery_loop(
+    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    template_name: &str,
+    error_message: &str,
+) -> Result<RecoveryAction> {
+    let mut list_state = ListState::default();
+    list_state.select(Some(1)); // Default to Rescue Shell
+
+    loop {
+        terminal.draw(|frame| {
+            draw_recovery_screen(frame, template_name, error_message, &mut list_state);
+        })?;
+
+        if event::poll(Duration::from_millis(100))? {
+            if let Event::Key(KeyEvent { code, kind: KeyEventKind::Press, .. }) = event::read()? {
+                match code {
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        let i = list_state.selected().unwrap_or(1);
+                        list_state.select(Some(if i == 0 { 2 } else { i - 1 }));
+                    }
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        let i = list_state.selected().unwrap_or(1);
+                        list_state.select(Some(if i >= 2 { 0 } else { i + 1 }));
+                    }
+                    KeyCode::Enter | KeyCode::Char(' ') => {
+                        return Ok(match list_state.selected() {
+                            Some(0) => RecoveryAction::Retry,
+                            Some(2) => RecoveryAction::Reboot,
+                            _ => RecoveryAction::RescueShell,
+                        });
+                    }
+                    KeyCode::Char('1') => return Ok(RecoveryAction::Retry),
+                    KeyCode::Char('2') => return Ok(RecoveryAction::RescueShell),
+                    KeyCode::Char('3') => return Ok(RecoveryAction::Reboot),
+                    _ => {}
+                }
+            }
+        }
+    }
+}
+
+/// Draw the install failure recovery screen
+fn draw_recovery_screen(
+    frame: &mut Frame,
+    template_name: &str,
+    error_message: &str,
+    list_state: &mut ListState,
+) {
+    let area = frame.area();
+    frame.render_widget(Clear, area);
+
+    let content_area = center_rect(area, 90, 85);
+
+    let chunks = Layout::vertical([
+        Constraint::Length(8),  // Logo
+        Constraint::Length(2),  // Slogan
+        Constraint::Length(3),  // Failure title
+        Constraint::Min(6),     // Error details
+        Constraint::Length(8),  // Recovery menu
+        Constraint::Length(3),  // Footer
+    ])
+    .split(content_area);
+
+    // Logo
+    draw_logo(frame, chunks[0]);
+    draw_slogan(frame, chunks[1]);
+
+    // Failure title
+    let title = Paragraph::new(vec![
+        Line::from(vec![
+            Span::styled(
+                " INSTALL FAILED ",
+                Style::default().fg(Color::White).bg(Color::Red).add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::from(vec![
+            Span::raw("Template: "),
+            Span::styled(template_name, Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+        ]),
+    ])
+    .centered();
+    frame.render_widget(title, chunks[2]);
+
+    // Error details
+    let error_block = Paragraph::new(error_message)
+        .block(
+            Block::default()
+                .title(" Error ")
+                .title_style(Style::default().fg(Color::Red).add_modifier(Modifier::BOLD))
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Red))
+        )
+        .wrap(ratatui::widgets::Wrap { trim: false });
+    frame.render_widget(error_block, chunks[3]);
+
+    // Recovery menu
+    let items: Vec<ListItem> = vec![
+        ListItem::new("  Retry install"),
+        ListItem::new(Line::from(vec![
+            Span::raw("  Rescue shell"),
+            Span::styled("  (default)", Style::default().fg(Color::DarkGray)),
+        ])),
+        ListItem::new("  Reboot"),
+    ];
+
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .title(" Recovery Options ")
+                .title_style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Yellow))
+        )
+        .highlight_style(
+            Style::default()
+                .bg(Color::Yellow)
+                .fg(Color::Black)
+                .add_modifier(Modifier::BOLD)
+        )
+        .highlight_symbol("▸ ");
+
+    frame.render_stateful_widget(list, chunks[4], list_state);
+
+    // Footer
+    let footer = Paragraph::new(Line::from(vec![
+        Span::styled("↑↓", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+        Span::raw(" Navigate  "),
+        Span::styled("Enter", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+        Span::raw(" Select  "),
+        Span::styled("1-3", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+        Span::raw(" Quick select"),
+    ]))
+    .centered();
+    frame.render_widget(footer, chunks[5]);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
