@@ -59,7 +59,7 @@
                     'bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-300': machine.status === 'Offline' || machine.status === 'ExistingOs',
                     'bg-purple-100 text-purple-800 dark:bg-purple-900/40 dark:text-purple-300': !['Ready','Installed','InstallingOS','Initializing','Writing','Failed','Discovered','ReadyToInstall','Offline','ExistingOs'].includes(machine.status)
                 }"
-                x-text="machine.status">
+                x-text="formatStatus(machine.status)">
             </span>
         </div>
         <div class="flex items-center gap-2">
@@ -103,7 +103,7 @@
                 Delete
             </button>
             {% endif %}
-            <a href="/machines" class="px-4 py-2 bg-transparent border-2 border-gray-900 dark:border-white text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/5 text-sm font-medium rounded-lg transition-colors">
+            <a href="/machines" class="px-4 py-2 bg-transparent border-2 border-gray-900 dark:border-gray-400 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/5 text-sm font-medium rounded-lg transition-colors">
                 &larr; Machines
             </a>
         </div>
@@ -150,7 +150,7 @@
                     'text-blue-600 dark:text-blue-400': machine.status === 'Discovered' || machine.status === 'ReadyToInstall',
                     'text-gray-600 dark:text-gray-400': !['Ready','Installed','InstallingOS','Initializing','Writing','Failed','Discovered','ReadyToInstall'].includes(machine.status)
                 }"
-                x-text="machine.status"></span>
+                x-text="formatStatus(machine.status)"></span>
         </div>
         <div class="flex flex-col gap-1">
             <span class="text-xs text-gray-500 dark:text-gray-600 uppercase tracking-wider font-medium">Uptime</span>
@@ -515,6 +515,7 @@
 
 <script>
   // Define helper functions in the script scope
+  const formatStatus = (s) => s ? s.replace(/([a-z])([A-Z])/g, '$1 $2').replace(/ (To|Of|In|On|At|By|For|The|A|An) /g, (m) => m.toLowerCase()) : s;
   const formatBytes = (bytes, decimals = 1) => {
       if (bytes === 0) return '0 Bytes';
       const k = 1024;

@@ -96,7 +96,7 @@
         }
         
         html.dark body {
-            background-color: #0A0B10;
+            background-color: #0a0a0a;
             color: #f3f4f6;
         }
         
@@ -112,7 +112,7 @@
             }
             
             html[data-theme="system"] body {
-                background-color: #0A0B10;
+                background-color: #0a0a0a;
                 color: #f3f4f6;
             }
         }
@@ -248,7 +248,7 @@
         }
     </script>
 </head>
-<body class="bg-gray-100 dark:bg-[#0A0B10] flex flex-col min-h-screen"
+<body class="bg-gray-100 dark:bg-[#0a0a0a] flex flex-col min-h-screen"
     x-data="{
         settingsOpen: false,
         osModal: false,
@@ -322,7 +322,7 @@
     @gamepad-connection-changed.window="gamepadConnected = $event.detail.connected"
 >
     <div x-data="machineActions" class="flex-grow">
-        <nav class="bg-white dark:bg-[#0A0B10] shadow-lg dark:shadow-none border-b border-gray-200 dark:border-[#222]/10 relative z-10 after:absolute after:bottom-[-1px] after:left-0 after:right-0 after:h-[2px] after:bg-gradient-to-r dark:after:from-indigo-900/10 dark:after:via-purple-800/10 dark:after:to-cyan-900/10 transition-colors duration-200">
+        <nav class="bg-white dark:bg-[#0a0a0a] shadow-lg dark:shadow-none border-b border-gray-200 dark:border-[#222]/10 relative z-10 after:absolute after:bottom-[-1px] after:left-0 after:right-0 after:h-[2px] after:bg-gradient-to-r dark:after:from-indigo-900/10 dark:after:via-purple-800/10 dark:after:to-cyan-900/10 transition-colors duration-200">
             <div class="max-w-7xl mx-auto px-4">
                 <div class="flex justify-between h-16">
                     {# Logo - left side with breathing room #}
@@ -420,7 +420,7 @@
         </nav>
 
         {% block main_content %}
-            <main class="max-w-7xl mx-auto py-6 sm:px-6 lg:px-8 transition-all duration-200 dark:bg-[#0A0B10]">
+            <main class="max-w-7xl mx-auto py-6 sm:px-6 lg:px-8 transition-all duration-200 dark:bg-[#0a0a0a]">
                 {% block content %}{% endblock %}
             </main>
         {% endblock %}
@@ -444,7 +444,7 @@
                         x-transition:leave-start="opacity-100 translate-y-0 sm:scale-100"
                         x-transition:leave-end="opacity-0 translate-y-4 sm:translate-y-0 sm:scale-95"
                         @click.away="osModal = false"
-                        class="relative transform overflow-hidden rounded-lg bg-white dark:bg-[#0A0B10] px-4 pb-4 pt-5 text-left shadow-xl dark:shadow-[0_0_15px_rgba(0,0,0,0.4)] dark:border dark:border-gray-900 dark:border-opacity-50 transition-all sm:my-8 sm:w-full sm:max-w-lg sm:p-6"
+                        class="relative transform overflow-hidden rounded-lg bg-white dark:bg-[#0a0a0a] px-4 pb-4 pt-5 text-left shadow-xl dark:shadow-[0_0_15px_rgba(0,0,0,0.4)] dark:border dark:border-gray-900 dark:border-opacity-50 transition-all sm:my-8 sm:w-full sm:max-w-lg sm:p-6"
                     >
                         <div id="os-modal-content">
                             <div class="flex items-center justify-center">
@@ -475,7 +475,7 @@
                         x-transition:leave-start="opacity-100 translate-y-0 sm:scale-100"
                         x-transition:leave-end="opacity-0 translate-y-4 sm:translate-y-0 sm:scale-95"
                         @click.away="statusModal = false"
-                        class="relative transform overflow-hidden rounded-lg bg-white dark:bg-[#0A0B10] px-4 pb-4 pt-5 text-left shadow-xl dark:shadow-[0_0_15px_rgba(0,0,0,0.4)] dark:border dark:border-gray-900 dark:border-opacity-50 transition-all sm:my-8 sm:w-full sm:max-w-lg sm:p-6"
+                        class="relative transform overflow-hidden rounded-lg bg-white dark:bg-[#0a0a0a] px-4 pb-4 pt-5 text-left shadow-xl dark:shadow-[0_0_15px_rgba(0,0,0,0.4)] dark:border dark:border-gray-900 dark:border-opacity-50 transition-all sm:my-8 sm:w-full sm:max-w-lg sm:p-6"
                     >
                         <div id="status-modal-content">
                             <div class="flex items-center justify-center">
@@ -506,7 +506,7 @@
                         x-transition:leave-start="opacity-100 translate-y-0 sm:scale-100"
                         x-transition:leave-end="opacity-0 translate-y-4 sm:translate-y-0 sm:scale-95"
                         @click.away="deleteModal = false"
-                        class="relative transform overflow-hidden rounded-lg bg-white dark:bg-[#0A0B10] px-4 pb-4 pt-5 text-left shadow-xl dark:shadow-[0_0_15px_rgba(0,0,0,0.4)] dark:border dark:border-gray-900 dark:border-opacity-50 transition-all sm:my-8 sm:w-full sm:max-w-lg sm:p-6"
+                        class="relative transform overflow-hidden rounded-lg bg-white dark:bg-[#0a0a0a] px-4 pb-4 pt-5 text-left shadow-xl dark:shadow-[0_0_15px_rgba(0,0,0,0.4)] dark:border dark:border-gray-900 dark:border-opacity-50 transition-all sm:my-8 sm:w-full sm:max-w-lg sm:p-6"
                     >
                         <div class="sm:flex sm:items-start">
                             <div class="mx-auto flex h-12 w-12 flex-shrink-0 items-center justify-center rounded-full bg-red-100 sm:mx-0 sm:h-10 sm:w-10">
@@ -580,7 +580,7 @@
     </script>
     
     {% if hide_footer is not defined or not hide_footer %}
-    <footer class="bg-white dark:bg-[#0A0B10] border-t border-gray-200 dark:border-[#222]/10 mt-auto w-full">
+    <footer class="bg-white dark:bg-[#0a0a0a] border-t border-gray-200 dark:border-[#222]/10 mt-auto w-full">
         <div class="max-w-7xl mx-auto py-4 px-4 sm:px-6 lg:px-8">
             <p class="text-center text-gray-500 dark:text-gray-500 text-sm italic">
                 metal, managed &middot; <a href="https://github.com/riffcc/dragonfly" class="text-purple-600 dark:text-purple-400 hover:underline not-italic">Dragonfly</a>
