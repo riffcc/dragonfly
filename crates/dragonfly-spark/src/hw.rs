@@ -95,6 +95,51 @@ pub fn cpu_cores() -> u32 {
     if count == 0 { 1 } else { count }
 }
 
+/// Total memory detected at boot (bytes), set once by init_memory()
+static mut TOTAL_MEMORY_BYTES: u64 = 0;
+
+/// Initialize memory detection from multiboot info. Call once at boot.
+///
+/// # Safety
+/// `multiboot_info` must point to a valid multiboot info structure.
+pub unsafe fn init_memory(multiboot_info: u32, is_multiboot2: bool) {
+    let bytes = if is_multiboot2 {
+        total_memory_mb_mb2(multiboot_info) as u64 * 1024 * 1024
+    } else {
+        total_memory_bytes_mb1(multiboot_info)
+    };
+    unsafe { TOTAL_MEMORY_BYTES = bytes; }
+}
+
+/// Get total detected memory in bytes (0 if not yet detected)
+pub fn total_memory_bytes() -> u64 {
+    unsafe { TOTAL_MEMORY_BYTES }
+}
+
+/// Parse Multiboot1 memory info and return total usable memory in bytes
+///
+/// Multiboot1 info structure:
+///   offset 0: flags
+///   offset 4: mem_lower (KB below 1MB, if flags bit 0)
+///   offset 8: mem_upper (KB above 1MB, if flags bit 0)
+///
+/// # Safety
+/// `multiboot_info` must point to a valid multiboot1 information structure.
+unsafe fn total_memory_bytes_mb1(multiboot_info: u32) -> u64 {
+    let info_ptr = multiboot_info as *const u32;
+    let flags = unsafe { *info_ptr };
+
+    // Bit 0 of flags indicates mem_lower/mem_upper are valid
+    if flags & 1 == 0 {
+        return 0;
+    }
+
+    let mem_lower_kb = unsafe { *info_ptr.add(1) } as u64; // KB below 1MB
+    let mem_upper_kb = unsafe { *info_ptr.add(2) } as u64; // KB above 1MB
+
+    (mem_lower_kb + mem_upper_kb) * 1024
+}
+
 /// Multiboot2 tag types for memory map
 const MULTIBOOT2_TAG_TYPE_END: u32 = 0;
 const MULTIBOOT2_TAG_TYPE_MMAP: u32 = 6;

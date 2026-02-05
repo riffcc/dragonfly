@@ -74,6 +74,9 @@ pub struct HardwareCheckIn {
     pub virt_platform: Option<String>,
     /// Existing OS detected on disk (if any)
     pub existing_os: Option<DetectedOs>,
+    /// Nameservers from /etc/resolv.conf
+    #[serde(default)]
+    pub nameservers: Vec<String>,
 }
 
 /// Disk information from agent
@@ -480,6 +483,7 @@ impl ProvisioningService {
         machine.hardware = HardwareInfo {
             cpu_model: info.cpu_model.clone(),
             cpu_cores: info.cpu_cores,
+            cpu_threads: None,
             memory_bytes: info.memory_bytes,
             disks: info.disks.iter().map(|d| Disk {
                 device: format!("/dev/{}", d.name),
@@ -487,6 +491,7 @@ impl ProvisioningService {
                 model: d.model.clone(),
                 serial: d.serial.clone(),
             }).collect(),
+            gpus: Vec::new(),
             network_interfaces: info.interfaces.iter()
                 .filter(|i| i.mac != info.mac)
                 .map(|i| NetworkInterface {
@@ -497,6 +502,11 @@ impl ProvisioningService {
             is_virtual: info.is_virtual,
             virt_platform: info.virt_platform.clone(),
         };
+
+        // Store nameservers
+        if !info.nameservers.is_empty() {
+            machine.config.nameservers = info.nameservers.clone();
+        }
 
         // Set initial status
         machine.status = MachineStatus {
@@ -542,6 +552,11 @@ impl ProvisioningService {
                 model: d.model.clone(),
                 serial: d.serial.clone(),
             }).collect();
+        }
+
+        // Update nameservers if reported
+        if !info.nameservers.is_empty() {
+            machine.config.nameservers = info.nameservers.clone();
         }
 
         // Update last seen and current IP
@@ -713,6 +728,7 @@ mod tests {
             is_virtual: false,
             virt_platform: None,
             existing_os: None,
+            nameservers: vec![],
         }
     }
 
@@ -827,6 +843,7 @@ mod tests {
             is_virtual: false,
             virt_platform: None,
             existing_os: None,
+            nameservers: vec![],
         };
 
         let response = service.handle_checkin(&checkin).await.unwrap();

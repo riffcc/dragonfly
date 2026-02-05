@@ -37,11 +37,20 @@ pub struct MachineResponse {
 pub struct HardwareResponse {
     pub cpu_model: Option<String>,
     pub cpu_cores: Option<u32>,
+    pub cpu_threads: Option<u32>,
     pub memory_gb: Option<f64>,
     pub disks: Vec<DiskResponse>,
+    pub gpus: Vec<GpuResponse>,
     pub network_interfaces: Vec<NetworkInterfaceResponse>,
     pub is_virtual: bool,
     pub virt_platform: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GpuResponse {
+    pub name: String,
+    pub vendor: Option<String>,
+    pub vram_gb: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -92,11 +101,23 @@ impl From<&HardwareInfo> for HardwareResponse {
         Self {
             cpu_model: h.cpu_model.clone(),
             cpu_cores: h.cpu_cores,
+            cpu_threads: h.cpu_threads,
             memory_gb: h.memory_bytes.map(|b| b as f64 / (1024.0 * 1024.0 * 1024.0)),
             disks: h.disks.iter().map(DiskResponse::from).collect(),
+            gpus: h.gpus.iter().map(GpuResponse::from).collect(),
             network_interfaces: h.network_interfaces.iter().map(NetworkInterfaceResponse::from).collect(),
             is_virtual: h.is_virtual,
             virt_platform: h.virt_platform.clone(),
+        }
+    }
+}
+
+impl From<&dragonfly_common::GpuInfo> for GpuResponse {
+    fn from(g: &dragonfly_common::GpuInfo) -> Self {
+        Self {
+            name: g.name.clone(),
+            vendor: g.vendor.clone(),
+            vram_gb: g.vram_bytes.map(|b| b as f64 / (1024.0 * 1024.0 * 1024.0)),
         }
     }
 }
@@ -242,8 +263,10 @@ impl From<RegisterMachineRequest> for Machine {
         machine.hardware = HardwareInfo {
             cpu_model: req.cpu_model,
             cpu_cores: req.cpu_cores,
+            cpu_threads: None,
             memory_bytes: req.memory_bytes,
             disks: req.disks.into_iter().map(Disk::from).collect(),
+            gpus: Vec::new(),
             network_interfaces: req.network_interfaces.into_iter().map(NetworkInterface::from).collect(),
             is_virtual: req.is_virtual,
             virt_platform: req.virt_platform,
@@ -363,7 +386,7 @@ pub fn machine_to_common(m: &Machine) -> CommonMachine {
             model: d.model.clone(),
             calculated_size: Some(format!("{:.1} GB", d.size_bytes as f64 / 1_000_000_000.0)),
         }).collect(),
-        nameservers: vec![],
+        nameservers: m.config.nameservers.clone(),
         created_at: m.metadata.created_at,
         updated_at: m.metadata.updated_at,
         memorable_name: Some(m.config.memorable_name.clone()),
@@ -382,7 +405,9 @@ pub fn machine_to_common(m: &Machine) -> CommonMachine {
         last_deployment_duration: None,
         cpu_model: m.hardware.cpu_model.clone(),
         cpu_cores: m.hardware.cpu_cores,
+        cpu_threads: m.hardware.cpu_threads,
         total_ram_bytes: m.hardware.memory_bytes,
+        gpus: m.hardware.gpus.clone(),
         proxmox_vmid: None, // TODO: extract from source if Proxmox
         proxmox_node: None,
         proxmox_cluster: None,
@@ -429,6 +454,7 @@ pub fn machine_from_register_request(req: &CommonRegisterRequest) -> Machine {
     machine.hardware = HardwareInfo {
         cpu_model: req.cpu_model.clone(),
         cpu_cores: req.cpu_cores,
+        cpu_threads: None,
         memory_bytes: req.total_ram_bytes,
         disks: req.disks.iter().map(|d| Disk {
             device: d.device.clone(),
@@ -436,6 +462,7 @@ pub fn machine_from_register_request(req: &CommonRegisterRequest) -> Machine {
             model: d.model.clone(),
             serial: None,
         }).collect(),
+        gpus: Vec::new(),
         network_interfaces: vec![NetworkInterface {
             name: "eth0".to_string(), // Default name
             mac: req.mac_address.clone(),

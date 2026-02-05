@@ -18,7 +18,7 @@ use clap::Parser;
 use tracing::{info, error, warn, debug};
 // Use wildcard import for sysinfo to bring traits into scope
 use sysinfo::*;
-use workflow::{AgentWorkflowRunner, AgentAction, checkin_native};
+use workflow::{AgentWorkflowRunner, AgentAction, AgentHardwareInfo, checkin_native};
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -177,6 +177,209 @@ fn detect_disks() -> Vec<DiskInfo> {
     disks
 }
 
+/// Detect nameservers by sending a DHCP INFORM request.
+///
+/// Spark boots via DHCP - we already have an IP. DHCPINFORM asks the DHCP server
+/// for configuration options (DNS, domain, etc.) without requesting a new lease.
+/// This is the correct way to get nameservers: ask the network directly.
+fn detect_nameservers(local_ip: &str, mac: &str) -> Vec<String> {
+    match dhcp_inform(local_ip, mac) {
+        Ok(info) => {
+            if !info.nameservers.is_empty() {
+                tracing::info!("DHCP INFORM returned nameservers: {:?}", info.nameservers);
+                if let Some(ref domain) = info.domain_name {
+                    tracing::info!("DHCP domain: {}", domain);
+                }
+                return info.nameservers;
+            }
+            tracing::warn!("DHCP INFORM returned no DNS servers");
+            Vec::new()
+        }
+        Err(e) => {
+            tracing::warn!("DHCP INFORM failed: {}. Falling back to resolv.conf", e);
+            // Fallback for non-DHCP or broken environments
+            parse_resolv_conf()
+        }
+    }
+}
+
+/// Parse nameservers from /etc/resolv.conf (fallback only)
+fn parse_resolv_conf() -> Vec<String> {
+    let resolv_path = Path::new("/etc/resolv.conf");
+    match fs::read_to_string(resolv_path) {
+        Ok(contents) => {
+            contents
+                .lines()
+                .filter_map(|line| {
+                    let trimmed = line.trim();
+                    if trimmed.starts_with("nameserver") {
+                        trimmed.split_whitespace().nth(1).map(|s| s.to_string())
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        }
+        Err(_) => Vec::new(),
+    }
+}
+
+/// Response from a DHCP INFORM exchange
+struct DhcpInformResult {
+    nameservers: Vec<String>,
+    domain_name: Option<String>,
+}
+
+/// Send a DHCPINFORM and extract configuration options from the response.
+///
+/// DHCPINFORM (RFC 2131) tells the DHCP server "I already have an IP,
+/// just give me my configuration options." The server replies with a
+/// DHCPACK containing DNS servers, domain name, etc.
+fn dhcp_inform(local_ip: &str, mac: &str) -> Result<DhcpInformResult> {
+    use std::net::{Ipv4Addr, UdpSocket, SocketAddr};
+
+    let our_ip: Ipv4Addr = local_ip.parse()
+        .context("Invalid local IP for DHCP INFORM")?;
+
+    // Parse MAC address
+    let mac_bytes: Vec<u8> = mac.split(':')
+        .filter_map(|h| u8::from_str_radix(h, 16).ok())
+        .collect();
+    if mac_bytes.len() != 6 {
+        anyhow::bail!("Invalid MAC address: {}", mac);
+    }
+
+    // Build DHCPINFORM packet
+    // Generate a transaction ID from timestamp + MAC hash (no rand dependency needed)
+    let xid: u32 = {
+        let mut hasher = DefaultHasher::new();
+        std::time::SystemTime::now().hash(&mut hasher);
+        mac.hash(&mut hasher);
+        hasher.finish() as u32
+    };
+    let mut packet = vec![0u8; 300];
+
+    packet[0] = 1;    // op: BOOTREQUEST
+    packet[1] = 1;    // htype: Ethernet
+    packet[2] = 6;    // hlen: MAC length
+    // packet[3] = 0; // hops
+
+    // xid (transaction ID)
+    packet[4..8].copy_from_slice(&xid.to_be_bytes());
+
+    // secs = 0, flags = 0 (unicast OK)
+
+    // ciaddr: our current IP (we already have one)
+    packet[12..16].copy_from_slice(&our_ip.octets());
+
+    // chaddr: our MAC address (padded to 16 bytes)
+    packet[28..34].copy_from_slice(&mac_bytes);
+
+    // Magic cookie at byte 236
+    packet[236] = 99;
+    packet[237] = 130;
+    packet[238] = 83;
+    packet[239] = 99;
+
+    // DHCP options start at byte 240
+    let mut opt_pos = 240;
+
+    // Option 53: DHCP Message Type = 8 (INFORM)
+    packet[opt_pos] = 53;
+    packet[opt_pos + 1] = 1;
+    packet[opt_pos + 2] = 8;
+    opt_pos += 3;
+
+    // Option 55: Parameter Request List
+    let requested = [6u8, 15, 28, 42]; // DNS, Domain Name, Broadcast, NTP
+    packet[opt_pos] = 55;
+    packet[opt_pos + 1] = requested.len() as u8;
+    packet[opt_pos + 2..opt_pos + 2 + requested.len()].copy_from_slice(&requested);
+    opt_pos += 2 + requested.len();
+
+    // Option 255: End
+    packet[opt_pos] = 255;
+    opt_pos += 1;
+
+    packet.truncate(opt_pos);
+
+    // Send on UDP port 67 (DHCP server), listen on port 68 (DHCP client)
+    let socket = UdpSocket::bind(SocketAddr::from((Ipv4Addr::UNSPECIFIED, 68)))
+        .context("Failed to bind DHCP client socket (port 68)")?;
+    socket.set_broadcast(true)?;
+    socket.set_read_timeout(Some(Duration::from_secs(5)))?;
+
+    let dest = SocketAddr::from((Ipv4Addr::BROADCAST, 67));
+    socket.send_to(&packet, dest)
+        .context("Failed to send DHCPINFORM")?;
+
+    tracing::debug!("Sent DHCPINFORM (xid={:#010x}) from {}", xid, local_ip);
+
+    // Wait for DHCPACK response
+    let mut buf = vec![0u8; 1500];
+    let (len, _src) = socket.recv_from(&mut buf)
+        .context("No DHCP response received (timeout)")?;
+
+    // Verify it's a response to our request
+    if len < 240 {
+        anyhow::bail!("DHCP response too short: {} bytes", len);
+    }
+    if buf[0] != 2 {
+        anyhow::bail!("Not a BOOTREPLY (op={})", buf[0]);
+    }
+    let resp_xid = u32::from_be_bytes([buf[4], buf[5], buf[6], buf[7]]);
+    if resp_xid != xid {
+        anyhow::bail!("XID mismatch: expected {:#010x}, got {:#010x}", xid, resp_xid);
+    }
+
+    // Verify magic cookie
+    if buf[236..240] != [99, 130, 83, 99] {
+        anyhow::bail!("Invalid DHCP magic cookie");
+    }
+
+    // Parse DHCP options
+    let mut result = DhcpInformResult {
+        nameservers: Vec::new(),
+        domain_name: None,
+    };
+
+    let mut pos = 240;
+    while pos < len {
+        let option = buf[pos];
+        if option == 255 { break; } // End
+        if option == 0 { pos += 1; continue; } // Padding
+
+        if pos + 1 >= len { break; }
+        let opt_len = buf[pos + 1] as usize;
+        let data_start = pos + 2;
+        let data_end = data_start + opt_len;
+        if data_end > len { break; }
+
+        match option {
+            6 => {
+                // DNS servers: list of 4-byte IPv4 addresses
+                let mut i = data_start;
+                while i + 4 <= data_end {
+                    let ip = Ipv4Addr::new(buf[i], buf[i + 1], buf[i + 2], buf[i + 3]);
+                    result.nameservers.push(ip.to_string());
+                    i += 4;
+                }
+            }
+            15 => {
+                // Domain name
+                if let Ok(domain) = std::str::from_utf8(&buf[data_start..data_end]) {
+                    result.domain_name = Some(domain.trim_end_matches('\0').to_string());
+                }
+            }
+            _ => {} // Ignore other options
+        }
+
+        pos = data_end;
+    }
+
+    Ok(result)
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
@@ -257,8 +460,18 @@ async fn main() -> Result<()> {
     info!("Detected RAM: {} bytes ({:.2} GiB)", total_ram_bytes, total_ram_gib);
     // --- End CPU/RAM Detection ---
     
-    // Detect disks
+    // Detect disks and nameservers
     let disks = detect_disks();
+    let nameservers = detect_nameservers(&ip_address_str, &mac_address);
+
+    // Build hardware info for checkin (sent to server with every checkin)
+    let agent_hw_info = AgentHardwareInfo {
+        cpu_model: cpu_model.clone(),
+        cpu_cores,
+        memory_bytes: total_ram_bytes,
+        disks: disks.clone(),
+        nameservers,
+    };
 
     info!("Starting Dragonfly agent (Mage boot: {})", kernel_params.has_dragonfly_params());
 
@@ -309,6 +522,7 @@ async fn main() -> Result<()> {
         Some(&hostname),
         Some(&ip_address_str),
         hardware,
+        &agent_hw_info,
         Duration::from_secs(args.checkin_interval),
         args.action.clone(),
         kernel_params.mode.as_deref(),
@@ -385,6 +599,7 @@ async fn run_native_provisioning_loop(
     hostname: Option<&str>,
     ip_address: Option<&str>,
     hardware: Hardware,
+    agent_hw_info: &AgentHardwareInfo,
     checkin_interval: Duration,
     action_filter: Option<Vec<usize>>,
     boot_mode: Option<&str>,
@@ -430,7 +645,7 @@ async fn run_native_provisioning_loop(
             attempt += 1;
             info!(attempt, "Imaging mode - checking in with server");
             let response = checkin_with_retry(
-                client, server_url, mac, effective_hostname, ip_address, existing_os.as_ref(),
+                client, server_url, mac, effective_hostname, ip_address, existing_os.as_ref(), Some(agent_hw_info),
             ).await?;
 
             info!(
@@ -505,6 +720,7 @@ async fn run_native_provisioning_loop(
     let hostname_owned = effective_hostname.map(|s| s.to_string());
     let ip_address_owned = ip_address.map(|s| s.to_string());
     let existing_os_clone = existing_os.clone();
+    let hw_info_clone = agent_hw_info.clone();
 
     let checkin_result = boot_menu::wait_for_checkin_with_interrupt(
         || async move {
@@ -515,6 +731,7 @@ async fn run_native_provisioning_loop(
                 hostname_owned.as_deref(),
                 ip_address_owned.as_deref(),
                 existing_os_clone.as_ref(),
+                Some(&hw_info_clone),
             ).await
         },
         existing_os.as_ref(),
@@ -564,7 +781,7 @@ async fn run_native_provisioning_loop(
         loop {
             tokio::time::sleep(checkin_interval).await;
 
-            match checkin_native(client, server_url, mac, effective_hostname, ip_address, existing_os.as_ref()).await {
+            match checkin_native(client, server_url, mac, effective_hostname, ip_address, existing_os.as_ref(), Some(agent_hw_info)).await {
                 Ok(response) => {
                     debug!(action = ?response.action, "Check-in response");
                     handle_agent_action(
@@ -598,11 +815,12 @@ async fn checkin_with_retry(
     hostname: Option<&str>,
     ip_address: Option<&str>,
     existing_os: Option<&probe::DetectedOs>,
+    agent_hw_info: Option<&AgentHardwareInfo>,
 ) -> Result<workflow::CheckInResponse> {
     let mut attempt: u32 = 0;
     loop {
         attempt += 1;
-        match checkin_native(client, server_url, mac, hostname, ip_address, existing_os).await {
+        match checkin_native(client, server_url, mac, hostname, ip_address, existing_os, agent_hw_info).await {
             Ok(response) => return Ok(response),
             Err(e) => {
                 // Cap backoff at 10s — the server is local, retries should be quick

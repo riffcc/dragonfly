@@ -32,7 +32,11 @@ pub struct Machine {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cpu_cores: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub cpu_threads: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub total_ram_bytes: Option<u64>,
+    #[serde(default)]
+    pub gpus: Vec<crate::GpuInfo>,
     // Proxmox specific fields
     #[serde(skip_serializing_if = "Option::is_none")]
     pub proxmox_vmid: Option<u32>,

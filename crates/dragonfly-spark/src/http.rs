@@ -232,6 +232,13 @@ fn build_checkin_json(
     write_bytes(buf, &mut pos, b",\"cpu_cores\":");
     pos += write_u32_decimal(&mut buf[pos..], cores);
 
+    // Memory in bytes
+    let mem_bytes = hw::total_memory_bytes();
+    if mem_bytes > 0 {
+        write_bytes(buf, &mut pos, b",\"memory_bytes\":");
+        pos += write_u64_decimal(&mut buf[pos..], mem_bytes);
+    }
+
     // Existing OS info if detected
     if let Some(os) = detected_os {
         write_bytes(buf, &mut pos, b",\"existing_os\":{\"name\":\"");
@@ -430,6 +437,28 @@ fn write_u32_decimal(buf: &mut [u8], mut n: u32) -> usize {
     }
     // Write digits in reverse, then reverse
     let mut tmp = [0u8; 10];
+    let mut len = 0;
+    while n > 0 {
+        tmp[len] = b'0' + (n % 10) as u8;
+        n /= 10;
+        len += 1;
+    }
+    let copy_len = len.min(buf.len());
+    for i in 0..copy_len {
+        buf[i] = tmp[len - 1 - i];
+    }
+    copy_len
+}
+
+/// Write a u64 as decimal into a buffer, return bytes written
+fn write_u64_decimal(buf: &mut [u8], mut n: u64) -> usize {
+    if n == 0 {
+        if !buf.is_empty() {
+            buf[0] = b'0';
+        }
+        return 1;
+    }
+    let mut tmp = [0u8; 20];
     let mut len = 0;
     while n > 0 {
         tmp[len] = b'0' + (n % 10) as u8;

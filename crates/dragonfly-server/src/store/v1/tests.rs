@@ -635,6 +635,7 @@ async fn test_machine_with_full_hardware_info() {
     machine.hardware = HardwareInfo {
         cpu_model: Some("Intel Xeon E5-2690 v4".to_string()),
         cpu_cores: Some(28),
+        cpu_threads: Some(56),
         memory_bytes: Some(128 * 1024 * 1024 * 1024), // 128GB
         disks: vec![
             Disk {
@@ -662,6 +663,7 @@ async fn test_machine_with_full_hardware_info() {
                 speed_mbps: Some(25000),
             },
         ],
+        gpus: vec![],
         is_virtual: false,
         virt_platform: None,
     };

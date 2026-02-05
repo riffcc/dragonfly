@@ -287,11 +287,28 @@ pub enum WorkflowResult {
 pub struct HardwareInfo {
     pub cpu_model: Option<String>,
     pub cpu_cores: Option<u32>,
+    /// Logical thread count (hyperthreading)
+    #[serde(default)]
+    pub cpu_threads: Option<u32>,
     pub memory_bytes: Option<u64>,
     pub disks: Vec<Disk>,
+    /// Detected GPUs
+    #[serde(default)]
+    pub gpus: Vec<GpuInfo>,
     pub network_interfaces: Vec<NetworkInterface>,
     pub is_virtual: bool,
     pub virt_platform: Option<String>,
+}
+
+/// GPU information detected from hardware
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct GpuInfo {
+    /// GPU model name (e.g. "RTX 4070 Ti", "RX 7900 XTX")
+    pub name: String,
+    /// Vendor (e.g. "NVIDIA", "AMD", "Intel")
+    pub vendor: Option<String>,
+    /// Video RAM in bytes
+    pub vram_bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -333,6 +350,9 @@ pub struct MachineConfig {
     pub installation_progress: u8,
     pub installation_step: Option<String>,
     pub netboot: NetbootConfig,
+    /// Nameservers detected from the machine
+    #[serde(default)]
+    pub nameservers: Vec<String>,
 }
 
 impl MachineConfig {
@@ -350,6 +370,7 @@ impl MachineConfig {
             installation_progress: 0,
             installation_step: None,
             netboot: NetbootConfig::default(),
+            nameservers: Vec::new(),
         }
     }
 
@@ -367,6 +388,7 @@ impl MachineConfig {
             installation_progress: 0,
             installation_step: None,
             netboot: NetbootConfig::default(),
+            nameservers: Vec::new(),
         }
     }
 }

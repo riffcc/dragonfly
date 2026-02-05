@@ -76,6 +76,13 @@ pub extern "C" fn _start(multiboot_magic: u32, multiboot_info: u32) -> ! {
         }
     };
 
+    // Detect total memory from multiboot info (must happen before allocator init)
+    unsafe { hw::init_memory(multiboot_info, is_multiboot2); }
+    let mem_mb = (hw::total_memory_bytes() / (1024 * 1024)) as u32;
+    serial::print("Memory: ");
+    serial::print_dec(mem_mb);
+    serial::println(" MB");
+
     // Parse command line and framebuffer based on multiboot version
     if is_multiboot2 {
         // Parse command line parameters (server=IP:PORT) - MB2 format

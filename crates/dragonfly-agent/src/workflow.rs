@@ -328,6 +328,17 @@ pub enum AgentAction {
 }
 
 use crate::probe::DetectedOs;
+use dragonfly_common::models::DiskInfo;
+
+/// Hardware info collected by the agent for check-in
+#[derive(Debug, Clone)]
+pub struct AgentHardwareInfo {
+    pub cpu_model: Option<String>,
+    pub cpu_cores: Option<u32>,
+    pub memory_bytes: u64,
+    pub disks: Vec<DiskInfo>,
+    pub nameservers: Vec<String>,
+}
 
 /// Check in with the server using native provisioning endpoint
 pub async fn checkin_native(
@@ -337,15 +348,45 @@ pub async fn checkin_native(
     hostname: Option<&str>,
     ip_address: Option<&str>,
     existing_os: Option<&DetectedOs>,
+    hardware: Option<&AgentHardwareInfo>,
 ) -> Result<CheckInResponse> {
     let url = format!("{}/api/agent/checkin", server_url);
 
-    let payload = serde_json::json!({
+    let mut payload = serde_json::json!({
         "mac": mac,
         "hostname": hostname,
         "ip_address": ip_address,
         "existing_os": existing_os,
     });
+
+    // Include hardware info if available
+    if let Some(hw) = hardware {
+        let obj = payload.as_object_mut().unwrap();
+        if let Some(ref cpu) = hw.cpu_model {
+            obj.insert("cpu_model".into(), serde_json::json!(cpu));
+        }
+        if let Some(cores) = hw.cpu_cores {
+            obj.insert("cpu_cores".into(), serde_json::json!(cores));
+        }
+        if hw.memory_bytes > 0 {
+            obj.insert("memory_bytes".into(), serde_json::json!(hw.memory_bytes));
+        }
+        if !hw.disks.is_empty() {
+            let disks: Vec<_> = hw.disks.iter().map(|d| {
+                // Server expects "name" not "device", and without /dev/ prefix
+                let name = d.device.strip_prefix("/dev/").unwrap_or(&d.device);
+                serde_json::json!({
+                    "name": name,
+                    "size_bytes": d.size_bytes,
+                    "model": d.model,
+                })
+            }).collect();
+            obj.insert("disks".into(), serde_json::json!(disks));
+        }
+        if !hw.nameservers.is_empty() {
+            obj.insert("nameservers".into(), serde_json::json!(hw.nameservers));
+        }
+    }
 
     let response = client.post(&url).json(&payload).send().await?;
 
