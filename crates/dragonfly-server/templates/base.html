@@ -325,62 +325,47 @@
         <nav class="bg-white dark:bg-[#0A0B10] shadow-lg dark:shadow-none border-b border-gray-200 dark:border-[#222]/10 relative z-10 after:absolute after:bottom-[-1px] after:left-0 after:right-0 after:h-[2px] after:bg-gradient-to-r dark:after:from-indigo-900/10 dark:after:via-purple-800/10 dark:after:to-cyan-900/10 transition-colors duration-200">
             <div class="max-w-7xl mx-auto px-4">
                 <div class="flex justify-between h-16">
-                    <div class="flex">
-                        <div class="flex-shrink-0 flex items-center">
-                            <a href="/" class="gamepad-nav-exclude text-2xl font-bold bg-gradient-to-r from-green-500 to-purple-600 bg-clip-text text-transparent dark:from-indigo-400 dark:to-purple-300 dark:drop-shadow-[0_0_6px_rgba(129,140,248,0.5)]">
-                                Dragonfly
-                                <span class="block text-xs text-gray-500 dark:text-gray-400 italic font-light mt-[-5px]">metal, managed</span>
-                            </a>
-                        </div>
-                        <div class="hidden sm:ml-6 sm:flex sm:space-x-8">
-                            <a href="/" class="gamepad-nav-exclude border-transparent text-gray-500 dark:text-gray-300 hover:border-indigo-400 hover:text-gray-700 dark:hover:text-white inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium transition-all duration-200 {% if current_path == '/' %} border-indigo-500 text-gray-900 dark:text-white {% endif %}">
-                                Dashboard
-                            </a>
-                            <a href="/tags" class="gamepad-nav-exclude border-transparent text-gray-500 dark:text-gray-300 hover:border-indigo-400 hover:text-gray-700 dark:hover:text-white inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium transition-all duration-200 {% if current_path[:5] == '/tags' %} border-indigo-500 text-gray-900 dark:text-white {% endif %}">
-                                Tags
-                            </a>
-                            <a href="/machines" class="gamepad-nav-exclude border-transparent text-gray-500 dark:text-gray-300 hover:border-indigo-400 hover:text-gray-700 dark:hover:text-white inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium transition-all duration-200 {% if current_path[:9] == '/machines' %} border-indigo-500 text-gray-900 dark:text-white {% endif %}">
-                                Machines
-                            </a>
-                            <a href="/compute" class="gamepad-nav-exclude border-transparent text-gray-500 dark:text-gray-300 hover:border-indigo-400 hover:text-gray-700 dark:hover:text-white inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium transition-all duration-200 {% if current_path[:9] == '/compute' %} border-indigo-500 text-gray-900 dark:text-white {% endif %}">
-                                Compute
-                            </a>
-                            {# Storage tab hidden - not yet implemented
-                            <a href="/storage" class="gamepad-nav-exclude border-transparent text-gray-500 dark:text-gray-300 hover:border-indigo-400 hover:text-gray-700 dark:hover:text-white inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium transition-all duration-200 {% if current_path[:8] == '/storage' %} border-indigo-500 text-gray-900 dark:text-white {% endif %}">
-                                Storage
-                            </a>
-                            #}
-                            {# Monitoring tab hidden - not yet implemented
-                            <a href="/monitoring" class="gamepad-nav-exclude border-transparent text-gray-500 dark:text-gray-300 hover:border-indigo-400 hover:text-gray-700 dark:hover:text-white inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium transition-all duration-200 {% if current_path[:11] == '/monitoring' %} border-indigo-500 text-gray-900 dark:text-white {% endif %}">
-                                Monitoring
-                            </a>
-                            #}
-                        </div>
+                    {# Logo - left side with breathing room #}
+                    <div class="flex-shrink-0 flex items-center mr-8">
+                        <a href="/" class="gamepad-nav-exclude text-2xl font-bold text-purple-600 dark:text-purple-400 dark:drop-shadow-[0_0_6px_rgba(168,85,247,0.4)]">
+                            Dragonfly
+                            <span class="block text-xs text-gray-500 dark:text-gray-400 italic font-light mt-[-5px]">metal, managed</span>
+                        </a>
                     </div>
-                    <div class="flex items-center">
-                        <!-- Fullscreen Toggle Button - Hide if gamepad connected -->
-                        <template x-if="!gamepadConnected">
-                            <button 
-                                @click="toggleFullscreen()"
-                                class="inline-flex items-center p-2 text-gray-500 dark:text-gray-300 hover:text-gray-700 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-900 rounded-md focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 mr-2"
-                                aria-label="Toggle fullscreen mode"
-                            >
-                                <!-- Fullscreen icon -->
-                                <svg x-show="!isFullscreen" xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-                                    <path fill-rule="evenodd" d="M3 4a1 1 0 011-1h4a1 1 0 010 2H6.414l2.293 2.293a1 1 0 01-1.414 1.414L5 6.414V8a1 1 0 01-2 0V4zm9 1a1 1 0 010-2h4a1 1 0 011 1v4a1 1 0 01-2 0V6.414l-2.293 2.293a1 1 0 11-1.414-1.414L13.586 5H12zm-9 7a1 1 0 012 0v1.586l2.293-2.293a1 1 0 011.414 1.414L6.414 15H8a1 1 0 010 2H4a1 1 0 01-1-1v-4zm13-1a1 1 0 011 1v4a1 1 0 01-1 1h-4a1 1 0 010-2h1.586l-2.293-2.293a1 1 0 011.414-1.414L15 13.586V12a1 1 0 011-1z" clip-rule="evenodd" />
-                                </svg>
-                                <!-- Exit fullscreen icon -->
-                                <svg x-show="isFullscreen" xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-                                    <path fill-rule="evenodd" d="M5 4a1 1 0 00-1 1v4a1 1 0 001 1h4a1 1 0 001-1V5a1 1 0 00-1-1H5zm10 0a1 1 0 00-1 1v4a1 1 0 001 1h4a1 1 0 001-1V5a1 1 0 00-1-1h-4zM5 16a1 1 0 001-1v-4a1 1 0 00-1-1H1a1 1 0 00-1 1v4a1 1 0 001 1h4zm10 0a1 1 0 001-1v-4a1 1 0 00-1-1h-4a1 1 0 00-1 1v4a1 1 0 001 1h4z" clip-rule="evenodd" />
-                                </svg>
-                            </button>
-                        </template>
-                        
+
+                    {# Nav links - centered #}
+                    <div class="hidden sm:flex sm:space-x-8 flex-1 justify-center">
+                        <a href="/" class="gamepad-nav-exclude border-transparent text-gray-500 dark:text-gray-300 hover:border-purple-400 hover:text-gray-700 dark:hover:text-white inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium transition-all duration-200 {% if current_path == '/' %} border-purple-500 text-gray-900 dark:text-white {% endif %}">
+                            Dashboard
+                        </a>
+                        <a href="/tags" class="gamepad-nav-exclude border-transparent text-gray-500 dark:text-gray-300 hover:border-purple-400 hover:text-gray-700 dark:hover:text-white inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium transition-all duration-200 {% if current_path[:5] == '/tags' %} border-purple-500 text-gray-900 dark:text-white {% endif %}">
+                            Tags
+                        </a>
+                        <a href="/machines" class="gamepad-nav-exclude border-transparent text-gray-500 dark:text-gray-300 hover:border-purple-400 hover:text-gray-700 dark:hover:text-white inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium transition-all duration-200 {% if current_path[:9] == '/machines' %} border-purple-500 text-gray-900 dark:text-white {% endif %}">
+                            Machines
+                        </a>
+                        <a href="/compute" class="gamepad-nav-exclude border-transparent text-gray-500 dark:text-gray-300 hover:border-purple-400 hover:text-gray-700 dark:hover:text-white inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium transition-all duration-200 {% if current_path[:9] == '/compute' %} border-purple-500 text-gray-900 dark:text-white {% endif %}">
+                            Compute
+                        </a>
+                        {# Storage tab hidden - not yet implemented
+                        <a href="/storage" class="gamepad-nav-exclude border-transparent text-gray-500 dark:text-gray-300 hover:border-purple-400 hover:text-gray-700 dark:hover:text-white inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium transition-all duration-200 {% if current_path[:8] == '/storage' %} border-purple-500 text-gray-900 dark:text-white {% endif %}">
+                            Storage
+                        </a>
+                        #}
+                        {# Monitoring tab hidden - not yet implemented
+                        <a href="/monitoring" class="gamepad-nav-exclude border-transparent text-gray-500 dark:text-gray-300 hover:border-purple-400 hover:text-gray-700 dark:hover:text-white inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium transition-all duration-200 {% if current_path[:11] == '/monitoring' %} border-purple-500 text-gray-900 dark:text-white {% endif %}">
+                            Monitoring
+                        </a>
+                        #}
+                    </div>
+
+                    {# Right side - icon-only buttons #}
+                    <div class="flex items-center gap-1">
                         <!-- Theme Toggle Button - Hide if gamepad connected -->
                         <template x-if="!gamepadConnected">
-                            <button 
+                            <button
                                 @click="toggleTheme()"
-                                class="gamepad-nav-exclude inline-flex items-center p-2 text-gray-500 dark:text-gray-300 hover:text-gray-700 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-900 rounded-md focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 mr-2"
+                                class="gamepad-nav-exclude inline-flex items-center p-2 text-gray-500 dark:text-gray-300 hover:text-gray-700 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-900 rounded-md focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-purple-500"
                                 aria-label="Toggle dark mode"
                             >
                                 <!-- Sun icon (shows in dark mode) -->
@@ -393,41 +378,39 @@
                                 </svg>
                             </button>
                         </template>
-                        
-                        <!-- Settings Button - Hide if gamepad connected -->
+
+                        <!-- Settings Button (icon only) - Hide if gamepad connected -->
                         <template x-if="!gamepadConnected">
-                            <a 
+                            <a
                                 href="/settings"
-                                class="gamepad-nav-exclude inline-flex items-center p-2 text-gray-500 dark:text-gray-300 hover:text-gray-700 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-900 rounded-md focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
+                                class="gamepad-nav-exclude inline-flex items-center p-2 text-gray-500 dark:text-gray-300 hover:text-gray-700 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-900 rounded-md focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-purple-500"
+                                aria-label="Settings"
                             >
-                                <svg class="h-5 w-5 mr-2" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <svg class="h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
                                 </svg>
-                                <span class="text-sm font-medium">Settings</span>
                             </a>
                         </template>
-                        
+
                         {% if is_authenticated %}
-                        <!-- Logout Button - Hide if gamepad connected -->
+                        <!-- Logout Button (icon only) - Hide if gamepad connected -->
                         <template x-if="!gamepadConnected">
-                            <form action="/logout" method="post" class="ml-4">
-                                <button type="submit" class="gamepad-nav-exclude inline-flex items-center p-2 text-gray-500 dark:text-gray-300 hover:text-gray-700 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-900 rounded-md focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500">
-                                    <svg class="h-5 w-5 mr-2" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <form action="/logout" method="post">
+                                <button type="submit" class="gamepad-nav-exclude inline-flex items-center p-2 text-gray-500 dark:text-gray-300 hover:text-gray-700 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-900 rounded-md focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-purple-500" aria-label="Logout">
+                                    <svg class="h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
                                     </svg>
-                                    <span class="text-sm font-medium">Logout</span>
                                 </button>
                             </form>
                         </template>
                         {% else %}
-                        <!-- Login Button - Hide if gamepad connected -->
+                        <!-- Login Button (icon only) - Hide if gamepad connected -->
                         <template x-if="!gamepadConnected">
-                            <a href="/login" class="gamepad-nav-exclude ml-4 inline-flex items-center p-2 text-gray-500 dark:text-gray-300 hover:text-gray-700 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-900 rounded-md focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500">
-                                <svg class="h-5 w-5 mr-2" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <a href="/login" class="gamepad-nav-exclude inline-flex items-center p-2 text-gray-500 dark:text-gray-300 hover:text-gray-700 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-900 rounded-md focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-purple-500" aria-label="Login">
+                                <svg class="h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 16l-4-4m0 0l4-4m-4 4h14m-5 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
                                 </svg>
-                                <span class="text-sm font-medium">Login</span>
                             </a>
                         </template>
                         {% endif %}
@@ -597,10 +580,10 @@
     </script>
     
     {% if hide_footer is not defined or not hide_footer %}
-    <footer class="bg-white dark:bg-[#0A0B10] shadow-lg dark:shadow-none border-t border-gray-200 dark:border-[#222]/10 relative z-10 before:absolute before:top-[-1px] before:left-0 before:right-0 before:h-[2px] before:bg-gradient-to-r dark:before:from-indigo-900/10 dark:before:via-purple-800/10 dark:before:to-cyan-900/10 mt-auto w-full">
+    <footer class="bg-white dark:bg-[#0A0B10] border-t border-gray-200 dark:border-[#222]/10 mt-auto w-full">
         <div class="max-w-7xl mx-auto py-4 px-4 sm:px-6 lg:px-8">
-            <p class="text-center text-gray-500 dark:text-gray-400 text-sm">
-                Dragonfly - Bare Metal Infrastructure Management
+            <p class="text-center text-gray-500 dark:text-gray-500 text-sm italic">
+                metal, managed &middot; <a href="https://github.com/riffcc/dragonfly" class="text-purple-600 dark:text-purple-400 hover:underline not-italic">Dragonfly</a>
             </p>
         </div>
     </footer>

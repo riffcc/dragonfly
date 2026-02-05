@@ -414,7 +414,9 @@ fn create_demo_machine(
         // Initialize new hardware fields to None for demo data
         cpu_model: None,
         cpu_cores: None,
+        cpu_threads: None,
         total_ram_bytes: None,
+        gpus: vec![],
         proxmox_vmid: None,
         proxmox_node: None,
         proxmox_cluster: None, // Add the new field, initialize to None for demo
@@ -714,11 +716,11 @@ pub async fn machine_details(
                     info!("Serialized demo workflow JSON: {}", workflow_info_json);                         
                     
                     // Determine IP address type
-                    let ip_address_type = if machine.ip_address.is_empty() || 
+                    let ip_address_type = if machine.ip_address.is_empty() ||
                                                 machine.ip_address == "0.0.0.0" {
-                        "DHCP".to_string()
+                        "No IP".to_string()
                     } else {
-                        "Static/IPAM".to_string()
+                        "DHCP".to_string()
                     };
 
                     // Create the Askama template context
@@ -791,11 +793,11 @@ pub async fn machine_details(
                     info!("Serialized workflow JSON for {}: {}", machine.id, workflow_info_json);                         
 
                     // Determine IP address type
-                    let ip_address_type = if machine.ip_address.is_empty() || 
+                    let ip_address_type = if machine.ip_address.is_empty() ||
                                                 machine.ip_address == "0.0.0.0" {
-                        "DHCP".to_string()
+                        "No IP".to_string()
                     } else {
-                        "Static/IPAM".to_string()
+                        "DHCP".to_string()
                     };
 
                     // Create the Askama template context

@@ -1,8 +1,13 @@
 {% extends "base.html" %}
 
+{% block head %}
+<!-- Lucide icons -->
+<script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
+{% endblock %}
+
 {% block content %}
 
-<div x-data="machineDetailsData()" 
+<div x-data="machineDetailsData()"
     x-init="initializeComponent()">
 
     {# Embed JSON data using script tags #}
@@ -13,78 +18,187 @@
         {{ workflow_info_json | safe }} {# Use safe within script tag #}
     </script>
 
-    <div class="flex justify-between items-center mb-8">
-        <h1 class="text-4xl font-bold text-black dark:text-white" x-text="machine.hostname || 'Loading...'"></h1>
-        <div class="flex space-x-3">
+    {# ===== LAYOUT: SIDEBAR + CONTENT ===== #}
+    <div class="flex gap-6 max-w-[1400px] mx-auto">
+
+    {# Sidebar nav #}
+    <aside class="hidden lg:flex flex-col gap-1 w-[200px] shrink-0 pt-2">
+        <a href="#" class="flex items-center gap-3 px-4 py-3 rounded-lg text-sm bg-purple-600 text-white font-medium">
+            <span class="w-5 text-center">📋</span> Overview
+        </a>
+        <span class="flex items-center gap-3 px-4 py-3 rounded-lg text-sm text-gray-400 dark:text-gray-600 cursor-default opacity-50">
+            <span class="w-5 text-center">📊</span> Metrics
+        </span>
+        <span class="flex items-center gap-3 px-4 py-3 rounded-lg text-sm text-gray-400 dark:text-gray-600 cursor-default opacity-50">
+            <span class="w-5 text-center">📜</span> Logs
+        </span>
+        <span class="flex items-center gap-3 px-4 py-3 rounded-lg text-sm text-gray-400 dark:text-gray-600 cursor-default opacity-50">
+            <span class="w-5 text-center">🔧</span> Console
+        </span>
+        <span class="flex items-center gap-3 px-4 py-3 rounded-lg text-sm text-gray-400 dark:text-gray-600 cursor-default opacity-50">
+            <span class="w-5 text-center">📸</span> Snapshots
+        </span>
+        <span class="flex items-center gap-3 px-4 py-3 rounded-lg text-sm text-gray-400 dark:text-gray-600 cursor-default opacity-50">
+            <span class="w-5 text-center">⏱️</span> History
+        </span>
+    </aside>
+
+    {# Main content #}
+    <div class="flex-1 min-w-0">
+
+    {# ===== PAGE HEADER ===== #}
+    <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6">
+        <div class="flex items-center gap-4">
+            <h1 class="text-3xl font-bold text-gray-900 dark:text-white" x-text="machine.hostname || machine.memorable_name || 'Unknown Machine'"></h1>
+            <span class="inline-flex items-center px-3 py-1 rounded-full text-xs font-semibold"
+                :class="{
+                    'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-300': machine.status === 'Ready' || machine.status === 'Installed',
+                    'bg-yellow-100 text-yellow-800 dark:bg-yellow-900/40 dark:text-yellow-300': machine.status === 'InstallingOS' || machine.status === 'Initializing' || machine.status === 'Writing',
+                    'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300': machine.status === 'Failed',
+                    'bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-300': machine.status === 'Discovered' || machine.status === 'ReadyToInstall',
+                    'bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-300': machine.status === 'Offline' || machine.status === 'ExistingOs',
+                    'bg-purple-100 text-purple-800 dark:bg-purple-900/40 dark:text-purple-300': !['Ready','Installed','InstallingOS','Initializing','Writing','Failed','Discovered','ReadyToInstall','Offline','ExistingOs'].includes(machine.status)
+                }"
+                x-text="machine.status">
+            </span>
+        </div>
+        <div class="flex items-center gap-2">
             {% if is_authenticated %}
-            {# Show Edit button when not editing #}
-            <button x-show="!isEditing" 
+            {# Edit button (hidden when editing) #}
+            <button x-show="!isEditing"
                 @click="startEditing()"
-                class="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium rounded-md"
-            >
+                class="px-4 py-2 bg-transparent border-2 border-blue-600 dark:border-blue-500 hover:bg-blue-500/10 text-blue-700 dark:text-blue-400 text-sm font-medium rounded-lg transition-colors">
                 Edit
             </button>
-            
-            {# Show Save and Cancel buttons when editing #}
+
+            {# Save/Cancel buttons (shown when editing) #}
             <template x-if="isEditing">
-                <div>
-                    <!-- Error Message -->
-                    <div x-show="editFormError" class="text-sm text-red-600 dark:text-red-400 mb-2 text-right" x-text="editFormError"></div>
-                    <div class="flex justify-end space-x-3">
-                        <button @click="cancelEdit()" 
-                                :disabled="isSubmitting"
-                                class="px-4 py-2 bg-gray-600 hover:bg-gray-700 text-white text-sm font-medium rounded-md"
-                                :class="{'opacity-50 cursor-not-allowed': isSubmitting}">
-                            Cancel
-                        </button>
-                        <button @click="saveChanges()" 
-                                :disabled="isSubmitting"
-                                class="px-4 py-2 bg-green-600 hover:bg-green-700 text-white text-sm font-medium rounded-md"
-                                :class="{'opacity-50 cursor-not-allowed': isSubmitting}">
-                            <span x-show="isSubmitting">
-                                <svg class="animate-spin -ml-1 mr-2 h-4 w-4 text-white inline" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                                </svg>
-                                Saving...
-                            </span>
-                            <span x-show="!isSubmitting">Save</span>
-                        </button>
-                    </div>
+                <div class="flex items-center gap-2">
+                    <div x-show="editFormError" class="text-sm text-red-500 mr-2" x-text="editFormError"></div>
+                    <button @click="cancelEdit()"
+                            :disabled="isSubmitting"
+                            class="px-4 py-2 bg-gray-600 hover:bg-gray-700 text-white text-sm font-medium rounded-lg transition-colors"
+                            :class="{'opacity-50 cursor-not-allowed': isSubmitting}">
+                        Cancel
+                    </button>
+                    <button @click="saveChanges()"
+                            :disabled="isSubmitting"
+                            class="px-4 py-2 bg-green-600 hover:bg-green-700 text-white text-sm font-medium rounded-lg transition-colors"
+                            :class="{'opacity-50 cursor-not-allowed': isSubmitting}">
+                        <span x-show="isSubmitting">
+                            <svg class="animate-spin -ml-1 mr-2 h-4 w-4 text-white inline" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                            </svg>
+                            Saving...
+                        </span>
+                        <span x-show="!isSubmitting">Save</span>
+                    </button>
                 </div>
             </template>
-            
-            {# Always show Delete button if authenticated #}
-            <button 
-                @click="deleteModalOpen = true" 
-                class="px-4 py-2 bg-red-600 hover:bg-red-700 text-white text-sm font-medium rounded-md"
-            >
+
+            <button
+                @click="deleteModalOpen = true"
+                class="px-4 py-2 bg-transparent border-2 border-red-600 dark:border-red-700 hover:bg-red-600/10 text-red-600 dark:text-red-400 text-sm font-medium rounded-lg transition-colors">
                 Delete
             </button>
-            <a href="/machines" class="inline-flex items-center px-1 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm text-sm font-medium text-gray-700 dark:text-gray-300 bg-white dark:bg-gray-700 hover:bg-gray-50 dark:hover:bg-gray-600 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500">
-                <div class="text-sm ml-1 mr-1"><- Machines</div>
-            </a>
             {% endif %}
+            <a href="/machines" class="px-4 py-2 bg-transparent border-2 border-gray-900 dark:border-white text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/5 text-sm font-medium rounded-lg transition-colors">
+                &larr; Machines
+            </a>
         </div>
     </div>
 
-    <!-- Deployment Progress Section - Use x-if based on Alpine data -->
+    {# ===== ACTIONS ROW (colored Lucide icon buttons) ===== #}
+    <div class="flex flex-wrap gap-2 mb-6">
+        <button class="inline-flex items-center gap-1.5 px-3 py-2 bg-transparent border-[1.5px] border-blue-600 dark:border-blue-500 rounded-lg text-xs text-blue-700 dark:text-blue-400 hover:bg-blue-500/10 transition-colors">
+            <i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i> Reboot
+        </button>
+        <button class="inline-flex items-center gap-1.5 px-3 py-2 bg-transparent border-[1.5px] border-green-600 dark:border-green-500 rounded-lg text-xs text-green-700 dark:text-green-400 hover:bg-green-500/10 transition-colors">
+            <i data-lucide="power" class="w-3.5 h-3.5"></i> Power On
+        </button>
+        <button class="inline-flex items-center gap-1.5 px-3 py-2 bg-transparent border-[1.5px] border-yellow-600 dark:border-yellow-500 rounded-lg text-xs text-yellow-700 dark:text-yellow-400 hover:bg-yellow-500/10 transition-colors">
+            <i data-lucide="circle-stop" class="w-3.5 h-3.5"></i> Shutdown
+        </button>
+        <button class="inline-flex items-center gap-1.5 px-3 py-2 bg-transparent border-[1.5px] border-orange-600 dark:border-orange-500 rounded-lg text-xs text-orange-700 dark:text-orange-400 hover:bg-orange-500/10 transition-colors">
+            <i data-lucide="power-off" class="w-3.5 h-3.5"></i> Power Off
+        </button>
+        <button class="inline-flex items-center gap-1.5 px-3 py-2 bg-transparent border-0 rounded-lg text-xs text-yellow-700 dark:text-yellow-400 hover:bg-yellow-500/10 transition-colors" style="outline: 2px dashed; outline-offset: -2px;">
+            <i data-lucide="move-right" class="w-3.5 h-3.5"></i> Evacuate
+        </button>
+        <button class="inline-flex items-center gap-1.5 px-3 py-2 bg-transparent border-0 rounded-lg text-xs text-red-700 dark:text-red-400 hover:bg-red-500/10 transition-colors" style="outline: 2px dashed; outline-offset: -2px;">
+            <i data-lucide="eraser" class="w-3.5 h-3.5"></i> Reimage
+        </button>
+    </div>
+
+    {# ===== INFO GRID (4-column: Hostname+IP, Status, Uptime, Created) ===== #}
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+        <div class="flex flex-col gap-1">
+            <span class="text-xs text-gray-500 dark:text-gray-600 uppercase tracking-wider font-medium">Hostname</span>
+            <span class="text-sm">
+                <span class="text-purple-600 dark:text-purple-400" x-text="(machine.hostname || machine.reported_hostname || 'Not set')"></span>
+                <span class="text-gray-500 dark:text-gray-500 tech-mono text-xs ml-1" x-text="machine.ip_address ? '(' + machine.ip_address + ')' : ''"></span>
+            </span>
+        </div>
+        <div class="flex flex-col gap-1">
+            <span class="text-xs text-gray-500 dark:text-gray-600 uppercase tracking-wider font-medium">Status</span>
+            <span class="text-sm"
+                :class="{
+                    'text-green-600 dark:text-green-400': machine.status === 'Ready' || machine.status === 'Installed',
+                    'text-yellow-600 dark:text-yellow-400': machine.status === 'InstallingOS' || machine.status === 'Initializing' || machine.status === 'Writing',
+                    'text-red-600 dark:text-red-400': machine.status === 'Failed',
+                    'text-blue-600 dark:text-blue-400': machine.status === 'Discovered' || machine.status === 'ReadyToInstall',
+                    'text-gray-600 dark:text-gray-400': !['Ready','Installed','InstallingOS','Initializing','Writing','Failed','Discovered','ReadyToInstall'].includes(machine.status)
+                }"
+                x-text="machine.status"></span>
+        </div>
+        <div class="flex flex-col gap-1">
+            <span class="text-xs text-gray-500 dark:text-gray-600 uppercase tracking-wider font-medium">Uptime</span>
+            <span class="text-sm text-gray-900 dark:text-gray-200" x-text="machine.uptime || 'Unknown'"></span>
+        </div>
+        <div class="flex flex-col gap-1">
+            <span class="text-xs text-gray-500 dark:text-gray-600 uppercase tracking-wider font-medium">Created</span>
+            <span class="text-sm text-gray-900 dark:text-gray-200" x-text="'{{ created_at_formatted }}'"></span>
+        </div>
+    </div>
+
+    {# ===== TAGS (inline) ===== #}
+    <div class="flex flex-wrap gap-2 mb-6">
+        <template x-if="machine.tags && machine.tags.length > 0">
+            <template x-for="tag in machine.tags" :key="tag.id || tag.name">
+                <span class="inline-flex items-center gap-1.5 px-3 py-1.5 bg-gray-100 dark:bg-[#1a1a1a] border border-gray-200 dark:border-[#333] rounded-full text-sm text-gray-700 dark:text-gray-300">
+                    <span x-show="tag.emoji" x-text="tag.emoji" class="text-sm"></span>
+                    <span x-text="tag.name"></span>
+                    {% if is_authenticated %}
+                    <button @click="removeTag(tag)" class="text-gray-400 hover:text-red-500 ml-0.5 transition-colors">&times;</button>
+                    {% endif %}
+                </span>
+            </template>
+        </template>
+        {% if is_authenticated %}
+        <button @click="addTagModal = true"
+            class="inline-flex items-center gap-1 px-3 py-1.5 bg-transparent border border-dashed border-gray-300 dark:border-[#444] rounded-full text-sm text-gray-500 dark:text-gray-500 hover:border-purple-500 hover:text-purple-500 dark:hover:border-purple-400 dark:hover:text-purple-400 transition-colors">
+            + Tags
+        </button>
+        {% endif %}
+    </div>
+
+    {# ===== DEPLOYMENT PROGRESS (conditional) ===== #}
     <template x-if="machine.status === 'InstallingOS'">
         <template x-if="workflow_info">
-            <div class="rounded rounded-xl border border-black dark:border-purple-600 border-2 p-4 sm:p-6 mb-4"
-                 id="workflow-progress-container"> {# Keep ID for potential direct targeting #}
+            <div class="rounded-xl border-2 border-purple-600 dark:border-purple-600 bg-white dark:bg-[#111] p-5 mb-6"
+                 id="workflow-progress-container">
                 <div class="mb-4">
-                    <h3 class="text-lg font-medium leading-6 text-gray-900 dark:text-yellow-100">Deployment Progress</h3>
+                    <h3 class="text-lg font-semibold text-gray-900 dark:text-yellow-100">Deployment Progress</h3>
                     <p class="mt-1 text-sm text-gray-500 dark:text-gray-300">
                         Template: <span class="font-semibold" x-text="workflow_info.template_name"></span>
-                            <template x-if="workflow_info.current_action"> • Current action: <span x-text="workflow_info.current_action"></span></template>
+                            <template x-if="workflow_info.current_action"> &bull; Current action: <span x-text="workflow_info.current_action"></span></template>
                             <template x-if="workflow_info.current_action == 'Completed via kexec detection'">
                             <span class="ml-2 italic">(Auto-detected successful deployment)</span>
                         </template>
                     </p>
                 </div>
-                
-                {# ... rest of the progress section, binding to workflow_info ... #}
+
                 <div class="relative pt-1">
                     <div class="flex mb-2 items-center justify-between">
                             <div>
@@ -114,7 +228,7 @@
                 </div>
 
                 <div class="mt-4">
-                    <h4 class="text-sm font-medium leading-6 text-gray-700 dark:text-gray-200 mb-2">Task Timeline</h4>
+                    <h4 class="text-sm font-medium text-gray-700 dark:text-gray-200 mb-2">Task Timeline</h4>
                     <div id="tasks-table-container" class="overflow-x-auto">
                         <table class="min-w-full divide-y divide-gray-200 dark:divide-gray-600">
                             <thead class="bg-gray-50 dark:bg-gray-700">
@@ -127,7 +241,6 @@
                                 </tr>
                             </thead>
                             <tbody id="tasks-table-body" class="bg-white dark:bg-gray-800 divide-y divide-gray-200 dark:divide-gray-700">
-                                    {# Use x-for to loop through Alpine data #}
                                     <template x-for="task in workflow_info.tasks" :key="task.name">
                                         <tr :data-task-name="task.name"
                                             :data-task-status="task.status"
@@ -155,7 +268,6 @@
                                                 </template>
                                             </td>
                                             <td class="px-3 py-2 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">
-                                                {# Display estimated duration first - Use Alpine #}
                                                 <template x-if="task.estimated_duration !== null && task.estimated_duration !== undefined">
                                                     <span x-text="task.estimated_duration + 's'"></span>
                                                 </template>
@@ -163,9 +275,8 @@
                                                     <span>N/A</span>
                                                 </template>
 
-                                                {# Separately check and display comparison if possible and relevant - Use Alpine #}
-                                                <template x-if="task.status === 'STATE_SUCCESS' && 
-                                                        task.estimated_duration !== null && task.estimated_duration !== undefined && 
+                                                <template x-if="task.status === 'STATE_SUCCESS' &&
+                                                        task.estimated_duration !== null && task.estimated_duration !== undefined &&
                                                         task.reported_duration !== null && task.reported_duration !== undefined &&
                                                         task.reported_duration !== task.estimated_duration">
                                                     <template x-if="task.reported_duration > task.estimated_duration">
@@ -177,7 +288,6 @@
                                                 </template>
                                             </td>
                                         <td class="px-3 py-2 whitespace-nowrap text-sm">
-                                            {# Use Alpine :class for status styling #}
                                             <span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full"
                                                     :class="{
                                                         'bg-green-100 text-green-800 dark:bg-green-400/10 dark:text-green-300': task.status === 'STATE_SUCCESS',
@@ -185,7 +295,7 @@
                                                         'bg-yellow-100 text-yellow-800 dark:bg-yellow-400/10 dark:text-yellow-300': task.status === 'STATE_RUNNING',
                                                         'bg-gray-100 text-gray-800 dark:bg-gray-400/10 dark:text-gray-300': !['STATE_SUCCESS', 'STATE_FAILED', 'STATE_RUNNING'].includes(task.status)
                                                     }">
-                                                <span x-text="task.status"></span> {# Use Alpine x-text #}
+                                                <span x-text="task.status"></span>
                                             </span>
                                         </td>
                                     </tr>
@@ -194,7 +304,6 @@
                         </table>
                     </div>
 
-                    {# Display estimated completion using Alpine #}
                     <template x-if="workflow_info && workflow_info.estimated_completion !== null && workflow_info.estimated_completion !== undefined">
                         <div class="mt-4 text-sm text-gray-600 dark:text-gray-300">
                             <p>Estimated completion: <span x-text="workflow_info.estimated_completion"></span></p>
@@ -204,142 +313,150 @@
             </div>
         </template>
         <template x-if="!workflow_info">
-            <div class="border-t border-gray-200 dark:border-gray-700 p-4 sm:p-6 bg-gray-50 dark:bg-gray-800/30">
+            <div class="rounded-xl border border-gray-200 dark:border-[#1a1a1a] bg-white dark:bg-[#111] p-5 mb-6">
                 <p class="text-sm text-gray-500 dark:text-gray-400 italic">Waiting for workflow information...</p>
             </div>
         </template>
     </template>
 
-    <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-6">
-        <div class="bg-blue-100/20 border border-purple-500 rounded-xl shadow-lg p-4 space-y-2">
-            <h3 class="text-center text-lg font-semibold text-black dark:text-white">🧬 Details</h3>
-            <div class="text-xl mt-8 text-gray-900 dark:text-gray-400">
-                <div><span class="font-bold text-purple-900 dark:text-purple-100">Operating System:</span> Ubuntu 24.04</div>
-                <div><span class="font-bold text-purple-900 dark:text-purple-100">CPU:</span> AMD Ryzen 7 7800X3D (8 cores, 16 threads)</div>
-                <div><span class="font-bold text-purple-900 dark:text-purple-100">GPU:</span> NVIDIA RTX 4070 Ti</div>
-                <div><span class="font-bold text-purple-900 dark:text-purple-100">RAM:</span> 64 GiB</div>
-                <div><span class="font-bold text-purple-900 dark:text-purple-100">Created:</span> 2025-04-03 23:34:42 UTC</div>
-                <div><span class="font-bold text-purple-900 dark:text-purple-100">Updated:</span> 2025-04-04 00:21:25 UTC</div>
+    {# ===== TWO-COLUMN: INFO + NETWORK ===== #}
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
+        {# Info Section #}
+        <div class="rounded-xl border border-gray-200 dark:border-[#1a1a1a] bg-white dark:bg-[#111] p-5">
+            <div class="mb-4">
+                <h2 class="text-sm font-semibold text-gray-500 dark:text-gray-500 uppercase tracking-wider">Info</h2>
             </div>
-        </div>
-        
-        <div class="bg-blue-100/20 border border-indigo-500 rounded-xl shadow-lg p-4 space-y-2">
-            <h3 class="text-center text-lg font-semibold text-black dark:text-white">⚙️ Actions</h3> 
-            <div class="grid grid-cols-3 grid-rows-2 gap-2 mt-8 min-h-[120px]"> {# Explicit grid with rows #}
-                <div class="flex items-center justify-center">
-                    <button class="w-full h-16 border border-indigo-500 hover:bg-indigo-600 text-black dark:text-white rounded-md">Reboot</button>
+            <div class="grid grid-cols-2 gap-x-6 gap-y-5">
+                <div class="flex flex-col gap-1">
+                    <span class="text-xs text-gray-500 dark:text-gray-600 uppercase tracking-wider font-medium">Operating System</span>
+                    <span class="text-base font-semibold text-gray-900 dark:text-gray-100" x-text="osNames[machine.os_installed] || osNames[machine.os_choice] || machine.os_installed || machine.os_choice || 'Not set'"></span>
                 </div>
-                <div class="flex items-center justify-center">
-                    <button class="w-full h-16 border border-red-700 hover:bg-red-600 text-black dark:text-white rounded-md">Power on</button>
+                <div class="flex flex-col gap-1">
+                    <span class="text-xs text-gray-500 dark:text-gray-600 uppercase tracking-wider font-medium flex items-center gap-2">
+                        CPU
+                        <template x-if="machine.cpu_cores">
+                            <span class="inline-flex items-center gap-0.5 text-gray-400 dark:text-gray-500 normal-case tracking-normal">
+                                <i data-lucide="cpu" class="w-3 h-3"></i>
+                                <span x-text="machine.cpu_cores"></span>
+                            </span>
+                        </template>
+                        <template x-if="machine.cpu_threads && machine.cpu_threads !== machine.cpu_cores">
+                            <span class="inline-flex items-center gap-0.5 text-gray-400 dark:text-gray-500 normal-case tracking-normal">
+                                <i data-lucide="spool" class="w-3 h-3"></i>
+                                <span x-text="machine.cpu_threads"></span>
+                            </span>
+                        </template>
+                    </span>
+                    <span class="text-base font-semibold text-gray-900 dark:text-gray-100" x-text="machine.cpu_model || 'Unknown'"></span>
                 </div>
-                <div class="flex items-center justify-center">
-                    <button class="w-full h-16 border border-green-700 hover:bg-green-600 text-black dark:text-white rounded-md">Shutdown</button>
+                <div class="flex flex-col gap-1">
+                    <span class="text-xs text-gray-500 dark:text-gray-600 uppercase tracking-wider font-medium">Memory</span>
+                    <span class="text-base font-semibold text-gray-900 dark:text-gray-100" x-text="machine.total_ram_bytes ? formatBytes(machine.total_ram_bytes) : 'Unknown'"></span>
                 </div>
-                <div class="flex items-center justify-center">
-                    <button class="w-full h-16 border border-green-700 hover:bg-green-600 text-black dark:text-white rounded-md">Power off</button>
-                </div>
-                <div class="flex items-center justify-center">
-                    <button class="w-full h-16 border border-red-700 hover:bg-red-600 text-black dark:text-white rounded-md">Evacuate</button>
-                </div>
-                <div class="flex items-center justify-center">
-                    <button class="w-full h-16 border border-yellow-700 hover:bg-yellow-600 text-black dark:text-white rounded-md">Reimage</button>
-                </div>
-            </div>
-        </div>
-        <div class="bg-[#e6e6ff] dark:bg-[#112240] border border-cyan-500 rounded-xl shadow-lg p-4 space-y-2">
-            <h3 class="text-center text-lg font-semibold text-black dark:text-cyan-300">🖧 <span class="dark:text-white">Network</span></h3>
-            <div class="text-xl mt-8 text-gray-900 dark:text-gray-300 ml-4">
-            <div><span class="font-bold dark:text-cyan-100">Hostname:</span> blackberry</div>
-            <div><span class="font-bold dark:text-cyan-100">Domain:</span> lon.riff.cc</div>
-            <div><span class="font-bold dark:text-cyan-100">Memorable Name:</span> </div>
-            <div><span class="font-bold dark:text-cyan-100">IP:</span> 10.1.0.5</div>
-            <div><span class="font-bold dark:text-cyan-100">Network:</span> 10.1.0.0/24</div>
-            <div><span class="font-bold dark:text-cyan-100">MAC:</span> bc:24:11:b9:54:89</div>
-            <div><span class="font-bold dark:text-cyan-100">Mode:</span> DHCP</div>
-            </div>
-        </div>
-
-        <!-- Tags -->
-        <div class="bg-[#fff5e6] dark:bg-[#281e36] border border-pink-500 rounded-xl shadow-lg p-4 space-y-2">
-            <h3 class="text-center text-lg font-semibold">🏷 Tags</h3>
-            <div class="flex flex-wrap gap-2 justify-center text-lg text-black dark:text-pink-100">
-                <div class="flex items-center gap-0 rounded-md px-1 py-1 border border-green-500">
-                    <span class="rounded px-1">🌉 gpu</span>
-                    <a href="/machines?machine_id={{ machine.id }}&tag=gpu&action=delete">
-                        <span class="text-xs text-gray-400 px-1">x</span>
-                    </a>
-                </div>
-                <div class="flex items-center gap-0 rounded-md px-1 py-1 border border-red-500">
-                    <span class="rounded px-1">🧑‍🔬 ai</span>
-                    <span class="text-xs text-gray-400 px-1">x</span>
-                </div>
-                <div class="flex items-center gap-0 rounded-md px-1 py-1 border border-purple-500">
-                    <span class="rounded px-1">🔒 2fa</span>
-                    <span class="text-xs text-gray-400 px-1">x</span>
-                </div>
-                <div class="flex items-center gap-0 rounded-md px-1 py-1 border border-pink-500">
-                    <span class="rounded px-1">🐉 dragonfly-server</span>
-                    <span class="text-xs text-gray-400 px-1">x</span>
-                </div>
+                <template x-if="machine.gpus && machine.gpus.length > 0">
+                    <div class="flex flex-col gap-1">
+                        <span class="text-xs text-gray-500 dark:text-gray-600 uppercase tracking-wider font-medium">GPU</span>
+                        <span class="text-base font-semibold text-gray-900 dark:text-gray-100" x-text="machine.gpus[0].name"></span>
+                    </div>
+                </template>
+                <template x-if="machine.bmc_credentials">
+                    <div class="flex flex-col gap-1">
+                        <span class="text-xs text-gray-500 dark:text-gray-600 uppercase tracking-wider font-medium">BMC State</span>
+                        <span class="text-sm text-green-600 dark:text-green-400 font-medium">
+                            <span x-text="machine.bmc_credentials.address || 'Configured'"></span>
+                            <template x-if="machine.bmc_credentials.bmc_type">
+                                <span class="text-gray-400 dark:text-gray-600 ml-1 font-normal" x-text="'(' + machine.bmc_credentials.bmc_type + ')'"></span>
+                            </template>
+                        </span>
+                    </div>
+                </template>
             </div>
         </div>
 
-        <!-- Storage Card - Double width on physical hosts -->
-        <div class="bg-green-100/20 dark:bg-[#221c2c] border border-yellow-500 rounded-xl shadow-lg p-1 space-y-1">
-            <h3 class="text-center text-lg font-semibold text-black dark:text-white p-4">💾 Storage</h3>
-            <div class="overflow-x-auto">
-            <table class="w-full text-sm text-black dark:text-yellow-100">
-                <thead class="text-xs uppercase bg-blue-100 dark:bg-red-900/10 border-b border-yellow-800/30">
-                <tr>
-                    <th class="px-4 py-2 text-left">Device</th>
-                    <th class="px-4 py-2 text-left">Size</th>
-                    <th class="px-4 py-2 text-left">Model name</th>
-                </tr>
+        {# Network Section #}
+        <div class="rounded-xl border border-gray-200 dark:border-[#1a1a1a] bg-white dark:bg-[#111] p-5">
+            <div class="mb-4">
+                <h2 class="text-sm font-semibold text-gray-500 dark:text-gray-500 uppercase tracking-wider">Network</h2>
+            </div>
+            <div class="grid grid-cols-2 gap-x-6 gap-y-4">
+                <div class="flex flex-col gap-1">
+                    <span class="text-xs text-gray-500 dark:text-gray-600 uppercase tracking-wider font-medium">Domain</span>
+                    <span class="text-sm text-gray-700 dark:text-gray-300" x-text="(function() {
+                        var h = machine.hostname || '';
+                        var parts = h.split('.');
+                        return parts.length > 1 ? parts.slice(1).join('.') : 'N/A';
+                    })()"></span>
+                </div>
+                <div class="flex flex-col gap-1">
+                    <span class="text-xs text-gray-500 dark:text-gray-600 uppercase tracking-wider font-medium">MAC</span>
+                    <span class="text-sm text-gray-700 dark:text-gray-300 tech-mono" x-text="machine.mac_address || 'N/A'"></span>
+                </div>
+                <div class="flex flex-col gap-1">
+                    <span class="text-xs text-gray-500 dark:text-gray-600 uppercase tracking-wider font-medium">Mode</span>
+                    <span class="text-sm text-gray-700 dark:text-gray-300" x-text="ipAddressType"></span>
+                </div>
+                <div class="flex flex-col gap-1">
+                    <span class="text-xs text-gray-500 dark:text-gray-600 uppercase tracking-wider font-medium">Nameservers</span>
+                    <span class="text-sm text-gray-700 dark:text-gray-300 tech-mono" x-text="(machine.nameservers && machine.nameservers.length > 0) ? machine.nameservers.join(', ') : 'None'"></span>
+                </div>
+                <template x-if="machine.proxmox_cluster">
+                    <div class="flex flex-col gap-1">
+                        <span class="text-xs text-gray-500 dark:text-gray-600 uppercase tracking-wider font-medium">Cluster</span>
+                        <span class="text-sm text-purple-600 dark:text-purple-400" x-text="machine.proxmox_cluster"></span>
+                    </div>
+                </template>
+                <template x-if="machine.proxmox_node">
+                    <div class="flex flex-col gap-1">
+                        <span class="text-xs text-gray-500 dark:text-gray-600 uppercase tracking-wider font-medium">Type</span>
+                        <span class="text-sm text-gray-700 dark:text-gray-300">Proxmox</span>
+                    </div>
+                </template>
+                <template x-if="!machine.proxmox_cluster && !machine.proxmox_node">
+                    <div class="flex flex-col gap-1">
+                        <span class="text-xs text-gray-500 dark:text-gray-600 uppercase tracking-wider font-medium">Memorable Name</span>
+                        <span class="text-sm text-gray-700 dark:text-gray-300" x-text="machine.memorable_name || 'Not set'"></span>
+                    </div>
+                </template>
+            </div>
+        </div>
+    </div>
+
+    {# ===== STORAGE (full width) ===== #}
+    <div class="rounded-xl border border-gray-200 dark:border-[#1a1a1a] bg-white dark:bg-[#111] p-5 mb-6">
+        <div class="mb-4">
+            <h2 class="text-sm font-semibold text-gray-500 dark:text-gray-500 uppercase tracking-wider">Storage</h2>
+        </div>
+        <template x-if="machine.disks && machine.disks.length > 0">
+            <table class="w-full">
+                <thead>
+                    <tr class="border-b border-gray-100 dark:border-[#222]">
+                        <th class="text-left text-[11px] text-gray-400 dark:text-gray-600 uppercase tracking-wider pb-2 font-medium">Device</th>
+                        <th class="text-left text-[11px] text-gray-400 dark:text-gray-600 uppercase tracking-wider pb-2 font-medium">Size</th>
+                        <th class="text-left text-[11px] text-gray-400 dark:text-gray-600 uppercase tracking-wider pb-2 font-medium">Model</th>
+                    </tr>
                 </thead>
                 <tbody>
-                <tr class="border-b border-yellow-800/20">
-                    <td class="px-4 py-2 font-medium">/dev/nvme0n1</td>
-                    <td class="px-4 py-2">3.64 TB</td>
-                    <td class="px-4 py-2">WD_BLACK SN850X</td>
-                </tr>
-                <tr>
-                    <td class="px-4 py-2 font-medium">/dev/nvme1n1</td>
-                    <td class="px-4 py-2">1.82 TB</td>
-                    <td class="px-4 py-2">Samsung 990 Pro</td>
-                </tr>
+                    <template x-for="disk in machine.disks" :key="disk.device">
+                        <tr class="border-b border-gray-50 dark:border-[#1a1a1a] last:border-0">
+                            <td class="py-3 text-sm tech-mono text-purple-600 dark:text-purple-400" x-text="disk.device"></td>
+                            <td class="py-3 text-sm text-gray-700 dark:text-gray-300" x-text="disk.size_bytes ? formatBytes(disk.size_bytes) : 'Unknown'"></td>
+                            <td class="py-3 text-sm text-gray-700 dark:text-gray-300" x-text="disk.model || 'Unknown'"></td>
+                        </tr>
+                    </template>
                 </tbody>
             </table>
-            </div>
-        </div>
-
-        <!-- Cluster Details Card -->
-        <div class="bg-white dark:bg-[#1e293b] shadow overflow-hidden sm:rounded-lg border border-transparent dark:border-white dark:border-opacity-5">
-            <h3 class="text-center text-lg font-semibold text-black dark:text-white p-4">🫀 Status</h3>
-            <div class="text-lg text-grey-900 dark:text-gray-300 ml-4 mb-8">
-                <div>
-                    <span class="font-bold text-cyan-900 dark:text-cyan-100">State:</span>
-                    <span class="font-semibold rounded rounded-xl border border-green-500 px-1 py-0 text-md">Ready</span>
-                </div>
-                <div>
-                    <span class="font-bold text-cyan-900 dark:text-cyan-100">BMC State:</span>
-                    <span class="font-semibold rounded rounded-xl border border-green-500 px-1 py-0 text-md">Ready</span>
-                </div>
-                <div><span class="font-bold text-cyan-900 dark:text-cyan-100">Uptime:</span> 4 days, 12 hours, 34 minutes</div>
-                <div><span class="font-bold text-cyan-900 dark:text-cyan-100">Cluster:</span> SpaceTempAgency</div>
-                <div><span class="font-bold text-cyan-900 dark:text-cyan-100">Cluster type:</span> Proxmox</div>
-            </div>
-        </div>
-        {# Add styles for the custom border width at the top of the file #}
-        <style>
-            .border-3 {
-                border-width: 3px !important;
-            }
-        </style>
+        </template>
+        <template x-if="!machine.disks || machine.disks.length === 0">
+            <p class="text-sm text-gray-400 dark:text-gray-600 italic">No storage devices detected</p>
+        </template>
     </div>
-    
-    <!-- Delete Machine Modal (Moved INSIDE x-data scope) -->
-    <div x-show="deleteModalOpen" 
-         x-cloak 
+
+    </div>{# /flex-1 content #}
+    </div>{# /flex sidebar+content layout #}
+
+    {# ===== DELETE MACHINE MODAL ===== #}
+    <div x-show="deleteModalOpen"
+         x-cloak
          class="fixed inset-0 z-50 overflow-y-auto"
          x-transition:enter="transition ease-out duration-300"
          x-transition:enter-start="opacity-0"
@@ -349,8 +466,7 @@
          x-transition:leave-end="opacity-0">
         <div class="flex items-center justify-center min-h-screen pt-4 px-4 pb-20 text-center sm:block sm:p-0">
             <div @click="deleteModalOpen = false" class="fixed inset-0 bg-gray-500 dark:bg-gray-900 bg-opacity-75 dark:bg-opacity-75 transition-opacity" aria-hidden="true"></div>
-            
-            <!-- Modal Content -->
+
             <div class="inline-block align-bottom bg-white dark:bg-gray-800 rounded-lg text-left overflow-hidden shadow-xl transform transition-all sm:my-8 sm:align-middle sm:max-w-lg sm:w-full">
                 <div class="px-4 pt-5 pb-4 sm:p-6 sm:pb-4">
                     <div class="sm:flex sm:items-start">
@@ -372,7 +488,7 @@
                     </div>
                 </div>
                 <div class="bg-gray-50 dark:bg-gray-700 px-4 py-3 sm:px-6 sm:flex sm:flex-row-reverse">
-                    <button @click="deleteMachine()" 
+                    <button @click="deleteMachine()"
                             :disabled="isDeleting"
                             class="w-full inline-flex justify-center rounded-md border border-transparent shadow-sm px-4 py-2 bg-red-600 text-base font-medium text-white hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500 sm:ml-3 sm:w-auto sm:text-sm"
                             :class="{'opacity-50 cursor-not-allowed': isDeleting}">
@@ -385,9 +501,9 @@
                         </span>
                         <span x-show="!isDeleting">Delete</span>
                     </button>
-                    <button @click="deleteModalOpen = false" 
+                    <button @click="deleteModalOpen = false"
                             :disabled="isDeleting"
-                            class="mt-3 w-full inline-flex justify-center rounded-md border border-gray-300 dark:border-gray-600 shadow-sm px-4 py-2 bg-white dark:bg-gray-800 text-base font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 sm:mt-0 sm:ml-3 sm:w-auto sm:text-sm"
+                            class="mt-3 w-full inline-flex justify-center rounded-md border border-gray-300 dark:border-gray-600 shadow-sm px-4 py-2 bg-white dark:bg-gray-800 text-base font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-purple-500 sm:mt-0 sm:ml-3 sm:w-auto sm:text-sm"
                             :class="{'opacity-50 cursor-not-allowed': isDeleting}">
                         Cancel
                     </button>
@@ -399,7 +515,7 @@
 
 <script>
   // Define helper functions in the script scope
-  const formatBytes = (bytes, decimals = 1) => { 
+  const formatBytes = (bytes, decimals = 1) => {
       if (bytes === 0) return '0 Bytes';
       const k = 1024;
       const dm = decimals < 0 ? 0 : decimals;
@@ -407,7 +523,7 @@
       const i = Math.floor(Math.log(bytes) / Math.log(k));
       return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
   };
-  const findMatchingStreamTasks = (fileName) => { 
+  const findMatchingStreamTasks = (fileName) => {
       const taskRows = document.querySelectorAll('#tasks-table-body tr[data-task-name]');
       const matchingRows = [];
       taskRows.forEach(row => {
@@ -443,34 +559,35 @@
   };
 
   // Alpine component function
-  function machineDetailsData() { 
+  function machineDetailsData() {
     return {
         // --- Properties ---
-        machine: { 
-            id: null, 
-            status: 'Loading...', 
-            hostname: null, 
-            ip_address: null, 
-            mac_address: null, 
+        machine: {
+            id: null,
+            status: 'Loading...',
+            hostname: null,
+            ip_address: null,
+            mac_address: null,
             memorable_name: null,
-            os_choice: null, 
-            disks: [], 
+            os_choice: null,
+            disks: [],
             nameservers: [],
+            tags: [],
             last_deployment_duration: null,
-            bmc_credentials: null // Add other keys as needed by template
-        }, 
+            bmc_credentials: null
+        },
         workflow_info: null,
-        machineId: '', 
+        machineId: '',
         machineIp: '',
         taskProgressState: {},
         evtSource: null,
-        selectedStatus: '', // For the status update modal
-        fetchDebounceTimer: null, // Timer for debouncing fetches
+        selectedStatus: '',
+        fetchDebounceTimer: null,
         error: null,
 
         // Inline edit properties
-        isEditing: false, // Replaces editModalOpen
-        editForm: { // Keep this to hold edits
+        isEditing: false,
+        editForm: {
             hostname: '',
             memorable_name: '',
             mac_address: '',
@@ -479,18 +596,22 @@
         },
         editFormError: '',
         isSubmitting: false,
-        
+
         // Delete modal properties
         deleteModalOpen: false,
         isDeleting: false,
-        
+
+        // Tag modal
+        addTagModal: false,
+
         // IP Address Type
         ipAddressType: 'Unknown',
-        
-        // --- Methods --- 
-        // Renamed from openEditModal
+
+        // OS display name mapping (loaded from /static/os_names.json)
+        osNames: {},
+
+        // --- Methods ---
         startEditing() {
-            // Populate editForm with current machine data
             this.editForm = {
                 hostname: this.machine.hostname || '',
                 memorable_name: this.machine.memorable_name || '',
@@ -498,41 +619,40 @@
                 ip_address: this.machine.ip_address || '',
                 os_choice: this.machine.os_choice || ''
             };
-            this.editFormError = ''; // Clear previous errors
+            this.editFormError = '';
             this.isEditing = true;
         },
-        
+
         cancelEdit() {
             this.isEditing = false;
-            this.editFormError = ''; // Clear errors on cancel
-            // No need to reset editForm, startEditing will repopulate
+            this.editFormError = '';
         },
-        
+
         saveChanges() {
             this.isSubmitting = true;
             this.editFormError = '';
-            
+
             // Validate MAC address format
             if (this.editForm.mac_address && !/^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$/.test(this.editForm.mac_address)) {
                 this.editFormError = 'Invalid MAC address format. Please use XX:XX:XX:XX:XX:XX format.';
                 this.isSubmitting = false;
                 return;
             }
-            
+
             // Validate IP address format if provided
             if (this.editForm.ip_address && !/^((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$/.test(this.editForm.ip_address)) {
                 this.editFormError = 'Invalid IP address format. Must be a valid IPv4 address.';
                 this.isSubmitting = false;
                 return;
             }
-            
+
             // Validate hostname format if provided
             if (this.editForm.hostname && !/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/i.test(this.editForm.hostname)) {
                 this.editFormError = 'Invalid hostname format. Must follow RFC-1123 standard.';
                 this.isSubmitting = false;
                 return;
             }
-            
+
             fetch(`/api/machines/${this.machine.id}`, {
                 method: 'PUT',
                 headers: {
@@ -549,30 +669,24 @@
                 return response.json();
             })
             .then(data => {
-                // Update the machine data directly in our model
                 Object.assign(this.machine, this.editForm);
-                
-                // Show success toast
                 if (window.showToast) {
                     window.showToast(`Machine updated successfully`, 'success');
                 }
-                
-                // Exit editing mode
-                this.isEditing = false; 
+                this.isEditing = false;
             })
             .catch(error => {
                 this.editFormError = error.message || 'An error occurred while updating the machine';
                 console.error('Error updating machine:', error);
-                // Remain in editing mode on error
             })
             .finally(() => {
                 this.isSubmitting = false;
             });
         },
-        
+
         deleteMachine() {
             this.isDeleting = true;
-            
+
             fetch(`/api/machines/${this.machine.id}`, {
                 method: 'DELETE',
             })
@@ -585,12 +699,9 @@
                 return response.text();
             })
             .then(() => {
-                // Show success toast
                 if (window.showToast) {
                     window.showToast(`Machine deleted successfully`, 'success');
                 }
-                
-                // Redirect to machines list
                 window.location.href = '/machines';
             })
             .catch(error => {
@@ -605,6 +716,11 @@
             });
         },
 
+        removeTag(tag) {
+            // Tag removal - will be wired up when tag API exists
+            console.log('Remove tag:', tag);
+        },
+
         initSSE() {
             console.log("Initializing SSE connection...");
             if (this.evtSource && this.evtSource.readyState !== EventSource.CLOSED) {
@@ -613,68 +729,55 @@
             }
             if (!this.machineId || this.machineId === 'error') {
                  console.warn("Cannot initialize SSE without a valid machine ID.");
-                 return; // Don't init if ID not set or error
+                 return;
             }
 
-            // Close existing connection if any (e.g., after error retry)
             if (this.evtSource) {
                 this.evtSource.close();
             }
 
             console.log(`Attempting SSE connection to /api/events for machine ${this.machineId}`);
             this.evtSource = new EventSource('/api/events');
-            window.globalEvtSource = this.evtSource; // Keep global reference if needed elsewhere
+            window.globalEvtSource = this.evtSource;
 
             this.evtSource.onopen = () => {
                 console.log("SSE connection opened.");
-                this.error = null; // Clear error on successful connection
+                this.error = null;
             };
 
             this.evtSource.onerror = (err) => {
                 console.error('Global SSE connection error:', err);
-                // Removed sse.close() to allow auto-reconnect
                 console.log('SSE connection error. Browser will attempt to reconnect automatically.');
-                // Optionally set an error state for the UI
-                this.error = "Connection lost. Attempting to reconnect..."; 
+                this.error = "Connection lost. Attempting to reconnect...";
             };
 
-            // Generic message handler (if needed)
             this.evtSource.onmessage = (event) => {
                  console.log("Generic SSE message received:", event.data);
             };
 
-            // --- Listener Replacement Start ---
-            // Listen for machine updates with debounced fetch fallback
             this.evtSource.addEventListener('machine_updated', (event) => {
                 console.log('Received machine_updated event:', event.data);
                 try {
                     const eventData = JSON.parse(event.data);
-                    
-                    // Clear any pending fetch timeout
                     clearTimeout(this.fetchDebounceTimer);
 
-                    // Check if the event contains the full machine object
                     if (eventData.machine) {
-                        // Full data received directly in the event
                         console.log('Processing full data from SSE event.');
-                        // Ensure we only update if the ID matches the current machine
                         if (eventData.machine.id === this.machine.id) {
                             this.machine = eventData.machine;
-                            this.workflow_info = eventData.workflow_info || null; 
+                            this.workflow_info = eventData.workflow_info || null;
                             console.log('Updated machine state from SSE event:', this.machine);
                             console.log('Updated workflow info from SSE event:', this.workflow_info);
                         } else {
                             console.warn('Received full machine_updated event for a different machine ID:', eventData.machine.id, 'Expected:', this.machine.id);
                         }
                     } else if (eventData.id === this.machine.id) {
-                        // Only ID received, debounce the fetch for the current machine
                         console.log(`Debouncing fetch for machine ${eventData.id}...`);
                         this.fetchDebounceTimer = setTimeout(() => {
                             console.log(`Executing debounced fetch for machine ${eventData.id}`);
                             fetch(`/api/machines/${eventData.id}`)
                                 .then(response => {
                                     if (!response.ok) {
-                                        // Throw an error to be caught by .catch()
                                         throw new Error(`Network response was not ok: ${response.statusText} (${response.status})`);
                                     }
                                     return response.json();
@@ -686,7 +789,7 @@
                                         this.workflow_info = fullData.workflow_info || null;
                                         console.log('Updated machine state via fetch:', this.machine);
                                         console.log('Updated workflow info via fetch:', this.workflow_info);
-                                        this.error = null; // Clear fetch error on success
+                                        this.error = null;
                                     } else if (fullData.machine && fullData.machine.id !== this.machine.id) {
                                         console.warn('Fetched data belongs to a different machine ID:', fullData.machine.id, 'Expected:', this.machine.id);
                                     } else {
@@ -694,49 +797,36 @@
                                     }
                                 })
                                 .catch(error => {
-                                    // Log the network error 
                                     console.error('Error fetching full machine data:', error);
-                                    // Update UI error state
                                     this.error = `Failed to fetch update for ${eventData.id}: ${error.message}. Retrying on next event.`;
                                 });
-                        }, 32); // <-- Changed debounce delay from 500 to 32ms
+                        }, 32);
                     } else {
-                        // Event is for a different machine or has unexpected format
                         console.warn('Ignoring machine_updated event: ID mismatch or invalid format.', 'Event ID:', eventData.id, 'Current Machine ID:', this.machine.id);
                     }
                 } catch (e) {
                     console.error('Error parsing machine_updated event data:', e, 'Raw data:', event.data);
-                    // Potentially update UI error state if parsing fails critically
                     this.error = "Error processing update event.";
                 }
             });
-            // --- Listener Replacement End ---
 
-            // Listen for machine discovered events
             this.evtSource.addEventListener('machine_discovered', (event) => {
                 console.log("SSE Listener: machine_discovered received:", event.data);
-                // Add parsing and update logic here
             });
 
-            // Add other specific listeners (ip_download_progress, task_progress) here if needed
             this.evtSource.addEventListener('ip_download_progress', (event) => {
                 console.log("[PROGRESS_LISTENER] Listener is active!");
                 console.log("SSE Listener: ip_download_progress received:", event.data);
                 try {
                     const progressData = JSON.parse(event.data);
-                    // Update logic based on progressData...
-                    // Example: Find relevant task and update its progress visually
                     if (progressData.machine_id === this.machineId) {
                          console.log("Matching machine ID for progress update.");
-                         const taskName = progressData.file_name || 'stream image'; // Use lowercase default
+                         const taskName = progressData.file_name || 'stream image';
                          const bytesDownloaded = progressData.bytes_downloaded;
                          const totalSize = progressData.total_size;
                          const calculatedProgress = (totalSize > 0) ? (bytesDownloaded / totalSize * 100) : 0;
 
-                         // Update the reactive state. Alpine will handle the DOM update.
-                         // Ensure the task exists in the state before updating
                          if (this.taskProgressState[taskName] !== undefined) {
-                            // Direct assignment for Alpine 3 reactivity
                             this.taskProgressState[taskName] = {
                                 percent: calculatedProgress,
                                 bytesDownloaded: bytesDownloaded,
@@ -744,7 +834,6 @@
                             };
                             console.log(`Updated taskProgressState for ${taskName}:`, JSON.stringify(this.taskProgressState[taskName]));
                          } else {
-                            // Log if the task name from the event doesn't match any known task
                             console.warn(`Task state key not found for progress update: ${taskName}`);
                          }
                      }
@@ -753,10 +842,8 @@
                 }
             });
 
-             // Example for task_progress (adjust format if needed)
              this.evtSource.addEventListener('task_progress', (event) => {
                  console.log("SSE Listener: task_progress received:", event.data);
-                 // Add parsing and update logic here
              });
 
         },
@@ -764,7 +851,6 @@
         initializeComponent() {
             console.log("Initializing Machine Details Component");
 
-            // Check if JSON data is available
             const machineDataElement = document.getElementById('machine-data-json');
             const workflowDataElement = document.getElementById('workflow-data-json');
 
@@ -772,20 +858,17 @@
                 try {
                     this.machine = JSON.parse(machineDataElement.textContent);
                     console.log("Machine data loaded from JSON:", this.machine);
-                    
-                    // Explicitly set the machineId from the machine data
+
                     this.machineId = this.machine.id;
                     this.machineIp = this.machine.ip_address;
                     console.log("Machine ID set to:", this.machineId);
-                    
-                    // Set IP Address Type from template variable
+
                     this.ipAddressType = '{{ ip_address_type | safe }}';
                     console.log("IP Address Type:", this.ipAddressType);
-                    
-                    this.editForm = { ...this.machine }; // Initialize edit form
+
+                    this.editForm = { ...this.machine };
                 } catch (e) {
                     console.error("Failed to parse machine JSON:", e);
-                    // Set default error state
                     this.machine = { id: 'error', ip_address: 'error', status: 'Error parsing data', hostname: 'Error' };
                     this.workflow_info = null;
                     this.machineId = 'error';
@@ -793,14 +876,12 @@
                 }
             } else {
                 console.error("Machine data not found in script tag.");
-                // Set default error state
                 this.machine = { id: 'error', ip_address: 'error', status: 'Error parsing data', hostname: 'Error' };
                 this.workflow_info = null;
                 this.machineId = 'error';
                 this.machineIp = 'error';
             }
 
-            // Parse workflow info if available
             if (workflowDataElement && workflowDataElement.textContent) {
                 try {
                     this.workflow_info = JSON.parse(workflowDataElement.textContent);
@@ -811,31 +892,38 @@
                 }
             }
 
-            // Initialize task progress state from DOM after initial render
             this.$nextTick(() => {
                 if (this.workflow_info && this.workflow_info.tasks) {
                     this.workflow_info.tasks.forEach(task => {
-                        // Initialize with the structure expected by the template
-                        if (this.taskProgressState[task.name] === undefined) { // Avoid overwriting if already updated by SSE
-                            this.taskProgressState[task.name] = { 
+                        if (this.taskProgressState[task.name] === undefined) {
+                            this.taskProgressState[task.name] = {
                                 percent: task.progress || 0,
-                                bytesDownloaded: 0, // Assume 0 initially
-                                totalSize: 0 // Assume 0 initially, update via SSE
+                                bytesDownloaded: 0,
+                                totalSize: 0
                             };
                         }
                     });
                     console.log("Initial taskProgressState:", JSON.stringify(this.taskProgressState));
                 }
+
+                // Initialize Lucide icons after Alpine renders
+                if (window.lucide) {
+                    lucide.createIcons();
+                }
             });
 
-            // Initialize SSE connection AFTER initial data is parsed and properties are set
-            this.initSSE(); 
+            // Load OS display names
+            fetch('/static/os_names.json')
+                .then(r => r.json())
+                .then(names => { this.osNames = names; })
+                .catch(e => console.warn('Could not load OS names:', e));
+
+            this.initSSE();
         },
 
-        // Helper function to format progress text
         generateProgressText(progressInfo) {
             if (!progressInfo) {
-                return '0%'; // Or 'Pending' or whatever default
+                return '0%';
             }
             const percent = progressInfo.percent || 0;
             if (progressInfo.totalSize > 0) {
@@ -849,25 +937,19 @@
 
         fetchMachineData() {
             if (!this.machineId) return;
-            // ... existing code ...
             this.evtSource.addEventListener('ip_download_progress', (event) => {
-                console.log("[PROGRESS_LISTENER] Listener is active!"); // Added listener active log
+                console.log("[PROGRESS_LISTENER] Listener is active!");
                 console.log("SSE Listener: ip_download_progress received:", event.data);
                 try {
                     const progressData = JSON.parse(event.data);
-                    // Update logic based on progressData...
-                    // Example: Find relevant task and update its progress visually
                     if (progressData.machine_id === this.machineId) {
                          console.log("Matching machine ID for progress update.");
-                         const taskName = progressData.file_name || 'stream image'; // Use lowercase default
+                         const taskName = progressData.file_name || 'stream image';
                          const bytesDownloaded = progressData.bytes_downloaded;
                          const totalSize = progressData.total_size;
                          const calculatedProgress = (totalSize > 0) ? (bytesDownloaded / totalSize * 100) : 0;
 
-                         // Update the reactive state. Alpine will handle the DOM update.
-                         // Ensure the task exists in the state before updating
                          if (this.taskProgressState[taskName] !== undefined) {
-                            // Direct assignment for Alpine 3 reactivity
                             this.taskProgressState[taskName] = {
                                 percent: calculatedProgress,
                                 bytesDownloaded: bytesDownloaded,
@@ -875,7 +957,6 @@
                             };
                             console.log(`Updated taskProgressState for ${taskName}:`, JSON.stringify(this.taskProgressState[taskName]));
                          } else {
-                            // Log if the task name from the event doesn't match any known task
                             console.warn(`Task state key not found for progress update: ${taskName}`);
                          }
                      }
@@ -884,10 +965,8 @@
                 }
             });
 
-             // Example for task_progress (adjust format if needed)
              this.evtSource.addEventListener('task_progress', (event) => {
                  console.log("SSE Listener: task_progress received:", event.data);
-                 // Add parsing and update logic here
              });
 
         }
