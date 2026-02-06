@@ -16,6 +16,9 @@ pub struct Machine {
     pub status: MachineStatus,
     pub disks: Vec<DiskInfo>,
     pub nameservers: Vec<String>,
+    /// DHCP-reported nameservers from agent checkin
+    #[serde(default)]
+    pub reported_nameservers: Vec<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -48,6 +51,27 @@ pub struct Machine {
     /// True if user explicitly requested reimage (molly guard passed)
     #[serde(default)]
     pub reimage_requested: bool,
+    /// Network configuration mode
+    #[serde(default)]
+    pub network_mode: Option<String>,
+    /// Static IPv4 configuration
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub static_ipv4: Option<crate::StaticIpConfig>,
+    /// Static IPv6 configuration
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub static_ipv6: Option<crate::StaticIpv6Config>,
+    /// DNS domain
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub domain: Option<String>,
+    /// Network entity ID
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub network_id: Option<Uuid>,
+    /// Settings saved but not yet applied to the host
+    #[serde(default)]
+    pub pending_apply: bool,
+    /// Which fields have been saved but not yet applied
+    #[serde(default)]
+    pub pending_fields: Vec<String>,
 }
 
 /// Machine lifecycle status

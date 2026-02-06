@@ -11,4 +11,7 @@ uuid = { workspace = true }
 chrono = { workspace = true }
 thiserror = { workspace = true }
 sha2 = "0.10"
-rand = "0.8" 
+rand = "0.8"
+
+[dev-dependencies]
+serde_json = { workspace = true }

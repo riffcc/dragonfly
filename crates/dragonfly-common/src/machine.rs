@@ -330,6 +330,39 @@ pub struct NetworkInterface {
 // Config
 // ============================================================================
 
+/// Network configuration mode
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum NetworkMode {
+    Dhcp,
+    DhcpStaticDns,
+    StaticIpv4,
+    StaticIpv6,
+    StaticDualStack,
+}
+
+impl Default for NetworkMode {
+    fn default() -> Self {
+        Self::Dhcp
+    }
+}
+
+/// Static IPv4 configuration
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct StaticIpConfig {
+    pub address: String,
+    pub prefix_len: u8,
+    pub gateway: Option<String>,
+}
+
+/// Static IPv6 configuration
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct StaticIpv6Config {
+    pub address: String,
+    pub prefix_len: u8,
+    pub gateway: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct MachineConfig {
     /// User-set hostname (desired). Persists across reboots.
@@ -350,9 +383,36 @@ pub struct MachineConfig {
     pub installation_progress: u8,
     pub installation_step: Option<String>,
     pub netboot: NetbootConfig,
-    /// Nameservers detected from the machine
+    /// Nameservers (user-configured, or initially populated from DHCP)
     #[serde(default)]
     pub nameservers: Vec<String>,
+    /// Nameservers as reported by the agent at checkin (DHCP-assigned, read-only)
+    #[serde(default)]
+    pub reported_nameservers: Vec<String>,
+    /// Network configuration mode
+    #[serde(default)]
+    pub network_mode: NetworkMode,
+    /// Static IPv4 configuration (when network_mode is StaticIpv4 or StaticDualStack)
+    #[serde(default)]
+    pub static_ipv4: Option<StaticIpConfig>,
+    /// Static IPv6 configuration (when network_mode is StaticIpv6 or StaticDualStack)
+    #[serde(default)]
+    pub static_ipv6: Option<StaticIpv6Config>,
+    /// DNS domain (e.g. "lon.riff.cc")
+    #[serde(default)]
+    pub domain: Option<String>,
+    /// Which Network entity this machine belongs to
+    #[serde(default)]
+    pub network_id: Option<Uuid>,
+    /// Settings saved but not yet applied to the host
+    #[serde(default)]
+    pub pending_apply: bool,
+    /// Which fields have been saved but not yet applied
+    #[serde(default)]
+    pub pending_fields: Vec<String>,
+    /// JSON snapshot of original field values before pending changes (for revert)
+    #[serde(default)]
+    pub pending_snapshot: Option<String>,
 }
 
 impl MachineConfig {
@@ -371,6 +431,15 @@ impl MachineConfig {
             installation_step: None,
             netboot: NetbootConfig::default(),
             nameservers: Vec::new(),
+            reported_nameservers: Vec::new(),
+            network_mode: NetworkMode::default(),
+            static_ipv4: None,
+            static_ipv6: None,
+            domain: None,
+            network_id: None,
+            pending_apply: false,
+            pending_fields: Vec::new(),
+            pending_snapshot: None,
         }
     }
 
@@ -389,6 +458,15 @@ impl MachineConfig {
             installation_step: None,
             netboot: NetbootConfig::default(),
             nameservers: Vec::new(),
+            reported_nameservers: Vec::new(),
+            network_mode: NetworkMode::default(),
+            static_ipv4: None,
+            static_ipv6: None,
+            domain: None,
+            network_id: None,
+            pending_apply: false,
+            pending_fields: Vec::new(),
+            pending_snapshot: None,
         }
     }
 }
