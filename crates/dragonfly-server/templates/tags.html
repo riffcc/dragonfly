@@ -12,11 +12,13 @@
 
   .node-card {
     cursor: grab;
-    padding: 0.25rem;
-    margin: 0.125rem;
-    min-height: 2.5rem;
+    padding: 0.5rem 0.75rem;
     display: flex;
-    align-items: center;
+    gap: 0.5rem;
+    width: fit-content;
+    background: #111;
+    border: 2px solid #1a1a1a;
+    margin: 0.125rem;
   }
   
   .node-card:active {
@@ -30,78 +32,128 @@
     box-shadow: 0 0 0 1px rgba(139, 92, 246, 0.5);
   }
 
-  /* Dynamic node card sizing based on density */
-  .node-card .detail-info {
-    display: none; /* Hidden by default in compact mode */
+  /* Smooth transitions */
+  .node-card, .node-card > * {
+    transition: all 0.2s ease;
   }
-  
-  /* Expanded card styles */
-  .expanded-layout .node-card {
+
+  /* Node card inner layout */
+  .node-card .node-left {
+    display: flex;
     flex-direction: column;
-    align-items: stretch;
-    padding: 0.5rem;
-    height: auto;
-    min-height: 6rem;
+    gap: 0.125rem;
+    min-width: 0;
   }
-  
-  .expanded-layout .node-card .basic-info {
+  .node-card .node-row {
     display: flex;
     align-items: center;
-    margin-bottom: 0.5rem;
+    gap: 0.25rem;
+    min-width: 0;
   }
-  
-  .expanded-layout .node-card .detail-info {
-    display: block;
-    margin-top: 0.25rem;
-    font-size: 0.7rem;
+  .node-card .node-row-indent {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+    flex-wrap: wrap;
+    padding-left: 0.75rem;
+    margin-top: 0.0625rem;
   }
-  
-  .expanded-layout .node-card .tag-container {
-    margin-top: 0.5rem;
-    max-width: 100%;
+  .node-card .node-dot {
+    width: 0.5rem;
+    height: 0.5rem;
+    border-radius: 50%;
+    flex-shrink: 0;
+    display: inline-block;
   }
-  
-  /* Medium layout - between compact and fully expanded */
-  .medium-layout .node-card {
-    padding: 0.4rem;
-    min-height: 3.5rem;
+  .node-card .node-emoji {
+    font-size: 0.875rem;
+    flex-shrink: 0;
   }
-  
-  .medium-layout .node-card .compact-node-tag {
+  .node-card .node-hostname {
+    font-weight: 600;
+    color: white;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .node-card .node-domain {
+    font-weight: 400;
+  }
+  .node-card .node-ip {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    color: #34d399;
+    font-size: 0.725rem;
+    padding-left: 0.75rem;
+  }
+  .node-card .node-tag {
+    padding: 0.125rem 0.375rem;
+    font-size: 0.6rem;
+    line-height: 0.875rem;
+    border-radius: 0.25rem;
+    white-space: nowrap;
+  }
+
+  /* HW column */
+  .node-card .node-hw {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    color: #444;
+    font-size: 0.625rem;
+    font-weight: 500;
+    padding-top: 0.125rem;
+    margin-left: 0.025rem;
+    justify-content: space-between;
+    height: 100%;
+  }
+  .node-card .node-hw-badges {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 0.0625rem;
+  }
+  .node-card .node-hw-row {
+    display: flex;
+    align-items: center;
+    gap: 0.1875rem;
+  }
+  .node-card .node-hw-num {
+    text-align: right;
+    min-width: 1.5rem;
+    color: white;
+  }
+  .node-card .node-hw svg {
+    width: 0.6875rem;
+    height: 0.6875rem;
+  }
+  .node-card .node-status {
     font-size: 0.65rem;
-    padding: 0.15rem 0.3rem;
-  }
-  
-  .medium-layout .node-card .status-line {
-    display: block;
-    font-size: 0.65rem;
-    margin-top: 0.2rem;
-  }
-  
-  /* Smooth transitions for dynamic sizing */
-  .node-card, .node-card > *, .node-card .compact-node-tag {
-    transition: all 0.3s ease-in-out;
+    font-weight: 500;
+    flex-shrink: 0;
   }
 
   /* Tag card styling */
   .tag-card {
-    border: 1px solid rgba(139, 92, 246, 0.2);
-    padding: 0.5rem 0.75rem;
-    height: 2.5rem;
+    border-radius: 0.5rem;
+    padding: 0.375rem 0.625rem;
+    height: auto;
     display: flex;
     align-items: center;
     justify-content: space-between;
-    min-width: 7rem;
+    min-width: 0;
     max-width: fit-content;
     transition: all 0.2s ease;
-    gap: 0.5rem;
+    gap: 0.375rem;
+    font-size: 0.8rem;
   }
   
   .tag-card .tag-content {
     display: flex;
     align-items: center;
     overflow: hidden;
-    margin-right: 0.5rem;
+    margin-right: 0.25rem;
   }
   
   .tag-card .tag-actions {
@@ -111,24 +163,25 @@
   }
   
   .tag-card.drag-over {
-    border-color: rgba(139, 92, 246, 0.7);
-    background-color: rgba(139, 92, 246, 0.1);
+    border-color: rgba(139, 92, 246, 0.7) !important;
+    background-color: rgba(139, 92, 246, 0.1) !important;
     transform: scale(1.03);
   }
 
   /* New Tag Card specific style */
   .new-tag-card {
-    border: 2px solid #4c00ff;
+    border: 2px solid rgba(255, 255, 255, 0.6);
     border-style: dashed;
     cursor: pointer;
     justify-content: center;
+    color: rgba(255, 255, 255, 0.8);
   }
   
   .new-tag-card.drag-over {
-    border-color: rgba(20, 184, 166, 0.7);
-    background-color: hsl(199, 100%, 50%);
+    border-color: rgba(255, 255, 255, 0.9);
+    background-color: rgba(255, 255, 255, 0.05);
     transform: scale(1.03);
-    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+    box-shadow: 0 0 8px rgba(255, 255, 255, 0.2);
   }
 
   .ghost-card {
@@ -138,35 +191,15 @@
     height: 2.5rem;
   }
 
-  /* Compact node card styles */
-  .compact-node-tag {
-    padding: 0.1rem 0.25rem;
-    font-size: 0.6rem;
-    line-height: 0.8rem;
-    border-radius: 0.25rem;
-    margin-right: 0.25rem;
-    white-space: nowrap;
-  }
-
-  /* Status indicators */
-  .status-dot {
-    height: 0.5rem;
-    width: 0.5rem;
-    border-radius: 50%;
-    flex-shrink: 0;
-    margin-right: 0.5rem;
-  }
   
   /* Emoji selector styles */
   .emoji-selector {
     cursor: pointer;
-    font-size: 1rem;
-    margin-right: 0.5rem;
+    font-size: 0.875rem;
     display: inline-flex;
     justify-content: center;
     align-items: center;
-    width: 1.5rem;
-    height: 1.5rem;
+    flex-shrink: 0;
     border-radius: 0.25rem;
   }
   
@@ -209,16 +242,14 @@
   /* Selected node styles */
   .node-card.selected {
     border: 2px solid #6366f1 !important;
-    background-color: rgba(99, 102, 241, 0.1);
   }
   
   .node-card.current {
-    box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.8);
   }
   
   /* Enhanced Selection box for box select */
   .selection-box {
-    position: absolute;
+    position: fixed;
     border: 2px solid rgba(99, 102, 241, 0.8);
     background-color: rgba(99, 102, 241, 0.15);
     z-index: 100;
@@ -239,29 +270,38 @@
     cursor: crosshair;
   }
   
-  /* Add style for when CMD/CTRL is pressed */
-  #nodes-container.multi-select {
-    background-color: rgba(99, 102, 241, 0.03);
-  }
   
-  .dark #nodes-container.multi-select {
-    background-color: rgba(139, 92, 246, 0.05);
-  }
-  
-  /* Sort button styles */
-  .sort-button {
+  /* Sort icon buttons */
+  .sort-btn {
     display: inline-flex;
     align-items: center;
-    padding: 0.375rem 0.75rem;
-    font-size: 0.875rem;
+    justify-content: center;
+    width: 1.75rem;
+    height: 1.75rem;
     border-radius: 0.375rem;
-    background-color: #4f46e5;
-    color: white;
-    font-weight: 500;
+    color: #666;
+    transition: all 0.15s ease;
   }
-  
-  .sort-button:hover {
-    background-color: #4338ca;
+  .sort-btn:hover { color: #a5b4fc; }
+  .sort-btn.active { color: #818cf8; }
+  .sort-btn svg { width: 1rem; height: 1rem; }
+
+  /* Search bar */
+  .node-search {
+    background: #000;
+    border: 1.5px solid rgba(255, 255, 255, 0.8);
+    border-radius: 9999px;
+    color: white;
+    font-size: 0.8rem;
+    padding: 0.3rem 2rem 0.3rem 0.75rem;
+    outline: none;
+    transition: border-color 0.2s ease;
+  }
+  .node-search:focus {
+    border-color: #818cf8;
+  }
+  .node-search::placeholder {
+    color: #555;
   }
   
   /* Selected node info section */
@@ -300,79 +340,11 @@
     50% { opacity: 0.7; }
   }
   
-  /* Ultra-compact grid */
-  .ultra-compact-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-    gap: 0.25rem;
-  }
-  
-  /* Medium grid - fewer columns, larger items */
-  .medium-grid {
-    grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)) !important;
-    gap: 0.4rem !important;
-  }
-  
-  /* Expanded grid - even fewer columns, much larger items */
-  .expanded-grid {
-    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)) !important;
-    gap: 0.5rem !important;
-  }
-  
-  @media (min-width: 1280px) {
-    .ultra-compact-grid {
-      grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
-    }
-    
-    .medium-grid {
-      grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)) !important;
-    }
-    
-    .expanded-grid {
-      grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)) !important;
-    }
-  }
-  
-  @media (min-width: 1536px) {
-    .ultra-compact-grid {
-      grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
-    }
-    
-    .medium-grid {
-      grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)) !important;
-    }
-    
-    .expanded-grid {
-      grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)) !important;
-    }
-  }
-  
-  @media (min-width: 1920px) {
-    .ultra-compact-grid {
-      grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
-    }
-    
-    .medium-grid {
-      grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)) !important;
-    }
-    
-    .expanded-grid {
-      grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)) !important;
-    }
-  }
-  
-  @media (min-width: 2560px) {
-    .ultra-compact-grid {
-      grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
-    }
-    
-    .medium-grid {
-      grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)) !important;
-    }
-    
-    .expanded-grid {
-      grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)) !important;
-    }
+  /* Node grid */
+  .node-grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.375rem;
   }
   
   /* Tag grid */
@@ -410,35 +382,45 @@
     background-color: rgba(255, 255, 255, 0.3);
   }
 
+  /* Tag card hover - subtle brightening */
+  .tag-card:not(.new-tag-card):not(.has-selected-nodes):hover {
+    border-color: rgba(255, 255, 255, 0.9);
+    color: white;
+  }
+
+  /* New tag card hover */
+  .new-tag-card:hover {
+    border-color: rgba(255, 255, 255, 0.9);
+    color: white;
+  }
+
   /* Selected tag styles - when nodes with this tag are selected */
   .tag-card.has-selected-nodes {
-    box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.5);
-    border-color: rgba(0, 4, 255, 0.8);
-    background-color: rgba(0, 4, 255, 0.8);
-  }
-  
-  .tag-card.has-selected-nodes .bg-blue-600 {
-    background-color: rgba(30, 64, 255, 1);
-  }
-  
-  .dark .tag-card.has-selected-nodes {
-    box-shadow: 0 0 0 2px rgba(139, 92, 246, 0.5);
-    border-color: hsl(200, 100%, 50%);
-    background-color: hsl(200, 100%, 50%);
+    border-color: #6366f1 !important;
+    color: #a5b4fc !important;
+    box-shadow: 0 0 8px rgba(99, 102, 241, 0.3);
   }
 </style>
 {% endblock %}
 
 {% block content %}
-<div class="h-full flex flex-col px-2 sm:px-3 lg:px-4 py-4">
-  <header class="mb-3 flex-shrink-0">
-    <h1 class="text-2xl font-bold text-gray-900 dark:text-white">Tags Manager</h1>
-    <p class="mt-1 text-sm text-gray-600 dark:text-gray-300">
-      Drag and drop nodes to assign tags or perform bulk actions.
-    </p>
-  </header>
+<div class="h-full flex flex-col">
+  <div class="flex justify-between items-center mb-6 flex-shrink-0">
+    <div>
+      <h1 class="text-3xl font-bold text-gray-900 dark:text-white">Tags</h1>
+      <p class="mt-1 text-sm text-gray-600 dark:text-gray-300">
+        Drag and drop nodes onto tags to assign, unassign or edit tags or perform bulk actions.
+      </p>
+    </div>
+  </div>
 
   <div x-data="tagManager()" x-init="window.Alpine.store('tagManager', this)" x-cloak class="flex-grow min-h-0 flex flex-col">
+    <!-- Selection box for box select (page-wide) -->
+    <div
+      class="selection-box"
+      x-ref="selectionBox"
+      style="display: none; top: 0; left: 0; width: 0; height: 0;"
+    ></div>
     <!-- Loading Indicator -->
     <div x-show="isLoading" class="flex justify-center items-center h-full">
       <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-purple-500"></div>
@@ -450,18 +432,6 @@
       <!-- Tags Section -->
       <div class="mb-4 pb-2 border-b border-gray-200 dark:border-gray-700">
 
-        <!-- Selected node info -->
-        <div class="selected-node-info mb-3" x-show="currentNodeId !== null">
-          <div class="mb-2">
-            <span class="font-semibold">Selected:</span>
-            <span x-text="selectedNodeIds.length > 1 ? 
-              `${selectedNodeIds.length} nodes selected` : 
-              getCurrentNodeName()"></span>
-          </div>
-          <div class="mt-2 text-sm text-gray-600 dark:text-gray-400" x-show="selectedNodeIds.length > 0">
-            Drag to a tag to assign, or use <kbd class="px-1 py-0.5 bg-gray-200 dark:bg-gray-700 rounded">CMD</kbd>/<kbd class="px-1 py-0.5 bg-gray-200 dark:bg-gray-700 rounded">CTRL</kbd>+click to select multiple nodes.
-          </div>
-        </div>
         
         <!-- Tag Grid -->
         <div class="tag-grid" data-gamepad-column="tags" x-bind:data-refresh="refreshTrigger">
@@ -472,7 +442,8 @@
               :data-tag-name="tag"
               data-gamepad-focusable="true"
               data-gamepad-droptarget="true"
-              class="tag-card bg-blue-500 text-white dark:bg-blue-600 rounded-md shadow-sm"
+              class="tag-card rounded-md"
+              style="background: transparent; border: 2px solid rgba(255, 255, 255, 0.6); color: rgba(255, 255, 255, 0.8);"
               @dragover.prevent="dragOver($event, tag)"
               @dragleave.prevent="dragLeave($event)"
               @drop.prevent="drop($event, tag)"
@@ -493,9 +464,9 @@
                 <span class="font-medium truncate" x-text="tag"></span>
               </div>
               <div class="flex items-center">
-                <span class="font-bold mr-1.5" x-text="nodes.length"></span>
-                <button @click.stop.prevent="deleteTag(tag)" type="button" data-tag-action="delete"
-                  class="text-white opacity-50 hover:opacity-100 focus:opacity-100 p-0.5 rounded">
+                <span class="font-bold text-base mr-1.5" x-text="nodes.length"></span>
+                <button @click.stop.prevent="confirmDeleteTag(tag)" type="button" data-tag-action="delete"
+                  class="text-gray-400 dark:text-gray-500 hover:text-red-500 dark:hover:text-red-400 focus:text-red-500 p-0.5 rounded">
                   <svg class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
                   </svg>
@@ -510,7 +481,7 @@
             data-tag-name="__NEW__"
             data-gamepad-focusable="true"
             data-gamepad-droptarget="true" 
-            class="tag-card new-tag-card bg-transparent border-6 border-blue-500 dark:border-blue-100 text-blue-700 dark:text-blue-100 rounded-md shadow-md hover:bg-blue-50 dark:hover:bg-blue-900/20 transition-colors"
+            class="tag-card new-tag-card bg-transparent rounded-md transition-colors"
             @click="isCreatingTag = true; $nextTick(() => $refs.newTagInput.focus())"
             @dragover.prevent="dragOver($event, '__NEW__')"
             @dragleave.prevent="dragLeave($event)"
@@ -519,7 +490,7 @@
             x-show="!isCreatingTag"
           >
             <div class="flex items-center">
-              <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 mr-1" viewBox="0 0 20 20" fill="currentColor">
+              <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 mr-1" viewBox="0 0 20 20" fill="#34d399">
                 <path fill-rule="evenodd" d="M10 5a1 1 0 011 1v3h3a1 1 0 110 2h-3v3a1 1 0 11-2 0v-3H6a1 1 0 110-2h3V6a1 1 0 011-1z" clip-rule="evenodd" />
               </svg>
               <span class="font-semibold">new tag</span>
@@ -533,7 +504,7 @@
             @keydown.escape="isCreatingTag = false"
             @click.outside="isCreatingTag = false"
           >
-            <div class="tag-card bg-white dark:bg-gray-800 rounded-md shadow-sm">
+            <div class="tag-card border border-gray-200 dark:border-[#1a1a1a] bg-white dark:bg-[#111] rounded-xl shadow-sm">
               <input 
                 type="text" 
                 x-ref="newTagInput"
@@ -560,56 +531,47 @@
       <!-- Nodes Section -->
       <div class="flex-grow flex flex-col min-h-0" data-gamepad-column="nodes">
         <div class="flex items-center justify-between mb-2 flex-shrink-0">
-          <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
+          <h2 class="text-xl font-bold text-gray-900 dark:text-white">
             Nodes
-            <span class="ml-2 text-sm font-normal text-gray-500 dark:text-gray-400" x-text="'(' + availableNodes.length + ' total)'"></span>
+            <span class="ml-1 text-base font-normal text-gray-500 dark:text-gray-400" x-text="'(' + availableNodes.length + ' total)'"></span>
           </h2>
           
-          <div class="flex space-x-2">
-            <!-- Sort Button - Standalone and more prominent -->
-            <button 
-              @click="cycleSortOption()" 
-              data-gamepad-focusable="true"
-              class="sort-button"
-              data-gamepad-action="sort"
-              title="Change sort order"
-            >
-              <span x-text="getSortLabel()"></span>
-            </button>
-            
+          <div class="flex items-center gap-1.5">
             <!-- Search Input -->
             <div class="relative">
               <input type="text" x-model="nodeSearchQuery" @input.debounce.300ms="filterNodes(currentFilter)"
                      data-gamepad-focusable="true"
-                     class="rounded-md border-gray-300 shadow-sm focus:border-purple-500 focus:ring-purple-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm py-1 pr-8 pl-2"
+                     class="node-search"
                      placeholder="Search nodes...">
-              <div class="absolute inset-y-0 right-0 flex items-center pr-2 pointer-events-none">
-                <svg class="h-4 w-4 text-gray-400" viewBox="0 0 20 20" fill="currentColor">
-                  <path fill-rule="evenodd" d="M8 4a4 4 0 100 8 4 4 0 000-8zM2 8a6 6 0 1110.89 3.476l4.817 4.817a1 1 0 01-1.414 1.414l-4.816-4.816A6 6 0 012 8z" clip-rule="evenodd" />
+              <div class="absolute inset-y-0 right-0 flex items-center pr-2.5 pointer-events-none">
+                <svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                  <circle cx="11" cy="11" r="7" stroke="url(#search-ring)"/>
+                  <line x1="16.5" y1="16.5" x2="21" y2="21" stroke="#999"/>
+                  <defs>
+                    <linearGradient id="search-ring" x1="4" y1="4" x2="18" y2="18">
+                      <stop offset="0%" stop-color="#c0c0c0"/>
+                      <stop offset="40%" stop-color="#d4d4d4"/>
+                      <stop offset="60%" stop-color="#d4aa50"/>
+                      <stop offset="80%" stop-color="#d4d4d4"/>
+                      <stop offset="100%" stop-color="#c0c0c0"/>
+                    </linearGradient>
+                  </defs>
                 </svg>
               </div>
             </div>
-            
-            <!-- Filter Buttons -->
-            <button type="button" @click="filterNodes('all')" 
-                   :class="{'bg-purple-600 text-white': currentFilter === 'all', 'bg-gray-200 text-gray-700 dark:bg-gray-700 dark:text-gray-300': currentFilter !== 'all'}"
-                   class="px-2 py-1 rounded-md text-xs font-medium">
-              All
+
+            <!-- Sort Buttons -->
+            <button @click="sortOption = 'name-asc'; filterNodes(currentFilter)" class="sort-btn" :class="{'active': sortOption === 'name-asc'}" title="Sort A-Z">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m3 16 4 4 4-4"/><path d="M7 20V4"/><path d="M20 8h-5"/><path d="M15 10V6.5a2.5 2.5 0 0 1 5 0V10"/><path d="M15 14h5l-5 6h5"/></svg>
             </button>
-            <button type="button" @click="filterNodes('gpu')"
-                   :class="{'bg-purple-600 text-white': currentFilter === 'gpu', 'bg-gray-200 text-gray-700 dark:bg-gray-700 dark:text-gray-300': currentFilter !== 'gpu'}"
-                   class="px-2 py-1 rounded-md text-xs font-medium">
-              GPU
+            <button @click="sortOption = 'name-desc'; filterNodes(currentFilter)" class="sort-btn" :class="{'active': sortOption === 'name-desc'}" title="Sort Z-A">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m3 16 4 4 4-4"/><path d="M7 4v16"/><path d="M15 4h5l-5 6h5"/><path d="M15 20v-3.5a2.5 2.5 0 0 1 5 0V20"/><path d="M20 18h-5"/></svg>
             </button>
-            <button type="button" @click="filterNodes('mismatched')"
-                   :class="{'bg-purple-600 text-white': currentFilter === 'mismatched', 'bg-gray-200 text-gray-700 dark:bg-gray-700 dark:text-gray-300': currentFilter !== 'mismatched'}"
-                   class="px-2 py-1 rounded-md text-xs font-medium">
-              Mismatched
+            <button @click="sortOption = 'status'; filterNodes(currentFilter)" class="sort-btn" :class="{'active': sortOption === 'status'}" title="Sort by status">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m17 11-5-5-5 5"/><path d="m17 18-5-5-5 5"/></svg>
             </button>
-            <button type="button" @click="filterNodes('reimaging')"
-                   :class="{'bg-purple-600 text-white': currentFilter === 'reimaging', 'bg-gray-200 text-gray-700 dark:bg-gray-700 dark:text-gray-300': currentFilter !== 'reimaging'}"
-                   class="px-2 py-1 rounded-md text-xs font-medium">
-              Reimaging
+            <button @click="sortOption = 'tags'; filterNodes(currentFilter)" class="sort-btn" :class="{'active': sortOption === 'tags'}" title="Sort by tags">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.586 2.586A2 2 0 0 0 11.172 2H4a2 2 0 0 0-2 2v7.172a2 2 0 0 0 .586 1.414l8.704 8.704a2.426 2.426 0 0 0 3.42 0l6.58-6.58a2.426 2.426 0 0 0 0-3.42z"/><circle cx="7.5" cy="7.5" r=".5" fill="currentColor"/></svg>
             </button>
           </div>
         </div>
@@ -619,27 +581,20 @@
           id="nodes-container"
           class="flex-grow overflow-y-auto pr-1 relative" 
           @dragover.prevent
-          @resize.window="updateNodeLayout()"
           @click="handleContainerClick($event)"
         >
           <div x-show="filteredNodes.length === 0" class="text-center py-6 text-gray-500 dark:text-gray-400 italic">
             No nodes match the current filter or search.
           </div>
 
-          <!-- Selection box for box select -->
-          <div 
-            class="selection-box" 
-            x-ref="selectionBox" 
-            style="display: none; top: 0; left: 0; width: 0; height: 0;"
-          ></div>
 
-          <div class="ultra-compact-grid" id="nodes-grid" x-ref="nodesGrid">
+          <div class="node-grid" id="nodes-grid" x-ref="nodesGrid">
             <template x-for="node in filteredNodes" :key="node.id">
               <div
                 :id="'node-' + node.id"
                 :data-node-id="node.id"
                 data-gamepad-focusable="true"
-                class="node-card bg-white dark:bg-gray-800 rounded-md border border-gray-200 dark:border-gray-700 text-xs"
+                class="node-card rounded-xl text-xs"
                 draggable="true"
                 @dragstart="startDrag($event, node)"
                 @dragend="endDrag()"
@@ -650,82 +605,99 @@
                   'selected-for-gamepad': selectedNodeId === node.id 
                 }"
               >
-                <!-- Basic info (always visible) -->
-                <div class="basic-info flex items-center flex-grow min-w-0">
-                  <!-- Status Dot -->
-                  <span class="status-dot"
-                      :class="{
-                          'bg-green-500': node.status === 'Ready',
-                          'bg-yellow-500': node.status === 'InstallingOS' || node.status === 'NeedsOS',
-                          'bg-red-500': typeof node.status === 'object' && node.status.Error,
-                          'bg-gray-400': node.status === 'Offline' || !node.status
-                      }"
-                      :title="formatStatus(node.status)">
-                  </span>
-                  
-                  <!-- Emoji Selector -->
-                  <div 
-                    class="emoji-selector"
-                    @click.stop="toggleEmojiDropdown($event, node.id)"
-                  >
-                    <span x-text="getNodeEmoji(node.id)"></span>
+                <!-- Left column -->
+                <div class="node-left">
+                  <!-- Row 1: dot + emoji + hostname + domain -->
+                  <div class="node-row">
+                    <span class="node-dot"
+                        :class="{
+                            'bg-green-500': node.status === 'Ready' || node.status === 'Installed',
+                            'bg-yellow-500': node.status === 'InstallingOS' || node.status === 'NeedsOS' || node.status === 'ReadyToInstall' || node.status === 'Initializing' || node.status === 'Installing' || node.status === 'Writing',
+                            'bg-blue-500': node.status === 'ExistingOS' || node.status === 'Discovered',
+                            'bg-red-500': typeof node.status === 'object' && node.status.Error,
+                            'bg-gray-400': node.status === 'Offline' || !node.status
+                        }"
+                        :title="formatStatus(node.status)">
+                    </span>
+                    <div
+                      class="emoji-selector"
+                      @click.stop="toggleEmojiDropdown($event, node.id)"
+                    >
+                      <span x-text="getNodeEmoji(node.id)"></span>
+                    </div>
+                    <!-- Emoji Dropdown -->
+                    <div
+                      x-show="showEmojiDropdown && currentEmojiNode === node.id"
+                      class="emoji-dropdown"
+                      @click.away="showEmojiDropdown = false"
+                    >
+                      <template x-for="emoji in emojis" :key="emoji">
+                        <div class="emoji-option" x-text="emoji" @click.stop="selectNodeEmoji(node.id, emoji)"></div>
+                      </template>
+                    </div>
+                    <span class="node-hostname"><span x-text="node.hostname || node.memorable_name || node.id"></span><span class="node-domain" x-show="node.domain && node.hostname" x-text="'.' + node.domain"></span></span>
                   </div>
-                  
-                  <!-- Emoji Dropdown (Shows only when activated) -->
-                  <div
-                    x-show="showEmojiDropdown && currentEmojiNode === node.id"
-                    class="emoji-dropdown"
-                    @click.away="showEmojiDropdown = false"
-                  >
-                    <template x-for="emoji in emojis" :key="emoji">
-                      <div
-                        class="emoji-option"
-                        x-text="emoji"
-                        @click.stop="selectNodeEmoji(node.id, emoji)"
-                      ></div>
+                  <!-- Row 2: IP -->
+                  <div class="node-ip" x-text="node.ip_address || 'No IP'"></div>
+                  <!-- Row 3: Tags (only if present) -->
+                  <div class="node-row-indent" x-show="node.tags && node.tags.length > 0">
+                    <template x-for="(tag, index) in node.tags || []" :key="index">
+                      <span class="node-tag bg-purple-900 text-purple-200" x-text="tag"></span>
                     </template>
                   </div>
-                  
-                  <!-- Basic Info -->
-                  <div class="flex-grow min-w-0">
-                    <div class="font-medium text-gray-900 dark:text-white truncate" x-text="node.hostname || node.id"></div>
-                    <div class="text-gray-500 dark:text-gray-400 truncate" x-text="node.ip_address || 'No IP'"></div>
-                    <div class="status-line text-gray-500 dark:text-gray-400 hidden" x-text="formatStatus(node.status)"></div>
-                  </div>
                 </div>
-                
-                <!-- Detailed info (visible in expanded mode) -->
-                <div class="detail-info text-gray-600 dark:text-gray-400">
-                  <div class="grid grid-cols-2 gap-1">
-                    <div>
-                      <span class="font-semibold">Status:</span>
-                      <span x-text="formatStatus(node.status)"></span>
+                <!-- Right column: HW specs + status -->
+                <div class="node-hw">
+                  <div class="node-hw-badges">
+                    <div class="node-hw-row" x-show="node.cpu_cores">
+                      <span class="node-hw-num" x-text="node.cpu_cores"></span>
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><line x1="9" y1="1" x2="9" y2="4"/><line x1="15" y1="1" x2="15" y2="4"/><line x1="9" y1="20" x2="9" y2="23"/><line x1="15" y1="20" x2="15" y2="23"/><line x1="20" y1="9" x2="23" y2="9"/><line x1="20" y1="14" x2="23" y2="14"/><line x1="1" y1="9" x2="4" y2="9"/><line x1="1" y1="14" x2="4" y2="14"/></svg>
                     </div>
-                    <div>
-                      <span class="font-semibold">Tags:</span>
-                      <span x-text="(node.tags?.length || 0) + ' tag(s)'"></span>
+                    <div class="node-hw-row" x-show="node.cpu_threads && node.cpu_threads !== node.cpu_cores">
+                      <span class="node-hw-num" x-text="node.cpu_threads"></span>
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 13.44 4.442 17.082A2 2 0 0 0 4.982 21H19a2 2 0 0 0 .558-3.921l-1.115-.32A2 2 0 0 1 17 14.837V7.66"/><path d="m7 10.56 12.558-3.642A2 2 0 0 0 19.018 3H5a2 2 0 0 0-.558 3.921l1.115.32A2 2 0 0 1 7 9.163v7.178"/></svg>
                     </div>
-                    <div class="col-span-2">
-                      <span class="font-semibold">IP:</span>
-                      <span x-text="node.ip_address || 'Unknown'"></span>
+                    <div class="node-hw-row" x-show="node.total_ram_bytes">
+                      <span class="node-hw-num" x-text="formatRamCompact(node.total_ram_bytes)"></span>
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 12v-2"/><path d="M12 18v-2"/><path d="M16 12v-2"/><path d="M16 18v-2"/><path d="M2 11h1.5"/><path d="M20 18v-2"/><path d="M20.5 11H22"/><path d="M4 18v-2"/><path d="M8 12v-2"/><path d="M8 18v-2"/><rect x="2" y="6" width="20" height="10" rx="2"/></svg>
                     </div>
                   </div>
-                </div>
-                
-                <!-- Tags -->
-                <div class="tag-container flex flex-wrap ml-1 max-w-[40%]">
-                  <template x-for="(tag, index) in node.tags?.slice(0, 2) || []" :key="index">
-                    <span class="compact-node-tag bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-200" x-text="tag"></span>
-                  </template>
-                  <template x-if="(node.tags?.length || 0) > 2">
-                    <span class="compact-node-tag bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-200">
-                      +<span x-text="(node.tags?.length || 0) - 2"></span>
-                    </span>
-                  </template>
+                  <span class="node-status"
+                    :class="{
+                      'text-green-500': node.status === 'Ready' || node.status === 'Installed',
+                      'text-yellow-500': node.status === 'InstallingOS' || node.status === 'NeedsOS' || node.status === 'ReadyToInstall' || node.status === 'Initializing' || node.status === 'Installing' || node.status === 'Writing',
+                      'text-blue-500': node.status === 'ExistingOS' || node.status === 'Discovered',
+                      'text-red-500': typeof node.status === 'object' && node.status.Error,
+                      'text-gray-500': node.status === 'Offline' || !node.status
+                    }"
+                    x-text="formatStatus(node.status)">
+                  </span>
                 </div>
               </div>
             </template>
           </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Delete Tag Confirmation Modal -->
+    <div x-show="showDeleteModal" x-cloak class="fixed inset-0 z-50 flex items-center justify-center">
+      <div class="fixed inset-0 bg-black/50" @click="showDeleteModal = false; deleteTargetTag = null"></div>
+      <div class="relative bg-white dark:bg-[#111] border border-gray-200 dark:border-[#1a1a1a] rounded-xl shadow-xl p-6 max-w-sm w-full mx-4">
+        <h3 class="text-lg font-semibold text-gray-900 dark:text-white mb-2">Delete tag?</h3>
+        <p class="text-sm text-gray-600 dark:text-gray-400 mb-4">
+          This will remove <span class="font-semibold text-white" x-text="deleteTargetTag"></span> from
+          <span class="font-semibold" x-text="(tagBuckets[deleteTargetTag]?.length || 0) + ' machine(s)'"></span>.
+        </p>
+        <div class="flex justify-end gap-3">
+          <button @click="showDeleteModal = false; deleteTargetTag = null"
+            class="px-4 py-2 text-sm text-gray-600 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200 rounded-lg">
+            Cancel
+          </button>
+          <button @click="deleteTag(deleteTargetTag)"
+            class="px-4 py-2 text-sm bg-red-600 hover:bg-red-700 text-white rounded-lg font-medium">
+            Delete
+          </button>
         </div>
       </div>
     </div>
@@ -768,15 +740,10 @@
       newTagName: '', // For the input field
       isCreatingTag: false, // Whether the inline tag input is visible
       inlineTagName: '', // For the inline tag input
+      pendingAssignNodeIds: null, // Node IDs waiting to be assigned to a new tag (from drag-to-new)
+      showDeleteModal: false, // Whether the delete confirmation modal is visible
+      deleteTargetTag: null, // Tag name pending deletion
       refreshTrigger: 0, // Used to force UI refresh
-      
-      // Layout variables
-      currentLayout: 'compact', // 'compact', 'medium', or 'expanded'
-      nodeLayoutThresholds: {
-        compact: { maxRows: Infinity }, // Always valid
-        medium: { maxRows: 5 },
-        expanded: { maxRows: 3 }
-      },
       
       // Box select variables
       isBoxSelecting: false,
@@ -824,7 +791,6 @@
         this.handleGlobalMouseUp = this.handleGlobalMouseUp.bind(this);
         this.handleKeyDown = this.handleKeyDown.bind(this);
         this.handleKeyUp = this.handleKeyUp.bind(this);
-        this.updateNodeLayout = this.updateNodeLayout.bind(this);
 
         // Global listener to clear drag state if needed (e.g., drag ends outside window)
         document.addEventListener('dragend', () => {
@@ -840,77 +806,12 @@
         document.addEventListener('keydown', this.handleKeyDown);
         document.addEventListener('keyup', this.handleKeyUp);
         
-        // Add resize observer to update layout
-        this.resizeObserver = new ResizeObserver(() => {
-          this.updateNodeLayout();
-        });
-        
-        // Initialize the layout after data is loaded
-        window.addEventListener('load', () => {
-          setTimeout(() => this.updateNodeLayout(), 100);
-        });
       },
       
-      // Update node layout based on container width and node count
-      updateNodeLayout() {
-        if (this.isLoading || !this.$refs.nodesGrid) return;
-        
-        const container = document.getElementById('nodes-container');
-        const grid = this.$refs.nodesGrid;
-        const nodeCount = this.filteredNodes.length;
-        
-        if (nodeCount === 0) return;
-        
-        // Get the computed style to determine columns
-        const gridStyle = window.getComputedStyle(grid);
-        const containerWidth = container.clientWidth;
-        
-        // Calculate the column count based on the grid's computed template
-        const gridTemplateColumns = gridStyle.gridTemplateColumns;
-        const columnCount = gridTemplateColumns.split(' ').length;
-        
-        // Calculate approximate row count
-        const rowCount = Math.ceil(nodeCount / columnCount);
-        
-        console.log(`Container width: ${containerWidth}px, Nodes: ${nodeCount}, Columns: ${columnCount}, Rows: ${rowCount}`);
-        
-        // Determine layout based on row count
-        let newLayout = 'compact';
-        
-        if (rowCount <= this.nodeLayoutThresholds.expanded.maxRows) {
-          newLayout = 'expanded';
-        } else if (rowCount <= this.nodeLayoutThresholds.medium.maxRows) {
-          newLayout = 'medium';
-        }
-        
-        // Apply the new layout if it's different
-        if (newLayout !== this.currentLayout) {
-          console.log(`Changing layout from ${this.currentLayout} to ${newLayout}`);
-          
-          // Remove old layout classes
-          grid.classList.remove('medium-grid', 'expanded-grid');
-          container.classList.remove('medium-layout', 'expanded-layout');
-          
-          // Add new layout classes
-          if (newLayout === 'medium') {
-            grid.classList.add('medium-grid');
-            container.classList.add('medium-layout');
-          } else if (newLayout === 'expanded') {
-            grid.classList.add('expanded-grid');
-            container.classList.add('expanded-layout');
-          }
-          
-          this.currentLayout = newLayout;
-        }
-      },
-
       // Handle key down event to detect CMD/CTRL
       handleKeyDown(event) {
         if (event.key === 'Control' || event.key === 'Meta') {
           this.isMultiSelectMode = true;
-          // Add class to nodes container for visual feedback
-          const container = document.getElementById('nodes-container');
-          if (container) container.classList.add('multi-select');
         }
       },
       
@@ -918,9 +819,6 @@
       handleKeyUp(event) {
         if (event.key === 'Control' || event.key === 'Meta') {
           this.isMultiSelectMode = false;
-          // Remove class from nodes container
-          const container = document.getElementById('nodes-container');
-          if (container) container.classList.remove('multi-select');
         }
       },
 
@@ -937,9 +835,14 @@
           this.availableNodes = machines.map(machine => ({
             id: machine.id,
             hostname: machine.hostname,
-            ip_address: machine.ip_address || null, // Include IP
+            memorable_name: machine.memorable_name || null,
+            ip_address: machine.ip_address || null,
+            domain: machine.domain || null,
             status: machine.status || 'Unknown',
-            tags: machine.tags || []
+            tags: machine.tags || [],
+            cpu_cores: machine.cpu_cores || null,
+            cpu_threads: machine.cpu_threads || null,
+            total_ram_bytes: machine.total_ram_bytes || null,
           }));
           
           // Next, load all available tags
@@ -954,13 +857,6 @@
           // Initial filter application
           this.filterNodes(this.currentFilter);
           
-          // Start observing the grid for size changes
-          if (this.$refs.nodesGrid) {
-            this.resizeObserver.observe(this.$refs.nodesGrid);
-          }
-          
-          // Initial layout update
-          this.$nextTick(() => this.updateNodeLayout());
 
         } catch (error) {
           console.error('Error loading data:', error);
@@ -1142,9 +1038,6 @@
         this.applySorting(filtered);
         
         this.filteredNodes = filtered;
-        
-        // Update layout to reflect new node count
-        this.$nextTick(() => this.updateNodeLayout());
       },
       
       // Apply sorting to the filtered nodes
@@ -1196,18 +1089,18 @@
       startBoxSelect(event) {
         // Don't start box select during a drag operation
         if (this.isDragging) return;
-        
+
         // Allow selection to start from anywhere except interactive elements
-        if (event.target.closest('.tag-card, .node-card, button, input, a, .emoji-selector, .emoji-dropdown, select, textarea, .sort-button, .selected-node-info')) {
+        if (event.target.closest('.tag-card, .node-card, button, input, a, .emoji-selector, .emoji-dropdown, select, textarea, .sort-button')) {
           return;
         }
-        
+
         // Only activate on left mouse button
         if (event.button !== 0) return;
-        
+
         // Store initial CTRL/CMD key state for this selection operation
         this.boxSelectCtrlKey = event.ctrlKey || event.metaKey || this.isMultiSelectMode;
-        
+
         // If not using CTRL/CMD key and starting a new selection,
         // clear any existing selection
         if (!this.boxSelectCtrlKey) {
@@ -1215,48 +1108,16 @@
           this.currentNodeId = null;
           this.selectedNodeId = null;
         }
-        
-        console.log('Starting box select, CTRL key:', this.boxSelectCtrlKey);
+
         this.isBoxSelecting = true;
-        
-        // Get container for positioning
-        const container = document.getElementById('nodes-container');
-        const containerRect = container.getBoundingClientRect();
-        
-        // Calculate mouse position relative to the viewport
-        const mouseX = event.clientX;
-        const mouseY = event.clientY;
-        
-        // Check if mouse is inside the container
-        const isInContainer = (
-          mouseX >= containerRect.left && 
-          mouseX <= containerRect.right && 
-          mouseY >= containerRect.top && 
-          mouseY <= containerRect.bottom
-        );
-        
-        // If outside container, don't start selection
-        if (!isInContainer) {
-          this.isBoxSelecting = false;
-          return;
-        }
-        
-        // Add selecting class to container
-        container.classList.add('selecting');
-        // Add multi-select class if using CTRL/CMD
-        if (this.boxSelectCtrlKey) {
-          container.classList.add('multi-select');
-        }
-        
-        // Calculate relative coordinates within the container
+
+        // Use viewport coordinates directly (selection box is position: fixed)
         this.boxSelectStart = {
-          x: mouseX - containerRect.left + container.scrollLeft,
-          y: mouseY - containerRect.top + container.scrollTop
+          x: event.clientX,
+          y: event.clientY
         };
-        
-        // Store initial position for the selection box
         this.boxSelectEnd = { ...this.boxSelectStart };
-        
+
         // Set up the selection box
         const selBox = this.$refs.selectionBox;
         selBox.style.left = `${this.boxSelectStart.x}px`;
@@ -1264,11 +1125,11 @@
         selBox.style.width = '0px';
         selBox.style.height = '0px';
         selBox.style.display = 'block';
-        
-        // Add global event listeners for mouse movement and release while dragging
+
+        // Add global event listeners
         document.addEventListener('mousemove', this.handleGlobalMouseMove);
         document.addEventListener('mouseup', this.handleGlobalMouseUp);
-        
+
         // Prevent default to avoid text selection
         event.preventDefault();
       },
@@ -1293,49 +1154,32 @@
         document.removeEventListener('mousemove', this.handleGlobalMouseMove);
         document.removeEventListener('mouseup', this.handleGlobalMouseUp);
         
-        // Remove multi-select class if it was applied for this drag
-        const container = document.getElementById('nodes-container');
-        if (this.boxSelectCtrlKey && !this.isMultiSelectMode) {
-          container.classList.remove('multi-select');
-        }
       },
       
       updateBoxSelect(event) {
         if (!this.isBoxSelecting) return;
-        
-        const container = document.getElementById('nodes-container');
-        const containerRect = container.getBoundingClientRect();
-        
-        // Calculate mouse position relative to container
-        const relativeX = event.clientX - containerRect.left + container.scrollLeft;
-        const relativeY = event.clientY - containerRect.top + container.scrollTop;
-        
-        // Update end coordinates, constrained to container boundaries
+
+        // Use viewport coordinates directly
         this.boxSelectEnd = {
-          x: Math.max(0, Math.min(relativeX, container.scrollWidth)),
-          y: Math.max(0, Math.min(relativeY, container.scrollHeight))
+          x: event.clientX,
+          y: event.clientY
         };
-        
-        // Calculate dimensions and position for the selection box
+
         const left = Math.min(this.boxSelectStart.x, this.boxSelectEnd.x);
         const top = Math.min(this.boxSelectStart.y, this.boxSelectEnd.y);
         const width = Math.abs(this.boxSelectEnd.x - this.boxSelectStart.x);
         const height = Math.abs(this.boxSelectEnd.y - this.boxSelectStart.y);
-        
-        // Update selection box
+
         const selBox = this.$refs.selectionBox;
         selBox.style.left = `${left}px`;
         selBox.style.top = `${top}px`;
         selBox.style.width = `${width}px`;
         selBox.style.height = `${height}px`;
-        
-        // Perform real-time selection updates while dragging
-        // but only if the selection box has a reasonable size
+
         if (width > 5 && height > 5) {
           this.updateSelectionFromBox();
         }
-        
-        // Prevent default to avoid text selection
+
         event.preventDefault();
       },
       
@@ -1343,45 +1187,30 @@
       // that can be called from both updateBoxSelect and endBoxSelect
       updateSelectionFromBox() {
         if (!this.isBoxSelecting) return;
-        
-        const container = document.getElementById('nodes-container');
-        const selBox = this.$refs.selectionBox;
+
+        // Selection box coordinates are viewport-relative (position: fixed)
         const selRect = {
-          left: parseInt(selBox.style.left, 10),
-          top: parseInt(selBox.style.top, 10),
-          right: parseInt(selBox.style.left, 10) + parseInt(selBox.style.width, 10),
-          bottom: parseInt(selBox.style.top, 10) + parseInt(selBox.style.height, 10)
+          left: Math.min(this.boxSelectStart.x, this.boxSelectEnd.x),
+          top: Math.min(this.boxSelectStart.y, this.boxSelectEnd.y),
+          right: Math.max(this.boxSelectStart.x, this.boxSelectEnd.x),
+          bottom: Math.max(this.boxSelectStart.y, this.boxSelectEnd.y)
         };
-        
-        // Skip tiny selections to prevent accidental selections
+
         if ((selRect.right - selRect.left) < 5 || (selRect.bottom - selRect.top) < 5) {
           return;
         }
-        
-        // Find all nodes within the selection box
+
+        // Hit-test: any overlap between selection box and node card selects it
         const selectedNodes = [];
         document.querySelectorAll('.node-card').forEach(nodeEl => {
-          const nodeRect = nodeEl.getBoundingClientRect();
-          const containerRect = container.getBoundingClientRect();
-          
-          // Calculate node position relative to container
-          const nodePos = {
-            left: nodeRect.left - containerRect.left + container.scrollLeft,
-            top: nodeRect.top - containerRect.top + container.scrollTop,
-            right: nodeRect.right - containerRect.left + container.scrollLeft,
-            bottom: nodeRect.bottom - containerRect.top + container.scrollTop
-          };
-          
-          // Check if node is within selection box using centerpoint algorithm
-          const nodeCenterX = (nodePos.left + nodePos.right) / 2;
-          const nodeCenterY = (nodePos.top + nodePos.bottom) / 2;
-          
-          const isIntersecting = 
-            nodeCenterX >= selRect.left && 
-            nodeCenterX <= selRect.right && 
-            nodeCenterY >= selRect.top && 
-            nodeCenterY <= selRect.bottom;
-          
+          const r = nodeEl.getBoundingClientRect();
+
+          const isIntersecting =
+            r.left < selRect.right &&
+            r.right > selRect.left &&
+            r.top < selRect.bottom &&
+            r.bottom > selRect.top;
+
           if (isIntersecting) {
             const nodeId = nodeEl.dataset.nodeId;
             if (nodeId) selectedNodes.push(nodeId);
@@ -1427,29 +1256,21 @@
       
       endBoxSelect(event) {
         if (!this.isBoxSelecting) return;
-        
+
         // Update selection one final time
         this.updateBoxSelect(event);
-        
+
         // Hide selection box
         const selBox = this.$refs.selectionBox;
         selBox.style.display = 'none';
-        
-        // Remove selecting class from container
-        const container = document.getElementById('nodes-container');
-        container.classList.remove('selecting');
-        
+
         // Set justFinishedBoxSelect flag to prevent immediate deselection
         this.justFinishedBoxSelect = true;
-        
-        // Reset the flag after a short delay to allow event propagation to complete
         setTimeout(() => {
           this.justFinishedBoxSelect = false;
         }, 100);
-        
+
         this.isBoxSelecting = false;
-        
-        // Prevent click from propagating to container
         event.stopPropagation();
       },
 
@@ -1473,41 +1294,31 @@
       // Create new tag from the inline input (when clicking new tag card)
       createNewTagInline() {
         if (this.inlineTagName && this.inlineTagName.trim()) {
-          // Prevent creating a tag named "new tag"
           const trimmedName = this.inlineTagName.trim();
           if (trimmedName.toLowerCase() === 'new tag') {
             this.showToast('"new tag" is a reserved name and cannot be used', 'error');
             return;
           }
-          
-          // Pass selected nodes if any are selected
-          const nodesToAssign = this.selectedNodeIds.length > 0 ? [...this.selectedNodeIds] : null;
+
+          // Use pending node IDs from drag, or selected nodes, or null
+          const nodesToAssign = this.pendingAssignNodeIds
+            || (this.selectedNodeIds.length > 0 ? [...this.selectedNodeIds] : null);
           this.createNewTag(trimmedName, nodesToAssign);
           this.inlineTagName = '';
           this.isCreatingTag = false;
+          this.pendingAssignNodeIds = null;
         }
       },
 
-      // Prompt for and create a new tag
+      // Show inline tag input, optionally storing node IDs to assign after creation
       promptNewTag(nodeIdToAssign = null) {
           if (nodeIdToAssign) {
-            // When we have a node to assign, show the prompt
-            const tagName = prompt(`Enter name for the new tag:`);
-            if (tagName && tagName.trim()) {
-                const cleanTagName = tagName.trim();
-                
-                // Check if it's an array of node IDs
-                if (Array.isArray(nodeIdToAssign)) {
-                  this.createNewTag(cleanTagName, nodeIdToAssign);
-                } else {
-                  this.createNewTag(cleanTagName, [nodeIdToAssign]);
-                }
-            }
+            this.pendingAssignNodeIds = Array.isArray(nodeIdToAssign) ? nodeIdToAssign : [nodeIdToAssign];
           } else {
-            // Without a node to assign, switch to inline editing mode
-            this.isCreatingTag = true;
-            this.$nextTick(() => this.$refs.newTagInput.focus());
+            this.pendingAssignNodeIds = null;
           }
+          this.isCreatingTag = true;
+          this.$nextTick(() => this.$refs.newTagInput.focus());
       },
 
       // Create a new tag bucket (and potentially assign a node)
@@ -1565,11 +1376,16 @@
         }
       },
 
+      // Show delete confirmation modal
+      confirmDeleteTag(tag) {
+        this.deleteTargetTag = tag;
+        this.showDeleteModal = true;
+      },
+
       // Delete a tag and remove it from all associated nodes
       async deleteTag(tag) {
-        if (!confirm(`Are you sure you want to delete the tag '${tag}'?\nThis will remove the tag from ${this.tagBuckets[tag]?.length || 0} machine(s).`)) {
-          return;
-        }
+        this.showDeleteModal = false;
+        this.deleteTargetTag = null;
 
         const nodeIds = [...(this.tagBuckets[tag] || [])]; // Copy IDs before modifying
 
@@ -1603,16 +1419,25 @@
       // Get node name (hostname or ID)
       getNodeName(nodeId) {
         const node = this.availableNodes.find(n => n.id === nodeId);
-        return node ? (node.hostname || node.id) : nodeId;
+        return node ? (node.hostname || node.memorable_name || node.id) : nodeId;
       },
 
       // Format machine status for display
+      formatRamCompact(bytes) {
+        if (!bytes) return '';
+        const gib = bytes / (1024 * 1024 * 1024);
+        if (gib >= 1) return Math.round(gib) + 'G';
+        const mib = bytes / (1024 * 1024);
+        return Math.round(mib) + 'M';
+      },
+
       formatStatus(status) {
         if (typeof status === 'string') {
           if (status === 'ExistingOS') return 'Existing OS';
-          if (status === 'InstallingOS') return 'Installing OS';
+          if (status === 'InstallingOS') return 'Installing';
           if (status === 'NeedsOS') return 'Needs OS';
-          return status; // Ready, Offline etc.
+          if (status === 'ReadyToInstall') return 'Ready to Install';
+          return status;
         } else if (status && typeof status === 'object' && status.Error) {
           return `Error: ${status.Error}`;
         }
@@ -1903,7 +1728,7 @@
       getCurrentNodeName() {
         if (!this.currentNodeId) return '';
         const node = this.availableNodes.find(n => n.id === this.currentNodeId);
-        return node ? (node.hostname || node.id) : '';
+        return node ? (node.hostname || node.memorable_name || node.id) : '';
       },
 
       // Assigns a node to a tag (API call + UI update)
@@ -1931,10 +1756,17 @@
                   
                   // Refresh the tag bucket by fetching the machines with this tag
                   await this.refreshTagBucket(tag);
-                  
+
+                  // Auto-delete empty tags
+                  if (!this.tagBuckets[tag] || this.tagBuckets[tag].length === 0) {
+                    await this.deleteTagFromAPI(tag);
+                    delete this.tagBuckets[tag];
+                    this.showToast(`Tag '${tag}' deleted (no remaining nodes)`);
+                  }
+
                   // Force UI update
                   this.forceRefresh();
-                  
+
                   return; // Exit after removing
               } catch (error) {
                   console.error(`Failed to remove tag '${tag}' from node ${nodeId}:`, error);
