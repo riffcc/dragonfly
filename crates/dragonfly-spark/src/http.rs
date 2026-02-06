@@ -343,19 +343,29 @@ fn build_checkin_json(
         write_bytes(buf, &mut pos, b"]");
     }
 
-    // Existing OS info if detected
+    // Existing OS info if detected (skip "No OS" — that means detection ran but found nothing)
     if let Some(os) = detected_os {
-        write_bytes(buf, &mut pos, b",\"existing_os\":{\"name\":\"");
-
         let name = os.display_name();
-        let name_bytes = name.as_bytes();
-        let name_len = name_bytes.len().min(buf.len().saturating_sub(pos + 50));
-        if name_len > 0 && pos + name_len <= buf.len() {
-            buf[pos..pos+name_len].copy_from_slice(&name_bytes[..name_len]);
-            pos += name_len;
-        }
+        if name != "No OS" {
+            write_bytes(buf, &mut pos, b",\"existing_os\":{\"name\":\"");
 
-        write_bytes(buf, &mut pos, b"\",\"device\":\"/dev/sda\"}");
+            let name_bytes = name.as_bytes();
+            let name_len = name_bytes.len().min(buf.len().saturating_sub(pos + 50));
+            if name_len > 0 && pos + name_len <= buf.len() {
+                buf[pos..pos+name_len].copy_from_slice(&name_bytes[..name_len]);
+                pos += name_len;
+            }
+
+            // Device path based on disk type
+            let dev_path: &[u8] = match os.disk_type {
+                disk::DiskType::VirtioBlk => b"\",\"device\":\"/dev/vda\"}",
+                disk::DiskType::VirtioScsi { .. } => b"\",\"device\":\"/dev/sda\"}",
+                disk::DiskType::Ahci { .. } => b"\",\"device\":\"/dev/sda\"}",
+                disk::DiskType::AtaPio => b"\",\"device\":\"/dev/sda\"}",
+                disk::DiskType::BiosDirect { .. } => b"\",\"device\":\"/dev/sda\"}",
+            };
+            write_bytes(buf, &mut pos, dev_path);
+        }
     }
 
     // Close main object
