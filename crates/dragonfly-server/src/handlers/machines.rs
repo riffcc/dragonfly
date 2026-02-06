@@ -7,29 +7,29 @@ use serde_json::json;
 
 use crate::AppState;
 use dragonfly_common::models::{ErrorResponse, Machine, MachineStatus};
+use dragonfly_common::MachineSource;
 use crate::handlers::proxmox; // Import proxmox functions
 
 // Struct to receive the power action request
 #[derive(Deserialize, Debug)]
 pub struct BmcPowerActionRequest {
-    pub action: String, // e.g., "reboot-pxe", "power-on", "power-off", "reboot"
+    pub action: String, // e.g., "reboot-pxe", "power-on", "power-off", "reboot", "start", "stop", "shutdown"
 }
 
 // Handler for BMC power actions
 #[axum::debug_handler]
 pub async fn bmc_power_action_handler(
-    State(state): State<AppState>, // Use state to get settings
+    State(state): State<AppState>,
     Path(machine_id): Path<Uuid>,
     Json(payload): Json<BmcPowerActionRequest>,
 ) -> Result<Response, Response> {
-    info!("Received BMC power action '{}' for machine {}", payload.action, machine_id);
-    info!("DEBUG: BMC power handler called with action '{}' for machine {}", payload.action, machine_id);
+    info!("Received power action '{}' for machine {}", payload.action, machine_id);
 
-    // 1. Fetch machine details from the v1 Store
-    let machine: Machine = match state.store.get_machine(machine_id).await {
-        Ok(Some(m)) => crate::store::conversions::machine_to_common(&m),
+    // 1. Fetch v1 machine directly (need MachineSource for dispatch)
+    let v1_machine = match state.store.get_machine(machine_id).await {
+        Ok(Some(m)) => m,
         Ok(None) => {
-            error!("Machine {} not found for BMC action", machine_id);
+            error!("Machine {} not found for power action", machine_id);
             return Err((StatusCode::NOT_FOUND, Json(ErrorResponse {
                 error: "Machine not found".to_string(),
                 message: format!("Machine with ID {} not found", machine_id)
@@ -44,20 +44,28 @@ pub async fn bmc_power_action_handler(
         }
     };
 
-    // 2. Check machine type and execute action
-    // Determine if this is a Proxmox VM by checking if the Proxmox-specific fields are populated
-    if machine.proxmox_vmid.is_some() && machine.proxmox_node.is_some() {
-        info!("DEBUG: Identified as Proxmox VM: vmid={:?}, node={:?}", machine.proxmox_vmid, machine.proxmox_node);
-        handle_proxmox_vm_action(state, &machine, &payload.action).await
-    } else {
-        error!(
-            "BMC actions not supported for this machine type (not a Proxmox VM) for machine {}",
-            machine_id
-        );
-        Err((StatusCode::BAD_REQUEST, Json(ErrorResponse {
-            error: "BMC actions not supported for this machine type".to_string(),
-            message: "This machine does not support BMC power actions. Only Proxmox VMs are currently supported.".to_string()
-        })).into_response())
+    // 2. Dispatch based on machine source type
+    let machine = crate::store::conversions::machine_to_common(&v1_machine);
+    match &v1_machine.metadata.source {
+        MachineSource::Proxmox { node, vmid, .. } => {
+            info!("Proxmox VM action: node={}, vmid={}, action={}", node, vmid, payload.action);
+            handle_proxmox_vm_action(state, &machine, &payload.action).await
+        }
+        MachineSource::ProxmoxLxc { node, ctid, .. } => {
+            info!("Proxmox LXC action: node={}, ctid={}, action={}", node, ctid, payload.action);
+            handle_proxmox_lxc_action(&state, node, *ctid, &payload.action).await
+        }
+        MachineSource::ProxmoxNode { node, .. } => {
+            info!("Proxmox node action: node={}, action={}", node, payload.action);
+            handle_proxmox_node_action(&state, node, &payload.action).await
+        }
+        _ => {
+            error!("Power actions not supported for machine {} (source: {:?})", machine_id, v1_machine.metadata.source);
+            Err((StatusCode::BAD_REQUEST, Json(ErrorResponse {
+                error: "Power actions not supported for this machine type".to_string(),
+                message: "This machine does not have a supported power management backend (Proxmox VM, LXC, or node).".to_string()
+            })).into_response())
+        }
     }
 }
 
@@ -301,7 +309,39 @@ async fn handle_proxmox_vm_action(
                 }
             }
         },
-        // TODO: Implement other actions like "power-on", "power-off"
+        "shutdown" => {
+            info!("Handling 'shutdown' (ACPI graceful) for Proxmox VM {} (Node: {}, VMID: {})", machine.id, node, vmid);
+            let path = format!("/api2/json/nodes/{}/qemu/{}/status/shutdown", node, vmid);
+            match proxmox::connect_to_proxmox(&state, "power").await {
+                Ok(c) => {
+                    match c.post(&path, &()).await {
+                        Ok(response) => {
+                            if response.status >= 200 && response.status < 300 {
+                                info!("Successfully initiated shutdown for Proxmox VM {}", vmid);
+                                Ok((StatusCode::OK, Json(json!({ "message": "VM shutdown initiated" }))).into_response())
+                            } else {
+                                error!("Failed to shutdown VM {}: Status {}", vmid, response.status);
+                                Err((StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse {
+                                    error: "Failed to shutdown VM".to_string(),
+                                    message: format!("Proxmox returned status code {}", response.status)
+                                })).into_response())
+                            }
+                        },
+                        Err(e) => {
+                            error!("Failed to shutdown VM {}: {}", vmid, e);
+                            Err(map_proxmox_error_to_response(proxmox::ProxmoxHandlerError::ApiError(e)))
+                        }
+                    }
+                },
+                Err(e) => {
+                    error!("Failed to connect to Proxmox for shutdown on {}: {}", machine.id, e);
+                    Err((StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse {
+                        error: format!("Failed to connect to Proxmox: {}", e),
+                        message: "Could not establish connection to Proxmox server.".to_string()
+                    })).into_response())
+                }
+            }
+        },
         _ => {
             warn!("Unsupported action '{}' requested for Proxmox VM {}", action, machine.id);
             Err((StatusCode::BAD_REQUEST, Json(ErrorResponse {
@@ -316,4 +356,171 @@ async fn handle_proxmox_vm_action(
 fn map_proxmox_error_to_response(err: proxmox::ProxmoxHandlerError) -> Response {
      // Reuse the IntoResponse implementation from proxmox.rs
     err.into_response()
-} 
+}
+
+/// Execute a simple Proxmox POST action and return a standard response.
+/// Used by both VM and LXC handlers to avoid repeating the connect → post → check pattern.
+async fn proxmox_post_action(
+    state: &AppState,
+    path: &str,
+    entity_type: &str,
+    entity_id: u32,
+    action_desc: &str,
+) -> Result<Response, Response> {
+    match proxmox::connect_to_proxmox(state, "power").await {
+        Ok(c) => {
+            match c.post(path, &()).await {
+                Ok(response) => {
+                    if response.status >= 200 && response.status < 300 {
+                        info!("Successfully {} {} {}", action_desc, entity_type, entity_id);
+                        Ok((StatusCode::OK, Json(json!({
+                            "message": format!("{} {} {}", entity_type, entity_id, action_desc)
+                        }))).into_response())
+                    } else {
+                        error!("Failed to {} {} {}: Status {}", action_desc, entity_type, entity_id, response.status);
+                        Err((StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse {
+                            error: format!("Failed to {} {}", action_desc, entity_type),
+                            message: format!("Proxmox returned status code {}", response.status)
+                        })).into_response())
+                    }
+                },
+                Err(e) => {
+                    error!("Failed to {} {} {}: {}", action_desc, entity_type, entity_id, e);
+                    Err(map_proxmox_error_to_response(proxmox::ProxmoxHandlerError::ApiError(e)))
+                }
+            }
+        },
+        Err(e) => {
+            error!("Failed to connect to Proxmox: {}", e);
+            Err((StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse {
+                error: format!("Failed to connect to Proxmox: {}", e),
+                message: "Could not establish connection to Proxmox server.".to_string()
+            })).into_response())
+        }
+    }
+}
+
+/// Handle power actions for Proxmox LXC containers.
+/// LXC supports: start, stop, shutdown, reboot
+/// LXC does NOT support: reboot-pxe (no PXE for containers)
+async fn handle_proxmox_lxc_action(
+    state: &AppState,
+    node: &str,
+    ctid: u32,
+    action: &str,
+) -> Result<Response, Response> {
+    match action {
+        "start" => {
+            let path = format!("/api2/json/nodes/{}/lxc/{}/status/start", node, ctid);
+            proxmox_post_action(state, &path, "LXC container", ctid, "started").await
+        },
+        "stop" => {
+            let path = format!("/api2/json/nodes/{}/lxc/{}/status/stop", node, ctid);
+            proxmox_post_action(state, &path, "LXC container", ctid, "stopped (hard)").await
+        },
+        "shutdown" => {
+            let path = format!("/api2/json/nodes/{}/lxc/{}/status/shutdown", node, ctid);
+            proxmox_post_action(state, &path, "LXC container", ctid, "shutdown initiated").await
+        },
+        "reboot" => {
+            let path = format!("/api2/json/nodes/{}/lxc/{}/status/reboot", node, ctid);
+            proxmox_post_action(state, &path, "LXC container", ctid, "reboot initiated").await
+        },
+        _ => {
+            warn!("Unsupported action '{}' for LXC container {} on node {}", action, ctid, node);
+            Err((StatusCode::BAD_REQUEST, Json(ErrorResponse {
+                error: format!("Unsupported action '{}' for LXC container", action),
+                message: "LXC containers support: start, stop, shutdown, reboot".to_string()
+            })).into_response())
+        }
+    }
+}
+
+/// Handle power actions for physical Proxmox nodes.
+/// Nodes support: reboot, shutdown
+/// Nodes do NOT support: start (can't remote-start a physical machine via API), stop (dangerous)
+async fn handle_proxmox_node_action(
+    state: &AppState,
+    node: &str,
+    action: &str,
+) -> Result<Response, Response> {
+    match action {
+        "reboot" => {
+            let path = format!("/api2/json/nodes/{}/status", node);
+            match proxmox::connect_to_proxmox(state, "power").await {
+                Ok(c) => {
+                    let params = json!({"command": "reboot"});
+                    match c.post(&path, &params).await {
+                        Ok(response) => {
+                            if response.status >= 200 && response.status < 300 {
+                                info!("Successfully initiated reboot for Proxmox node {}", node);
+                                Ok((StatusCode::OK, Json(json!({
+                                    "message": format!("Node {} reboot initiated", node)
+                                }))).into_response())
+                            } else {
+                                error!("Failed to reboot node {}: Status {}", node, response.status);
+                                Err((StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse {
+                                    error: "Failed to reboot node".to_string(),
+                                    message: format!("Proxmox returned status code {}", response.status)
+                                })).into_response())
+                            }
+                        },
+                        Err(e) => {
+                            error!("Failed to reboot node {}: {}", node, e);
+                            Err(map_proxmox_error_to_response(proxmox::ProxmoxHandlerError::ApiError(e)))
+                        }
+                    }
+                },
+                Err(e) => {
+                    error!("Failed to connect to Proxmox: {}", e);
+                    Err((StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse {
+                        error: format!("Failed to connect to Proxmox: {}", e),
+                        message: "Could not establish connection to Proxmox server.".to_string()
+                    })).into_response())
+                }
+            }
+        },
+        "shutdown" => {
+            let path = format!("/api2/json/nodes/{}/status", node);
+            match proxmox::connect_to_proxmox(state, "power").await {
+                Ok(c) => {
+                    let params = json!({"command": "shutdown"});
+                    match c.post(&path, &params).await {
+                        Ok(response) => {
+                            if response.status >= 200 && response.status < 300 {
+                                info!("Successfully initiated shutdown for Proxmox node {}", node);
+                                Ok((StatusCode::OK, Json(json!({
+                                    "message": format!("Node {} shutdown initiated", node)
+                                }))).into_response())
+                            } else {
+                                error!("Failed to shutdown node {}: Status {}", node, response.status);
+                                Err((StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse {
+                                    error: "Failed to shutdown node".to_string(),
+                                    message: format!("Proxmox returned status code {}", response.status)
+                                })).into_response())
+                            }
+                        },
+                        Err(e) => {
+                            error!("Failed to shutdown node {}: {}", node, e);
+                            Err(map_proxmox_error_to_response(proxmox::ProxmoxHandlerError::ApiError(e)))
+                        }
+                    }
+                },
+                Err(e) => {
+                    error!("Failed to connect to Proxmox: {}", e);
+                    Err((StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse {
+                        error: format!("Failed to connect to Proxmox: {}", e),
+                        message: "Could not establish connection to Proxmox server.".to_string()
+                    })).into_response())
+                }
+            }
+        },
+        _ => {
+            warn!("Unsupported action '{}' for physical node {}", action, node);
+            Err((StatusCode::BAD_REQUEST, Json(ErrorResponse {
+                error: format!("Unsupported action '{}' for physical node", action),
+                message: "Physical nodes support: reboot, shutdown. Use IPMI/BMC for power on/off.".to_string()
+            })).into_response())
+        }
+    }
+}
