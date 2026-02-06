@@ -39,6 +39,7 @@ mod vector_font;
 mod vbe;
 mod vga;
 mod virtio;
+mod virtio_blk;
 mod virtio_net;
 
 /// Multiboot1 magic that bootloader passes to us (iPXE)

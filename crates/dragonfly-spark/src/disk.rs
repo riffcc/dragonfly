@@ -1,21 +1,43 @@
 //! Disk scanning and OS detection
 //!
-//! Supports ATA PIO (legacy IDE), AHCI (SATA), and VirtIO SCSI
+//! Supports ATA PIO (legacy IDE), AHCI (SATA), VirtIO SCSI, and VirtIO Block
 //! Can read GPT partition tables and ext4 filesystems to detect OS
 
 use crate::bios::{inb, outb, insw, io_wait};
 use crate::serial;
 use crate::ahci;
 use crate::virtio;
+use crate::virtio_blk;
 
 /// GPT header signature "EFI PART"
 const GPT_SIGNATURE: u64 = 0x5452415020494645;
 
-/// Linux filesystem partition type GUID (little-endian bytes)
+/// Linux filesystem partition type GUID (generic)
 /// 0FC63DAF-8483-4772-8E79-3D69D8477DE4
 const LINUX_FS_GUID: [u8; 16] = [
     0xAF, 0x3D, 0xC6, 0x0F, 0x83, 0x84, 0x72, 0x47,
     0x8E, 0x79, 0x3D, 0x69, 0xD8, 0x47, 0x7D, 0xE4
+];
+
+/// Linux root (x86-64) partition type GUID — used by Debian 13+ discoverable partitions
+/// 4F68BCE3-E8CD-4DB1-96E7-FBCAF984B709
+const LINUX_ROOT_X86_64_GUID: [u8; 16] = [
+    0xE3, 0xBC, 0x68, 0x4F, 0xCD, 0xE8, 0xB1, 0x4D,
+    0x96, 0xE7, 0xFB, 0xCA, 0xF9, 0x84, 0xB7, 0x09
+];
+
+/// Linux root (x86) partition type GUID
+/// 44479540-F297-41B2-9AF7-D131D5F0458A
+const LINUX_ROOT_X86_GUID: [u8; 16] = [
+    0x40, 0x95, 0x47, 0x44, 0x97, 0xF2, 0xB2, 0x41,
+    0x9A, 0xF7, 0xD1, 0x31, 0xD5, 0xF0, 0x45, 0x8A
+];
+
+/// Linux root (ARM64/AArch64) partition type GUID
+/// B921B045-1DF0-41C3-AF44-4C6F280D3FAE
+const LINUX_ROOT_ARM64_GUID: [u8; 16] = [
+    0x45, 0xB0, 0x21, 0xB9, 0xF0, 0x1D, 0xC3, 0x41,
+    0xAF, 0x44, 0x4C, 0x6F, 0x28, 0x0D, 0x3F, 0xAE
 ];
 
 /// EFI System Partition GUID
@@ -25,12 +47,95 @@ const EFI_SYSTEM_GUID: [u8; 16] = [
     0xBA, 0x4B, 0x00, 0xA0, 0xC9, 0x3E, 0xC9, 0x3B
 ];
 
+/// Check if a GUID is any Linux partition type (generic FS, root x86/x86-64/arm64)
+fn is_linux_partition_guid(guid: &[u8; 16]) -> bool {
+    *guid == LINUX_FS_GUID
+        || *guid == LINUX_ROOT_X86_64_GUID
+        || *guid == LINUX_ROOT_X86_GUID
+        || *guid == LINUX_ROOT_ARM64_GUID
+}
+
 /// ext4 superblock magic number
 const EXT4_MAGIC: u16 = 0xEF53;
+
+/// ext4 feature flag: 64-bit mode (descriptor size > 32 bytes)
+const EXT4_FEATURE_INCOMPAT_64BIT: u32 = 0x0080;
+
+/// Cached ext4 filesystem context for correct multi-block-group inode lookup.
+/// Populated once in detect_os_from_ext4, used by read_inode.
+struct Ext4FsContext {
+    partition_lba: u64,
+    block_size: u32,
+    inode_size: u32,
+    inodes_per_group: u32,
+    desc_size: u32,   // 32 or 64 bytes per BGDT entry
+    valid: bool,
+}
+
+static mut EXT4_CTX: Ext4FsContext = Ext4FsContext {
+    partition_lba: 0,
+    block_size: 0,
+    inode_size: 0,
+    inodes_per_group: 0,
+    desc_size: 32,
+    valid: false,
+};
 
 /// Static buffer for OS name (avoid stack allocation issues in 64-bit mode)
 static mut OS_NAME_BUF: [u8; 64] = [0u8; 64];
 static mut OS_NAME_LEN: usize = 0;
+
+/// Detected disk information for reporting (independent of OS detection)
+pub struct DetectedDisk {
+    pub disk_type: DiskType,
+    pub size_bytes: u64,
+    pub model: [u8; 40],
+    pub model_len: usize,
+}
+
+const MAX_DETECTED_DISKS: usize = 8;
+static mut DETECTED_DISKS: [DetectedDisk; MAX_DETECTED_DISKS] = {
+    const EMPTY: DetectedDisk = DetectedDisk {
+        disk_type: DiskType::AtaPio,
+        size_bytes: 0,
+        model: [0u8; 40],
+        model_len: 0,
+    };
+    [EMPTY; MAX_DETECTED_DISKS]
+};
+static mut DETECTED_DISK_COUNT: usize = 0;
+
+/// Get detected disks (for checkin reporting)
+pub fn detected_disks() -> &'static [DetectedDisk] {
+    unsafe { &DETECTED_DISKS[..DETECTED_DISK_COUNT] }
+}
+
+/// Record a detected disk
+fn record_disk(disk_type: DiskType, size_bytes: u64, model: &[u8], model_len: usize) {
+    unsafe {
+        if DETECTED_DISK_COUNT >= MAX_DETECTED_DISKS {
+            return;
+        }
+        let d = &mut DETECTED_DISKS[DETECTED_DISK_COUNT];
+        d.disk_type = disk_type;
+        d.size_bytes = size_bytes;
+        let copy_len = model_len.min(40);
+        d.model[..copy_len].copy_from_slice(&model[..copy_len]);
+        d.model_len = copy_len;
+        DETECTED_DISK_COUNT += 1;
+
+        serial::print("Disk detected: ");
+        serial::print_dec((size_bytes / (1024 * 1024 * 1024)) as u32);
+        serial::print(" GiB");
+        if copy_len > 0 {
+            serial::print(" model=");
+            if let Ok(s) = core::str::from_utf8(&model[..copy_len]) {
+                serial::print(s.trim());
+            }
+        }
+        serial::println("");
+    }
+}
 
 /// Static storage for OsInfo to avoid ~600 byte struct returns in 64-bit mode
 static mut OS_INFO: OsInfo = OsInfo {
@@ -148,8 +253,39 @@ pub enum DiskType {
     Ahci { port: u8 },
     /// VirtIO SCSI (VMs)
     VirtioScsi { target: u8, lun: u8 },
+    /// VirtIO Block (VMs)
+    VirtioBlk,
     /// BIOS INT 13h (direct, preserves BIOS state)
     BiosDirect { drive: u8 },
+}
+
+/// Unified disk reader - wraps different controller types so GPT/ext4 code
+/// doesn't need to be duplicated per controller type.
+pub enum DiskReader {
+    VirtioScsi { ctrl: virtio::VirtioScsi, target: u8, lun: u8 },
+    VirtioBlk { ctrl: virtio_blk::VirtioBlk },
+    AtaPio { drive: u8 },
+    Ahci { ctrl: ahci::AhciController, port: u8 },
+}
+
+impl DiskReader {
+    fn read_sector(&mut self, lba: u32, buffer: &mut [u8; 512]) -> bool {
+        match self {
+            DiskReader::VirtioScsi { ctrl, target, lun } => ctrl.read_sector(*target, *lun, lba, buffer),
+            DiskReader::VirtioBlk { ctrl } => ctrl.read_sector(lba, buffer),
+            DiskReader::AtaPio { drive } => read_sector_ata(*drive, lba, buffer),
+            DiskReader::Ahci { ctrl, port } => ctrl.read_sector(*port, lba as u64, buffer),
+        }
+    }
+
+    fn disk_type(&self) -> DiskType {
+        match self {
+            DiskReader::VirtioScsi { target, lun, .. } => DiskType::VirtioScsi { target: *target, lun: *lun },
+            DiskReader::VirtioBlk { .. } => DiskType::VirtioBlk,
+            DiskReader::AtaPio { .. } => DiskType::AtaPio,
+            DiskReader::Ahci { port, .. } => DiskType::Ahci { port: *port },
+        }
+    }
 }
 
 /// Detected OS information
@@ -352,6 +488,12 @@ pub fn scan_for_os() -> Option<&'static OsInfo> {
         return unsafe { Some(&*core::ptr::addr_of!(OS_INFO)) };
     }
 
+    // Try VirtIO Block (VMs - common in Proxmox)
+    if scan_virtio_blk_into_static() {
+        serial::println("DBG: scan_for_os returning VirtIO Block result");
+        return unsafe { Some(&*core::ptr::addr_of!(OS_INFO)) };
+    }
+
     serial::println("No bootable drives found");
     None
 }
@@ -364,7 +506,12 @@ fn scan_virtio_scsi_into_static() -> bool {
     if init_result.is_none() {
         return false;
     }
-    let (mut controller, target, lun) = init_result.unwrap();
+    let (controller, target, lun) = init_result.unwrap();
+
+    // Record disk for checkin reporting (size will be updated from GPT if available)
+    record_disk(DiskType::VirtioScsi { target, lun }, 0, b"VirtIO SCSI Disk", 16);
+
+    let mut reader = DiskReader::VirtioScsi { ctrl: controller, target, lun };
 
     serial::print("VirtIO SCSI: Reading MBR from target ");
     serial::print_dec(target as u32);
@@ -372,46 +519,68 @@ fn scan_virtio_scsi_into_static() -> bool {
 
     // Read MBR directly into static storage
     unsafe {
-        if !controller.read_sector(target, lun, 0, &mut (*core::ptr::addr_of_mut!(OS_INFO)).mbr) {
+        if !reader.read_sector(0, &mut (*core::ptr::addr_of_mut!(OS_INFO)).mbr) {
             serial::println("VirtIO SCSI: MBR read failed");
             return false;
         }
     }
     serial::println("VirtIO SCSI: MBR read OK");
 
-    // Check for GPT - if so, do full OS detection
-    let first_entry = unsafe {
-        let mbr_ptr = core::ptr::addr_of!(OS_INFO).cast::<u8>().add(core::mem::offset_of!(OsInfo, mbr));
-        core::ptr::read_unaligned(mbr_ptr.add(446) as *const PartitionEntry)
-    };
-    if first_entry.partition_type == 0xEE {
-        serial::println("GPT detected - performing OS detection");
-        return detect_os_from_gpt_into_static(&mut controller, target, lun);
-    }
+    analyze_mbr_into_static(&mut reader)
+}
 
-    parse_mbr_into_static(DiskType::VirtioScsi { target, lun })
+/// Scan VirtIO Block and write directly to static storage (avoids struct return)
+fn scan_virtio_blk_into_static() -> bool {
+    serial::println("Trying VirtIO Block...");
+
+    let init_result = virtio_blk::init();
+    if init_result.is_none() {
+        return false;
+    }
+    let controller = init_result.unwrap();
+
+    // Record disk for checkin reporting
+    let size_bytes = controller.capacity_sectors * 512;
+    record_disk(DiskType::VirtioBlk, size_bytes, b"VirtIO Block Device", 19);
+
+    let mut reader = DiskReader::VirtioBlk { ctrl: controller };
+
+    serial::println("VirtIO Block: Reading MBR");
+
+    // Read MBR directly into static storage
+    unsafe {
+        if !reader.read_sector(0, &mut (*core::ptr::addr_of_mut!(OS_INFO)).mbr) {
+            serial::println("VirtIO Block: MBR read failed");
+            return false;
+        }
+    }
+    serial::println("VirtIO Block: MBR read OK");
+
+    analyze_mbr_into_static(&mut reader)
 }
 
 /// Scan ATA PIO and write directly to static storage
 fn scan_ata_pio_into_static() -> bool {
     serial::println("Trying ATA PIO...");
 
-    // Check if drive exists
+    // Check if drive exists (also records disk info from IDENTIFY)
     if !drive_exists(0) {
         serial::println("ATA PIO: No drive found");
         return false;
     }
     serial::println("ATA PIO: Drive found");
 
+    let mut reader = DiskReader::AtaPio { drive: 0 };
+
     // Read MBR directly into static storage
     unsafe {
-        if !read_sector_ata(0, 0, &mut (*core::ptr::addr_of_mut!(OS_INFO)).mbr) {
+        if !reader.read_sector(0, &mut (*core::ptr::addr_of_mut!(OS_INFO)).mbr) {
             serial::println("ATA PIO: MBR read failed");
             return false;
         }
     }
 
-    parse_mbr_into_static(DiskType::AtaPio)
+    analyze_mbr_into_static(&mut reader)
 }
 
 /// Scan AHCI and write directly to static storage
@@ -429,20 +598,70 @@ fn scan_ahci_into_static() -> bool {
         return false;
     }
 
+    // Record disk for checkin reporting
+    record_disk(DiskType::Ahci { port: drive.port }, 0, b"AHCI/SATA Disk", 14);
+
+    let port = drive.port;
+    let mut reader = DiskReader::Ahci { ctrl: controller, port };
+
     serial::print("AHCI: Reading MBR from port ");
-    serial::print_dec(drive.port as u32);
+    serial::print_dec(port as u32);
     serial::println("");
 
     // Read MBR directly into static storage
     unsafe {
-        if !controller.read_sector(drive.port, 0, &mut (*core::ptr::addr_of_mut!(OS_INFO)).mbr) {
+        if !reader.read_sector(0, &mut (*core::ptr::addr_of_mut!(OS_INFO)).mbr) {
             serial::println("AHCI: MBR read failed");
             return false;
         }
     }
     serial::println("AHCI: MBR read OK");
 
-    parse_mbr_into_static(DiskType::Ahci { port: drive.port })
+    analyze_mbr_into_static(&mut reader)
+}
+
+/// Common MBR analysis: check boot signature, detect GPT, route to OS detection.
+/// Called after MBR has been read into OS_INFO.mbr.
+/// Returns true if a disk with valid MBR/GPT was found (even without OS).
+fn analyze_mbr_into_static(reader: &mut DiskReader) -> bool {
+    // Check MBR boot signature (0xAA55) - required for BOTH MBR and GPT disks
+    let has_boot_sig = unsafe {
+        let mbr = &(*core::ptr::addr_of!(OS_INFO)).mbr;
+        let sig = u16::from_le_bytes([mbr[510], mbr[511]]);
+        if sig != MBR_SIGNATURE {
+            serial::print("No MBR boot signature (0x");
+            serial::print_hex32(sig as u32);
+            serial::println(") - blank or unformatted disk");
+        }
+        sig == MBR_SIGNATURE
+    };
+
+    if !has_boot_sig {
+        // Disk exists but no valid MBR - report as unformatted
+        unsafe {
+            let os_info = &mut *core::ptr::addr_of_mut!(OS_INFO);
+            os_info.name = "No OS";
+            os_info.disk_type = reader.disk_type();
+            os_info.partition = 0;
+            os_info.bootable = false;
+            os_info.os_name_buf = [0; 64];
+            os_info.os_name_len = 0;
+        }
+        return true; // Disk detected, just no OS
+    }
+
+    // Check for GPT protective MBR
+    let first_entry = unsafe {
+        let mbr_ptr = core::ptr::addr_of!(OS_INFO).cast::<u8>().add(core::mem::offset_of!(OsInfo, mbr));
+        core::ptr::read_unaligned(mbr_ptr.add(446) as *const PartitionEntry)
+    };
+    if first_entry.partition_type == 0xEE {
+        serial::println("GPT detected - performing OS detection");
+        return detect_os_from_gpt_into_static(reader, 0, 0);
+    }
+
+    // Legacy MBR
+    parse_mbr_into_static(reader.disk_type())
 }
 
 /// Parse MBR and write to static storage
@@ -502,17 +721,18 @@ fn parse_mbr_into_static(disk_type: DiskType) -> bool {
 }
 
 /// Detect OS from GPT and write directly to static storage
-fn detect_os_from_gpt_into_static(controller: &mut virtio::VirtioScsi, target: u8, lun: u8) -> bool {
+fn detect_os_from_gpt_into_static(controller: &mut DiskReader, _target: u8, _lun: u8) -> bool {
     serial::println("Parsing GPT for OS detection...");
+    let disk_type = controller.disk_type();
 
     // Read GPT header at LBA 1
     let mut gpt_sector = [0u8; 512];
-    if !controller.read_sector(target, lun, 1, &mut gpt_sector) {
+    if !controller.read_sector(1, &mut gpt_sector) {
         serial::println("Failed to read GPT header - returning GPT System fallback");
         unsafe {
             let os_info = &mut *core::ptr::addr_of_mut!(OS_INFO);
             os_info.name = "GPT System";
-            os_info.disk_type = DiskType::VirtioScsi { target, lun };
+            os_info.disk_type = disk_type;
             os_info.partition = 1;
             os_info.bootable = true;
             // mbr already in place from caller
@@ -537,7 +757,7 @@ fn detect_os_from_gpt_into_static(controller: &mut virtio::VirtioScsi, target: u
         unsafe {
             let os_info = &mut *core::ptr::addr_of_mut!(OS_INFO);
             os_info.name = "GPT System";
-            os_info.disk_type = DiskType::VirtioScsi { target, lun };
+            os_info.disk_type = disk_type;
             os_info.partition = 1;
             os_info.bootable = true;
             os_info.os_name_buf = [0; 64];
@@ -558,9 +778,11 @@ fn detect_os_from_gpt_into_static(controller: &mut virtio::VirtioScsi, target: u
     serial::println(" bytes each");
 
     // Scan partition entries - look for both EFI System and Linux partitions
+    // Collect multiple Linux partitions (Debian may have separate /boot + root)
     let mut esp_partition_lba: u64 = 0;
-    let mut linux_partition_lba: u64 = 0;
-    let mut linux_partition_num: u8 = 0;
+    const MAX_LINUX_PARTS: usize = 4;
+    let mut linux_parts: [(u64, u8); MAX_LINUX_PARTS] = [(0, 0); MAX_LINUX_PARTS]; // (lba, partition_num)
+    let mut linux_part_count: usize = 0;
 
     // Cache the last read sector
     let mut cached_sector_idx: i32 = -1;
@@ -577,7 +799,7 @@ fn detect_os_from_gpt_into_static(controller: &mut virtio::VirtioScsi, target: u
 
         if sector_idx as i32 != cached_sector_idx {
             let entry_lba = gpt_header.partition_entry_lba + sector_idx as u64;
-            if !controller.read_sector(target, lun, entry_lba as u32, &mut cached_sector) {
+            if !controller.read_sector(entry_lba as u32, &mut cached_sector) {
                 continue;
             }
             cached_sector_idx = sector_idx as i32;
@@ -606,21 +828,25 @@ fn detect_os_from_gpt_into_static(controller: &mut virtio::VirtioScsi, target: u
             esp_partition_lba = entry.starting_lba;
         }
 
-        if entry.type_guid == LINUX_FS_GUID && linux_partition_lba == 0 {
-            serial::print("  -> Linux partition at LBA ");
+        if is_linux_partition_guid(&entry.type_guid) && linux_part_count < MAX_LINUX_PARTS {
+            serial::print("  -> Linux partition ");
+            serial::print_dec(linux_part_count as u32);
+            serial::print(" at LBA ");
             serial::print_dec(entry.starting_lba as u32);
             serial::println("");
-            linux_partition_lba = entry.starting_lba;
-            linux_partition_num = entry_idx as u8 + 1;
+            linux_parts[linux_part_count] = (entry.starting_lba, entry_idx as u8 + 1);
+            linux_part_count += 1;
         }
 
-        if esp_partition_lba != 0 && linux_partition_lba != 0 {
-            serial::println("Found both ESP and Linux partitions");
+        if esp_partition_lba != 0 && linux_part_count >= 2 {
+            serial::println("Found ESP and multiple Linux partitions");
             break;
         }
     }
 
-    serial::println("DBG: after partition loop (into_static)");
+    serial::print("Found ");
+    serial::print_dec(linux_part_count as u32);
+    serial::println(" Linux partition(s)");
 
     // Zero OS_NAME_BUF for reuse
     unsafe {
@@ -633,7 +859,7 @@ fn detect_os_from_gpt_into_static(controller: &mut virtio::VirtioScsi, target: u
     // Try FAT32 ESP first
     if esp_partition_lba != 0 {
         serial::println("Trying ESP (FAT32) for OS detection...");
-        if let Some((buf, len)) = detect_os_from_esp(controller, target, lun, esp_partition_lba) {
+        if let Some((buf, len)) = detect_os_from_esp(controller, _target, _lun, esp_partition_lba) {
             unsafe {
                 OS_NAME_BUF = buf;
                 OS_NAME_LEN = len;
@@ -641,11 +867,27 @@ fn detect_os_from_gpt_into_static(controller: &mut virtio::VirtioScsi, target: u
         }
     }
 
-    // Fall back to ext4
-    if unsafe { OS_NAME_LEN } == 0 && linux_partition_lba != 0 {
-        serial::println("Falling back to ext4 for OS detection...");
-        detect_os_from_ext4(controller, target, lun, linux_partition_lba);
+    // Fall back to ext4 — try each Linux partition until we detect an OS name
+    // This handles Debian's separate /boot + root layout (first Linux partition
+    // is /boot which has no /etc/os-release, second is root which does)
+    if unsafe { OS_NAME_LEN } == 0 {
+        for i in 0..linux_part_count {
+            let (part_lba, _part_num) = linux_parts[i];
+            serial::print("Trying ext4 on Linux partition ");
+            serial::print_dec(i as u32);
+            serial::print(" at LBA ");
+            serial::print_dec(part_lba as u32);
+            serial::println("...");
+            if detect_os_from_ext4(controller, _target, _lun, part_lba) {
+                serial::println("OS detected from ext4!");
+                break;
+            }
+        }
     }
+
+    // Use the last partition with a Linux GUID for the partition number (usually root)
+    let linux_partition_lba = if linux_part_count > 0 { linux_parts[0].0 } else { 0 };
+    let linux_partition_num = if linux_part_count > 0 { linux_parts[linux_part_count - 1].1 } else { 0 };
 
     serial::println("DBG: writing final OsInfo to static");
     serial::print("DBG: OS_NAME_LEN=");
@@ -662,7 +904,7 @@ fn detect_os_from_gpt_into_static(controller: &mut virtio::VirtioScsi, target: u
             os_info.name = "Linux";
             os_info.partition = if linux_partition_num > 0 { linux_partition_num } else { 1 };
         }
-        os_info.disk_type = DiskType::VirtioScsi { target, lun };
+        os_info.disk_type = disk_type;
         os_info.bootable = true;
         // mbr already in place
         // Copy os_name_buf byte by byte to avoid alignment issues
@@ -684,7 +926,8 @@ fn detect_os_from_gpt_into_static(controller: &mut virtio::VirtioScsi, target: u
 fn scan_virtio_scsi() -> Option<OsInfo> {
     serial::println("Trying VirtIO SCSI...");
 
-    let (mut controller, target, lun) = virtio::init()?;
+    let (controller, target, lun) = virtio::init()?;
+    let mut reader = DiskReader::VirtioScsi { ctrl: controller, target, lun };
 
     serial::print("VirtIO SCSI: Reading MBR from target ");
     serial::print_dec(target as u32);
@@ -692,7 +935,7 @@ fn scan_virtio_scsi() -> Option<OsInfo> {
 
     // Read MBR
     let mut mbr = [0u8; 512];
-    if !controller.read_sector(target, lun, 0, &mut mbr) {
+    if !reader.read_sector(0, &mut mbr) {
         serial::println("VirtIO SCSI: MBR read failed");
         return None;
     }
@@ -704,7 +947,7 @@ fn scan_virtio_scsi() -> Option<OsInfo> {
     };
     if first_entry.partition_type == 0xEE {
         serial::println("GPT detected - performing OS detection");
-        return detect_os_from_gpt(&mut controller, target, lun, &mbr);
+        return detect_os_from_gpt(&mut reader, target, lun, &mbr);
     }
 
     parse_mbr(&mbr, DiskType::VirtioScsi { target, lun })
@@ -844,17 +1087,18 @@ fn parse_mbr(mbr: &[u8; 512], disk_type: DiskType) -> Option<OsInfo> {
 
 /// Parse GPT and detect OS from filesystem
 /// This is called after we have a working disk reader
-fn detect_os_from_gpt(controller: &mut virtio::VirtioScsi, target: u8, lun: u8, mbr: &[u8; 512]) -> Option<OsInfo> {
+fn detect_os_from_gpt(controller: &mut DiskReader, _target: u8, _lun: u8, mbr: &[u8; 512]) -> Option<OsInfo> {
     serial::println("Parsing GPT for OS detection...");
+    let disk_type = controller.disk_type();
 
     // Read GPT header at LBA 1
     let mut gpt_sector = [0u8; 512];
-    if !controller.read_sector(target, lun, 1, &mut gpt_sector) {
+    if !controller.read_sector(1, &mut gpt_sector) {
         serial::println("Failed to read GPT header - returning GPT System fallback");
         // Don't fail completely - we know it's GPT from the protective MBR
         return Some(OsInfo {
             name: "GPT System",
-            disk_type: DiskType::VirtioScsi { target, lun },
+            disk_type,
             partition: 1,
             bootable: true,
             mbr: *mbr,
@@ -877,7 +1121,7 @@ fn detect_os_from_gpt(controller: &mut virtio::VirtioScsi, target: u8, lun: u8, 
         serial::println("Invalid GPT signature - returning GPT System fallback");
         return Some(OsInfo {
             name: "GPT System",
-            disk_type: DiskType::VirtioScsi { target, lun },
+            disk_type,
             partition: 1,
             bootable: true,
             mbr: *mbr,
@@ -920,7 +1164,7 @@ fn detect_os_from_gpt(controller: &mut virtio::VirtioScsi, target: u8, lun: u8, 
         // Read sector if not cached
         if sector_idx as i32 != cached_sector_idx {
             let entry_lba = gpt_header.partition_entry_lba + sector_idx as u64;
-            if !controller.read_sector(target, lun, entry_lba as u32, &mut cached_sector) {
+            if !controller.read_sector(entry_lba as u32, &mut cached_sector) {
                 serial::print("Failed to read GPT entry sector ");
                 serial::print_dec(sector_idx as u32);
                 serial::println("");
@@ -956,7 +1200,7 @@ fn detect_os_from_gpt(controller: &mut virtio::VirtioScsi, target: u8, lun: u8, 
         }
 
         // Check for Linux filesystem partition
-        if entry.type_guid == LINUX_FS_GUID && linux_partition_lba == 0 {
+        if is_linux_partition_guid(&entry.type_guid) && linux_partition_lba == 0 {
             serial::print("  -> Linux partition at LBA ");
             serial::print_dec(entry.starting_lba as u32);
             serial::println("");
@@ -986,7 +1230,7 @@ fn detect_os_from_gpt(controller: &mut virtio::VirtioScsi, target: u8, lun: u8, 
     // Try FAT32 ESP first (GRUB/systemd-boot config)
     if esp_partition_lba != 0 {
         serial::println("Trying ESP (FAT32) for OS detection...");
-        if let Some((buf, len)) = detect_os_from_esp(controller, target, lun, esp_partition_lba) {
+        if let Some((buf, len)) = detect_os_from_esp(controller, _target, _lun, esp_partition_lba) {
             unsafe {
                 OS_NAME_BUF = buf;
                 OS_NAME_LEN = len;
@@ -998,7 +1242,7 @@ fn detect_os_from_gpt(controller: &mut virtio::VirtioScsi, target: u8, lun: u8, 
     if unsafe { OS_NAME_LEN } == 0 && linux_partition_lba != 0 {
         serial::println("Falling back to ext4 for OS detection...");
         // detect_os_from_ext4 writes directly to OS_NAME_BUF and OS_NAME_LEN
-        detect_os_from_ext4(controller, target, lun, linux_partition_lba);
+        detect_os_from_ext4(controller, _target, _lun, linux_partition_lba);
     }
 
     serial::println("DBG: about to return OsInfo");
@@ -1011,7 +1255,7 @@ fn detect_os_from_gpt(controller: &mut virtio::VirtioScsi, target: u8, lun: u8, 
         serial::println("DBG: returning GPT System");
         return Some(OsInfo {
             name: "GPT System",
-            disk_type: DiskType::VirtioScsi { target, lun },
+            disk_type,
             partition: 1,
             bootable: true,
             mbr: *mbr,
@@ -1024,7 +1268,7 @@ fn detect_os_from_gpt(controller: &mut virtio::VirtioScsi, target: u8, lun: u8, 
     unsafe {
         Some(OsInfo {
             name: "Linux",
-            disk_type: DiskType::VirtioScsi { target, lun },
+            disk_type,
             partition: if linux_partition_num > 0 { linux_partition_num } else { 1 },
             bootable: true,
             mbr: *mbr,
@@ -1036,7 +1280,7 @@ fn detect_os_from_gpt(controller: &mut virtio::VirtioScsi, target: u8, lun: u8, 
 
 /// Detect OS from EFI System Partition by reading GRUB config
 fn detect_os_from_esp(
-    controller: &mut virtio::VirtioScsi,
+    controller: &mut DiskReader,
     target: u8,
     lun: u8,
     partition_lba: u64
@@ -1053,7 +1297,7 @@ fn detect_os_from_esp(
 
     // Read FAT32 boot sector
     let mut boot_sector = [0u8; 512];
-    if !controller.read_sector(target, lun, partition_lba as u32, &mut boot_sector) {
+    if !controller.read_sector(partition_lba as u32, &mut boot_sector) {
         serial::println("Failed to read FAT32 boot sector");
         return None;
     }
@@ -1177,7 +1421,7 @@ struct Fat32Context {
 
 /// Read a file from FAT32 filesystem
 fn read_fat32_file(
-    controller: &mut virtio::VirtioScsi,
+    controller: &mut DiskReader,
     target: u8,
     lun: u8,
     fat32: &Fat32Context,
@@ -1216,7 +1460,7 @@ fn read_fat32_file(
             let file_lba = cluster_to_lba(fat32, file_cluster);
 
             let mut contents = [0u8; 512];
-            if !controller.read_sector(target, lun, file_lba as u32, &mut contents) {
+            if !controller.read_sector(file_lba as u32, &mut contents) {
                 return None;
             }
             return Some(contents);
@@ -1235,7 +1479,7 @@ fn read_fat32_file(
 /// Find a directory entry by name (8.3 format, case-insensitive)
 /// Follows FAT cluster chain to search entire directory
 fn find_fat32_entry(
-    controller: &mut virtio::VirtioScsi,
+    controller: &mut DiskReader,
     target: u8,
     lun: u8,
     fat32: &Fat32Context,
@@ -1260,7 +1504,7 @@ fn find_fat32_entry(
         // Read all sectors in this cluster
         for sector_offset in 0..fat32.sectors_per_cluster {
             let mut sector = [0u8; 512];
-            if !controller.read_sector(target, lun, (cluster_lba + sector_offset as u64) as u32, &mut sector) {
+            if !controller.read_sector((cluster_lba + sector_offset as u64) as u32, &mut sector) {
                 serial::print("FAT32: Failed to read dir sector at cluster ");
                 serial::print_dec(current_cluster);
                 serial::println("");
@@ -1325,7 +1569,7 @@ fn find_fat32_entry(
 
 /// Read FAT entry to get next cluster in chain
 fn get_next_cluster(
-    controller: &mut virtio::VirtioScsi,
+    controller: &mut DiskReader,
     target: u8,
     lun: u8,
     fat32: &Fat32Context,
@@ -1338,7 +1582,7 @@ fn get_next_cluster(
     let offset_in_sector = (fat_offset % fat32.bytes_per_sector) as usize;
 
     let mut sector = [0u8; 512];
-    if !controller.read_sector(target, lun, fat_sector as u32, &mut sector) {
+    if !controller.read_sector(fat_sector as u32, &mut sector) {
         return None;
     }
 
@@ -1454,15 +1698,18 @@ fn parse_grub_config(contents: &[u8; 512]) -> GrubParseResult {
 
 /// Detect OS from ext4 filesystem by reading /etc/os-release
 /// Detect OS from ext4. Writes to OS_NAME_BUF and OS_NAME_LEN globals. Returns true on success.
-fn detect_os_from_ext4(controller: &mut virtio::VirtioScsi, target: u8, lun: u8, partition_lba: u64) -> bool {
+fn detect_os_from_ext4(controller: &mut DiskReader, target: u8, lun: u8, partition_lba: u64) -> bool {
     serial::println("Reading ext4 filesystem for OS detection...");
+
+    // Reset ext4 context from any previous scan
+    unsafe { EXT4_CTX.valid = false; }
 
     // ext4 superblock is at offset 1024 (byte 1024-2047 of the partition)
     // For 512-byte sectors, that's sector 2 of the partition
     let superblock_lba = partition_lba + 2;
 
     let mut sb_sector = [0u8; 512];
-    if !controller.read_sector(target, lun, superblock_lba as u32, &mut sb_sector) {
+    if !controller.read_sector(superblock_lba as u32, &mut sb_sector) {
         serial::println("Failed to read ext4 superblock");
         return false;
     }
@@ -1485,6 +1732,36 @@ fn detect_os_from_ext4(controller: &mut virtio::VirtioScsi, target: u8, lun: u8,
     serial::print("Block size: ");
     serial::print_dec(block_size);
     serial::println(" bytes");
+
+    // Populate ext4 filesystem context for correct multi-block-group inode lookup
+    let inode_size = superblock.s_inode_size as u32;
+    let inodes_per_group = superblock.s_inodes_per_group;
+
+    // Determine block group descriptor size: 32 bytes (standard) or 64 bytes (64-bit feature)
+    let desc_size = if superblock.s_feature_incompat & EXT4_FEATURE_INCOMPAT_64BIT != 0 {
+        // s_desc_size is at superblock offset 254 (within our 512-byte read)
+        let ds = u16::from_le_bytes([sb_sector[254], sb_sector[255]]) as u32;
+        if ds >= 32 { ds } else { 32 }
+    } else {
+        32
+    };
+
+    unsafe {
+        EXT4_CTX.partition_lba = partition_lba;
+        EXT4_CTX.block_size = block_size;
+        EXT4_CTX.inode_size = inode_size;
+        EXT4_CTX.inodes_per_group = inodes_per_group;
+        EXT4_CTX.desc_size = desc_size;
+        EXT4_CTX.valid = true;
+    }
+
+    serial::print("ext4: inodes_per_group=");
+    serial::print_dec(inodes_per_group);
+    serial::print(" inode_size=");
+    serial::print_dec(inode_size);
+    serial::print(" desc_size=");
+    serial::print_dec(desc_size);
+    serial::println("");
 
     // Try to read /etc/os-release
     // First, find the root inode (inode 2)
@@ -1532,7 +1809,7 @@ fn detect_os_from_ext4(controller: &mut virtio::VirtioScsi, target: u8, lun: u8,
 /// Try to read OS info from ext4 - first /boot/grub/grub.cfg, then /etc/os-release
 /// Writes directly to OS_NAME_BUF and OS_NAME_LEN globals. Returns true on success.
 fn read_os_release(
-    controller: &mut virtio::VirtioScsi,
+    controller: &mut DiskReader,
     target: u8,
     lun: u8,
     partition_lba: u64,
@@ -1548,7 +1825,7 @@ fn read_os_release(
     let bgdt_lba = partition_lba + (bgdt_block as u64 * block_size as u64 / 512);
 
     let mut bgdt_sector = [0u8; 512];
-    if !controller.read_sector(target, lun, bgdt_lba as u32, &mut bgdt_sector) {
+    if !controller.read_sector(bgdt_lba as u32, &mut bgdt_sector) {
         serial::println("Failed to read block group descriptor");
         return false;
     }
@@ -1659,7 +1936,7 @@ fn read_os_release(
 
 /// Read /boot/grub/grub.cfg from ext4
 fn read_grub_cfg_from_ext4(
-    controller: &mut virtio::VirtioScsi,
+    controller: &mut DiskReader,
     target: u8,
     lun: u8,
     partition_lba: u64,
@@ -1706,7 +1983,7 @@ fn read_grub_cfg_from_ext4(
 
 /// Read /etc/os-release from ext4. Returns true if OS was detected.
 fn read_etc_os_release(
-    controller: &mut virtio::VirtioScsi,
+    controller: &mut DiskReader,
     target: u8,
     lun: u8,
     partition_lba: u64,
@@ -1772,7 +2049,7 @@ fn read_etc_os_release(
 
 /// Read /usr/lib/os-release from ext4 (symlink target). Returns true if OS was detected.
 fn read_usr_lib_os_release(
-    controller: &mut virtio::VirtioScsi,
+    controller: &mut DiskReader,
     target: u8,
     lun: u8,
     partition_lba: u64,
@@ -1835,7 +2112,7 @@ fn read_usr_lib_os_release(
 
 /// Read an inode from the filesystem
 fn read_inode(
-    controller: &mut virtio::VirtioScsi,
+    controller: &mut DiskReader,
     target: u8,
     lun: u8,
     partition_lba: u64,
@@ -1844,10 +2121,60 @@ fn read_inode(
     inode_size: u32,
     inode_num: u32
 ) -> Option<Ext4Inode> {
-    // Inode numbers are 1-based
-    let inode_index = inode_num - 1;
-    let inode_offset = inode_index * inode_size;
-    let inode_block = inode_table_block + (inode_offset / block_size);
+    // Use EXT4_CTX for correct multi-block-group lookup when available
+    let (actual_inode_table_block, local_inode_index) = unsafe {
+        if EXT4_CTX.valid && EXT4_CTX.inodes_per_group > 0 {
+            let inodes_per_group = EXT4_CTX.inodes_per_group;
+            let block_group = (inode_num - 1) / inodes_per_group;
+            let local_idx = (inode_num - 1) % inodes_per_group;
+
+            if block_group == 0 {
+                // Block group 0 — use the passed inode_table_block (fast path)
+                (inode_table_block, local_idx)
+            } else {
+                // Different block group — read its BGDT entry to get inode table location
+                let desc_size = EXT4_CTX.desc_size;
+                let bgdt_block = if block_size == 1024 { 2u64 } else { 1u64 };
+                let bgdt_byte_offset = block_group as u64 * desc_size as u64;
+                let bgdt_lba = partition_lba + (bgdt_block * block_size as u64 / 512) + (bgdt_byte_offset / 512);
+                let sector_off = (bgdt_byte_offset % 512) as usize;
+
+                serial::print("read_inode: BG ");
+                serial::print_dec(block_group);
+                serial::print(" desc at LBA ");
+                serial::print_dec(bgdt_lba as u32);
+                serial::println("");
+
+                let mut bgdt_sector = [0u8; 512];
+                if !controller.read_sector(bgdt_lba as u32, &mut bgdt_sector) {
+                    serial::println("  -> BGDT read FAILED");
+                    return None;
+                }
+
+                // inode table block is at offset 8 within the BGDT entry
+                let it_block = u32::from_le_bytes([
+                    bgdt_sector[sector_off + 8],
+                    bgdt_sector[sector_off + 9],
+                    bgdt_sector[sector_off + 10],
+                    bgdt_sector[sector_off + 11],
+                ]);
+
+                serial::print("  BG ");
+                serial::print_dec(block_group);
+                serial::print(" inode_table_block=");
+                serial::print_dec(it_block);
+                serial::println("");
+
+                (it_block, local_idx)
+            }
+        } else {
+            // No EXT4_CTX — legacy fallback (all inodes from BG0)
+            (inode_table_block, inode_num - 1)
+        }
+    };
+
+    let inode_offset = local_inode_index * inode_size;
+    let inode_block = actual_inode_table_block + (inode_offset / block_size);
     let offset_in_block = inode_offset % block_size;
 
     let inode_lba = partition_lba + (inode_block as u64 * block_size as u64 / 512);
@@ -1857,7 +2184,7 @@ fn read_inode(
     serial::print("read_inode(");
     serial::print_dec(inode_num);
     serial::print("): table_blk=");
-    serial::print_dec(inode_table_block);
+    serial::print_dec(actual_inode_table_block);
     serial::print(" inode_blk=");
     serial::print_dec(inode_block);
     serial::print(" LBA=");
@@ -1865,7 +2192,7 @@ fn read_inode(
     serial::println("");
 
     let mut sector = [0u8; 512];
-    if !controller.read_sector(target, lun, (inode_lba + sector_offset as u64) as u32, &mut sector) {
+    if !controller.read_sector((inode_lba + sector_offset as u64) as u32, &mut sector) {
         serial::println("  -> read_inode FAILED");
         return None;
     }
@@ -1879,6 +2206,26 @@ fn read_inode(
 
 // Static buffer for i_block data in get_first_data_block
 static mut IBLOCK_BYTES: [u8; 60] = [0u8; 60];
+
+/// A contiguous range of physical data blocks from an extent
+#[derive(Clone, Copy)]
+struct DataExtent {
+    start_block: u64,
+    num_blocks: u16,
+}
+
+/// Maximum number of extents we track for a single inode
+const MAX_EXTENTS: usize = 32;
+
+/// Static storage for inode extent lists (avoids heap allocation)
+static mut INODE_EXTENTS: [DataExtent; MAX_EXTENTS] = [DataExtent { start_block: 0, num_blocks: 0 }; MAX_EXTENTS];
+static mut INODE_EXTENT_COUNT: usize = 0;
+
+/// Buffer for reading extent tree leaf blocks (depth > 0)
+static mut EXTENT_LEAF_BUF: [u8; 4096] = [0u8; 4096];
+
+/// Static buffer for i_block data in get_inode_extents (separate from get_first_data_block)
+static mut EXTENT_IBLOCK_BYTES: [u8; 60] = [0u8; 60];
 
 /// Get the first data block from an inode (handles both extents and direct blocks)
 fn get_first_data_block(dir_inode: &Ext4Inode) -> Option<u64> {
@@ -2005,9 +2352,142 @@ fn get_first_data_block(dir_inode: &Ext4Inode) -> Option<u64> {
 // Static buffer for directory block reads - avoid 4KB stack allocation
 static mut DIR_BLOCK_DATA: [u8; 4096] = [0u8; 4096];
 
-/// Find a directory entry by name
+/// Populate INODE_EXTENTS with all data extents for an inode.
+/// Handles extent trees of depth 0 (inline) and depth 1+ (index nodes on disk).
+/// Returns the number of extents found.
+fn get_inode_extents(
+    controller: &mut DiskReader,
+    target: u8,
+    lun: u8,
+    partition_lba: u64,
+    block_size: u32,
+    inode: &Ext4Inode,
+) -> usize {
+    unsafe { INODE_EXTENT_COUNT = 0; }
+
+    let inode_ptr = inode as *const Ext4Inode as *const u8;
+
+    // Copy i_block (60 bytes at offset 40) to static buffer
+    let i_block = unsafe { &mut *core::ptr::addr_of_mut!(EXTENT_IBLOCK_BYTES) };
+    for i in 0..60 {
+        i_block[i] = unsafe { core::ptr::read_unaligned(inode_ptr.wrapping_add(40 + i)) };
+    }
+
+    let flags = unsafe {
+        u32::from_le_bytes([
+            core::ptr::read_unaligned(inode_ptr.wrapping_add(32)),
+            core::ptr::read_unaligned(inode_ptr.wrapping_add(33)),
+            core::ptr::read_unaligned(inode_ptr.wrapping_add(34)),
+            core::ptr::read_unaligned(inode_ptr.wrapping_add(35)),
+        ])
+    };
+
+    if flags & EXT4_EXTENTS_FL == 0 {
+        // Direct block pointers (legacy, no extents)
+        let block_num = u32::from_le_bytes([i_block[0], i_block[1], i_block[2], i_block[3]]);
+        if block_num != 0 {
+            unsafe {
+                INODE_EXTENTS[0] = DataExtent { start_block: block_num as u64, num_blocks: 1 };
+                INODE_EXTENT_COUNT = 1;
+            }
+        }
+        return unsafe { INODE_EXTENT_COUNT };
+    }
+
+    // Parse extent header
+    let eh_magic = u16::from_le_bytes([i_block[0], i_block[1]]);
+    let eh_entries = u16::from_le_bytes([i_block[2], i_block[3]]);
+    let eh_depth = u16::from_le_bytes([i_block[6], i_block[7]]);
+
+    if eh_magic != EXT4_EXTENT_MAGIC || eh_entries == 0 {
+        return 0;
+    }
+
+    if eh_depth == 0 {
+        // Leaf: extents are inline after the 12-byte header (max 4 fit in 60 bytes)
+        let count = (eh_entries as usize).min(MAX_EXTENTS).min(4);
+        for i in 0..count {
+            let off = 12 + i * 12;
+            if off + 12 > 60 { break; }
+            let ee_len = u16::from_le_bytes([i_block[off + 4], i_block[off + 5]]);
+            let ee_start_hi = u16::from_le_bytes([i_block[off + 6], i_block[off + 7]]);
+            let ee_start_lo = u32::from_le_bytes([
+                i_block[off + 8], i_block[off + 9], i_block[off + 10], i_block[off + 11]
+            ]);
+            let start = ((ee_start_hi as u64) << 32) | (ee_start_lo as u64);
+            let len = ee_len & 0x7FFF; // mask off uninitialized flag
+            unsafe {
+                INODE_EXTENTS[i] = DataExtent { start_block: start, num_blocks: len };
+            }
+        }
+        unsafe { INODE_EXTENT_COUNT = count; }
+    } else {
+        // Depth > 0: index nodes in i_block point to leaf blocks on disk
+        let num_indices = (eh_entries as usize).min(4);
+        let sectors_per_block = block_size / 512;
+
+        for idx_i in 0..num_indices {
+            let off = 12 + idx_i * 12;
+            if off + 12 > 60 { break; }
+            // Index entry: ei_block(4) ei_leaf_lo(4) ei_leaf_hi(2) ei_unused(2)
+            let ei_leaf_lo = u32::from_le_bytes([
+                i_block[off + 4], i_block[off + 5], i_block[off + 6], i_block[off + 7]
+            ]);
+            let ei_leaf_hi = u16::from_le_bytes([i_block[off + 8], i_block[off + 9]]);
+            let leaf_block = ((ei_leaf_hi as u64) << 32) | (ei_leaf_lo as u64);
+
+            // Read the leaf block from disk
+            let leaf_lba = partition_lba + (leaf_block * block_size as u64 / 512);
+            let leaf_buf = unsafe { &mut *core::ptr::addr_of_mut!(EXTENT_LEAF_BUF) };
+
+            let mut read_ok = true;
+            for s in 0..sectors_per_block.min(8) {
+                let mut sector = [0u8; 512];
+                if !controller.read_sector((leaf_lba + s as u64) as u32, &mut sector) {
+                    read_ok = false;
+                    break;
+                }
+                leaf_buf[s as usize * 512..(s as usize + 1) * 512].copy_from_slice(&sector);
+            }
+            if !read_ok { continue; }
+
+            // Parse leaf block extent header
+            let leaf_magic = u16::from_le_bytes([leaf_buf[0], leaf_buf[1]]);
+            let leaf_entries = u16::from_le_bytes([leaf_buf[2], leaf_buf[3]]);
+            let leaf_depth = u16::from_le_bytes([leaf_buf[6], leaf_buf[7]]);
+
+            if leaf_magic != EXT4_EXTENT_MAGIC || leaf_depth != 0 {
+                continue; // not a valid leaf, or deeper tree (very rare)
+            }
+
+            for j in 0..leaf_entries as usize {
+                let ext_count = unsafe { INODE_EXTENT_COUNT };
+                if ext_count >= MAX_EXTENTS { break; }
+
+                let eoff = 12 + j * 12;
+                if eoff + 12 > block_size as usize { break; }
+                let ee_len = u16::from_le_bytes([leaf_buf[eoff + 4], leaf_buf[eoff + 5]]);
+                let ee_start_hi = u16::from_le_bytes([leaf_buf[eoff + 6], leaf_buf[eoff + 7]]);
+                let ee_start_lo = u32::from_le_bytes([
+                    leaf_buf[eoff + 8], leaf_buf[eoff + 9], leaf_buf[eoff + 10], leaf_buf[eoff + 11]
+                ]);
+                let start = ((ee_start_hi as u64) << 32) | (ee_start_lo as u64);
+                let len = ee_len & 0x7FFF;
+                unsafe {
+                    INODE_EXTENTS[ext_count] = DataExtent { start_block: start, num_blocks: len };
+                    INODE_EXTENT_COUNT = ext_count + 1;
+                }
+            }
+        }
+    }
+
+    unsafe { INODE_EXTENT_COUNT }
+}
+
+/// Find a directory entry by name, scanning ALL blocks in the directory.
+/// Handles multi-block directories and extent trees of any reasonable depth.
 fn find_dir_entry(
-    controller: &mut virtio::VirtioScsi,
+    controller: &mut DiskReader,
     target: u8,
     lun: u8,
     partition_lba: u64,
@@ -2015,85 +2495,66 @@ fn find_dir_entry(
     dir_inode: &Ext4Inode,
     name: &[u8]
 ) -> Option<u32> {
-    serial::println("DBG: entered find_dir_entry");
+    // Get all data extents for this directory inode
+    let extent_count = get_inode_extents(controller, target, lun, partition_lba, block_size, dir_inode);
+    if extent_count == 0 {
+        return None;
+    }
 
-    // Get the first data block (handling extents)
-    serial::println("DBG: calling get_first_data_block");
-    let block_num = get_first_data_block(dir_inode)?;
-    serial::print("DBG: got block_num=");
-    serial::print_dec(block_num as u32);
-    serial::println("");
-
-    let block_lba = partition_lba + (block_num * block_size as u64 / 512);
-    serial::print("Reading dir block at LBA ");
-    serial::print_dec(block_lba as u32);
-    serial::println("");
-
-    // Read directory block (may span multiple sectors) - use static buffer
     let sectors_per_block = block_size / 512;
     let block_data = unsafe { &mut *core::ptr::addr_of_mut!(DIR_BLOCK_DATA) };
 
-    for i in 0..sectors_per_block.min(8) {
-        let mut sector = [0u8; 512];
-        if !controller.read_sector(target, lun, (block_lba + i as u64) as u32, &mut sector) {
-            return None;
+    // Iterate ALL blocks across ALL extents
+    for ext_i in 0..extent_count {
+        let extent = unsafe { INODE_EXTENTS[ext_i] };
+
+        for blk_offset in 0..extent.num_blocks {
+            let phys_block = extent.start_block + blk_offset as u64;
+            let block_lba = partition_lba + (phys_block * block_size as u64 / 512);
+
+            // Read full directory block
+            let mut read_ok = true;
+            for s in 0..sectors_per_block.min(8) {
+                let mut sector = [0u8; 512];
+                if !controller.read_sector((block_lba + s as u64) as u32, &mut sector) {
+                    read_ok = false;
+                    break;
+                }
+                block_data[s as usize * 512..(s as usize + 1) * 512].copy_from_slice(&sector);
+            }
+            if !read_ok { continue; }
+
+            // Parse directory entries in this block
+            // Ext4DirEntry: inode(4) rec_len(2) name_len(1) file_type(1) name(variable)
+            let mut offset = 0usize;
+            while offset + 8 <= block_size as usize {
+                let entry_inode = u32::from_le_bytes([
+                    block_data[offset], block_data[offset + 1],
+                    block_data[offset + 2], block_data[offset + 3]
+                ]);
+                let entry_rec_len = u16::from_le_bytes([
+                    block_data[offset + 4], block_data[offset + 5]
+                ]);
+                let entry_name_len = block_data[offset + 6];
+
+                if entry_rec_len == 0 { break; }
+                if entry_inode == 0 {
+                    offset += entry_rec_len as usize;
+                    continue;
+                }
+
+                let name_end = offset + 8 + entry_name_len as usize;
+                if name_end > block_size as usize { break; }
+
+                let entry_name = &block_data[offset + 8..name_end];
+
+                if entry_name == name {
+                    return Some(entry_inode);
+                }
+
+                offset += entry_rec_len as usize;
+            }
         }
-        block_data[i as usize * 512..(i as usize + 1) * 512].copy_from_slice(&sector);
-    }
-
-    // Debug: show first 32 bytes of directory block
-    serial::print("Dir block first 32 bytes: ");
-    for i in 0..32 {
-        serial::print_hex32(block_data[i] as u32);
-        serial::print(" ");
-    }
-    serial::println("");
-
-    // Parse directory entries - read fields directly to avoid packed struct issues
-    // Ext4DirEntry layout: inode(4) rec_len(2) name_len(1) file_type(1) name(variable)
-    let mut offset = 0usize;
-    while offset < block_size as usize {
-        // Ensure we have at least 8 bytes for the header
-        if offset + 8 > block_size as usize {
-            break;
-        }
-
-        // Read fields directly from bytes
-        let entry_inode = u32::from_le_bytes([
-            block_data[offset], block_data[offset + 1],
-            block_data[offset + 2], block_data[offset + 3]
-        ]);
-        let entry_rec_len = u16::from_le_bytes([
-            block_data[offset + 4], block_data[offset + 5]
-        ]);
-        let entry_name_len = block_data[offset + 6];
-
-        if entry_inode == 0 || entry_rec_len == 0 {
-            break;
-        }
-
-        // Bounds check for name
-        let name_end = offset + 8 + entry_name_len as usize;
-        if name_end > block_size as usize {
-            break;
-        }
-
-        let entry_name = &block_data[offset + 8..name_end];
-
-        // Debug: show entry
-        serial::print("  Entry: inode=");
-        serial::print_dec(entry_inode);
-        serial::print(" name=");
-        for &b in entry_name {
-            serial::print_char(b);
-        }
-        serial::println("");
-
-        if entry_name == name {
-            return Some(entry_inode);
-        }
-
-        offset += entry_rec_len as usize;
     }
 
     None
@@ -2105,7 +2566,7 @@ static mut FILE_CONTENTS: [u8; 512] = [0u8; 512];
 /// Read file contents (first block only, up to 512 bytes)
 /// Returns a reference to a static buffer
 fn read_file_contents(
-    controller: &mut virtio::VirtioScsi,
+    controller: &mut DiskReader,
     target: u8,
     lun: u8,
     partition_lba: u64,
@@ -2121,7 +2582,7 @@ fn read_file_contents(
     let block_lba = partition_lba + (block_num * block_size as u64 / 512);
 
     let contents = unsafe { &mut *core::ptr::addr_of_mut!(FILE_CONTENTS) };
-    if !controller.read_sector(target, lun, block_lba as u32, contents) {
+    if !controller.read_sector(block_lba as u32, contents) {
         return None;
     }
 
@@ -2229,6 +2690,39 @@ fn drive_exists(drive: u8) -> bool {
         }
 
         serial::println("Drive exists!");
+
+        // Read the IDENTIFY data (256 words = 512 bytes) that's waiting
+        // We must read it to clear the buffer, and we extract size + model
+        if status & ATA_STATUS_DRQ != 0 {
+            let mut identify = [0u16; 256];
+            insw(ATA_PRIMARY_DATA, &mut identify);
+
+            // Words 27-46: Model number (40 ASCII chars, byte-swapped)
+            let mut model = [0u8; 40];
+            for i in 0..20 {
+                let word = identify[27 + i];
+                model[i * 2] = (word >> 8) as u8;
+                model[i * 2 + 1] = (word & 0xFF) as u8;
+            }
+            // Trim trailing spaces
+            let mut model_len = 40;
+            while model_len > 0 && (model[model_len - 1] == b' ' || model[model_len - 1] == 0) {
+                model_len -= 1;
+            }
+
+            // Words 60-61: Total sectors (28-bit LBA)
+            let sectors_28 = (identify[61] as u64) << 16 | identify[60] as u64;
+            // Words 100-103: Total sectors (48-bit LBA, if supported)
+            let sectors_48 = (identify[103] as u64) << 48
+                | (identify[102] as u64) << 32
+                | (identify[101] as u64) << 16
+                | identify[100] as u64;
+            let total_sectors = if sectors_48 > 0 { sectors_48 } else { sectors_28 };
+            let size_bytes = total_sectors * 512;
+
+            record_disk(DiskType::AtaPio, size_bytes, &model, model_len);
+        }
+
         true
     }
 }
