@@ -29,6 +29,14 @@ spec:
       timeout: 90
 
     - action: writefile
+      path: /var/lib/cloud/seed/nocloud/network-config
+      partition: 1
+      content: |
+        {{ network_config_cloudinit }}
+      mode: "0644"
+      timeout: 90
+
+    - action: writefile
       path: /var/lib/cloud/seed/nocloud/user-data
       partition: 1
       content: |
@@ -40,8 +48,8 @@ spec:
             shell: /bin/bash
             lock_passwd: false
             ssh_authorized_keys: {{ ssh_authorized_keys }}
+            ssh_import_id: {{ ssh_import_id }}
         disable_root: false
-        ssh_import_id: {{ ssh_import_id }}
         chpasswd:
           expire: false
           users:
@@ -95,15 +103,6 @@ spec:
           - |
             # Enable pveproxy service
             systemctl enable pveproxy
-      mode: "0644"
-      timeout: 90
-
-    - action: writefile
-      path: /etc/network/interfaces.d/eth0
-      partition: 1
-      content: |
-        auto eth0
-        iface eth0 inet dhcp
       mode: "0644"
       timeout: 90
 

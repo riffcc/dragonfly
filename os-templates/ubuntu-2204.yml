@@ -28,6 +28,14 @@ spec:
       timeout: 90
 
     - action: writefile
+      path: /var/lib/cloud/seed/nocloud/network-config
+      partition: 1
+      content: |
+        {{ network_config_cloudinit }}
+      mode: "0644"
+      timeout: 90
+
+    - action: writefile
       path: /var/lib/cloud/seed/nocloud/user-data
       partition: 1
       content: |
@@ -39,8 +47,8 @@ spec:
             shell: /bin/bash
             lock_passwd: false
             ssh_authorized_keys: {{ ssh_authorized_keys }}
+            ssh_import_id: {{ ssh_import_id }}
         disable_root: false
-        ssh_import_id: {{ ssh_import_id }}
         chpasswd:
           expire: false
           users:
@@ -56,21 +64,6 @@ spec:
               systemctl enable qemu-guest-agent
               systemctl start qemu-guest-agent
             fi
-      mode: "0644"
-      timeout: 90
-
-    - action: writefile
-      path: /etc/netplan/config.yaml
-      partition: 1
-      content: |
-        network:
-          version: 2
-          renderer: networkd
-          ethernets:
-            id0:
-              match:
-                name: en*
-              dhcp4: true
       mode: "0644"
       timeout: 90
 
