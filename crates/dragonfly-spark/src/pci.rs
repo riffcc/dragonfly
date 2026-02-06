@@ -222,6 +222,101 @@ pub fn find_device(vendor_id: u16, device_id: u16) -> Option<PciDevice> {
     None
 }
 
+/// GPU detected via PCI class 0x03 scan
+#[derive(Clone, Copy)]
+pub struct GpuDetected {
+    pub vendor_id: u16,
+    pub device_id: u16,
+}
+
+/// Maximum number of GPUs we track
+const MAX_GPUS: usize = 4;
+
+/// Detected GPUs stored at boot
+static mut DETECTED_GPUS: [GpuDetected; MAX_GPUS] = [GpuDetected { vendor_id: 0, device_id: 0 }; MAX_GPUS];
+static mut GPU_COUNT: usize = 0;
+
+/// Scan PCI bus for display controllers (class 0x03) and store results.
+///
+/// Call once at boot. Results are accessible via `gpu_count()` and `gpu_info()`.
+pub fn scan_gpus() {
+    let mut count = 0usize;
+
+    for bus in 0..=255u8 {
+        for slot in 0..32u8 {
+            if !pci_device_exists(bus, slot, 0) {
+                continue;
+            }
+
+            let max_func = {
+                let header_type = pci_read8(bus, slot, 0, 0x0E);
+                if header_type & 0x80 != 0 { 8 } else { 1 }
+            };
+
+            for func in 0..max_func {
+                if func > 0 && !pci_device_exists(bus, slot, func) {
+                    continue;
+                }
+
+                let class = pci_read8(bus, slot, func, 0x0B);
+                if class == 0x03 && count < MAX_GPUS {
+                    let vid = pci_read16(bus, slot, func, 0x00);
+                    let did = pci_read16(bus, slot, func, 0x02);
+
+                    // Skip virtual display adapters (QEMU stdvga, bochs, etc.)
+                    // 0x1234 = QEMU/Bochs, 0x1B36 = Red Hat/QEMU
+                    if vid == 0x1234 || vid == 0x1B36 {
+                        continue;
+                    }
+
+                    unsafe {
+                        DETECTED_GPUS[count] = GpuDetected { vendor_id: vid, device_id: did };
+                    }
+                    count += 1;
+
+                    serial::print("PCI: GPU found ");
+                    serial::print_hex32(vid as u32);
+                    serial::print(":");
+                    serial::print_hex32(did as u32);
+                    serial::print(" (");
+                    serial::print(gpu_vendor_name(vid));
+                    serial::println(")");
+                }
+            }
+        }
+    }
+
+    unsafe { GPU_COUNT = count; }
+
+    if count == 0 {
+        serial::println("PCI: No discrete GPUs found");
+    }
+}
+
+/// Number of detected GPUs
+pub fn gpu_count() -> usize {
+    unsafe { GPU_COUNT }
+}
+
+/// Get detected GPU by index
+pub fn gpu_info(idx: usize) -> Option<GpuDetected> {
+    if idx < unsafe { GPU_COUNT } {
+        Some(unsafe { DETECTED_GPUS[idx] })
+    } else {
+        None
+    }
+}
+
+/// Map PCI vendor ID to human-readable GPU vendor name
+pub fn gpu_vendor_name(vendor_id: u16) -> &'static str {
+    match vendor_id {
+        0x10DE => "NVIDIA",
+        0x1002 => "AMD",
+        0x8086 => "Intel",
+        _ => "Unknown",
+    }
+}
+
 /// Read a BAR (Base Address Register) from a PCI device
 pub fn pci_read_bar(device: &PciDevice, bar_num: u8) -> u32 {
     let offset = 0x10 + (bar_num as u8 * 4);

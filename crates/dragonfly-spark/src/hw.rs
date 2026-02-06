@@ -74,8 +74,36 @@ pub fn cpu_brand() -> ([u8; 48], usize) {
     (brand, len)
 }
 
-/// Get logical processor count from CPUID leaf 0x01
-pub fn cpu_cores() -> u32 {
+/// Detect CPU vendor from CPUID leaf 0x00
+/// Returns 1 for Intel, 2 for AMD, 0 for unknown
+fn cpu_vendor() -> u8 {
+    let (ebx_val, ecx, edx): (u32, u32, u32);
+    unsafe {
+        core::arch::asm!(
+            "push rbx",
+            "cpuid",
+            "mov edi, ebx",
+            "pop rbx",
+            inout("eax") 0u32 => _,
+            out("edi") ebx_val,
+            out("ecx") ecx,
+            out("edx") edx,
+            options(preserves_flags)
+        );
+    }
+    // "GenuineIntel" = EBX=0x756E6547 EDX=0x49656E69 ECX=0x6C65746E
+    if ebx_val == 0x756E6547 && edx == 0x49656E69 && ecx == 0x6C65746E {
+        return 1;
+    }
+    // "AuthenticAMD" = EBX=0x68747541 EDX=0x69746E65 ECX=0x444D4163
+    if ebx_val == 0x68747541 && edx == 0x69746E65 && ecx == 0x444D4163 {
+        return 2;
+    }
+    0
+}
+
+/// Get logical processor (thread) count from CPUID leaf 0x01
+pub fn cpu_threads() -> u32 {
     let ebx_val: u32;
     unsafe {
         core::arch::asm!(
@@ -93,6 +121,55 @@ pub fn cpu_cores() -> u32 {
     // Bits 23:16 of EBX = maximum number of addressable IDs for logical processors
     let count = (ebx_val >> 16) & 0xFF;
     if count == 0 { 1 } else { count }
+}
+
+/// Get physical core count from CPUID
+///
+/// Intel: CPUID leaf 0x04 (ECX=0), EAX[31:26] + 1 = cores per package
+/// AMD: CPUID leaf 0x80000008, ECX[7:0] + 1 = physical cores
+/// Unknown: falls back to logical thread count
+pub fn cpu_cores() -> u32 {
+    let vendor = cpu_vendor();
+
+    if vendor == 1 {
+        // Intel: CPUID leaf 0x04 (deterministic cache parameters)
+        let eax_val: u32;
+        unsafe {
+            core::arch::asm!(
+                "push rbx",
+                "cpuid",
+                "pop rbx",
+                inout("eax") 4u32 => eax_val,
+                inout("ecx") 0u32 => _,
+                out("edx") _,
+                options(preserves_flags)
+            );
+        }
+        // EAX[31:26] = max cores per package - 1
+        let cores = ((eax_val >> 26) & 0x3F) + 1;
+        if cores == 0 { 1 } else { cores }
+    } else if vendor == 2 {
+        // AMD: CPUID leaf 0x80000008
+        let ecx_val: u32;
+        unsafe {
+            core::arch::asm!(
+                "push rbx",
+                "cpuid",
+                "pop rbx",
+                inout("eax") 0x80000008u32 => _,
+                out("edi") _,
+                out("ecx") ecx_val,
+                out("edx") _,
+                options(preserves_flags)
+            );
+        }
+        // ECX[7:0] = number of physical cores - 1
+        let cores = (ecx_val & 0xFF) + 1;
+        if cores == 0 { 1 } else { cores }
+    } else {
+        // Unknown vendor: fall back to logical thread count
+        cpu_threads()
+    }
 }
 
 /// Total memory detected at boot (bytes), set once by init_memory()

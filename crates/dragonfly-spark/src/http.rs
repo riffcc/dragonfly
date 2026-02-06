@@ -3,9 +3,10 @@
 //! Minimal HTTP/1.1 client for check-in with Dragonfly server.
 //! Uses the existing TCP socket primitives from smoltcp.
 
-use crate::disk::OsInfo;
+use crate::disk::{self, OsInfo};
 use crate::hw;
 use crate::net::{self, format_ip, format_mac, NetworkStack};
+use crate::pci;
 use crate::serial;
 use smoltcp::wire::{IpEndpoint, Ipv4Address};
 
@@ -69,9 +70,16 @@ pub fn checkin(
 ) -> Option<CheckInResponse> {
     serial::println("HTTP: Starting check-in with server");
 
-    // Build JSON payload
-    let mut json_buf = [0u8; 512];
-    let json_len = build_checkin_json(mac, stack.get_ip()?, detected_os, &mut json_buf);
+    // Collect DNS servers from network stack
+    let mut dns_servers: [Option<Ipv4Address>; 3] = [None; 3];
+    let dns_count = stack.dns_server_count;
+    for i in 0..dns_count.min(3) {
+        dns_servers[i] = stack.dns_servers[i];
+    }
+
+    // Build JSON payload (2048 bytes to fit gpus + nameservers + disks)
+    let mut json_buf = [0u8; 2048];
+    let json_len = build_checkin_json(mac, stack.get_ip()?, detected_os, &dns_servers, dns_count, &mut json_buf);
 
     serial::print("HTTP: JSON payload (");
     serial::print_dec(json_len as u32);
@@ -80,8 +88,8 @@ pub fn checkin(
         serial::println(s);
     }
 
-    // Build HTTP request
-    let mut http_buf = [0u8; 1024];
+    // Build HTTP request (headers + JSON body)
+    let mut http_buf = [0u8; 2560];
     let http_len = build_http_request(&json_buf[..json_len], &server_ip, server_port, &mut http_buf);
 
     // Create TCP socket using static buffers
@@ -189,6 +197,8 @@ fn build_checkin_json(
     mac: &[u8; 6],
     ip: Ipv4Address,
     detected_os: Option<&OsInfo>,
+    dns_servers: &[Option<Ipv4Address>; 3],
+    dns_count: usize,
     buf: &mut [u8],
 ) -> usize {
     let mut pos = 0;
@@ -227,16 +237,110 @@ fn build_checkin_json(
         write_bytes(buf, &mut pos, b"\"");
     }
 
-    // CPU cores
+    // CPU physical cores
     let cores = hw::cpu_cores();
     write_bytes(buf, &mut pos, b",\"cpu_cores\":");
     pos += write_u32_decimal(&mut buf[pos..], cores);
+
+    // CPU logical threads
+    let threads = hw::cpu_threads();
+    write_bytes(buf, &mut pos, b",\"cpu_threads\":");
+    pos += write_u32_decimal(&mut buf[pos..], threads);
 
     // Memory in bytes
     let mem_bytes = hw::total_memory_bytes();
     if mem_bytes > 0 {
         write_bytes(buf, &mut pos, b",\"memory_bytes\":");
         pos += write_u64_decimal(&mut buf[pos..], mem_bytes);
+    }
+
+    // GPUs detected via PCI scan
+    let gpu_count = pci::gpu_count();
+    if gpu_count > 0 {
+        write_bytes(buf, &mut pos, b",\"gpus\":[");
+        for i in 0..gpu_count {
+            if let Some(gpu) = pci::gpu_info(i) {
+                if i > 0 {
+                    write_bytes(buf, &mut pos, b",");
+                }
+                let vendor_name = pci::gpu_vendor_name(gpu.vendor_id);
+                write_bytes(buf, &mut pos, b"{\"name\":\"");
+                write_bytes(buf, &mut pos, vendor_name.as_bytes());
+                write_bytes(buf, &mut pos, b" GPU\",\"vendor\":\"");
+                write_bytes(buf, &mut pos, vendor_name.as_bytes());
+                write_bytes(buf, &mut pos, b"\"}");
+            }
+        }
+        write_bytes(buf, &mut pos, b"]");
+    }
+
+    // DNS nameservers from DHCP
+    if dns_count > 0 {
+        write_bytes(buf, &mut pos, b",\"nameservers\":[");
+        let mut first = true;
+        for i in 0..dns_count.min(3) {
+            if let Some(dns_ip) = dns_servers[i] {
+                if !first {
+                    write_bytes(buf, &mut pos, b",");
+                }
+                write_bytes(buf, &mut pos, b"\"");
+                pos += format_ip(&dns_ip, &mut buf[pos..]);
+                write_bytes(buf, &mut pos, b"\"");
+                first = false;
+            }
+        }
+        write_bytes(buf, &mut pos, b"]");
+    }
+
+    // Detected disks
+    let disks = disk::detected_disks();
+    if !disks.is_empty() {
+        write_bytes(buf, &mut pos, b",\"disks\":[");
+        for (idx, d) in disks.iter().enumerate() {
+            if idx > 0 {
+                write_bytes(buf, &mut pos, b",");
+            }
+            // Device name based on disk type
+            let dev_name: &[u8] = match d.disk_type {
+                disk::DiskType::AtaPio => b"sda",
+                disk::DiskType::Ahci { port } => {
+                    match port {
+                        0 => b"sda",
+                        1 => b"sdb",
+                        2 => b"sdc",
+                        3 => b"sdd",
+                        _ => b"sda",
+                    }
+                }
+                disk::DiskType::VirtioScsi { target, .. } => {
+                    match target {
+                        0 => b"sda",
+                        1 => b"sdb",
+                        2 => b"sdc",
+                        _ => b"sda",
+                    }
+                }
+                disk::DiskType::VirtioBlk => b"vda",
+                disk::DiskType::BiosDirect { .. } => b"sda",
+            };
+            write_bytes(buf, &mut pos, b"{\"name\":\"");
+            write_bytes(buf, &mut pos, dev_name);
+            write_bytes(buf, &mut pos, b"\",\"size_bytes\":");
+            pos += write_u64_decimal(&mut buf[pos..], d.size_bytes);
+            if d.model_len > 0 {
+                write_bytes(buf, &mut pos, b",\"model\":\"");
+                let model_copy = d.model_len.min(buf.len().saturating_sub(pos + 20));
+                if model_copy > 0 && pos + model_copy <= buf.len() {
+                    // Copy model, trimming trailing spaces
+                    let model_bytes = &d.model[..model_copy];
+                    buf[pos..pos + model_copy].copy_from_slice(model_bytes);
+                    pos += model_copy;
+                }
+                write_bytes(buf, &mut pos, b"\"");
+            }
+            write_bytes(buf, &mut pos, b"}");
+        }
+        write_bytes(buf, &mut pos, b"]");
     }
 
     // Existing OS info if detected

@@ -83,6 +83,18 @@ pub extern "C" fn _start(multiboot_magic: u32, multiboot_info: u32) -> ! {
     serial::print_dec(mem_mb);
     serial::println(" MB");
 
+    // Detect CPU topology
+    let cores = hw::cpu_cores();
+    let threads = hw::cpu_threads();
+    serial::print("CPU: ");
+    serial::print_dec(cores);
+    serial::print(" cores, ");
+    serial::print_dec(threads);
+    serial::println(" threads");
+
+    // Scan for GPUs via PCI
+    pci::scan_gpus();
+
     // Parse command line and framebuffer based on multiboot version
     if is_multiboot2 {
         // Parse command line parameters (server=IP:PORT) - MB2 format

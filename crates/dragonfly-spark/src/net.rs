@@ -141,6 +141,9 @@ pub fn now() -> Instant {
     Instant::from_millis(elapsed_ms as i64)
 }
 
+/// Maximum DNS servers we store from DHCP
+pub const MAX_DNS_SERVERS: usize = 3;
+
 /// Network stack state
 pub struct NetworkStack<'a> {
     pub device: NetDevice,
@@ -151,6 +154,9 @@ pub struct NetworkStack<'a> {
     pub gateway: Option<Ipv4Address>,
     /// Boot server IP (siaddr from DHCP - this is the Dragonfly server)
     pub boot_server: Option<Ipv4Address>,
+    /// DNS servers from DHCP option 6
+    pub dns_servers: [Option<Ipv4Address>; MAX_DNS_SERVERS],
+    pub dns_server_count: usize,
 }
 
 impl<'a> NetworkStack<'a> {
@@ -186,6 +192,8 @@ impl<'a> NetworkStack<'a> {
             ip_addr: None,
             gateway: None,
             boot_server: None,
+            dns_servers: [None; MAX_DNS_SERVERS],
+            dns_server_count: 0,
         })
     }
 
@@ -257,6 +265,24 @@ impl<'a> NetworkStack<'a> {
                                 addrs.clear();
                                 addrs.push(new_cidr).ok();
                             });
+                        }
+
+                        // Capture DNS servers from DHCP option 6
+                        self.dns_server_count = 0;
+                        for dns in config.dns_servers.iter() {
+                            if self.dns_server_count < MAX_DNS_SERVERS {
+                                serial::print("DHCP: DNS server ");
+                                serial::print_dec(dns.0[0] as u32);
+                                serial::print(".");
+                                serial::print_dec(dns.0[1] as u32);
+                                serial::print(".");
+                                serial::print_dec(dns.0[2] as u32);
+                                serial::print(".");
+                                serial::print_dec(dns.0[3] as u32);
+                                serial::println("");
+                                self.dns_servers[self.dns_server_count] = Some(*dns);
+                                self.dns_server_count += 1;
+                            }
                         }
 
                         // Set gateway
