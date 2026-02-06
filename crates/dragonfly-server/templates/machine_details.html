@@ -66,17 +66,30 @@
                     style="field-sizing: content"
                     placeholder="hostname" spellcheck="false" autocomplete="off">
             </h1>
-            <span class="inline-flex items-center px-3 py-1 rounded-full text-xs font-semibold"
+            {# Static badge for non-installing states #}
+            <span x-show="machine.status !== 'Installing'" class="inline-flex items-center px-3 py-1 rounded-full text-xs font-semibold"
                 :class="{
                     'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-300': machine.status === 'Ready' || machine.status === 'Installed',
-                    'bg-yellow-100 text-yellow-800 dark:bg-yellow-900/40 dark:text-yellow-300': machine.status === 'InstallingOS' || machine.status === 'Initializing' || machine.status === 'Writing',
                     'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300': machine.status === 'Failed',
                     'bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-300': machine.status === 'Discovered' || machine.status === 'ReadyToInstall',
                     'bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-300': machine.status === 'Offline' || machine.status === 'ExistingOs',
-                    'bg-purple-100 text-purple-800 dark:bg-purple-900/40 dark:text-purple-300': !['Ready','Installed','InstallingOS','Initializing','Writing','Failed','Discovered','ReadyToInstall','Offline','ExistingOs'].includes(machine.status)
+                    'bg-yellow-100 text-yellow-800 dark:bg-yellow-900/40 dark:text-yellow-300': machine.status === 'Initializing' || machine.status === 'Writing',
+                    'bg-purple-100 text-purple-800 dark:bg-purple-900/40 dark:text-purple-300': !['Ready','Installed','Installing','Initializing','Writing','Failed','Discovered','ReadyToInstall','Offline','ExistingOs'].includes(machine.status)
                 }"
                 x-text="formatStatus(machine.status)">
             </span>
+            {# Live progress badge for Installing #}
+            <div x-show="machine.status === 'Installing'" x-cloak class="inline-flex items-center gap-2">
+                <div class="flex items-center gap-2 px-3 py-1 rounded-full bg-yellow-900/40 text-yellow-300 text-xs font-semibold">
+                    <svg class="animate-spin h-3 w-3 text-yellow-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+                    <span x-text="'Installing ' + liveProgress.percent + '%'"></span>
+                </div>
+                <div class="w-32 h-2 rounded-full bg-yellow-700/30 overflow-hidden">
+                    <div class="h-full bg-yellow-500 rounded-full transition-all duration-300"
+                        :style="'width: ' + liveProgress.percent + '%'"></div>
+                </div>
+                <span x-show="liveProgress.action" class="text-xs text-gray-400" x-text="liveProgress.action"></span>
+            </div>
         </div>
     </div>
 
@@ -172,15 +185,21 @@
         </div>
         <div class="flex flex-col gap-1">
             <span class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider font-medium">Status</span>
-            <span class="text-sm"
+            {# Normal status text for non-installing states #}
+            <span x-show="machine.status !== 'Installing'" class="text-sm"
                 :class="{
                     'text-green-600 dark:text-green-400': machine.status === 'Ready' || machine.status === 'Installed',
-                    'text-yellow-600 dark:text-yellow-400': machine.status === 'InstallingOS' || machine.status === 'Initializing' || machine.status === 'Writing',
+                    'text-yellow-600 dark:text-yellow-400': machine.status === 'Initializing' || machine.status === 'Writing',
                     'text-red-600 dark:text-red-400': machine.status === 'Failed',
                     'text-blue-600 dark:text-blue-400': machine.status === 'Discovered' || machine.status === 'ReadyToInstall',
-                    'text-gray-600 dark:text-gray-400': !['Ready','Installed','InstallingOS','Initializing','Writing','Failed','Discovered','ReadyToInstall'].includes(machine.status)
+                    'text-gray-600 dark:text-gray-400': !['Ready','Installed','Installing','Initializing','Writing','Failed','Discovered','ReadyToInstall'].includes(machine.status)
                 }"
                 x-text="formatStatus(machine.status)"></span>
+            {# Live progress for Installing #}
+            <div x-show="machine.status === 'Installing'" x-cloak class="flex flex-col gap-1">
+                <span class="text-sm text-yellow-600 dark:text-yellow-400 font-medium" x-text="'Installing ' + liveProgress.percent + '%'"></span>
+                <span x-show="liveProgress.message" class="text-xs text-gray-500 dark:text-gray-500 truncate max-w-[200px]" x-text="liveProgress.message"></span>
+            </div>
         </div>
         <div class="flex flex-col gap-1">
             <span class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider font-medium">Uptime</span>
@@ -214,7 +233,7 @@
     </div>
 
     {# ===== DEPLOYMENT PROGRESS (conditional) ===== #}
-    <template x-if="machine.status === 'InstallingOS'">
+    <template x-if="machine.status === 'Installing'">
         <template x-if="workflow_info">
             <div class="rounded-xl border-2 border-purple-600 dark:border-purple-600 bg-white dark:bg-[#111] p-5 mb-6"
                  id="workflow-progress-container">
@@ -914,6 +933,9 @@
         // Tag modal
         addTagModal: false,
 
+        // Live install progress (from workflow_progress SSE events)
+        liveProgress: { percent: 0, action: '', message: '', bytesTransferred: 0, bytesTotal: 0 },
+
         // Networks
         networks: [],
         createNetworkInline: false,
@@ -1431,6 +1453,28 @@
                  console.log("SSE Listener: task_progress received:", event.data);
              });
 
+            this.evtSource.addEventListener('workflow_progress', (event) => {
+                try {
+                    const d = JSON.parse(event.data);
+                    if (d.machine_id === this.machineId) {
+                        this.liveProgress = {
+                            percent: d.percent || 0,
+                            action: d.action || '',
+                            message: d.message || '',
+                            bytesTransferred: d.bytes_transferred || 0,
+                            bytesTotal: d.bytes_total || 0,
+                        };
+                        // Also update workflow_info.progress for the big progress section
+                        if (this.workflow_info) {
+                            this.workflow_info.progress = d.percent || 0;
+                            if (d.action) this.workflow_info.current_action = d.action;
+                        }
+                    }
+                } catch (e) {
+                    console.error('Error processing workflow_progress:', e);
+                }
+            });
+
         },
 
         initializeComponent() {
@@ -1474,6 +1518,16 @@
                     console.error("Failed to parse workflow JSON:", e);
                     this.workflow_info = null;
                 }
+            }
+
+            // Seed liveProgress from persisted installation_progress
+            if (this.machine.installation_progress > 0) {
+                this.liveProgress.percent = this.machine.installation_progress;
+                this.liveProgress.message = this.machine.installation_step || '';
+            }
+            if (this.workflow_info) {
+                this.liveProgress.percent = this.workflow_info.progress || this.liveProgress.percent;
+                this.liveProgress.action = this.workflow_info.current_action || '';
             }
 
             this.$nextTick(() => {
