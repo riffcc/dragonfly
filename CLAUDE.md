@@ -75,6 +75,12 @@ Flight and Swarm are equally capable for datacenter management. Swarm adds multi
 - Document complex logic with clear comments
 - Handle errors gracefully with proper error messages
 
+## Issue Tracking
+- **ALL internal tickets go in Plane** — project **FLY** (Dragonfly)
+- Project ID: `e8dc5d17-e534-4327-87c7-86475dee02b2`
+- Use `mcp__plane__plane_entity` to create/list/update issues
+- Do NOT use GitHub Issues for internal tracking
+
 ## Development Workflow
 1. **Understand Requirements** - Read README.md and existing code
 2. **Write Tests First** - Create failing tests that define expected behavior

@@ -799,7 +799,11 @@
                     </button>
                 </div>
             </template>
-            <button type="button"
+            {# TODO(FLY-53): Restore Add Machine button — the modal and handler exist but need
+               rework to match the new inline-edit workflow on the detail page. For now, machines
+               are discovered automatically via PXE/agent checkin. Re-enable when manual MAC
+               registration is needed. #}
+            {# <button type="button"
                     class="inline-flex items-center px-4 py-2 border border-purple-500 dark:border-purple-700 rounded-md shadow-sm text-sm font-medium text-gray-700 dark:text-gray-300 bg-white dark:bg-black hover:bg-gray-50 dark:hover:bg-gray-600 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
                     {% if not is_authenticated %}style="display: none;"{% endif %}
                     @click="console.log('Clicked Add Machine button. Setting addMachineModal=true'); addMachineModal = true">
@@ -807,7 +811,7 @@
                     <path fill-rule="evenodd" d="M10 5a1 1 0 011 1v3h3a1 1 0 110 2h-3v3a1 1 0 11-2 0v-3H6a1 1 0 110-2h3V6a1 1 0 011-1z" clip-rule="evenodd" />
                 </svg>
                 Add
-            </button>
+            </button> #}
         </div>
     </div>
     <div class="mt-8 flex flex-col overflow-visible">

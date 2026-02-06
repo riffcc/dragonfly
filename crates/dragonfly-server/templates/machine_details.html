@@ -26,19 +26,19 @@
         <a href="#" class="flex items-center gap-3 px-4 py-3 rounded-lg text-sm bg-purple-600 text-white font-medium">
             <span class="w-5 text-center">📋</span> Overview
         </a>
-        <span class="flex items-center gap-3 px-4 py-3 rounded-lg text-sm text-gray-400 dark:text-gray-600 cursor-default opacity-50">
+        <span class="flex items-center gap-3 px-4 py-3 rounded-lg text-sm text-gray-400 dark:text-gray-500 cursor-default opacity-50">
             <span class="w-5 text-center">📊</span> Metrics
         </span>
-        <span class="flex items-center gap-3 px-4 py-3 rounded-lg text-sm text-gray-400 dark:text-gray-600 cursor-default opacity-50">
+        <span class="flex items-center gap-3 px-4 py-3 rounded-lg text-sm text-gray-400 dark:text-gray-500 cursor-default opacity-50">
             <span class="w-5 text-center">📜</span> Logs
         </span>
-        <span class="flex items-center gap-3 px-4 py-3 rounded-lg text-sm text-gray-400 dark:text-gray-600 cursor-default opacity-50">
+        <span class="flex items-center gap-3 px-4 py-3 rounded-lg text-sm text-gray-400 dark:text-gray-500 cursor-default opacity-50">
             <span class="w-5 text-center">🔧</span> Console
         </span>
-        <span class="flex items-center gap-3 px-4 py-3 rounded-lg text-sm text-gray-400 dark:text-gray-600 cursor-default opacity-50">
+        <span class="flex items-center gap-3 px-4 py-3 rounded-lg text-sm text-gray-400 dark:text-gray-500 cursor-default opacity-50">
             <span class="w-5 text-center">📸</span> Snapshots
         </span>
-        <span class="flex items-center gap-3 px-4 py-3 rounded-lg text-sm text-gray-400 dark:text-gray-600 cursor-default opacity-50">
+        <span class="flex items-center gap-3 px-4 py-3 rounded-lg text-sm text-gray-400 dark:text-gray-500 cursor-default opacity-50">
             <span class="w-5 text-center">⏱️</span> History
         </span>
     </aside>
@@ -49,7 +49,23 @@
     {# ===== PAGE HEADER ===== #}
     <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6">
         <div class="flex items-center gap-4">
-            <h1 class="text-3xl font-bold text-gray-900 dark:text-white" x-text="machine.hostname || machine.memorable_name || 'Unknown Machine'"></h1>
+            {# Click-to-edit hostname in header #}
+            <h1 class="text-3xl font-bold text-gray-900 dark:text-white">
+                <span x-show="editingField !== 'hostname'"
+                    {% if is_authenticated %}@click="startFieldEdit('hostname', machine.hostname || '')"{% endif %}
+                    class="{% if is_authenticated %}cursor-pointer hover:bg-purple-50 dark:hover:bg-purple-900/10 rounded px-1 -mx-1{% endif %} transition-colors"
+                    x-text="machine.hostname || 'No hostname set'"></span>
+                <input x-show="editingField === 'hostname'" x-cloak
+                    x-ref="edit_hostname"
+                    :value="editValue"
+                    @input="editValue = $event.target.value"
+                    @keydown.enter="commitField('hostname')"
+                    @keydown.escape="cancelFieldEdit()"
+                    @blur="editingField === 'hostname' && commitField('hostname')"
+                    class="text-3xl font-bold bg-transparent border-b-2 border-purple-500 outline-none text-gray-900 dark:text-white"
+                    style="field-sizing: content"
+                    placeholder="hostname" spellcheck="false" autocomplete="off">
+            </h1>
             <span class="inline-flex items-center px-3 py-1 rounded-full text-xs font-semibold"
                 :class="{
                     'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-300': machine.status === 'Ready' || machine.status === 'Installed',
@@ -62,55 +78,10 @@
                 x-text="formatStatus(machine.status)">
             </span>
         </div>
-        <div class="flex items-center gap-2">
-            {% if is_authenticated %}
-            {# Edit button (hidden when editing) #}
-            <button x-show="!isEditing"
-                @click="startEditing()"
-                class="px-4 py-2 bg-transparent border-2 border-blue-600 dark:border-blue-500 hover:bg-blue-500/10 text-blue-700 dark:text-blue-400 text-sm font-medium rounded-lg transition-colors">
-                Edit
-            </button>
-
-            {# Save/Cancel buttons (shown when editing) #}
-            <template x-if="isEditing">
-                <div class="flex items-center gap-2">
-                    <div x-show="editFormError" class="text-sm text-red-500 mr-2" x-text="editFormError"></div>
-                    <button @click="cancelEdit()"
-                            :disabled="isSubmitting"
-                            class="px-4 py-2 bg-gray-600 hover:bg-gray-700 text-white text-sm font-medium rounded-lg transition-colors"
-                            :class="{'opacity-50 cursor-not-allowed': isSubmitting}">
-                        Cancel
-                    </button>
-                    <button @click="saveChanges()"
-                            :disabled="isSubmitting"
-                            class="px-4 py-2 bg-green-600 hover:bg-green-700 text-white text-sm font-medium rounded-lg transition-colors"
-                            :class="{'opacity-50 cursor-not-allowed': isSubmitting}">
-                        <span x-show="isSubmitting">
-                            <svg class="animate-spin -ml-1 mr-2 h-4 w-4 text-white inline" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                            </svg>
-                            Saving...
-                        </span>
-                        <span x-show="!isSubmitting">Save</span>
-                    </button>
-                </div>
-            </template>
-
-            <button
-                @click="deleteModalOpen = true"
-                class="px-4 py-2 bg-transparent border-2 border-red-600 dark:border-red-700 hover:bg-red-600/10 text-red-600 dark:text-red-400 text-sm font-medium rounded-lg transition-colors">
-                Delete
-            </button>
-            {% endif %}
-            <a href="/machines" class="px-4 py-2 bg-transparent border-2 border-gray-900 dark:border-gray-400 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/5 text-sm font-medium rounded-lg transition-colors">
-                &larr; Machines
-            </a>
-        </div>
     </div>
 
-    {# ===== ACTIONS ROW (colored Lucide icon buttons) ===== #}
-    <div class="flex flex-wrap gap-2 mb-6">
+    {# ===== ACTIONS ROW — machine actions (left) + config actions (right) ===== #}
+    <div class="flex flex-wrap items-center gap-2 mb-6">
         <button class="inline-flex items-center gap-1.5 px-3 py-2 bg-transparent border-[1.5px] border-blue-600 dark:border-blue-500 rounded-lg text-xs text-blue-700 dark:text-blue-400 hover:bg-blue-500/10 transition-colors">
             <i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i> Reboot
         </button>
@@ -124,24 +95,83 @@
             <i data-lucide="power-off" class="w-3.5 h-3.5"></i> Power Off
         </button>
         <button class="inline-flex items-center gap-1.5 px-3 py-2 bg-transparent border-0 rounded-lg text-xs text-yellow-700 dark:text-yellow-400 hover:bg-yellow-500/10 transition-colors" style="outline: 2px dashed; outline-offset: -2px;">
-            <i data-lucide="move-right" class="w-3.5 h-3.5"></i> Evacuate
+            <i data-lucide="life-buoy" class="w-3.5 h-3.5"></i> Evacuate
         </button>
         <button class="inline-flex items-center gap-1.5 px-3 py-2 bg-transparent border-0 rounded-lg text-xs text-red-700 dark:text-red-400 hover:bg-red-500/10 transition-colors" style="outline: 2px dashed; outline-offset: -2px;">
             <i data-lucide="eraser" class="w-3.5 h-3.5"></i> Reimage
         </button>
+
+        <div class="flex-1"></div>
+
+        {% if is_authenticated %}
+        {# Apply — shown when config is saved to DB but not yet pushed to host, AND no new local edits #}
+        <button x-show="machine.pending_apply && !hasPendingChanges()" x-cloak
+            @click="applyConfig()"
+            class="inline-flex items-center gap-1.5 px-3 py-2 bg-blue-800 hover:bg-blue-900 border-[1.5px] border-blue-700 shadow-inner rounded-lg text-xs text-white font-semibold transition-colors">
+            Apply
+        </button>
+        {# Save/Cancel — shown when there are unsaved local changes (hides Apply) #}
+        <button x-show="hasPendingChanges()" x-cloak
+            @click="saveAllChanges()" :disabled="isSubmitting"
+            class="inline-flex items-center gap-1.5 px-3 py-2 bg-transparent border-[1.5px] border-green-600 dark:border-green-500 rounded-lg text-xs text-green-700 dark:text-green-400 hover:bg-green-500/10 font-medium transition-colors disabled:opacity-50">
+            <span x-show="isSubmitting" class="inline-flex items-center"><svg class="animate-spin -ml-0.5 mr-1 h-3 w-3 text-green-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>Saving</span>
+            <span x-show="!isSubmitting">Save</span>
+        </button>
+        <button x-show="hasPendingChanges()" x-cloak
+            @click="cancelAllChanges()"
+            class="inline-flex items-center gap-1.5 px-3 py-2 bg-transparent border-[1.5px] border-blue-700 dark:border-blue-600 hover:bg-blue-800/10 rounded-lg text-xs text-blue-800 dark:text-blue-400 font-medium transition-colors">
+            Cancel
+        </button>
+        <span x-show="editFormError" x-cloak class="text-xs text-red-500" x-text="editFormError"></span>
+        <button @click="deleteModalOpen = true"
+            class="inline-flex items-center gap-1.5 px-3 py-2 bg-transparent border-[1.5px] border-red-600 dark:border-red-700 hover:bg-red-600/10 rounded-lg text-xs text-red-600 dark:text-red-400 font-medium transition-colors">
+            Delete
+        </button>
+        {% endif %}
+        <a href="/machines" class="inline-flex items-center gap-1.5 px-3 py-2 bg-transparent border-[1.5px] border-purple-600 dark:border-purple-500 hover:bg-purple-500/10 rounded-lg text-xs text-purple-700 dark:text-purple-400 font-medium transition-colors">
+            <i data-lucide="arrow-big-left" class="w-3.5 h-3.5"></i> Machines
+        </a>
     </div>
 
     {# ===== INFO GRID (4-column: Hostname+IP, Status, Uptime, Created) ===== #}
     <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
         <div class="flex flex-col gap-1">
-            <span class="text-xs text-gray-500 dark:text-gray-600 uppercase tracking-wider font-medium">Hostname</span>
+            <span class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider font-medium">Hostname <span x-show="isFieldPending('hostname')" x-cloak class="text-green-500 dark:text-green-400 normal-case tracking-normal font-normal">(Pending)</span><span x-show="isFieldSavedPending('hostname')" x-cloak class="text-yellow-500 dark:text-yellow-400 normal-case tracking-normal font-normal">(Pending)</span></span>
             <span class="text-sm">
-                <span class="text-purple-600 dark:text-purple-400" x-text="(machine.hostname || machine.reported_hostname || 'Not set')"></span>
-                <span class="text-gray-500 dark:text-gray-500 tech-mono text-xs ml-1" x-text="machine.ip_address ? '(' + machine.ip_address + ')' : ''"></span>
+                <span x-show="editingField !== 'hostname_grid'"
+                    {% if is_authenticated %}@click="startFieldEdit('hostname_grid', machine.hostname || '')"{% endif %}
+                    class="text-purple-600 dark:text-purple-400 {% if is_authenticated %}cursor-pointer hover:underline{% endif %}"
+                    x-text="(machine.hostname || machine.reported_hostname || 'Not set')"></span>
+                <input x-show="editingField === 'hostname_grid'" x-cloak
+                    x-ref="edit_hostname_grid"
+                    :value="editValue"
+                    @input="editValue = $event.target.value"
+                    @keydown.enter="commitField('hostname')"
+                    @keydown.escape="cancelFieldEdit()"
+                    @blur="editingField === 'hostname_grid' && commitField('hostname')"
+                    class="text-sm bg-transparent border-b-2 border-purple-500 outline-none text-purple-600 dark:text-purple-400"
+                    style="field-sizing: content"
+                    placeholder="hostname" spellcheck="false" autocomplete="off">
+                {# IP address — click to edit #}
+                <span x-show="editingField !== 'ip_address'" class="text-gray-500 dark:text-gray-500 tech-mono text-xs ml-1">
+                    <span {% if is_authenticated %}@click="startFieldEdit('ip_address', machine.ip_address || '')"{% endif %}
+                        class="{% if is_authenticated %}cursor-pointer hover:underline{% endif %}"
+                        x-text="machine.ip_address ? '(' + machine.ip_address + ')' : ''"></span>
+                </span>
+                <input x-show="editingField === 'ip_address'" x-cloak
+                    x-ref="edit_ip_address"
+                    :value="editValue"
+                    @input="editValue = $event.target.value"
+                    @keydown.enter="commitField('ip_address')"
+                    @keydown.escape="cancelFieldEdit()"
+                    @blur="editingField === 'ip_address' && commitField('ip_address')"
+                    class="text-xs tech-mono bg-transparent border-b border-purple-500 outline-none text-gray-700 dark:text-gray-300 ml-1"
+                    style="field-sizing: content"
+                    placeholder="IP address" spellcheck="false" autocomplete="off">
             </span>
         </div>
         <div class="flex flex-col gap-1">
-            <span class="text-xs text-gray-500 dark:text-gray-600 uppercase tracking-wider font-medium">Status</span>
+            <span class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider font-medium">Status</span>
             <span class="text-sm"
                 :class="{
                     'text-green-600 dark:text-green-400': machine.status === 'Ready' || machine.status === 'Installed',
@@ -153,11 +183,11 @@
                 x-text="formatStatus(machine.status)"></span>
         </div>
         <div class="flex flex-col gap-1">
-            <span class="text-xs text-gray-500 dark:text-gray-600 uppercase tracking-wider font-medium">Uptime</span>
+            <span class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider font-medium">Uptime</span>
             <span class="text-sm text-gray-900 dark:text-gray-200" x-text="machine.uptime || 'Unknown'"></span>
         </div>
         <div class="flex flex-col gap-1">
-            <span class="text-xs text-gray-500 dark:text-gray-600 uppercase tracking-wider font-medium">Created</span>
+            <span class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider font-medium">Created</span>
             <span class="text-sm text-gray-900 dark:text-gray-200" x-text="'{{ created_at_formatted }}'"></span>
         </div>
     </div>
@@ -328,11 +358,11 @@
             </div>
             <div class="grid grid-cols-2 gap-x-6 gap-y-5">
                 <div class="flex flex-col gap-1">
-                    <span class="text-xs text-gray-500 dark:text-gray-600 uppercase tracking-wider font-medium">Operating System</span>
+                    <span class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider font-medium">Operating System</span>
                     <span class="text-base font-semibold text-gray-900 dark:text-gray-100" x-text="osNames[machine.os_installed] || osNames[machine.os_choice] || machine.os_installed || machine.os_choice || 'Not set'"></span>
                 </div>
                 <div class="flex flex-col gap-1">
-                    <span class="text-xs text-gray-500 dark:text-gray-600 uppercase tracking-wider font-medium flex items-center gap-2">
+                    <span class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider font-medium flex items-center gap-2">
                         CPU
                         <template x-if="machine.cpu_cores">
                             <span class="inline-flex items-center gap-0.5 text-gray-400 dark:text-gray-500 normal-case tracking-normal">
@@ -350,22 +380,22 @@
                     <span class="text-base font-semibold text-gray-900 dark:text-gray-100" x-text="machine.cpu_model || 'Unknown'"></span>
                 </div>
                 <div class="flex flex-col gap-1">
-                    <span class="text-xs text-gray-500 dark:text-gray-600 uppercase tracking-wider font-medium">Memory</span>
+                    <span class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider font-medium">Memory</span>
                     <span class="text-base font-semibold text-gray-900 dark:text-gray-100" x-text="machine.total_ram_bytes ? formatBytes(machine.total_ram_bytes) : 'Unknown'"></span>
                 </div>
                 <template x-if="machine.gpus && machine.gpus.length > 0">
                     <div class="flex flex-col gap-1">
-                        <span class="text-xs text-gray-500 dark:text-gray-600 uppercase tracking-wider font-medium">GPU</span>
+                        <span class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider font-medium">GPU</span>
                         <span class="text-base font-semibold text-gray-900 dark:text-gray-100" x-text="machine.gpus[0].name"></span>
                     </div>
                 </template>
                 <template x-if="machine.bmc_credentials">
                     <div class="flex flex-col gap-1">
-                        <span class="text-xs text-gray-500 dark:text-gray-600 uppercase tracking-wider font-medium">BMC State</span>
+                        <span class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider font-medium">BMC State</span>
                         <span class="text-sm text-green-600 dark:text-green-400 font-medium">
                             <span x-text="machine.bmc_credentials.address || 'Configured'"></span>
                             <template x-if="machine.bmc_credentials.bmc_type">
-                                <span class="text-gray-400 dark:text-gray-600 ml-1 font-normal" x-text="'(' + machine.bmc_credentials.bmc_type + ')'"></span>
+                                <span class="text-gray-400 dark:text-gray-500 ml-1 font-normal" x-text="'(' + machine.bmc_credentials.bmc_type + ')'"></span>
                             </template>
                         </span>
                     </div>
@@ -373,50 +403,314 @@
             </div>
         </div>
 
-        {# Network Section #}
+        {# Network Section — per-field click-to-edit, no bulk edit mode #}
         <div class="rounded-xl border border-gray-200 dark:border-[#1a1a1a] bg-white dark:bg-[#111] p-5">
-            <div class="mb-4">
-                <h2 class="text-sm font-semibold text-gray-500 dark:text-gray-500 uppercase tracking-wider">Network</h2>
+            <div class="mb-4 flex items-center justify-between">
+                <h2 class="text-sm font-semibold text-gray-500 dark:text-gray-500 uppercase tracking-wider">Networking</h2>
+                {% if is_authenticated %}
+                <template x-if="machine.pending_apply && !hasPendingChanges()">
+                    <button @click="revertPendingChanges()" class="text-xs px-2 py-0.5 rounded-full border border-blue-500 dark:border-blue-400 text-blue-600 dark:text-blue-400 hover:bg-blue-500/10 font-medium transition-colors">Revert changes</button>
+                </template>
+                {% endif %}
             </div>
             <div class="grid grid-cols-2 gap-x-6 gap-y-4">
-                <div class="flex flex-col gap-1">
-                    <span class="text-xs text-gray-500 dark:text-gray-600 uppercase tracking-wider font-medium">Domain</span>
-                    <span class="text-sm text-gray-700 dark:text-gray-300" x-text="(function() {
-                        var h = machine.hostname || '';
-                        var parts = h.split('.');
-                        return parts.length > 1 ? parts.slice(1).join('.') : 'N/A';
-                    })()"></span>
+                {# Domain — simple click-to-edit text field #}
+                <div class="flex flex-col gap-1 items-start">
+                    <span class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider font-medium">Domain <span x-show="isFieldPending('domain')" x-cloak class="text-green-500 dark:text-green-400 normal-case tracking-normal font-normal">(Pending)</span><span x-show="isFieldSavedPending('domain')" x-cloak class="text-yellow-500 dark:text-yellow-400 normal-case tracking-normal font-normal">(Pending)</span></span>
+                    <span x-show="editingField !== 'domain'"
+                        class="text-sm {% if is_authenticated %}cursor-pointer hover:underline{% endif %}"
+                        :class="machine.domain ? 'text-gray-700 dark:text-gray-300' : 'text-purple-500 dark:text-purple-400'"
+                        {% if is_authenticated %}@click="startFieldEdit('domain', machine.domain || '')"{% endif %}
+                        x-text="machine.domain || '+ Add'"></span>
+                    {% if is_authenticated %}
+                    <input x-show="editingField === 'domain'" x-cloak
+                        x-ref="edit_domain"
+                        :value="editValue" @input="editValue = $event.target.value"
+                        @keydown.enter="commitField('domain')"
+                        @keydown.escape="cancelFieldEdit()"
+                        @blur="editingField === 'domain' && commitField('domain')"
+                        class="text-sm bg-transparent border-b-2 border-purple-500 outline-none text-gray-700 dark:text-gray-300 px-0"
+                        style="field-sizing: content" size="1"
+                        placeholder="example.com" spellcheck="false" autocomplete="off">
+                    {% endif %}
                 </div>
+                {# MAC — read-only (hardware reported) #}
                 <div class="flex flex-col gap-1">
-                    <span class="text-xs text-gray-500 dark:text-gray-600 uppercase tracking-wider font-medium">MAC</span>
-                    <span class="text-sm text-gray-700 dark:text-gray-300 tech-mono" x-text="machine.mac_address || 'N/A'"></span>
+                    <span class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider font-medium">MAC</span>
+                    <span class="text-sm text-cyan-600 dark:text-cyan-400 tech-mono" x-text="machine.mac_address || 'N/A'"></span>
                 </div>
+                {# Network Mode — per-field custom dropdown #}
+                <div class="flex flex-col gap-1 relative">
+                    <span class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider font-medium">Mode <span x-show="isFieldPending('network_mode')" x-cloak class="text-green-500 dark:text-green-400 normal-case tracking-normal font-normal">(Pending)</span><span x-show="isFieldSavedPending('network_mode')" x-cloak class="text-yellow-500 dark:text-yellow-400 normal-case tracking-normal font-normal">(Pending)</span></span>
+                    <span
+                        class="text-sm text-blue-600 dark:text-blue-400 font-medium self-start {% if is_authenticated %}cursor-pointer hover:underline{% endif %}"
+                        :class="editingField === 'network_mode' ? 'border-b-2 border-purple-500' : ''"
+                        {% if is_authenticated %}@click="editingField === 'network_mode' ? cancelFieldEdit() : startFieldEdit('network_mode', machine.network_mode || 'dhcp')"{% endif %}
+                        x-text="networkModeLabel(machine.network_mode)"></span>
+                    {% if is_authenticated %}
+                    <div x-show="editingField === 'network_mode'" x-cloak
+                        @keydown.escape.window="editingField === 'network_mode' && cancelFieldEdit()"
+                        @click.outside="editingField === 'network_mode' && cancelFieldEdit()"
+                        class="absolute top-full left-0 mt-1 z-20 min-w-[180px] rounded-lg border border-gray-200 dark:border-[#333] bg-white dark:bg-[#1a1a1a] shadow-lg py-1">
+                        <template x-for="opt in [
+                            {v: 'dhcp', l: 'DHCP'},
+                            {v: 'dhcp_static_dns', l: 'DHCP + Static DNS'},
+                            {v: 'static_ipv4', l: 'Static IPv4'},
+                            {v: 'static_ipv6', l: 'Static IPv6'},
+                            {v: 'static_dual_stack', l: 'Static Dual Stack'}
+                        ]" :key="opt.v">
+                            <button type="button"
+                                @click="commitDropdown('network_mode', opt.v)"
+                                class="w-full text-left px-3 py-1.5 text-sm transition-colors"
+                                :class="machine.network_mode === opt.v
+                                    ? 'text-blue-600 dark:text-blue-400 font-medium bg-blue-50 dark:bg-blue-900/20'
+                                    : 'text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-[#222]'"
+                                x-text="opt.l"></button>
+                        </template>
+                    </div>
+                    {% endif %}
+                </div>
+                {# IP Address — read-only (reported by agent) #}
                 <div class="flex flex-col gap-1">
-                    <span class="text-xs text-gray-500 dark:text-gray-600 uppercase tracking-wider font-medium">Mode</span>
-                    <span class="text-sm text-gray-700 dark:text-gray-300" x-text="ipAddressType"></span>
+                    <span class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider font-medium">IP Address</span>
+                    <span class="text-sm text-emerald-600 dark:text-emerald-400 tech-mono" x-text="machine.ip_address || 'Not assigned'"></span>
                 </div>
-                <div class="flex flex-col gap-1">
-                    <span class="text-xs text-gray-500 dark:text-gray-600 uppercase tracking-wider font-medium">Nameservers</span>
-                    <span class="text-sm text-gray-700 dark:text-gray-300 tech-mono" x-text="(machine.nameservers && machine.nameservers.length > 0) ? machine.nameservers.join(', ') : 'None'"></span>
+
+                {# Static IPv4 — shown when mode is static, each field individually editable #}
+                <template x-if="machine.network_mode === 'static_ipv4' || machine.network_mode === 'static_dual_stack'">
+                    <div class="col-span-2 grid grid-cols-3 gap-3 border-t border-gray-100 dark:border-[#222] pt-3">
+                        <div class="flex flex-col gap-0.5">
+                            <span class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider font-medium"><span class="normal-case">IPv4</span> Address</span>
+                            <span x-show="editingField !== 'static_ipv4_address'"
+                                {% if is_authenticated %}@click="startFieldEdit('static_ipv4_address', (machine.static_ipv4 && machine.static_ipv4.address) || '')"{% endif %}
+                                class="text-sm text-emerald-600 dark:text-emerald-400 tech-mono {% if is_authenticated %}cursor-pointer hover:underline{% endif %}"
+                                x-text="(machine.static_ipv4 && machine.static_ipv4.address) || 'Not set'"></span>
+                            <input x-show="editingField === 'static_ipv4_address'" x-cloak
+                                x-ref="edit_static_ipv4_address"
+                                :value="editValue" @input="editValue = $event.target.value"
+                                @keydown.enter="commitStaticField('ipv4', 'address')"
+                                @keydown.escape="cancelFieldEdit()"
+                                @keydown="if ($event.key === '/') { $event.preventDefault(); commitStaticField('ipv4', 'address', false); startFieldEdit('static_ipv4_prefix', String((machine.static_ipv4 && machine.static_ipv4.prefix_len) || '24')); }"
+                                @blur="editingField === 'static_ipv4_address' && commitStaticField('ipv4', 'address')"
+                                class="text-sm tech-mono bg-transparent border-b-2 border-purple-500 outline-none text-emerald-600 dark:text-emerald-400"
+                                style="field-sizing: content"
+                                placeholder="192.168.1.100" spellcheck="false" autocomplete="off">
+                            <span x-show="isFieldPending('static_ipv4')" x-cloak class="text-xs text-green-500 dark:text-green-400">(Pending)</span>
+                            <span x-show="isFieldSavedPending('static_ipv4')" x-cloak class="text-xs text-yellow-500 dark:text-yellow-400">(Pending)</span>
+                        </div>
+                        <div class="flex flex-col gap-1">
+                            <span class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider font-medium">Prefix</span>
+                            <span x-show="editingField !== 'static_ipv4_prefix'"
+                                {% if is_authenticated %}@click="startFieldEdit('static_ipv4_prefix', String((machine.static_ipv4 && machine.static_ipv4.prefix_len) || '24'))"{% endif %}
+                                class="text-sm text-gray-700 dark:text-gray-300 tech-mono {% if is_authenticated %}cursor-pointer hover:underline{% endif %}"
+                                x-text="'/' + ((machine.static_ipv4 && machine.static_ipv4.prefix_len) || '24')"></span>
+                            <input x-show="editingField === 'static_ipv4_prefix'" x-cloak
+                                x-ref="edit_static_ipv4_prefix" type="number" min="1" max="32"
+                                :value="editValue" @input="editValue = $event.target.value"
+                                @keydown.enter="commitStaticField('ipv4', 'prefix_len')"
+                                @keydown.escape="cancelFieldEdit()"
+                                @blur="editingField === 'static_ipv4_prefix' && commitStaticField('ipv4', 'prefix_len')"
+                                class="text-sm tech-mono bg-transparent border-b-2 border-purple-500 outline-none text-gray-700 dark:text-gray-300 w-12"
+                                placeholder="24" spellcheck="false" autocomplete="off">
+                        </div>
+                        <div class="flex flex-col gap-1">
+                            <span class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider font-medium">Gateway</span>
+                            <span x-show="editingField !== 'static_ipv4_gateway'"
+                                {% if is_authenticated %}@click="startFieldEdit('static_ipv4_gateway', (machine.static_ipv4 && machine.static_ipv4.gateway) || '')"{% endif %}
+                                class="text-sm text-gray-700 dark:text-gray-300 tech-mono {% if is_authenticated %}cursor-pointer hover:underline{% endif %}"
+                                x-text="(machine.static_ipv4 && machine.static_ipv4.gateway) || 'Not set'"></span>
+                            <input x-show="editingField === 'static_ipv4_gateway'" x-cloak
+                                x-ref="edit_static_ipv4_gateway"
+                                :value="editValue" @input="editValue = $event.target.value"
+                                @keydown.enter="commitStaticField('ipv4', 'gateway')"
+                                @keydown.escape="cancelFieldEdit()"
+                                @blur="editingField === 'static_ipv4_gateway' && commitStaticField('ipv4', 'gateway')"
+                                class="text-sm tech-mono bg-transparent border-b-2 border-purple-500 outline-none text-gray-700 dark:text-gray-300"
+                                style="field-sizing: content"
+                                placeholder="192.168.1.1" spellcheck="false" autocomplete="off">
+                        </div>
+                    </div>
+                </template>
+
+                {# Static IPv6 — shown when mode is static v6 #}
+                <template x-if="machine.network_mode === 'static_ipv6' || machine.network_mode === 'static_dual_stack'">
+                    <div class="col-span-2 grid grid-cols-3 gap-3 border-t border-gray-100 dark:border-[#222] pt-3">
+                        <div class="flex flex-col gap-1">
+                            <span class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider font-medium"><span class="normal-case">IPv6</span> Address</span>
+                            <span x-show="editingField !== 'static_ipv6_address'"
+                                {% if is_authenticated %}@click="startFieldEdit('static_ipv6_address', (machine.static_ipv6 && machine.static_ipv6.address) || '')"{% endif %}
+                                class="text-sm text-emerald-600 dark:text-emerald-400 tech-mono {% if is_authenticated %}cursor-pointer hover:underline{% endif %}"
+                                x-text="(machine.static_ipv6 && machine.static_ipv6.address) || 'Not set'"></span>
+                            <input x-show="editingField === 'static_ipv6_address'" x-cloak
+                                x-ref="edit_static_ipv6_address"
+                                :value="editValue" @input="editValue = $event.target.value"
+                                @keydown.enter="commitStaticField('ipv6', 'address')"
+                                @keydown.escape="cancelFieldEdit()"
+                                @keydown="if ($event.key === '/') { $event.preventDefault(); commitStaticField('ipv6', 'address', false); startFieldEdit('static_ipv6_prefix', String((machine.static_ipv6 && machine.static_ipv6.prefix_len) || '64')); }"
+                                @blur="editingField === 'static_ipv6_address' && commitStaticField('ipv6', 'address')"
+                                class="text-sm tech-mono bg-transparent border-b-2 border-purple-500 outline-none text-emerald-600 dark:text-emerald-400"
+                                style="field-sizing: content"
+                                placeholder="2001:db8::1" spellcheck="false" autocomplete="off">
+                        </div>
+                        <div class="flex flex-col gap-1">
+                            <span class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider font-medium">Prefix</span>
+                            <span x-show="editingField !== 'static_ipv6_prefix'"
+                                {% if is_authenticated %}@click="startFieldEdit('static_ipv6_prefix', String((machine.static_ipv6 && machine.static_ipv6.prefix_len) || '64'))"{% endif %}
+                                class="text-sm text-gray-700 dark:text-gray-300 tech-mono {% if is_authenticated %}cursor-pointer hover:underline{% endif %}"
+                                x-text="'/' + ((machine.static_ipv6 && machine.static_ipv6.prefix_len) || '64')"></span>
+                            <input x-show="editingField === 'static_ipv6_prefix'" x-cloak
+                                x-ref="edit_static_ipv6_prefix" type="number" min="1" max="128"
+                                :value="editValue" @input="editValue = $event.target.value"
+                                @keydown.enter="commitStaticField('ipv6', 'prefix_len')"
+                                @keydown.escape="cancelFieldEdit()"
+                                @blur="editingField === 'static_ipv6_prefix' && commitStaticField('ipv6', 'prefix_len')"
+                                class="text-sm tech-mono bg-transparent border-b-2 border-purple-500 outline-none text-gray-700 dark:text-gray-300 w-12"
+                                placeholder="64" spellcheck="false" autocomplete="off">
+                        </div>
+                        <div class="flex flex-col gap-1">
+                            <span class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider font-medium">Gateway</span>
+                            <span x-show="editingField !== 'static_ipv6_gateway'"
+                                {% if is_authenticated %}@click="startFieldEdit('static_ipv6_gateway', (machine.static_ipv6 && machine.static_ipv6.gateway) || '')"{% endif %}
+                                class="text-sm text-gray-700 dark:text-gray-300 tech-mono {% if is_authenticated %}cursor-pointer hover:underline{% endif %}"
+                                x-text="(machine.static_ipv6 && machine.static_ipv6.gateway) || 'Not set'"></span>
+                            <input x-show="editingField === 'static_ipv6_gateway'" x-cloak
+                                x-ref="edit_static_ipv6_gateway"
+                                :value="editValue" @input="editValue = $event.target.value"
+                                @keydown.enter="commitStaticField('ipv6', 'gateway')"
+                                @keydown.escape="cancelFieldEdit()"
+                                @blur="editingField === 'static_ipv6_gateway' && commitStaticField('ipv6', 'gateway')"
+                                class="text-sm tech-mono bg-transparent border-b-2 border-purple-500 outline-none text-gray-700 dark:text-gray-300"
+                                style="field-sizing: content"
+                                placeholder="2001:db8::1" spellcheck="false" autocomplete="off">
+                        </div>
+                    </div>
+                </template>
+
+                {# Nameservers — inline horizontal editing, no reflow #}
+                <div class="col-span-2 flex flex-col gap-1 border-t border-gray-100 dark:border-[#222] pt-3"
+                    @click.outside="editingField === 'nameservers' && commitNameservers()"
+                    @keydown.escape.window="editingField === 'nameservers' && commitNameservers()">
+                    <span class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider font-medium">DNS Nameservers <span x-show="isFieldPending('nameservers')" x-cloak class="text-green-500 dark:text-green-400 normal-case tracking-normal font-normal">(Pending)</span><span x-show="isFieldSavedPending('nameservers')" x-cloak class="text-yellow-500 dark:text-yellow-400 normal-case tracking-normal font-normal">(Pending)</span></span>
+                    <div class="flex flex-wrap items-center gap-2">
+                        <template x-if="editingField !== 'nameservers'">
+                            <template x-for="(ns, idx) in (machine.nameservers || [])" :key="ns + '-' + idx">
+                                <span class="text-sm text-gray-700 dark:text-gray-300 tech-mono px-2 py-0.5 rounded bg-gray-100 dark:bg-[#1a1a1a] {% if is_authenticated %}cursor-pointer hover:bg-gray-200 dark:hover:bg-[#222]{% endif %}"
+                                    {% if is_authenticated %}@click="startNameserverEdit()"{% endif %}
+                                    x-text="ns"></span>
+                            </template>
+                        </template>
+                        <template x-if="editingField !== 'nameservers' && (!machine.nameservers || machine.nameservers.length === 0)">
+                            <span class="text-sm text-gray-400 dark:text-gray-500 italic {% if is_authenticated %}cursor-pointer{% endif %}"
+                                {% if is_authenticated %}@click="startNameserverEdit(); editableNameservers.push('')"{% endif %}>None configured</span>
+                        </template>
+                        {% if is_authenticated %}
+                        <template x-if="editingField === 'nameservers'">
+                            <template x-for="(ns, idx) in editableNameservers" :key="idx">
+                                <span class="group inline-flex items-center bg-gray-100 dark:bg-[#1a1a1a] rounded relative">
+                                    <input type="text" x-model="editableNameservers[idx]" placeholder="0.0.0.0" spellcheck="false" autocomplete="off"
+                                        class="text-sm tech-mono bg-transparent outline-none text-gray-900 dark:text-gray-100 px-2 py-0.5 border-b border-transparent focus:border-purple-500"
+                                        style="field-sizing: content"
+                                        @keydown.enter="$event.target.blur()"
+                                        @blur="syncNameservers()">
+                                    <button @click="editableNameservers.splice(idx, 1); syncNameservers(); if (editableNameservers.length === 0) cancelFieldEdit()" type="button"
+                                        class="text-red-400 hover:text-red-300 text-xs -ml-1 pr-1 transition-colors">&times;</button>
+                                </span>
+                            </template>
+                        </template>
+                        <template x-if="editingField === 'nameservers'">
+                            <button @click="editableNameservers.push(''); $nextTick(() => { const inputs = $el.closest('.flex-wrap').querySelectorAll('input'); inputs[inputs.length - 1]?.focus(); })" type="button"
+                                class="text-purple-500 dark:text-purple-400 hover:text-purple-700 dark:hover:text-purple-300 text-sm font-bold px-1 transition-colors" title="Add nameserver">+</button>
+                        </template>
+                        <template x-if="editingField !== 'nameservers' && machine.nameservers && machine.nameservers.length > 0">
+                            <button @click="startNameserverEdit(); editableNameservers.push(''); $nextTick(() => { const inputs = $el.closest('.flex-wrap').querySelectorAll('input'); inputs[inputs.length - 1]?.focus(); })" type="button"
+                                class="text-purple-500 dark:text-purple-400 hover:text-purple-700 dark:hover:text-purple-300 text-sm font-bold px-1 transition-colors" title="Add nameserver">+</button>
+                        </template>
+                        {% endif %}
+                    </div>
                 </div>
+
+                {# Proxmox cluster info #}
                 <template x-if="machine.proxmox_cluster">
                     <div class="flex flex-col gap-1">
-                        <span class="text-xs text-gray-500 dark:text-gray-600 uppercase tracking-wider font-medium">Cluster</span>
+                        <span class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider font-medium">Cluster</span>
                         <span class="text-sm text-purple-600 dark:text-purple-400" x-text="machine.proxmox_cluster"></span>
                     </div>
                 </template>
                 <template x-if="machine.proxmox_node">
                     <div class="flex flex-col gap-1">
-                        <span class="text-xs text-gray-500 dark:text-gray-600 uppercase tracking-wider font-medium">Type</span>
+                        <span class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider font-medium">Type</span>
                         <span class="text-sm text-gray-700 dark:text-gray-300">Proxmox</span>
                     </div>
                 </template>
-                <template x-if="!machine.proxmox_cluster && !machine.proxmox_node">
-                    <div class="flex flex-col gap-1">
-                        <span class="text-xs text-gray-500 dark:text-gray-600 uppercase tracking-wider font-medium">Memorable Name</span>
-                        <span class="text-sm text-gray-700 dark:text-gray-300" x-text="machine.memorable_name || 'Not set'"></span>
+                {# Memorable Name #}
+                <div class="flex flex-col gap-1">
+                    <span class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider font-medium">Memorable Name <span x-show="isFieldPending('memorable_name')" x-cloak class="text-green-500 dark:text-green-400 normal-case tracking-normal font-normal">(Pending)</span><span x-show="isFieldSavedPending('memorable_name')" x-cloak class="text-yellow-500 dark:text-yellow-400 normal-case tracking-normal font-normal">(Pending)</span></span>
+                    <span x-show="editingField !== 'memorable_name'"
+                        class="text-sm text-gray-700 dark:text-gray-300 self-start {% if is_authenticated %}cursor-pointer hover:underline{% endif %}"
+                        {% if is_authenticated %}@click="startFieldEdit('memorable_name', machine.memorable_name || '')"{% endif %}
+                        x-text="machine.memorable_name || 'Not set'"></span>
+                    <input x-show="editingField === 'memorable_name'" x-cloak
+                        x-ref="edit_memorable_name"
+                        :value="editValue" @input="editValue = $event.target.value"
+                        @keydown.enter="commitField('memorable_name')"
+                        @keydown.escape="cancelFieldEdit()"
+                        @blur="editingField === 'memorable_name' && commitField('memorable_name')"
+                        class="text-sm bg-transparent border-b-2 border-purple-500 outline-none text-gray-700 dark:text-gray-300"
+                        style="field-sizing: content"
+                        placeholder="Memorable name" spellcheck="false" autocomplete="off">
+                </div>
+                {# Network — clickable VLAN assignment #}
+                <div class="flex flex-col gap-1 relative">
+                    <span class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider font-medium">Network <span x-show="isFieldPending('network_id')" x-cloak class="text-green-500 dark:text-green-400 normal-case tracking-normal font-normal">(Pending)</span><span x-show="isFieldSavedPending('network_id')" x-cloak class="text-yellow-500 dark:text-yellow-400 normal-case tracking-normal font-normal">(Pending)</span></span>
+                    <span
+                        class="text-sm text-blue-600 dark:text-blue-400 font-medium self-start {% if is_authenticated %}cursor-pointer hover:underline{% endif %}"
+                        {% if is_authenticated %}@click="editingField === 'network_select' ? cancelFieldEdit() : startFieldEdit('network_select', machine.network_id || '')"{% endif %}
+                        x-text="networkName()"></span>
+                    {% if is_authenticated %}
+                    <div x-show="editingField === 'network_select'" x-cloak
+                        @keydown.escape.window="editingField === 'network_select' && cancelFieldEdit()"
+                        @click.outside="editingField === 'network_select' && cancelFieldEdit()"
+                        class="absolute top-full left-0 mt-1 z-20 min-w-[200px] rounded-lg border border-gray-200 dark:border-[#333] bg-white dark:bg-[#1a1a1a] shadow-lg py-1">
+                        <button type="button" @click="commitDropdown('network_id', '')"
+                            class="w-full text-left px-3 py-1.5 text-sm transition-colors"
+                            :class="!machine.network_id
+                                ? 'text-blue-600 dark:text-blue-400 font-medium bg-blue-50 dark:bg-blue-900/20'
+                                : 'text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-[#222]'">Default</button>
+                        <template x-for="net in networks" :key="net.id">
+                            <button type="button" @click="commitDropdown('network_id', net.id)"
+                                class="w-full text-left px-3 py-1.5 text-sm transition-colors"
+                                :class="machine.network_id === net.id
+                                    ? 'text-blue-600 dark:text-blue-400 font-medium bg-blue-50 dark:bg-blue-900/20'
+                                    : 'text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-[#222]'"
+                                x-text="net.name + (net.vlan_id ? ' (VLAN ' + net.vlan_id + ')' : '')"></button>
+                        </template>
+                        <div class="border-t border-gray-100 dark:border-[#333] mt-1 pt-1">
+                            <template x-if="!createNetworkInline">
+                                <button type="button" @click="createNetworkInline = true; $nextTick(() => $refs.newNetName?.focus())"
+                                    class="w-full text-left px-3 py-1.5 text-sm text-purple-600 dark:text-purple-400 hover:bg-purple-50 dark:hover:bg-purple-900/10 transition-colors font-medium">+ Create network</button>
+                            </template>
+                            <template x-if="createNetworkInline">
+                                <div class="px-3 py-2 space-y-2">
+                                    <input type="text" x-ref="newNetName" x-model="newNetwork.name" placeholder="Network name"
+                                        class="w-full text-sm bg-transparent border-b border-gray-300 dark:border-gray-600 outline-none text-gray-900 dark:text-gray-100 py-1 focus:border-purple-500"
+                                        @keydown.enter="newNetwork.name.trim() && createNetwork()"
+                                        @keydown.escape="createNetworkInline = false; newNetwork = { name: '' }">
+                                    <input type="text" x-model="newNetwork.vlan_id" placeholder="VLAN ID (optional)"
+                                        class="w-full text-sm bg-transparent border-b border-gray-300 dark:border-gray-600 outline-none text-gray-900 dark:text-gray-100 py-1 focus:border-purple-500"
+                                        @keydown.enter="newNetwork.name.trim() && createNetwork()"
+                                        @keydown.escape="createNetworkInline = false; newNetwork = { name: '' }">
+                                    <div class="flex gap-2 pt-1">
+                                        <button type="button" @click="createNetwork()" :disabled="!newNetwork.name.trim()"
+                                            class="text-xs text-white bg-purple-600 hover:bg-purple-700 px-2 py-1 rounded transition-colors disabled:opacity-50">Create</button>
+                                        <button type="button" @click="createNetworkInline = false; newNetwork = { name: '' }"
+                                            class="text-xs text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300">Cancel</button>
+                                    </div>
+                                </div>
+                            </template>
+                        </div>
                     </div>
-                </template>
+                    {% endif %}
+                </div>
             </div>
         </div>
     </div>
@@ -430,16 +724,16 @@
             <table class="w-full">
                 <thead>
                     <tr class="border-b border-gray-100 dark:border-[#222]">
-                        <th class="text-left text-[11px] text-gray-400 dark:text-gray-600 uppercase tracking-wider pb-2 font-medium">Device</th>
-                        <th class="text-left text-[11px] text-gray-400 dark:text-gray-600 uppercase tracking-wider pb-2 font-medium">Size</th>
-                        <th class="text-left text-[11px] text-gray-400 dark:text-gray-600 uppercase tracking-wider pb-2 font-medium">Model</th>
+                        <th class="text-left text-[11px] text-gray-400 dark:text-gray-400 uppercase tracking-wider pb-2 font-medium">Device</th>
+                        <th class="text-left text-[11px] text-gray-400 dark:text-gray-400 uppercase tracking-wider pb-2 font-medium">Size</th>
+                        <th class="text-left text-[11px] text-gray-400 dark:text-gray-400 uppercase tracking-wider pb-2 font-medium">Model</th>
                     </tr>
                 </thead>
                 <tbody>
                     <template x-for="disk in machine.disks" :key="disk.device">
                         <tr class="border-b border-gray-50 dark:border-[#1a1a1a] last:border-0">
                             <td class="py-3 text-sm tech-mono text-purple-600 dark:text-purple-400" x-text="disk.device"></td>
-                            <td class="py-3 text-sm text-gray-700 dark:text-gray-300" x-text="disk.size_bytes ? formatBytes(disk.size_bytes) : 'Unknown'"></td>
+                            <td class="py-3 text-sm text-gray-700 dark:text-gray-300" x-text="disk.size_bytes ? formatDiskSize(disk.size_bytes) : 'Unknown'"></td>
                             <td class="py-3 text-sm text-gray-700 dark:text-gray-300" x-text="disk.model || 'Unknown'"></td>
                         </tr>
                     </template>
@@ -447,12 +741,14 @@
             </table>
         </template>
         <template x-if="!machine.disks || machine.disks.length === 0">
-            <p class="text-sm text-gray-400 dark:text-gray-600 italic">No storage devices detected</p>
+            <p class="text-sm text-gray-400 dark:text-gray-500 italic">No storage devices detected</p>
         </template>
     </div>
 
     </div>{# /flex-1 content #}
     </div>{# /flex sidebar+content layout #}
+
+    {# Create Network is now inline within the network dropdown popover #}
 
     {# ===== DELETE MACHINE MODAL ===== #}
     <div x-show="deleteModalOpen"
@@ -516,14 +812,29 @@
 <script>
   // Define helper functions in the script scope
   const formatStatus = (s) => s ? s.replace(/([a-z])([A-Z])/g, '$1 $2').replace(/ (To|Of|In|On|At|By|For|The|A|An) /g, (m) => m.toLowerCase()) : s;
-  const formatBytes = (bytes, decimals = 1) => {
-      if (bytes === 0) return '0 Bytes';
+
+  // FLY-50: Binary bytes for RAM (1024-based, GiB/MiB/KiB)
+  const formatBinaryBytes = (bytes, decimals = 1) => {
+      if (!bytes || bytes === 0) return '0 Bytes';
       const k = 1024;
       const dm = decimals < 0 ? 0 : decimals;
-      const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB', 'PB', 'EB', 'ZB', 'YB'];
+      const sizes = ['Bytes', 'KiB', 'MiB', 'GiB', 'TiB', 'PiB'];
       const i = Math.floor(Math.log(bytes) / Math.log(k));
       return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
   };
+
+  // FLY-50: Decimal bytes for disks (1000-based, GB/TB)
+  const formatDiskSize = (bytes, decimals = 1) => {
+      if (!bytes || bytes === 0) return '0 Bytes';
+      const k = 1000;
+      const dm = decimals < 0 ? 0 : decimals;
+      const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB', 'PB'];
+      const i = Math.floor(Math.log(bytes) / Math.log(k));
+      return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
+  };
+
+  // Keep formatBytes as alias for backward compat (uses binary)
+  const formatBytes = formatBinaryBytes;
   const findMatchingStreamTasks = (fileName) => {
       const taskRows = document.querySelectorAll('#tasks-table-body tr[data-task-name]');
       const matchingRows = [];
@@ -586,15 +897,13 @@
         fetchDebounceTimer: null,
         error: null,
 
-        // Inline edit properties
-        isEditing: false,
-        editForm: {
-            hostname: '',
-            memorable_name: '',
-            mac_address: '',
-            ip_address: '',
-            os_choice: ''
-        },
+        // Per-field click-to-edit
+        editingField: null,
+        editValue: '',
+
+        // Accumulated per-field changes (saved with Save, discarded with Cancel)
+        pendingChanges: {},
+        editableNameservers: [],
         editFormError: '',
         isSubmitting: false,
 
@@ -605,6 +914,11 @@
         // Tag modal
         addTagModal: false,
 
+        // Networks
+        networks: [],
+        createNetworkInline: false,
+        newNetwork: { name: '', vlan_id: '' },
+
         // IP Address Type
         ipAddressType: 'Unknown',
 
@@ -612,77 +926,29 @@
         osNames: {},
 
         // --- Methods ---
-        startEditing() {
-            this.editForm = {
-                hostname: this.machine.hostname || '',
-                memorable_name: this.machine.memorable_name || '',
-                mac_address: this.machine.mac_address || '',
-                ip_address: this.machine.ip_address || '',
-                os_choice: this.machine.os_choice || ''
-            };
-            this.editFormError = '';
-            this.isEditing = true;
-        },
 
-        cancelEdit() {
-            this.isEditing = false;
-            this.editFormError = '';
-        },
-
-        saveChanges() {
-            this.isSubmitting = true;
-            this.editFormError = '';
-
-            // Validate MAC address format
-            if (this.editForm.mac_address && !/^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$/.test(this.editForm.mac_address)) {
-                this.editFormError = 'Invalid MAC address format. Please use XX:XX:XX:XX:XX:XX format.';
-                this.isSubmitting = false;
-                return;
-            }
-
-            // Validate IP address format if provided
-            if (this.editForm.ip_address && !/^((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$/.test(this.editForm.ip_address)) {
-                this.editFormError = 'Invalid IP address format. Must be a valid IPv4 address.';
-                this.isSubmitting = false;
-                return;
-            }
-
-            // Validate hostname format if provided
-            if (this.editForm.hostname && !/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/i.test(this.editForm.hostname)) {
-                this.editFormError = 'Invalid hostname format. Must follow RFC-1123 standard.';
-                this.isSubmitting = false;
-                return;
-            }
-
-            fetch(`/api/machines/${this.machine.id}`, {
-                method: 'PUT',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify(this.editForm)
-            })
-            .then(response => {
-                if (!response.ok) {
-                    return response.json().then(data => {
-                        throw new Error(data.message || 'Failed to update machine');
-                    });
-                }
-                return response.json();
-            })
-            .then(data => {
-                Object.assign(this.machine, this.editForm);
-                if (window.showToast) {
-                    window.showToast(`Machine updated successfully`, 'success');
-                }
-                this.isEditing = false;
-            })
-            .catch(error => {
-                this.editFormError = error.message || 'An error occurred while updating the machine';
-                console.error('Error updating machine:', error);
-            })
-            .finally(() => {
-                this.isSubmitting = false;
+        // Per-field click-to-edit methods
+        startFieldEdit(field, currentValue) {
+            this.editingField = field;
+            this.editValue = currentValue;
+            this.$nextTick(() => {
+                const ref = this.$refs['edit_' + field];
+                if (ref) ref.focus();
             });
+        },
+
+        cancelFieldEdit() {
+            this.editingField = null;
+            this.editValue = '';
+        },
+
+        // Measure exact pixel width of text using the element's computed font
+        measureTextWidth(el, text) {
+            if (!this._measureCtx) {
+                this._measureCtx = document.createElement('canvas').getContext('2d');
+            }
+            this._measureCtx.font = getComputedStyle(el).font;
+            return Math.ceil(this._measureCtx.measureText(text).width) + 4;
         },
 
         deleteMachine() {
@@ -720,6 +986,324 @@
         removeTag(tag) {
             // Tag removal - will be wired up when tag API exists
             console.log('Remove tag:', tag);
+        },
+
+        networkModeLabel(mode) {
+            const labels = {
+                'dhcp': 'DHCP',
+                'dhcp_static_dns': 'DHCP + Static DNS',
+                'static_ipv4': 'Static IPv4',
+                'static_ipv6': 'Static IPv6',
+                'static_dual_stack': 'Static Dual Stack',
+            };
+            return labels[mode] || mode || 'DHCP';
+        },
+
+        // Domain display: look up network by machine.network_id
+        domainValue() {
+            if (!this.machine.network_id) return 'N/A';
+            const net = this.networks.find(n => n.id === this.machine.network_id);
+            return net && net.domain ? net.domain : 'N/A';
+        },
+
+        // Network name display — "Default" for unassigned VLAN 0 machines
+        networkName() {
+            if (!this.machine.network_id) {
+                // Machine is on the native/untagged VLAN (same as Dragonfly host)
+                return 'Default';
+            }
+            const net = this.networks.find(n => n.id === this.machine.network_id);
+            return net ? net.name : 'Unknown';
+        },
+
+        // Check if a field has a pending (unsaved local) change — green
+        isFieldPending(field) {
+            return this.pendingChanges.hasOwnProperty(field);
+        },
+
+        // Check if a field is saved to DB but not yet applied to host — yellow
+        isFieldSavedPending(field) {
+            return !this.isFieldPending(field) && (this.machine.pending_fields || []).includes(field);
+        },
+
+        // Are there any unsaved local changes?
+        hasPendingChanges() {
+            return Object.keys(this.pendingChanges).length > 0;
+        },
+
+        // Revert saved-but-not-applied changes (clear pending state on server)
+        revertPendingChanges() {
+            fetch(`/api/machines/${this.machine.id}/revert-pending`, { method: 'POST' })
+                .then(r => {
+                    if (!r.ok) throw new Error('Revert failed');
+                    return r.json();
+                })
+                .then(data => {
+                    if (data && data.id) {
+                        this.machine = data;
+                        this._originalMachine = JSON.parse(JSON.stringify(data));
+                    }
+                    if (window.showToast) window.showToast('Pending changes reverted', 'success');
+                })
+                .catch(e => {
+                    if (window.showToast) window.showToast('Revert failed: ' + e.message, 'error');
+                });
+        },
+
+        // Check if a value matches the original server state for a field
+        _matchesOriginal(field, value) {
+            if (!this._originalMachine) return false;
+            const orig = this._originalMachine[field];
+            // Normalize: treat null/undefined/'' as equivalent
+            const a = (value === null || value === undefined || value === '') ? '' : value;
+            const b = (orig === null || orig === undefined || orig === '') ? '' : orig;
+            return a === b;
+        },
+
+        // Track a pending change, or remove it if it's back to the original value
+        _setPending(field, value) {
+            if (this._matchesOriginal(field, value)) {
+                const copy = { ...this.pendingChanges };
+                delete copy[field];
+                this.pendingChanges = copy;
+            } else {
+                this.pendingChanges = { ...this.pendingChanges, [field]: value };
+            }
+        },
+
+        // Commit a simple text field locally (Enter or blur)
+        commitField(field, closeAfter = true) {
+            let value = this.editValue.trim();
+            // If memorable_name is cleared, revert to MAC-derived original
+            if (field === 'memorable_name' && !value) {
+                value = this._originalMemorableName || '';
+            }
+            this.machine[field] = value || null; // visual feedback (null for display)
+            // Send "" not null — server needs Some("") to distinguish "clear" from "not sent"
+            this._setPending(field, value);
+            if (closeAfter) this.cancelFieldEdit();
+        },
+
+        // Commit a dropdown selection locally
+        commitDropdown(field, value) {
+            this.machine[field] = value;
+            this._setPending(field, value || null);
+            // Switching to plain DHCP → restore nameservers from what DHCP reported
+            if (field === 'network_mode' && value === 'dhcp' && this.machine.reported_nameservers?.length) {
+                this.machine.nameservers = [...this.machine.reported_nameservers];
+                this.editableNameservers = [...this.machine.reported_nameservers];
+                this._setPending('nameservers', [...this.machine.reported_nameservers]);
+            }
+            this.cancelFieldEdit();
+        },
+
+        // Commit a static IP sub-field locally
+        commitStaticField(version, subfield, closeAfter = true) {
+            const value = this.editValue.trim();
+            const key = 'static_' + version; // static_ipv4 or static_ipv6
+            if (!this.machine[key]) {
+                this.machine[key] = { address: '', prefix_len: version === 'ipv4' ? 24 : 64, gateway: null };
+            }
+            const parsedValue = subfield === 'prefix_len' ? parseInt(value, 10) : (value || null);
+            this.machine[key][subfield] = parsedValue;
+
+            // Auto-calculate gateway when address + prefix are both set
+            if ((subfield === 'address' || subfield === 'prefix_len') && version === 'ipv4') {
+                const addr = this.machine[key].address;
+                const prefix = this.machine[key].prefix_len;
+                if (addr && prefix && !this.machine[key].gateway) {
+                    const gw = this._autoGateway(addr, prefix);
+                    if (gw) this.machine[key].gateway = gw;
+                }
+            }
+
+            // Update displayed IP to match configured static address
+            if (subfield === 'address' && version === 'ipv4' && this.machine[key].address) {
+                this.machine.ip_address = this.machine[key].address;
+            }
+
+            const newBlock = { ...this.machine[key] };
+            // Compare to original — if identical, remove from pending
+            const orig = this._originalMachine ? this._originalMachine[key] : null;
+            if (orig && JSON.stringify(newBlock) === JSON.stringify(orig)) {
+                const copy = { ...this.pendingChanges };
+                delete copy[key];
+                this.pendingChanges = copy;
+            } else {
+                this.pendingChanges = { ...this.pendingChanges, [key]: newBlock };
+            }
+            if (closeAfter) this.cancelFieldEdit();
+        },
+
+        // Calculate first usable address in subnet as default gateway
+        _autoGateway(addr, prefix) {
+            const parts = addr.split('.').map(Number);
+            if (parts.length !== 4 || parts.some(p => isNaN(p) || p < 0 || p > 255)) return null;
+            if (prefix < 1 || prefix > 30) return null;
+            const ip = (parts[0] << 24) | (parts[1] << 16) | (parts[2] << 8) | parts[3];
+            const mask = (~0 << (32 - prefix)) >>> 0;
+            const network = (ip & mask) >>> 0;
+            const gateway = (network + 1) >>> 0;
+            return [(gateway >>> 24) & 0xff, (gateway >>> 16) & 0xff, (gateway >>> 8) & 0xff, gateway & 0xff].join('.');
+        },
+
+        // Start editing nameservers (isolated from other fields)
+        startNameserverEdit() {
+            this.editableNameservers = this.machine.nameservers ? [...this.machine.nameservers] : [];
+            this.editingField = 'nameservers';
+        },
+
+        // Sync nameserver edits to pendingChanges without closing edit mode
+        syncNameservers() {
+            const cleaned = this.editableNameservers.filter(ns => ns.trim() !== '');
+            this.machine.nameservers = cleaned;
+            // Compare to original
+            const origNs = (this._originalMachine && this._originalMachine.nameservers) || [];
+            const nsChanged = JSON.stringify(cleaned) !== JSON.stringify(origNs);
+            if (nsChanged) {
+                this.pendingChanges = { ...this.pendingChanges, nameservers: cleaned };
+                // PoLSP: auto-switch to dhcp_static_dns if nameservers added while in DHCP
+                if ((this.machine.network_mode || 'dhcp') === 'dhcp' && cleaned.length > 0) {
+                    this.pendingChanges = { ...this.pendingChanges, network_mode: 'dhcp_static_dns' };
+                    this.machine.network_mode = 'dhcp_static_dns';
+                }
+            } else {
+                const copy = { ...this.pendingChanges };
+                delete copy.nameservers;
+                this.pendingChanges = copy;
+            }
+        },
+
+        // Close nameservers editing (called on click-outside via cancelFieldEdit)
+        commitNameservers() {
+            this.syncNameservers();
+            this.cancelFieldEdit();
+        },
+
+        // Save all accumulated changes to Dragonfly DB
+        saveAllChanges() {
+            if (!this.hasPendingChanges()) return;
+            this.isSubmitting = true;
+            this.editFormError = '';
+
+            // Validate hostname if present
+            if (this.pendingChanges.hostname !== undefined && this.pendingChanges.hostname &&
+                !/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/i.test(this.pendingChanges.hostname)) {
+                this.editFormError = 'Invalid hostname format (RFC-1123).';
+                this.isSubmitting = false;
+                return;
+            }
+
+            const payload = { ...this.pendingChanges };
+
+            fetch(`/api/machines/${this.machine.id}`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            })
+            .then(response => {
+                if (!response.ok) {
+                    return response.text().then(text => {
+                        try { throw new Error(JSON.parse(text).message || text); }
+                        catch(e) { throw new Error(text || 'Failed to save'); }
+                    });
+                }
+                return response.json();
+            })
+            .then(data => {
+                // Use server response as canonical state
+                if (data && data.id) {
+                    this.machine = data;
+                } else {
+                    // Fallback: mark pending_apply if network-affecting fields changed
+                    const networkFields = ['network_mode', 'static_ipv4', 'static_ipv6', 'nameservers', 'hostname', 'domain'];
+                    if (networkFields.some(f => this.pendingChanges.hasOwnProperty(f))) {
+                        this.machine.pending_apply = true;
+                    }
+                }
+                this.pendingChanges = {};
+                this._originalMachine = JSON.parse(JSON.stringify(this.machine));
+                if (window.showToast) window.showToast('Saved to Dragonfly', 'success');
+            })
+            .catch(error => {
+                this.editFormError = error.message;
+                if (window.showToast) window.showToast(error.message, 'error');
+            })
+            .finally(() => {
+                this.isSubmitting = false;
+            });
+        },
+
+        // Discard all local changes, revert to server state
+        cancelAllChanges() {
+            this.pendingChanges = {};
+            this.editingField = null;
+            this.editFormError = '';
+            // Re-fetch canonical state from server
+            fetch(`/api/machines/${this.machine.id}`)
+                .then(r => r.json())
+                .then(data => {
+                    if (data.machine) {
+                        this.machine = data.machine;
+                        this._originalMachine = JSON.parse(JSON.stringify(data.machine));
+                    }
+                })
+                .catch(e => console.error('Cancel re-fetch failed:', e));
+        },
+
+        // Fetch networks list
+        fetchNetworks() {
+            fetch('/api/networks')
+                .then(r => r.ok ? r.json() : Promise.resolve([]))
+                .then(data => { this.networks = Array.isArray(data) ? data : (data.networks || []); })
+                .catch(e => console.warn('Could not load networks:', e));
+        },
+
+        // Create a new network
+        createNetwork() {
+            if (!this.newNetwork.name.trim()) return;
+            fetch('/api/networks', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(this.newNetwork)
+            })
+            .then(r => {
+                if (!r.ok) throw new Error('Failed to create network');
+                return r.json();
+            })
+            .then(net => {
+                this.networks.push(net);
+                this.createNetworkInline = false;
+                this.newNetwork = { name: '', vlan_id: '' };
+                // Auto-select the new network for this machine
+                if (net.id) {
+                    this.machine.network_id = net.id;
+                    this._setPending('network_id', net.id);
+                }
+                if (window.showToast) window.showToast('Network created', 'success');
+            })
+            .catch(error => {
+                if (window.showToast) window.showToast(error.message, 'error');
+            });
+        },
+
+        applyConfig() {
+            fetch(`/api/machines/${this.machine.id}/apply`, { method: 'POST' })
+                .then(response => {
+                    if (!response.ok) throw new Error('Apply failed');
+                    return response.json();
+                })
+                .then(() => {
+                    this.machine.pending_apply = false;
+                    if (window.showToast) {
+                        window.showToast('Configuration applied', 'success');
+                    }
+                })
+                .catch(error => {
+                    if (window.showToast) {
+                        window.showToast('Apply failed: ' + error.message, 'error');
+                    }
+                });
         },
 
         initSSE() {
@@ -862,12 +1446,11 @@
 
                     this.machineId = this.machine.id;
                     this.machineIp = this.machine.ip_address;
+                    this._originalMachine = JSON.parse(JSON.stringify(this.machine));
+                    this._originalMemorableName = this.machine.memorable_name || '';
                     console.log("Machine ID set to:", this.machineId);
 
                     this.ipAddressType = '{{ ip_address_type | safe }}';
-                    console.log("IP Address Type:", this.ipAddressType);
-
-                    this.editForm = { ...this.machine };
                 } catch (e) {
                     console.error("Failed to parse machine JSON:", e);
                     this.machine = { id: 'error', ip_address: 'error', status: 'Error parsing data', hostname: 'Error' };
@@ -919,6 +1502,7 @@
                 .then(names => { this.osNames = names; })
                 .catch(e => console.warn('Could not load OS names:', e));
 
+            this.fetchNetworks();
             this.initSSE();
         },
 
