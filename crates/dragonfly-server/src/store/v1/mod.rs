@@ -3,17 +3,17 @@
 //! Clean, backend-agnostic storage layer with:
 //! - UUIDv7 primary keys for time-ordered, globally unique IDs
 //! - Deterministic identity hashing for machine re-identification
-//! - Store trait implementations for ReDB, etcd, and memory
+//! - Store trait implementations for SQLite, etcd, and memory
 //!
 //! See SCHEMA_V0.1.0.md for design details.
 
 mod memory;
-mod redb;
+mod sqlite;
 #[cfg(test)]
 mod tests;
 
 pub use memory::MemoryStore;
-pub use redb::RedbStore;
+pub use sqlite::SqliteStore;
 
 use async_trait::async_trait;
 use dragonfly_common::{Machine, MachineState, Network};
@@ -59,10 +59,10 @@ pub enum StoreError {
 pub type Result<T> = std::result::Result<T, StoreError>;
 
 /// Backend-agnostic storage interface.
-/// Implementations for ReDB, etcd, and memory.
+/// Implementations for SQLite, etcd, and memory.
 ///
 /// All methods are async for compatibility with network-based backends (etcd).
-/// Local backends (ReDB, memory) use blocking operations wrapped in spawn_blocking.
+/// Local backends (SQLite, memory) use async pools or blocking operations.
 #[async_trait]
 pub trait Store: Send + Sync {
     // === Machine Operations ===
@@ -93,6 +93,17 @@ pub trait Store: Send + Sync {
 
     /// Delete machine
     async fn delete_machine(&self, id: Uuid) -> Result<bool>;
+
+    // === Tag Operations ===
+
+    /// Create a standalone tag (persists even with no machines assigned)
+    async fn create_tag(&self, name: &str) -> Result<bool>;
+
+    /// List all unique tags (union of standalone tags and machine-assigned tags)
+    async fn list_all_tags(&self) -> Result<Vec<String>>;
+
+    /// Remove a tag from all machines and from the standalone tags table
+    async fn delete_tag(&self, tag: &str) -> Result<bool>;
 
     // === Template Operations ===
 
@@ -177,8 +188,8 @@ pub enum StoreConfig {
     /// In-memory storage (for testing)
     Memory,
 
-    /// ReDB local database
-    Redb { path: String },
+    /// SQLite local database
+    Sqlite { path: String },
 
     /// etcd distributed storage
     #[allow(dead_code)]
@@ -195,8 +206,8 @@ impl Default for StoreConfig {
 pub async fn create_store(config: &StoreConfig) -> Result<Arc<dyn Store>> {
     match config {
         StoreConfig::Memory => Ok(Arc::new(MemoryStore::new())),
-        StoreConfig::Redb { path } => {
-            let store = RedbStore::open(path)?;
+        StoreConfig::Sqlite { path } => {
+            let store = SqliteStore::open(path).await?;
             Ok(Arc::new(store))
         }
         StoreConfig::Etcd { endpoints: _ } => {

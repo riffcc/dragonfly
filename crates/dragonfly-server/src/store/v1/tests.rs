@@ -1,7 +1,7 @@
 //! Tests for the v0.1.0 Store trait
 //!
 //! These tests are written against the Store trait, so they can be run
-//! against any implementation (MemoryStore, RedbStore, EtcdStore).
+//! against any implementation (MemoryStore, SqliteStore, EtcdStore).
 
 use super::*;
 use dragonfly_common::{
@@ -20,13 +20,13 @@ fn create_memory_store() -> Arc<dyn Store> {
     Arc::new(MemoryStore::new())
 }
 
-/// Create a ReDB store for testing (uses tempdir)
-fn create_redb_store() -> Arc<dyn Store> {
+/// Create a SQLite store for testing (uses tempdir)
+async fn create_sqlite_store() -> Arc<dyn Store> {
     let tmp = tempfile::tempdir().unwrap();
-    let path = tmp.path().join("test.redb");
+    let path = tmp.path().join("test.db");
     // Note: we leak the tempdir to keep the file around for the test
     std::mem::forget(tmp);
-    Arc::new(RedbStore::open(&path).unwrap())
+    Arc::new(SqliteStore::open(&path).await.unwrap())
 }
 
 /// Create a test store instance (default: memory)
@@ -774,13 +774,13 @@ async fn test_machine_workflow_result() {
 }
 
 // ============================================================================
-// ReDB-Specific Tests
+// SQLite-Specific Tests
 // ============================================================================
-// These tests verify that RedbStore behaves identically to MemoryStore
+// These tests verify that SqliteStore behaves identically to MemoryStore
 
 #[tokio::test]
-async fn test_redb_machine_crud() {
-    let store = create_redb_store();
+async fn test_sqlite_machine_crud() {
+    let store = create_sqlite_store().await;
     let machine = test_machine("00:11:22:33:44:55");
     let id = machine.id;
 
@@ -814,8 +814,8 @@ async fn test_redb_machine_crud() {
 }
 
 #[tokio::test]
-async fn test_redb_machine_indices() {
-    let store = create_redb_store();
+async fn test_sqlite_machine_indices() {
+    let store = create_sqlite_store().await;
 
     let mut m1 = test_machine("00:11:22:33:44:55");
     m1.config.tags = vec!["production".to_string(), "web".to_string()];
@@ -839,8 +839,8 @@ async fn test_redb_machine_indices() {
 }
 
 #[tokio::test]
-async fn test_redb_template_crud() {
-    let store = create_redb_store();
+async fn test_sqlite_template_crud() {
+    let store = create_sqlite_store().await;
 
     let template = Template::new("debian-13").with_action(ActionStep::Image2disk(Image2DiskConfig {
         url: "http://example.com/debian.raw".to_string(),
@@ -862,8 +862,8 @@ async fn test_redb_template_crud() {
 }
 
 #[tokio::test]
-async fn test_redb_workflow_crud() {
-    let store = create_redb_store();
+async fn test_sqlite_workflow_crud() {
+    let store = create_sqlite_store().await;
 
     let machine = test_machine("00:11:22:33:44:55");
     let machine_id = machine.id;
@@ -885,8 +885,8 @@ async fn test_redb_workflow_crud() {
 }
 
 #[tokio::test]
-async fn test_redb_settings_crud() {
-    let store = create_redb_store();
+async fn test_sqlite_settings_crud() {
+    let store = create_sqlite_store().await;
 
     store.put_setting("proxmox.api_url", "https://pve.local:8006").await.unwrap();
     store.put_setting("proxmox.username", "root@pam").await.unwrap();
@@ -903,8 +903,8 @@ async fn test_redb_settings_crud() {
 }
 
 #[tokio::test]
-async fn test_redb_machine_update_preserves_indices() {
-    let store = create_redb_store();
+async fn test_sqlite_machine_update_preserves_indices() {
+    let store = create_sqlite_store().await;
 
     let mut machine = test_machine("00:11:22:33:44:55");
     machine.config.tags = vec!["production".to_string()];

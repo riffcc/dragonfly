@@ -51,30 +51,30 @@ const HANDOFF_READY_FILE: &str = "/var/lib/dragonfly/handoff_ready";
 
 // Get the current mode (or None if not set)
 pub async fn get_current_mode() -> Result<Option<DeploymentMode>> {
-    // Try to get the mode from ReDB
-    const REDB_PATH: &str = "/var/lib/dragonfly/dragonfly.redb";
+    // Try to get the mode from SQLite
+    const SQLITE_PATH: &str = "/var/lib/dragonfly/dragonfly.sqlite3";
 
-    if Path::new(REDB_PATH).exists() {
-        match crate::store::RedbStore::open(REDB_PATH) {
+    if Path::new(SQLITE_PATH).exists() {
+        match crate::store::SqliteStore::open(SQLITE_PATH).await {
             Ok(store) => {
                 match store.get_setting("deployment_mode").await {
                     Ok(Some(mode_str)) => {
                         let mode = DeploymentMode::from_str(&mode_str);
                         if mode.is_some() {
-                            debug!("Found deployment mode '{}' in ReDB", mode_str);
+                            debug!("Found deployment mode '{}' in SQLite", mode_str);
                             return Ok(mode);
                         }
                     }
                     Ok(None) => {
-                        debug!("No deployment mode found in ReDB");
+                        debug!("No deployment mode found in SQLite");
                     }
                     Err(e) => {
-                        warn!("Failed to read deployment mode from ReDB: {}", e);
+                        warn!("Failed to read deployment mode from SQLite: {}", e);
                     }
                 }
             }
             Err(e) => {
-                warn!("Failed to open ReDB for mode check: {}", e);
+                warn!("Failed to open SQLite for mode check: {}", e);
             }
         }
     }
@@ -98,7 +98,7 @@ pub async fn get_current_mode() -> Result<Option<DeploymentMode>> {
 // Save the current mode
 pub async fn save_mode(mode: DeploymentMode, already_elevated: bool) -> Result<()> {
     const DB_DIR: &str = "/var/lib/dragonfly";
-    const REDB_PATH: &str = "/var/lib/dragonfly/dragonfly.redb";
+    const SQLITE_PATH: &str = "/var/lib/dragonfly/dragonfly.sqlite3";
 
     // Ensure the directory exists
     let db_dir_path = Path::new(DB_DIR);
@@ -112,16 +112,17 @@ pub async fn save_mode(mode: DeploymentMode, already_elevated: bool) -> Result<(
         info!("Created database directory: {}", DB_DIR);
     }
 
-    // Open ReDB and save the mode
-    let store = crate::store::RedbStore::open(REDB_PATH)
-        .map_err(|e| anyhow!("Failed to open ReDB at {}: {}", REDB_PATH, e))?;
+    // Open SQLite and save the mode
+    let store = crate::store::SqliteStore::open(SQLITE_PATH)
+        .await
+        .map_err(|e| anyhow!("Failed to open SQLite at {}: {}", SQLITE_PATH, e))?;
 
     let mode_str = mode.as_str();
     store.put_setting("deployment_mode", mode_str)
         .await
         .map_err(|e| anyhow!("Failed to save deployment mode: {}", e))?;
 
-    info!("Successfully saved deployment mode '{}' to ReDB: {}", mode_str, REDB_PATH);
+    info!("Successfully saved deployment mode '{}' to SQLite: {}", mode_str, SQLITE_PATH);
     Ok(())
 }
 
@@ -792,8 +793,8 @@ pub async fn configure_simple_mode() -> Result<()> {
     }
 
     // NOTE: Mode is saved by the UI handler via app_state.store BEFORE calling this function
-    // Do NOT call save_mode() here as it would try to open ReDB separately and cause a lock conflict
-    
+    // Do NOT call save_mode() here as it would try to open SQLite separately and cause a lock conflict
+
     let is_macos = std::env::consts::OS == "macos" || std::env::consts::OS == "darwin";
     
     info!("System configured for Simple mode. Dragonfly will run as a service on startup.");
@@ -887,8 +888,8 @@ pub async fn configure_flight_mode(store: std::sync::Arc<dyn Store>) -> Result<(
                 info!("Kubernetes connectivity confirmed. Will use K8s/etcd for storage if configured.");
             },
             Err(e) => {
-                // K8s is OPTIONAL - Flight mode works fine with ReDB as storage backend
-                info!("Kubernetes not available ({}). Using ReDB for storage.", e);
+                // K8s is OPTIONAL - Flight mode works fine with SQLite as storage backend
+                info!("Kubernetes not available ({}). Using SQLite for storage.", e);
             }
         }
         Ok::<(), anyhow::Error>(()) // Always succeed - K8s is optional
@@ -1035,7 +1036,7 @@ pub async fn configure_flight_mode(store: std::sync::Arc<dyn Store>) -> Result<(
             }
             Err(_) => {
                 // K8s not available - skip Tinkerbell update, use native provisioning
-                info!("K8s not available - skipping Tinkerbell stack update, using native ReDB provisioning");
+                info!("K8s not available - skipping Tinkerbell stack update, using native SQLite provisioning");
             }
         }
         Ok::<(), anyhow::Error>(())
@@ -1071,7 +1072,7 @@ pub async fn configure_flight_mode(store: std::sync::Arc<dyn Store>) -> Result<(
     }
 
     // NOTE: Mode is saved by the UI handler via app_state.store BEFORE calling this function
-    // Do NOT call save_mode() here as it would try to open ReDB separately and cause a lock conflict
+    // Do NOT call save_mode() here as it would try to open SQLite separately and cause a lock conflict
 
     // Initialize OS templates now that Flight mode is configured
     info!("Initializing OS templates for Flight mode...");

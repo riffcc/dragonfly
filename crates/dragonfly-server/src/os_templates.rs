@@ -2,7 +2,7 @@
 //!
 //! This module handles loading and managing OS templates for provisioning.
 //! Templates are loaded from YAML files in /opt/dragonfly/templates/ and stored
-//! in the configured storage backend (ReDB, memory, etc.) via the v1 Store trait.
+//! in the configured storage backend (SQLite, memory, etc.) via the v1 Store trait.
 //!
 //! The file system is the source of truth - templates are always loaded from files
 //! on startup, allowing updates without database wipes.

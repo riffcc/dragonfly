@@ -257,7 +257,7 @@ impl AuthnBackend for AdminBackend {
             }
         };
 
-        // Fetch the stored user from ReDB Store
+        // Fetch the stored user from SQLite Store
         let user = match self.store.get_user_by_username(&username).await {
             Ok(Some(user)) => user,
             Ok(None) => {

@@ -322,8 +322,7 @@ settings          : key -> value
 
 No migration. Clean break.
 
-1. Delete `/var/lib/dragonfly/sqlite.db`
-2. Delete `/var/lib/dragonfly/dragonfly.redb`
+1. Delete `/var/lib/dragonfly/dragonfly.sqlite3`
 3. Machines re-register on next PXE boot
 4. Proxmox VMs re-sync on next sync cycle
 

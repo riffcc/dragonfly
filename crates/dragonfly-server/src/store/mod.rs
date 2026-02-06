@@ -6,7 +6,7 @@
 //! The `v1` module contains the new schema with:
 //! - `Machine` as the central entity with UUIDv7 primary keys
 //! - Deterministic identity hashing for machine re-identification
-//! - Backend-agnostic `Store` trait for ReDB, etcd, and memory
+//! - Backend-agnostic `Store` trait for SQLite, etcd, and memory
 //!
 //! All types are imported from `dragonfly_common`.
 
@@ -17,4 +17,4 @@ pub mod v1;
 pub mod conversions;
 
 // Re-export v1 Store as the primary interface
-pub use v1::{create_store, MemoryStore, RedbStore, Store, StoreConfig, StoreError, Result};
+pub use v1::{create_store, MemoryStore, SqliteStore, Store, StoreConfig, StoreError, Result};

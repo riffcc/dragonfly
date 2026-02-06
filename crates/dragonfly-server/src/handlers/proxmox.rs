@@ -18,6 +18,134 @@ use crate::AppState;
 use crate::store::conversions::{machine_from_register_request, machine_to_common};
 use dragonfly_common::models::{RegisterRequest, MachineStatus, ErrorResponse};
 
+/// Proxmox connection settings stored as JSON in the Store's settings KV.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ProxmoxSettings {
+    pub id: i64,
+    pub host: String,
+    pub port: i32,
+    pub username: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auth_ticket: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub csrf_token: Option<String>,
+    pub ticket_timestamp: Option<i64>,
+    pub skip_tls_verify: bool,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub updated_at: chrono::DateTime<chrono::Utc>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vm_create_token: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vm_power_token: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vm_config_token: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vm_sync_token: Option<String>,
+}
+
+const PROXMOX_SETTINGS_KEY: &str = "proxmox_settings";
+
+/// Load Proxmox settings from the Store's settings KV (public for use from api.rs).
+pub async fn get_proxmox_settings_from_store_pub(
+    store: &dyn crate::store::v1::Store,
+) -> Result<Option<ProxmoxSettings>, anyhow::Error> {
+    get_proxmox_settings_from_store(store).await
+}
+
+/// Save Proxmox settings to the Store's settings KV (public for use from api.rs).
+pub async fn put_proxmox_settings_to_store_pub(
+    store: &dyn crate::store::v1::Store,
+    settings: &ProxmoxSettings,
+) -> Result<(), anyhow::Error> {
+    put_proxmox_settings_to_store(store, settings).await
+}
+
+/// Load Proxmox settings from the Store's settings KV.
+async fn get_proxmox_settings_from_store(
+    store: &dyn crate::store::v1::Store,
+) -> Result<Option<ProxmoxSettings>, anyhow::Error> {
+    match store.get_setting(PROXMOX_SETTINGS_KEY).await {
+        Ok(Some(json)) => {
+            let settings: ProxmoxSettings = serde_json::from_str(&json)?;
+            Ok(Some(settings))
+        }
+        Ok(None) => Ok(None),
+        Err(e) => Err(anyhow::anyhow!("Failed to load Proxmox settings: {}", e)),
+    }
+}
+
+/// Save Proxmox settings to the Store's settings KV as JSON.
+async fn put_proxmox_settings_to_store(
+    store: &dyn crate::store::v1::Store,
+    settings: &ProxmoxSettings,
+) -> Result<(), anyhow::Error> {
+    let json = serde_json::to_string(settings)?;
+    store
+        .put_setting(PROXMOX_SETTINGS_KEY, &json)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to save Proxmox settings: {}", e))
+}
+
+/// Update connection settings (host, port, username, tls) in Store. Creates entry if needed.
+async fn update_proxmox_connection_settings_in_store(
+    store: &dyn crate::store::v1::Store,
+    host: &str,
+    port: i32,
+    username: &str,
+    skip_tls_verify: bool,
+) -> Result<ProxmoxSettings, anyhow::Error> {
+    let now = chrono::Utc::now();
+    let mut settings = get_proxmox_settings_from_store(store)
+        .await?
+        .unwrap_or(ProxmoxSettings {
+            id: 1,
+            host: String::new(),
+            port: 8006,
+            username: String::new(),
+            auth_ticket: None,
+            csrf_token: None,
+            ticket_timestamp: None,
+            skip_tls_verify: false,
+            created_at: now,
+            updated_at: now,
+            vm_create_token: None,
+            vm_power_token: None,
+            vm_config_token: None,
+            vm_sync_token: None,
+        });
+
+    settings.host = host.to_string();
+    settings.port = port;
+    settings.username = username.to_string();
+    settings.skip_tls_verify = skip_tls_verify;
+    settings.updated_at = now;
+
+    put_proxmox_settings_to_store(store, &settings).await?;
+    Ok(settings)
+}
+
+/// Update encrypted tokens in Store's Proxmox settings.
+async fn update_proxmox_tokens_in_store(
+    store: &dyn crate::store::v1::Store,
+    encrypted_create: String,
+    encrypted_power: String,
+    encrypted_config: String,
+    encrypted_sync: String,
+) -> Result<(), anyhow::Error> {
+    let now = chrono::Utc::now();
+    let mut settings = get_proxmox_settings_from_store(store)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("Cannot update tokens: no Proxmox settings exist"))?;
+
+    settings.vm_create_token = Some(encrypted_create);
+    settings.vm_power_token = Some(encrypted_power);
+    settings.vm_config_token = Some(encrypted_config);
+    settings.vm_sync_token = Some(encrypted_sync);
+    settings.updated_at = now;
+
+    put_proxmox_settings_to_store(store, &settings).await
+}
+
 // Define local structs needed by discover_proxmox_handler
 #[derive(Serialize, Debug, Clone)]
 pub struct DiscoveredProxmox {
@@ -395,7 +523,7 @@ pub async fn connect_proxmox_handler(
     let skip_tls_verify = request.skip_tls_verify.unwrap_or(false);
 
     // Same connection process as before - authenticate with provided credentials
-    let result = authenticate_with_proxmox(&host, port as i32, &username, &password, skip_tls_verify).await;
+    let result = authenticate_with_proxmox(state.store.as_ref(), &host, port as i32, &username, &password, skip_tls_verify).await;
     
     match result {
         Ok(_) => {
@@ -616,6 +744,7 @@ pub async fn connect_proxmox_handler(
 
 // Helper function to authenticate with Proxmox separately from token creation
 async fn authenticate_with_proxmox(
+    store: &dyn crate::store::v1::Store,
     host: &str,
     port: i32,
     username: &str,
@@ -645,11 +774,11 @@ async fn authenticate_with_proxmox(
             
             // No longer save the credentials - we only need them once to create tokens
             // Just add host, port, and whether to skip TLS verification (no credentials)
-            match crate::db::update_proxmox_connection_settings(
-                host, port as i32, username, skip_tls_verify
+            match update_proxmox_connection_settings_in_store(
+                store, host, port as i32, username, skip_tls_verify
             ).await {
-                Ok(_) => info!("Proxmox connection settings saved to database (without storing password)"),
-                Err(e) => warn!("Failed to save Proxmox settings to database: {}", e),
+                Ok(_) => info!("Proxmox connection settings saved to Store (without storing password)"),
+                Err(e) => warn!("Failed to save Proxmox settings to Store: {}", e),
             }
             
             Ok(())
@@ -1724,8 +1853,8 @@ pub async fn start_proxmox_sync_task(
                     };
                     
                     if !proxmox_configured {
-                        // Check database as a last resort
-                        match crate::db::get_proxmox_settings().await {
+                        // Check Store as a last resort
+                        match get_proxmox_settings_from_store(state_clone.store.as_ref()).await {
                             Ok(Some(settings)) => {
                                 if settings.vm_sync_token.is_none() {
                                     info!("Proxmox configured but sync token not available, skipping sync check");
@@ -1838,18 +1967,18 @@ pub async fn connect_to_proxmox(
         }
     }
     
-    // If not in memory, try to get settings from the database
-    let db_settings = match crate::db::get_proxmox_settings().await {
+    // If not in memory, try to get settings from the Store
+    let db_settings = match get_proxmox_settings_from_store(state.store.as_ref()).await {
         Ok(Some(settings)) => {
-            info!("Found Proxmox settings in database for host {}", settings.host);
+            info!("Found Proxmox settings in Store for host {}", settings.host);
             Some(settings)
         },
         Ok(None) => {
-            info!("No Proxmox settings found in database, checking in-memory settings");
+            info!("No Proxmox settings found in Store, checking in-memory settings");
             None
         },
         Err(e) => {
-            warn!("Error loading Proxmox settings from database: {}", e);
+            warn!("Error loading Proxmox settings from Store: {}", e);
             None
         }
     };
@@ -2246,20 +2375,22 @@ pub async fn save_proxmox_tokens(state: &crate::AppState, token_set: ProxmoxToke
     let encrypted_config_token = encrypt_string(&token_set.config_token)?;
     let encrypted_sync_token = encrypt_string(&token_set.sync_token)?;
     
-    // Update database with encrypted tokens
-    crate::db::update_proxmox_tokens(
+    // Update Store with encrypted tokens
+    update_proxmox_tokens_in_store(
+        state.store.as_ref(),
         encrypted_create_token,
         encrypted_power_token,
         encrypted_config_token,
-        encrypted_sync_token
+        encrypted_sync_token,
     ).await?;
-    
+
     // Also update connection settings
-    crate::db::update_proxmox_connection_settings(
+    update_proxmox_connection_settings_in_store(
+        state.store.as_ref(),
         &token_set.connection_info.host,
         token_set.connection_info.port,
         &token_set.connection_info.username,
-        token_set.connection_info.skip_tls_verify
+        token_set.connection_info.skip_tls_verify,
     ).await?;
     
     // Store tokens in memory for immediate use
@@ -2299,15 +2430,15 @@ pub async fn load_proxmox_tokens_to_memory(
     
     info!("Loading Proxmox API tokens from database to memory...");
     
-    // Get Proxmox settings from the database
-    let settings = match crate::db::get_proxmox_settings().await {
+    // Get Proxmox settings from the Store
+    let settings = match get_proxmox_settings_from_store(state.store.as_ref()).await {
         Ok(Some(settings)) => settings,
         Ok(None) => {
-            info!("No Proxmox settings found in database, skipping token loading");
+            info!("No Proxmox settings found in Store, skipping token loading");
             return Ok(());
         },
         Err(e) => {
-            warn!("Error loading Proxmox settings from database: {}", e);
+            warn!("Error loading Proxmox settings from Store: {}", e);
             return Err(anyhow::anyhow!("Failed to load Proxmox settings: {}", e));
         }
     };

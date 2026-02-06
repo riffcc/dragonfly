@@ -12,7 +12,7 @@ use std::convert::Infallible;
 use serde_json::json;
 use uuid::Uuid;
 use dragonfly_common::models::{MachineStatus, HostnameUpdateRequest, HostnameUpdateResponse, OsInstalledUpdateRequest, OsInstalledUpdateResponse, StatusUpdateRequest, BmcCredentialsUpdateRequest, InstallationProgressUpdateRequest, RegisterRequest, Machine};
-use crate::db::{self, ErrorResponse, OsAssignmentRequest};
+use dragonfly_common::models::{ErrorResponse, OsAssignmentRequest};
 use crate::provisioning::HardwareCheckIn;
 use crate::store::conversions::{machine_to_common, revert_pending_changes};
 use crate::AppState;
@@ -335,7 +335,7 @@ async fn register_machine(
     Json(payload): Json<RegisterRequest>,
 ) -> Response {
     use crate::store::conversions::machine_from_register_request;
-    use crate::db::RegisterResponse;
+    use dragonfly_common::models::RegisterResponse;
 
     info!("Registering machine with MAC: {}, CPU: {:?}, Cores: {:?}, RAM: {:?}",
           payload.mac_address, payload.cpu_model, payload.cpu_cores, payload.total_ram_bytes);
@@ -413,7 +413,7 @@ async fn get_all_machines(
     // Check if user is authenticated as admin
     let is_admin = auth_session.user.is_some();
 
-    // Query v1 Store (ReDB) for machines
+    // Query v1 Store (SQLite) for machines
     let machines: Vec<Machine> = match state.store.list_machines().await {
         Ok(machine_list) => machine_list.iter().map(|m| machine_to_common(m)).collect(),
         Err(e) => {
@@ -667,7 +667,7 @@ async fn assign_os(
     }
 }
 
-// Shared implementation - uses v1 Store (ReDB with UUIDv7)
+// Shared implementation - uses v1 Store (SQLite with UUIDv7)
 async fn assign_os_internal(app_state: &AppState, id: Uuid, os_choice: String) -> Response {
     info!("Assigning OS {} to machine {}", os_choice, id);
 
@@ -832,10 +832,10 @@ async fn update_status(
 
     // If status is Discovered, check for default OS
     if status == MachineStatus::Discovered {
-        if let Ok(settings) = db::get_app_settings().await {
-            if let Some(default_os) = settings.default_os {
+        if let Ok(Some(default_os)) = state.store.get_setting("default_os").await {
+            if !default_os.is_empty() {
                 info!("Applying default OS '{}' to newly registered machine {}", default_os, id);
-                machine.config.os_choice = Some(default_os.clone());
+                machine.config.os_choice = Some(default_os);
             }
         }
     }
@@ -4390,7 +4390,7 @@ async fn get_machine_status_and_progress_partial(
 /// Get all tags in the system
 #[axum::debug_handler]
 async fn api_get_tags(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     auth_session: AuthSession,
 ) -> Response {
     // Check if user is authenticated as admin
@@ -4398,7 +4398,7 @@ async fn api_get_tags(
         return response;
     }
 
-    match db::get_all_tags().await {
+    match state.store.list_all_tags().await {
         Ok(tags) => (StatusCode::OK, Json(tags)).into_response(),
         Err(e) => {
             error!("Failed to get all tags: {}", e);
@@ -4442,9 +4442,8 @@ async fn api_create_tag(
         ).into_response();
     }
 
-    match db::create_tag(&tag_name).await {
+    match state.store.create_tag(&tag_name).await {
         Ok(true) => {
-            // Emit tag created event
             let _ = state.event_manager.send("tags_updated".to_string());
             (StatusCode::CREATED, Json(json!({"success": true, "message": "Tag created"}))).into_response()
         },
@@ -4476,7 +4475,7 @@ async fn api_delete_tag(
         return response;
     }
 
-    match db::delete_tag(&tag_name).await {
+    match state.store.delete_tag(&tag_name).await {
         Ok(true) => {
             // Emit tag deleted event
             let _ = state.event_manager.send("tags_updated".to_string());
@@ -4816,23 +4815,52 @@ pub struct ProxmoxTokenRequest {
 // API endpoint to update a specific Proxmox API token
 #[axum::debug_handler]
 pub async fn update_proxmox_token(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     Json(request): Json<ProxmoxTokenRequest>,
 ) -> impl IntoResponse {
     use dragonfly_common::models::ErrorResponse;
-    
+    use crate::encryption::encrypt_string;
+
     info!("Updating Proxmox API token for type: {}", request.token_type);
-    
+
     // Validate token type
-    if !["create", "power", "config"].contains(&request.token_type.as_str()) {
+    if !["create", "power", "config", "sync"].contains(&request.token_type.as_str()) {
         return (StatusCode::BAD_REQUEST, Json(ErrorResponse {
             error: "INVALID_TOKEN_TYPE".to_string(),
-            message: "Token type must be one of: create, power, config".to_string(),
+            message: "Token type must be one of: create, power, config, sync".to_string(),
         })).into_response();
     }
-    
-    // Update the token in the database
-    match db::update_proxmox_api_tokens(&request.token_type, &request.token_value).await {
+
+    // Encrypt the token before storing
+    let encrypted = match encrypt_string(&request.token_value) {
+        Ok(v) => v,
+        Err(e) => {
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse {
+                error: "ENCRYPTION_FAILED".to_string(),
+                message: format!("Failed to encrypt token: {}", e),
+            })).into_response();
+        }
+    };
+
+    // Update the token in the Store
+    let result: Result<(), anyhow::Error> = async {
+        let store = state.store.as_ref();
+        let mut settings = crate::handlers::proxmox::get_proxmox_settings_from_store_pub(store)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("No Proxmox settings exist"))?;
+
+        match request.token_type.as_str() {
+            "create" => settings.vm_create_token = Some(encrypted),
+            "power" => settings.vm_power_token = Some(encrypted),
+            "config" => settings.vm_config_token = Some(encrypted),
+            "sync" => settings.vm_sync_token = Some(encrypted),
+            _ => unreachable!(),
+        }
+        settings.updated_at = chrono::Utc::now();
+        crate::handlers::proxmox::put_proxmox_settings_to_store_pub(store, &settings).await
+    }.await;
+
+    match result {
         Ok(_) => {
             info!("Successfully updated Proxmox API token for {} operations", request.token_type);
             (StatusCode::OK, Json(json!({

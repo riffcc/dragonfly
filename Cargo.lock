@@ -1664,7 +1664,6 @@ dependencies = [
  "proxmox-login",
  "proxmox-schema",
  "rand 0.8.5",
- "redb",
  "regex",
  "reqwest 0.12.28",
  "rust-embed",
@@ -4851,15 +4850,6 @@ checksum = "22e18b0f0062d30d4230b2e85ff77fdfe4326feb054b9783a3460d8435c8ab91"
 dependencies = [
  "crossbeam-deque",
  "crossbeam-utils",
-]
-
-[[package]]
-name = "redb"
-version = "3.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ae323eb086579a3769daa2c753bb96deb95993c534711e0dbe881b5192906a06"
-dependencies = [
- "libc",
 ]
 
 [[package]]

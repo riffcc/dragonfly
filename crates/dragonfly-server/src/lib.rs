@@ -16,7 +16,7 @@ use listenfd::ListenFd;
 use axum::extract::MatchedPath;
 
 use crate::auth::{AdminBackend, auth_router, Settings};
-use crate::db::init_db;
+// Legacy db module removed — all storage via Store trait
 use crate::event_manager::EventManager;
 use crate::services::{ServiceRunner, ServicesConfig, DhcpServiceConfig, TftpServiceConfig};
 use dragonfly_dhcp::DhcpMode;
@@ -40,7 +40,6 @@ use tracing_subscriber::{fmt, layer::SubscriberExt, EnvFilter};
 
 mod auth;
 mod api;
-mod db;
 mod filters; // Uncomment unused module
 pub mod handlers;
 pub mod ui;
@@ -239,8 +238,6 @@ pub struct AppState {
     pub is_installation_server: bool, // True if started via install command
     // Add client IP tracking
     pub client_ip: Arc<Mutex<Option<String>>>,
-    // Store the raw Pool<Sqlite> here
-    pub dbpool: sqlx::Pool<sqlx::Sqlite>,
     // Store API tokens in memory for immediate use after creation
     pub tokens: Arc<Mutex<std::collections::HashMap<String, String>>>,
     // Native provisioning service (optional - None uses legacy behavior)
@@ -366,18 +363,12 @@ pub async fn run() -> anyhow::Result<()> {
 
     let _is_install_mode = is_installation_server;
 
-    // Initialize databases
-    let db_pool = init_db().await?;
-
-    // Initialize v0.1.0 storage (unified store for machines, workflows, templates, settings)
-    const REDB_PATH: &str = "/var/lib/dragonfly/dragonfly.redb";
-    let store: Arc<dyn store::v1::Store> = match store::v1::RedbStore::open(REDB_PATH) {
-        Ok(s) => Arc::new(s),
-        Err(e) => {
-            warn!("ReDB failed, using in-memory store: {}", e);
-            Arc::new(store::v1::MemoryStore::new())
-        }
-    };
+    // Initialize unified SQLite storage
+    const SQLITE_PATH: &str = "/var/lib/dragonfly/dragonfly.sqlite3";
+    let sqlite_store = store::v1::SqliteStore::open(SQLITE_PATH).await
+        .map_err(|e| anyhow!("Failed to open SQLite store: {}", e))?;
+    let db_pool = sqlite_store.pool().clone();
+    let store: Arc<dyn store::v1::Store> = Arc::new(sqlite_store);
 
     // --- Auto-configure Flight mode ---
     // Dragonfly always runs in Flight mode now - no setup wizard needed
@@ -470,7 +461,7 @@ pub async fn run() -> anyhow::Result<()> {
         Err(e) => return Err(anyhow!("Failed to load admin credentials: {}", e)),
     };
 
-    // Load settings from ReDB or use defaults
+    // Load settings from SQLite or use defaults
     let settings = match store.get_setting("require_login").await {
         Ok(Some(val)) => {
             let mut s = auth::Settings::default();
@@ -554,7 +545,7 @@ pub async fn run() -> anyhow::Result<()> {
     let provisioning_service = if !native_provisioning_disabled && !is_installation_server {
         info!("Native provisioning enabled - initializing ProvisioningService");
 
-        // Get boot server URL with auto-detection (env var > ReDB > auto-detect > localhost)
+        // Get boot server URL with auto-detection (env var > SQLite > auto-detect > localhost)
         let boot_server_url = mode::get_base_url(Some(store.as_ref())).await;
         info!("Using boot server URL: {}", boot_server_url);
 
@@ -612,8 +603,6 @@ pub async fn run() -> anyhow::Result<()> {
         is_installation_server,
         // Initialize client IP tracking
         client_ip: Arc::new(Mutex::new(None)),
-        // Store the db_pool directly
-        dbpool: db_pool.clone(),
         // Store API tokens in memory for immediate use after creation
         tokens: Arc::new(Mutex::new(std::collections::HashMap::new())),
         // Native provisioning service (if enabled)
@@ -691,7 +680,6 @@ pub async fn run() -> anyhow::Result<()> {
         })
         .layer(CookieManagerLayer::new())
         .layer(auth_layer)
-        .layer(Extension(db_pool.clone()))
         // Configure a more verbose TraceLayer (after IP tracking)
         .layer(
             TraceLayer::new_for_http()
@@ -831,8 +819,10 @@ async fn handle_favicon() -> impl IntoResponse {
     }
 }
 
-// Access functions for main.rs to use
-pub use db::database_exists;
+// Check if database exists at the standard installation path
+pub async fn database_exists() -> bool {
+    std::path::Path::new("/var/lib/dragonfly/dragonfly.sqlite3").exists()
+}
 
 // Add encryption module
 pub mod encryption;

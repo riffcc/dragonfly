@@ -28,11 +28,6 @@ pub async fn create_test_app_state() -> AppState {
     // Create minimal settings
     let settings = Settings::default();
 
-    // Create in-memory SQLite pool for tests
-    let dbpool = sqlx::SqlitePool::connect(":memory:")
-        .await
-        .expect("Failed to create in-memory SQLite pool");
-
     // Create a minimal Jinja environment for testing
     let env = Environment::new();
     let template_env = TemplateEnv::Static(Arc::new(env));
@@ -53,7 +48,6 @@ pub async fn create_test_app_state() -> AppState {
         is_demo_mode: true,
         is_installation_server: false,
         client_ip: Arc::new(Mutex::new(None)),
-        dbpool,
         tokens: Arc::new(Mutex::new(HashMap::new())),
         provisioning: None,
         store,

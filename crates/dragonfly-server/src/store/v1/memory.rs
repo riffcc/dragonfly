@@ -27,6 +27,7 @@ pub struct MemoryStore {
     settings: RwLock<HashMap<String, String>>,
     networks: RwLock<HashMap<Uuid, Network>>,
     users: RwLock<HashMap<Uuid, User>>,
+    standalone_tags: RwLock<HashSet<String>>,
 
     // Machine indices
     /// identity_hash -> machine UUID
@@ -59,6 +60,7 @@ impl MemoryStore {
             settings: RwLock::new(HashMap::new()),
             networks: RwLock::new(HashMap::new()),
             users: RwLock::new(HashMap::new()),
+            standalone_tags: RwLock::new(HashSet::new()),
             identity_index: RwLock::new(HashMap::new()),
             mac_index: RwLock::new(HashMap::new()),
             ip_index: RwLock::new(HashMap::new()),
@@ -222,6 +224,15 @@ impl Store for MemoryStore {
     }
 
     async fn put_machine(&self, machine: &Machine) -> Result<()> {
+        // Collect old tags before updating
+        let old_tags: Vec<String> = {
+            let guard = Self::read_lock(&self.machines)?;
+            guard
+                .get(&machine.id)
+                .map(|m| m.config.tags.clone())
+                .unwrap_or_default()
+        };
+
         // If updating existing machine, remove old index entries first
         let existing = {
             let guard = Self::read_lock(&self.machines)?;
@@ -240,6 +251,30 @@ impl Store for MemoryStore {
 
         // Update indices
         self.update_machine_indices(machine)?;
+
+        // Sync standalone_tags: ensure new tags exist
+        {
+            let mut tags = Self::write_lock(&self.standalone_tags)?;
+            for tag in &machine.config.tags {
+                tags.insert(tag.clone());
+            }
+        }
+
+        // Clean up orphaned tags that were on this machine but no longer on any machine
+        let new_tags: HashSet<&String> = machine.config.tags.iter().collect();
+        for old_tag in &old_tags {
+            if new_tags.contains(old_tag) {
+                continue;
+            }
+            // Check if any other machine still has this tag
+            let tag_index = Self::read_lock(&self.tag_index)?;
+            let still_used = tag_index.get(old_tag).map_or(false, |s| !s.is_empty());
+            drop(tag_index);
+            if !still_used {
+                let mut tags = Self::write_lock(&self.standalone_tags)?;
+                tags.remove(old_tag);
+            }
+        }
 
         Ok(())
     }
@@ -281,24 +316,80 @@ impl Store for MemoryStore {
     }
 
     async fn delete_machine(&self, id: Uuid) -> Result<bool> {
-        // Get the machine first to clean up indices
         let machine = {
             let guard = Self::read_lock(&self.machines)?;
             guard.get(&id).cloned()
         };
 
         if let Some(machine) = machine {
+            let machine_tags = machine.config.tags.clone();
+
             // Remove from indices
             self.remove_machine_from_indices(&machine)?;
 
             // Remove from primary storage
-            let mut guard = Self::write_lock(&self.machines)?;
-            guard.remove(&id);
+            {
+                let mut guard = Self::write_lock(&self.machines)?;
+                guard.remove(&id);
+            }
+
+            // Clean up orphaned tags from this machine
+            let tag_index = Self::read_lock(&self.tag_index)?;
+            let orphans: Vec<String> = machine_tags
+                .iter()
+                .filter(|t| tag_index.get(*t).map_or(true, |s| s.is_empty()))
+                .cloned()
+                .collect();
+            drop(tag_index);
+
+            if !orphans.is_empty() {
+                let mut tags = Self::write_lock(&self.standalone_tags)?;
+                for orphan in orphans {
+                    tags.remove(&orphan);
+                }
+            }
 
             Ok(true)
         } else {
             Ok(false)
         }
+    }
+
+    // === Tag Operations ===
+
+    async fn create_tag(&self, name: &str) -> Result<bool> {
+        let mut tags = Self::write_lock(&self.standalone_tags)?;
+        Ok(tags.insert(name.to_string()))
+    }
+
+    async fn list_all_tags(&self) -> Result<Vec<String>> {
+        let tags = Self::read_lock(&self.standalone_tags)?;
+        let mut sorted: Vec<String> = tags.iter().cloned().collect();
+        sorted.sort();
+        Ok(sorted)
+    }
+
+    async fn delete_tag(&self, tag: &str) -> Result<bool> {
+        let mut standalone = Self::write_lock(&self.standalone_tags)?;
+        let removed_standalone = standalone.remove(tag);
+        drop(standalone);
+
+        let mut machines = Self::write_lock(&self.machines)?;
+        let mut removed_from_machines = false;
+        for machine in machines.values_mut() {
+            if machine.config.tags.contains(&tag.to_string()) {
+                machine.config.tags.retain(|t| t != tag);
+                removed_from_machines = true;
+            }
+        }
+
+        // Also clean tag_index
+        {
+            let mut tag_index = Self::write_lock(&self.tag_index)?;
+            tag_index.remove(tag);
+        }
+
+        Ok(removed_standalone || removed_from_machines)
     }
 
     // === Template Operations ===

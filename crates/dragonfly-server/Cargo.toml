@@ -72,8 +72,7 @@ async-compression = { version = "0.4", features = ["tokio", "gzip", "zstd"] }
 tokio-tar = "0.3"
 tokio-util = { version = "0.7", features = ["io"] }
 
-# Storage
-redb = "3.1.0"
+# Storage — SQLite via sqlx (already in deps above)
 
 # Kubernetes integration (moved from root)
 kube = { version = "0.87.1", features = ["client", "derive", "runtime"] } # Use version from root Cargo.toml

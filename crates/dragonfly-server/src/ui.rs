@@ -14,7 +14,7 @@ use chrono::{DateTime, Utc, TimeZone};
 use cookie::{Cookie, SameSite};
 use std::fs;
 use serde::{Serialize, Deserialize};
-// SQLite db functions removed - using ReDB store directly
+// SQLite db functions removed - using v1 Store trait directly
 use crate::auth::{self, AuthSession, Settings, Credentials};
 use minijinja::{Error as MiniJinjaError, ErrorKind as MiniJinjaErrorKind};
 use std::sync::Arc;
@@ -522,7 +522,7 @@ pub async fn index(
                 .collect();
             (demo_machines, counts, counts_json, dates)
         } else {
-            // Normal mode - fetch machines from v1 Store (ReDB with UUIDv7)
+            // Normal mode - fetch machines from v1 Store (SQLite with UUIDv7)
             let m: Vec<Machine> = match app_state.store.list_machines().await {
                 Ok(machine_list) => {
                     machine_list.iter().map(|m| machine_to_common(m)).collect()
@@ -605,7 +605,7 @@ pub async fn machine_list(
         };
         return render_minijinja(&app_state, "machine_list.html", context);
     } else { // Normal mode
-        // Normal mode - fetch machines from v1 Store (ReDB with UUIDv7)
+        // Normal mode - fetch machines from v1 Store (SQLite with UUIDv7)
         let machines_result = match app_state.store.list_machines().await {
             Ok(machine_list) => {
                 let machines: Vec<Machine> = machine_list
@@ -633,7 +633,7 @@ pub async fn machine_list(
                 render_minijinja(&app_state, "machine_list.html", context)
             },
             Err(e) => {
-                error!("Error fetching machines from ReDB: {}", e);
+                error!("Error fetching machines from SQLite: {}", e);
                 let context = MachineListTemplate {
                     machines: vec![],
                     theme,
@@ -766,7 +766,7 @@ pub async fn machine_details(
                 }
             }
             
-            // Normal mode - get machine by ID from v1 Store (ReDB with UUIDv7)
+            // Normal mode - get machine by ID from v1 Store (SQLite with UUIDv7)
             let machine_result: Result<Option<Machine>, anyhow::Error> = match app_state.store.get_machine(uuid).await {
                 Ok(Some(m)) => Ok(Some(machine_to_common(&m))),
                 Ok(None) => Ok(None),
@@ -916,7 +916,7 @@ pub async fn settings_page(
     let is_authenticated = auth_session.user.is_some();
     let current_path = uri.path().to_string();
     
-    // Get current settings from ReDB
+    // Get current settings from SQLite
     let store = &app_state.store;
     let require_login = store.get_setting("require_login").await
         .ok().flatten()
@@ -937,7 +937,7 @@ pub async fn settings_page(
         .ok().flatten()
         .unwrap_or_default();
 
-    info!("Settings page: default_os from ReDB = {:?}", default_os);
+    info!("Settings page: default_os from SQLite = {:?}", default_os);
     
     // If require_login is enabled and user is not authenticated,
     // redirect to login page
@@ -1157,7 +1157,7 @@ pub async fn update_settings(
     if is_authenticated {
         let store = &app_state.store;
 
-        // Load current settings from ReDB
+        // Load current settings from SQLite
         let current_setup_completed = store.get_setting("setup_completed").await
             .ok().flatten()
             .map(|v| v == "true")
@@ -1185,7 +1185,7 @@ pub async fn update_settings(
         info!("Saving settings: require_login={}, default_os={:?}, setup_completed={:?}",
               settings.require_login, settings.default_os, settings.setup_completed);
 
-        // Save settings to ReDB store
+        // Save settings to SQLite store
         let store = &app_state.store;
 
         if let Err(e) = store.put_setting("require_login", &settings.require_login.to_string()).await {
@@ -1234,7 +1234,7 @@ pub async fn update_settings(
             error!("Failed to save setup_completed: {}", e);
         }
 
-        info!("Settings saved to ReDB store.");
+        info!("Settings saved to SQLite store.");
 
         // Update admin password if provided and confirmed
         // Check form.password instead of form.password
