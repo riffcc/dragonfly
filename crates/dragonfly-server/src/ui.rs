@@ -1012,7 +1012,7 @@ pub async fn settings_page_section(
     uri: OriginalUri,
     Path(section): Path<String>,
 ) -> Response {
-    let valid_tabs = ["general", "users", "security", "provisioning", "license"];
+    let valid_tabs = ["general", "users", "security", "provisioning", "credentials", "iso-images", "license"];
     let tab = if valid_tabs.contains(&section.as_str()) {
         section
     } else {

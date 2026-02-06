@@ -71,6 +71,7 @@ pub fn api_router() -> Router<crate::AppState> {
         .route("/events", get(machine_events))
         .route("/heartbeat", get(heartbeat))
         // --- Proxmox Routes ---
+        .route("/proxmox/status", get(proxmox_status))
         .route("/proxmox/connect", post(crate::handlers::proxmox::connect_proxmox_handler))
         .route("/proxmox/discover", get(crate::handlers::proxmox::discover_proxmox_handler))
         .route("/proxmox/token", post(update_proxmox_token))
@@ -4806,6 +4807,40 @@ async fn abort_reimage(
 }
 
 // Add new endpoint to configure Proxmox API tokens
+/// GET /api/proxmox/status — return current Proxmox connection status
+#[axum::debug_handler]
+pub async fn proxmox_status(
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    let settings = crate::handlers::proxmox::get_proxmox_settings_from_store_pub(state.store.as_ref()).await;
+
+    match settings {
+        Ok(Some(s)) => {
+            Json(serde_json::json!({
+                "configured": true,
+                "host": s.host,
+                "port": s.port,
+                "username": s.username,
+                "skip_tls_verify": s.skip_tls_verify,
+                "has_power_token": s.vm_power_token.is_some(),
+                "has_create_token": s.vm_create_token.is_some(),
+                "has_config_token": s.vm_config_token.is_some(),
+                "has_sync_token": s.vm_sync_token.is_some(),
+            })).into_response()
+        }
+        Ok(None) => {
+            Json(serde_json::json!({
+                "configured": false,
+            })).into_response()
+        }
+        Err(e) => {
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({
+                "error": e.to_string()
+            }))).into_response()
+        }
+    }
+}
+
 #[derive(Deserialize)]
 pub struct ProxmoxTokenRequest {
     token_type: String,
