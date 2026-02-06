@@ -42,7 +42,13 @@ Flight and Swarm are equally capable for datacenter management. Swarm adds multi
 - Fresh install: login page → welcome/mode selection → dashboard
 - All settings stored in the configured storage backend (ReDB or K8s)
 
+### Components
+- **Spark** - The PXE agent. Boots on bare metal, detects hardware/disks/OS, reports to server, chainloads existing OS. This is a no_std bare metal Multiboot2 binary. Spark is the AGENT.
+- **Mage** - The imaging environment. Alpine-based netboot OS used ONLY for writing images to disk. Mage is the WRITER. It does NOT do discovery or detection - that's Spark's job.
+- **Server** - The Dragonfly server. Web UI, API, provisioning logic, workflow engine.
+
 ### Key Files
+- `crates/dragonfly-spark/` - Spark agent (no_std bare metal)
 - `crates/dragonfly-server/src/store/` - Storage abstraction (DragonflyStore trait)
 - `crates/dragonfly-server/src/store/redb_store.rs` - ReDB implementation
 - `crates/dragonfly-server/src/store/memory.rs` - In-memory fallback
