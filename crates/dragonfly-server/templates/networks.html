@@ -29,16 +29,27 @@
         </div>
     </template>
 
-    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+    <div class="flex flex-wrap gap-4">
         <template x-for="net in networks" :key="net.id">
             <div class="rounded-xl border border-gray-200 dark:border-[#1a1a1a] bg-white dark:bg-[#111] p-5 hover:border-purple-300 dark:hover:border-purple-800 transition-colors">
-                <div class="flex items-start justify-between mb-3">
-                    <h3 class="text-lg font-semibold text-gray-900 dark:text-white" x-text="net.name"></h3>
+                <div class="flex items-start justify-between mb-2">
+                    <div>
+                        <h3 class="text-lg font-semibold text-gray-900 dark:text-white leading-none" x-text="(editingNetwork && editingNetwork.id === net.id) ? form.name : net.name"></h3>
+                        <template x-if="(editingNetwork && editingNetwork.id === net.id) ? form.domain : net.domain">
+                            <p class="text-xs text-teal-600 dark:text-cyan-400" x-text="(editingNetwork && editingNetwork.id === net.id) ? form.domain : net.domain"></p>
+                        </template>
+                    </div>
                     <div class="flex items-center gap-1">
                         <template x-if="net.is_native">
                             <span class="text-xs px-2 py-0.5 rounded-full bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400 font-medium">Native</span>
                         </template>
-                        <template x-if="net.vlan_id">
+                        <template x-if="net.dhcp_enabled">
+                            <span class="text-xs px-2 py-0.5 rounded-full bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400 font-medium">DHCP</span>
+                        </template>
+                        <template x-if="!net.dhcp_enabled">
+                            <span class="text-xs px-2 py-0.5 rounded-full bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400 font-medium">Static</span>
+                        </template>
+                        <template x-if="net.vlan_id != null">
                             <span class="text-xs px-2 py-0.5 rounded-full bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400 font-medium tech-mono" x-text="'VLAN ' + net.vlan_id"></span>
                         </template>
                     </div>
@@ -46,99 +57,121 @@
                 <div class="grid grid-cols-2 gap-y-2 gap-x-4 text-sm">
                     <div>
                         <span class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider font-medium">Subnet</span>
-                        <p class="text-emerald-600 dark:text-emerald-400 tech-mono" x-text="net.subnet || 'N/A'"></p>
+                        <p class="text-emerald-600 dark:text-emerald-400 tech-mono" x-text="(editingNetwork && editingNetwork.id === net.id) ? (form.subnet || 'N/A') : (net.subnet || 'N/A')"></p>
                     </div>
                     <div>
                         <span class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider font-medium">Gateway</span>
-                        <p class="text-gray-700 dark:text-gray-300 tech-mono" x-text="net.gateway || 'N/A'"></p>
+                        <p class="text-gray-700 dark:text-gray-300 tech-mono" x-text="(editingNetwork && editingNetwork.id === net.id) ? (form.gateway || 'N/A') : (net.gateway || 'N/A')"></p>
                     </div>
-                    <div>
+                    <div class="col-span-2">
                         <span class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider font-medium">DNS</span>
-                        <p class="text-gray-700 dark:text-gray-300 tech-mono" x-text="(net.dns_servers && net.dns_servers.length > 0) ? net.dns_servers.join(', ') : 'None'"></p>
-                    </div>
-                    <div>
-                        <span class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider font-medium">DHCP</span>
-                        <p x-text="net.dhcp_enabled ? 'Enabled' : 'Disabled'"
-                            :class="net.dhcp_enabled ? 'text-green-600 dark:text-green-400' : 'text-gray-500 dark:text-gray-400'"></p>
+                        <div class="flex flex-wrap items-center gap-1.5 mt-0.5"
+                             x-data="{ get dnsArr() { return (editingNetwork && editingNetwork.id === net.id) ? (form.dns_servers_str ? form.dns_servers_str.split(',').map(s => s.trim()).filter(s => s) : []) : (net.dns_servers || []); } }">
+                            <template x-if="dnsArr.length > 0">
+                                <template x-for="(ns, idx) in dnsArr" :key="ns + '-' + idx">
+                                    <span class="text-sm text-gray-700 dark:text-gray-300 tech-mono px-2 py-0.5 rounded bg-gray-100 dark:bg-[#1a1a1a]" x-text="ns"></span>
+                                </template>
+                            </template>
+                            <template x-if="dnsArr.length === 0">
+                                <span class="text-sm text-gray-400 dark:text-gray-500 italic">None</span>
+                            </template>
+                        </div>
                     </div>
                 </div>
                 <template x-if="net.description">
-                    <p class="mt-3 text-sm text-gray-500 dark:text-gray-400 italic" x-text="net.description"></p>
+                    <p class="mt-2 text-sm text-gray-500 dark:text-gray-400 italic" x-text="net.description"></p>
                 </template>
                 {% if is_authenticated %}
-                <div class="mt-4 flex items-center gap-2 border-t border-gray-100 dark:border-[#222] pt-3">
+                <div class="mt-1 text-right">
                     <button @click="editNetwork(net)"
                         class="text-sm text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 transition-colors">Edit</button>
-                    <button @click="confirmDelete(net)"
-                        class="text-sm text-red-500 dark:text-red-400 hover:text-red-700 dark:hover:text-red-300 transition-colors">Delete</button>
                 </div>
                 {% endif %}
             </div>
         </template>
     </div>
 
-    {# Create/Edit modal #}
+    {# Create/Edit panel — slides in from right, doesn't obscure the page #}
     <div x-show="showCreateModal || editingNetwork" x-cloak
-        class="fixed inset-0 z-50 overflow-y-auto"
+        class="fixed inset-y-0 right-0 z-50 w-full max-w-md"
         x-transition:enter="transition ease-out duration-200"
-        x-transition:enter-start="opacity-0"
-        x-transition:enter-end="opacity-100"
+        x-transition:enter-start="translate-x-full"
+        x-transition:enter-end="translate-x-0"
         x-transition:leave="transition ease-in duration-150"
-        x-transition:leave-start="opacity-100"
-        x-transition:leave-end="opacity-0">
-        <div class="flex items-center justify-center min-h-screen px-4">
-            <div @click="closeModal()" class="fixed inset-0 bg-gray-500 dark:bg-gray-900 bg-opacity-75 dark:bg-opacity-75"></div>
-            <div class="relative bg-white dark:bg-gray-800 rounded-xl shadow-xl max-w-lg w-full p-6">
-                <h2 class="text-xl font-semibold text-gray-900 dark:text-white mb-4" x-text="editingNetwork ? 'Edit Network' : 'New Network'"></h2>
-                <div x-show="formError" class="mb-3 text-sm text-red-500" x-text="formError"></div>
-                <div class="grid grid-cols-2 gap-4">
-                    <div class="col-span-2">
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Name</label>
-                        <input type="text" x-model="form.name" placeholder="Production LAN"
-                            class="w-full text-sm rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-[#1a1a1a] text-gray-900 dark:text-gray-100 px-3 py-2 focus:ring-2 focus:ring-purple-500 focus:border-transparent">
-                    </div>
-                    <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">VLAN ID</label>
-                        <input type="number" x-model.number="form.vlan_id" placeholder="100"
-                            class="w-full text-sm rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-[#1a1a1a] text-gray-900 dark:text-gray-100 px-3 py-2 focus:ring-2 focus:ring-purple-500 focus:border-transparent">
-                    </div>
-                    <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Subnet</label>
-                        <input type="text" x-model="form.subnet" placeholder="192.168.1.0/24"
-                            class="w-full text-sm tech-mono rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-[#1a1a1a] text-gray-900 dark:text-gray-100 px-3 py-2 focus:ring-2 focus:ring-purple-500 focus:border-transparent">
-                    </div>
-                    <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Gateway</label>
-                        <input type="text" x-model="form.gateway" placeholder="192.168.1.1"
-                            class="w-full text-sm tech-mono rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-[#1a1a1a] text-gray-900 dark:text-gray-100 px-3 py-2 focus:ring-2 focus:ring-purple-500 focus:border-transparent">
-                    </div>
-                    <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Domain</label>
-                        <input type="text" x-model="form.domain" placeholder="lan.example.com"
-                            class="w-full text-sm rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-[#1a1a1a] text-gray-900 dark:text-gray-100 px-3 py-2 focus:ring-2 focus:ring-purple-500 focus:border-transparent">
-                    </div>
-                    <div class="col-span-2">
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">DNS Servers (comma separated)</label>
-                        <input type="text" x-model="form.dns_servers_str" placeholder="8.8.8.8, 8.8.4.4"
-                            class="w-full text-sm tech-mono rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-[#1a1a1a] text-gray-900 dark:text-gray-100 px-3 py-2 focus:ring-2 focus:ring-purple-500 focus:border-transparent">
-                    </div>
-                    <div class="col-span-2">
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Description</label>
-                        <input type="text" x-model="form.description" placeholder="Optional description"
-                            class="w-full text-sm rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-[#1a1a1a] text-gray-900 dark:text-gray-100 px-3 py-2 focus:ring-2 focus:ring-purple-500 focus:border-transparent">
-                    </div>
-                    <div class="flex items-center gap-4">
-                        <label class="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
-                            <input type="checkbox" x-model="form.is_native" class="rounded border-gray-300 dark:border-gray-600">
-                            Native (untagged)
-                        </label>
-                        <label class="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
-                            <input type="checkbox" x-model="form.dhcp_enabled" class="rounded border-gray-300 dark:border-gray-600">
-                            DHCP enabled
-                        </label>
+        x-transition:leave-start="translate-x-0"
+        x-transition:leave-end="translate-x-full">
+        <div class="h-full bg-white dark:bg-[#111] border-l border-gray-200 dark:border-[#1a1a1a] shadow-2xl overflow-y-auto p-6">
+            <div class="flex items-center justify-between mb-4">
+                <h2 class="text-lg font-semibold text-gray-900 dark:text-white" x-text="editingNetwork ? 'Edit Network' : 'New Network'"></h2>
+                <button @click="closeModal()" class="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 transition-colors">
+                    <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+                </button>
+            </div>
+            <div x-show="formError" class="mb-3 text-sm text-red-500" x-text="formError"></div>
+            <div class="grid grid-cols-2 gap-3">
+                <div class="col-span-2">
+                    <label class="block text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-1">Name</label>
+                    <input type="text" x-model="form.name" placeholder="Production LAN"
+                        class="w-full text-sm rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-[#1a1a1a] text-gray-900 dark:text-gray-100 px-3 py-2 focus:ring-2 focus:ring-purple-500 focus:border-transparent">
+                </div>
+                <div>
+                    <label class="block text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-1">VLAN ID</label>
+                    <input type="number" x-model.number="form.vlan_id" placeholder="100"
+                        class="w-full text-sm rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-[#1a1a1a] text-gray-900 dark:text-gray-100 px-3 py-2 focus:ring-2 focus:ring-purple-500 focus:border-transparent">
+                </div>
+                <div>
+                    <label class="block text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-1">Subnet</label>
+                    <input type="text" x-model="form.subnet" placeholder="192.168.1.0/24"
+                        class="w-full text-sm tech-mono rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-[#1a1a1a] text-gray-900 dark:text-gray-100 px-3 py-2 focus:ring-2 focus:ring-purple-500 focus:border-transparent">
+                </div>
+                <div>
+                    <label class="block text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-1">Gateway</label>
+                    <input type="text" x-model="form.gateway" placeholder="192.168.1.1"
+                        class="w-full text-sm tech-mono rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-[#1a1a1a] text-gray-900 dark:text-gray-100 px-3 py-2 focus:ring-2 focus:ring-purple-500 focus:border-transparent">
+                </div>
+                <div>
+                    <label class="block text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-1">Domain</label>
+                    <input type="text" x-model="form.domain" placeholder="lan.example.com"
+                        class="w-full text-sm rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-[#1a1a1a] text-gray-900 dark:text-gray-100 px-3 py-2 focus:ring-2 focus:ring-purple-500 focus:border-transparent">
+                </div>
+                <div class="col-span-2"
+                     x-data="{ get dnsList() { return form.dns_servers_str ? form.dns_servers_str.split(',').map(s => s.trim()).filter(s => s) : []; }, setDns(arr) { form.dns_servers_str = arr.join(', '); }, addDns() { const arr = this.dnsList; arr.push(''); form.dns_servers_str = arr.join(', '); this.$nextTick(() => { const inputs = this.$el.querySelectorAll('input[data-dns]'); if (inputs.length) inputs[inputs.length - 1].focus(); }); }, removeDns(idx) { const arr = this.dnsList; arr.splice(idx, 1); this.setDns(arr); }, updateDns(idx, val) { const arr = this.dnsList; arr[idx] = val; this.setDns(arr); } }">
+                    <label class="block text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-1">DNS Servers</label>
+                    <div class="flex flex-wrap items-center gap-1.5">
+                        <template x-for="(ns, idx) in dnsList" :key="idx">
+                            <span class="inline-flex items-center gap-1 px-2 py-1 rounded bg-gray-100 dark:bg-[#1a1a1a] border border-gray-200 dark:border-[#333]">
+                                <input data-dns type="text" :value="ns" @input="updateDns(idx, $event.target.value)" @keydown.enter.prevent="$event.target.blur()"
+                                    class="bg-transparent text-sm tech-mono text-gray-900 dark:text-gray-100 w-28 outline-none" placeholder="8.8.8.8">
+                                <button type="button" @click="removeDns(idx)" class="text-gray-400 hover:text-red-400 text-xs leading-none">&times;</button>
+                            </span>
+                        </template>
+                        <button type="button" @click="addDns()" class="text-xs text-purple-500 dark:text-purple-400 hover:text-purple-600 dark:hover:text-purple-300 px-2 py-1">+ Add</button>
                     </div>
                 </div>
-                <div class="flex justify-end gap-2 mt-6">
+                <div class="col-span-2">
+                    <label class="block text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-1">Description</label>
+                    <input type="text" x-model="form.description" placeholder="Optional description"
+                        class="w-full text-sm rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-[#1a1a1a] text-gray-900 dark:text-gray-100 px-3 py-2 focus:ring-2 focus:ring-purple-500 focus:border-transparent">
+                </div>
+                <div class="col-span-2 flex items-center gap-4">
+                    <label class="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
+                        <input type="checkbox" x-model="form.is_native" class="rounded border-gray-300 dark:border-gray-600"
+                            @change="if (form.is_native && !form.vlan_id) form.vlan_id = 0">
+                        Native (untagged)
+                    </label>
+                    <label class="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
+                        <input type="checkbox" x-model="form.dhcp_enabled" class="rounded border-gray-300 dark:border-gray-600">
+                        DHCP enabled
+                    </label>
+                </div>
+            </div>
+            <div class="flex items-center mt-6 pt-4 border-t border-gray-200 dark:border-[#222]">
+                <template x-if="editingNetwork">
+                    <button @click="confirmDelete(editingNetwork)"
+                        class="text-sm text-red-500 dark:text-red-400 hover:text-red-700 dark:hover:text-red-300 transition-colors">Delete</button>
+                </template>
+                <div class="flex-1"></div>
+                <div class="flex gap-2">
                     <button @click="closeModal()"
                         class="px-4 py-2 bg-gray-600 hover:bg-gray-700 text-white text-sm font-medium rounded-lg transition-colors">Cancel</button>
                     <button @click="saveNetwork()"
@@ -226,7 +259,7 @@ function networksData() {
             this.editingNetwork = net;
             this.form = {
                 name: net.name,
-                vlan_id: net.vlan_id || null,
+                vlan_id: (net.vlan_id != null) ? net.vlan_id : (net.is_native ? 0 : null),
                 subnet: net.subnet || '',
                 gateway: net.gateway || '',
                 dns_servers_str: (net.dns_servers || []).join(', '),
