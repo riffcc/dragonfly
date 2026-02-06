@@ -218,6 +218,7 @@ pub fn ui_router() -> Router<crate::AppState> {
         .route("/machines", get(machine_list))
         .route("/machines/{id}", get(machine_details))
         .route("/compute", get(compute_page))
+        .route("/networks", get(networks_page))
         .route("/tags", get(tags_page))
         .route("/theme/toggle", get(toggle_theme))
         .route("/settings", get(settings_page))
@@ -404,6 +405,7 @@ fn create_demo_machine(
         os_installed: Some("Ubuntu 22.04".to_string()),
         disks: vec![disk],
         nameservers: vec!["8.8.8.8".to_string(), "1.1.1.1".to_string()],
+        reported_nameservers: vec!["8.8.8.8".to_string(), "1.1.1.1".to_string()],
         memorable_name: Some(memorable_name),
         created_at,
         updated_at,
@@ -421,7 +423,14 @@ fn create_demo_machine(
         proxmox_node: None,
         proxmox_cluster: None, // Add the new field, initialize to None for demo
         is_proxmox_host: false, // Add the new field, default to false for demo data
-        reimage_requested: false, // Demo machines don't have pending reimages
+        reimage_requested: false,
+        network_mode: Some("dhcp".to_string()),
+        static_ipv4: None,
+        static_ipv6: None,
+        domain: None,
+        network_id: None,
+        pending_apply: false,
+        pending_fields: vec![],
     }
 }
 
@@ -1156,7 +1165,7 @@ pub async fn update_settings(
 
         // Construct the new settings
         let settings = Settings {
-            require_login: form.require_login.is_some(),
+            require_login: form.require_login.as_deref().map_or(false, |v| v == "true" || v == "on" || v == "1"),
             default_os: form.default_os.as_ref().filter(|os| !os.is_empty()).cloned(),
             setup_completed: form.setup_completed.is_some() || current_setup_completed,
             admin_username: form.username.clone().unwrap_or_else(|| "admin".to_string()),
@@ -1679,6 +1688,41 @@ pub async fn compute_page(
     };
 
     render_minijinja(&app_state, "compute.html", context)
+}
+
+// Handler for the networks page
+pub async fn networks_page(
+    State(app_state): State<crate::AppState>,
+    headers: HeaderMap,
+    auth_session: AuthSession,
+    uri: OriginalUri,
+) -> Response {
+    let theme = get_theme_from_cookie(&headers);
+    let is_authenticated = auth_session.user.is_some();
+    let current_path = uri.path().to_string();
+
+    let require_login = app_state.store.get_setting("require_login").await.ok().flatten().map(|v| v == "true").unwrap_or(true);
+    if require_login && !is_authenticated && !app_state.is_demo_mode {
+        return Redirect::to("/login").into_response();
+    }
+
+    let networks: Vec<dragonfly_common::Network> = match app_state.store.list_networks().await {
+        Ok(nets) => nets,
+        Err(e) => {
+            error!("Failed to fetch networks: {}", e);
+            vec![]
+        }
+    };
+
+    let context = serde_json::json!({
+        "theme": theme,
+        "is_authenticated": is_authenticated,
+        "current_path": current_path,
+        "networks": networks,
+        "is_admin": auth_session.user.is_some(),
+    });
+
+    render_minijinja(&app_state, "networks.html", context)
 }
 
 // Handler for the tags page

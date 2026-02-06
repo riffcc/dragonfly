@@ -297,23 +297,58 @@ impl From<NetworkInterfaceRequest> for NetworkInterface {
     }
 }
 
-/// Request type for updating machine configuration
+/// Request type for updating machine configuration (partial update via PATCH)
 #[derive(Debug, Clone, Deserialize)]
 pub struct UpdateMachineRequest {
     pub hostname: Option<String>,
+    pub memorable_name: Option<String>,
+    pub ip_address: Option<String>,
     pub os_choice: Option<String>,
     pub tags: Option<Vec<String>>,
     pub status: Option<String>,
+    pub network_mode: Option<dragonfly_common::NetworkMode>,
+    pub static_ipv4: Option<dragonfly_common::StaticIpConfig>,
+    pub static_ipv6: Option<dragonfly_common::StaticIpv6Config>,
+    pub nameservers: Option<Vec<String>>,
+    pub domain: Option<String>,
+    pub network_id: Option<uuid::Uuid>,
+}
+
+/// Snapshot an old value and mark a field as pending-apply.
+/// Only captures the original value the FIRST time a field becomes pending,
+/// so repeated edits don't lose the true original.
+fn snapshot_and_mark(machine: &mut Machine, field: &str, old_value: serde_json::Value) {
+    machine.config.pending_apply = true;
+    if !machine.config.pending_fields.contains(&field.to_string()) {
+        machine.config.pending_fields.push(field.to_string());
+        // Capture original value into snapshot JSON map
+        let mut snap: serde_json::Map<String, serde_json::Value> = machine.config.pending_snapshot
+            .as_ref()
+            .and_then(|s| serde_json::from_str(s).ok())
+            .unwrap_or_default();
+        snap.insert(field.to_string(), old_value);
+        machine.config.pending_snapshot = Some(serde_json::to_string(&snap).unwrap_or_default());
+    }
 }
 
 /// Apply update request to a machine
 pub fn apply_machine_update(machine: &mut Machine, req: UpdateMachineRequest) {
     if let Some(hostname) = req.hostname {
-        machine.config.hostname = Some(hostname);
+        snapshot_and_mark(machine, "hostname", serde_json::json!(machine.config.hostname));
+        machine.config.hostname = if hostname.is_empty() { None } else { Some(hostname) };
+    }
+    if let Some(memorable_name) = req.memorable_name {
+        machine.config.memorable_name = memorable_name;
+    }
+    if let Some(domain) = req.domain {
+        snapshot_and_mark(machine, "domain", serde_json::json!(machine.config.domain));
+        machine.config.domain = if domain.is_empty() { None } else { Some(domain) };
+    }
+    if let Some(ip_address) = req.ip_address {
+        machine.status.current_ip = Some(ip_address);
     }
     if let Some(os_choice) = req.os_choice {
         machine.config.os_choice = Some(os_choice);
-        // If OS choice is set and state is Discovered, transition to ReadyToInstall
         if matches!(machine.status.state, MachineState::Discovered) {
             machine.status.state = MachineState::ReadyToInstall;
         }
@@ -324,7 +359,55 @@ pub fn apply_machine_update(machine: &mut Machine, req: UpdateMachineRequest) {
     if let Some(status) = req.status {
         machine.status.state = string_to_machine_state(&status);
     }
+    if let Some(network_mode) = req.network_mode {
+        snapshot_and_mark(machine, "network_mode", serde_json::json!(machine.config.network_mode));
+        machine.config.network_mode = network_mode;
+    }
+    if let Some(static_ipv4) = req.static_ipv4 {
+        snapshot_and_mark(machine, "static_ipv4", serde_json::json!(machine.config.static_ipv4));
+        // Update displayed IP to match the configured static address
+        machine.status.current_ip = Some(static_ipv4.address.clone());
+        machine.config.static_ipv4 = Some(static_ipv4);
+    }
+    if let Some(static_ipv6) = req.static_ipv6 {
+        snapshot_and_mark(machine, "static_ipv6", serde_json::json!(machine.config.static_ipv6));
+        machine.config.static_ipv6 = Some(static_ipv6);
+    }
+    if let Some(nameservers) = req.nameservers {
+        snapshot_and_mark(machine, "nameservers", serde_json::json!(machine.config.nameservers));
+        machine.config.nameservers = nameservers;
+    }
+    if let Some(network_id) = req.network_id {
+        machine.config.network_id = Some(network_id);
+    }
 
+    machine.metadata.updated_at = Utc::now();
+}
+
+/// Restore config fields from pending_snapshot, clearing all pending state
+pub fn revert_pending_changes(machine: &mut Machine) {
+    if let Some(ref snapshot_str) = machine.config.pending_snapshot.clone() {
+        if let Ok(snap) = serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(snapshot_str) {
+            for (field, value) in &snap {
+                match field.as_str() {
+                    "hostname" => machine.config.hostname = serde_json::from_value(value.clone()).unwrap_or(None),
+                    "domain" => machine.config.domain = serde_json::from_value(value.clone()).unwrap_or(None),
+                    "network_mode" => {
+                        if let Ok(mode) = serde_json::from_value(value.clone()) {
+                            machine.config.network_mode = mode;
+                        }
+                    }
+                    "static_ipv4" => machine.config.static_ipv4 = serde_json::from_value(value.clone()).unwrap_or(None),
+                    "static_ipv6" => machine.config.static_ipv6 = serde_json::from_value(value.clone()).unwrap_or(None),
+                    "nameservers" => machine.config.nameservers = serde_json::from_value(value.clone()).unwrap_or_default(),
+                    _ => {}
+                }
+            }
+        }
+    }
+    machine.config.pending_apply = false;
+    machine.config.pending_fields.clear();
+    machine.config.pending_snapshot = None;
     machine.metadata.updated_at = Utc::now();
 }
 
@@ -387,6 +470,7 @@ pub fn machine_to_common(m: &Machine) -> CommonMachine {
             calculated_size: Some(format!("{:.1} GB", d.size_bytes as f64 / 1_000_000_000.0)),
         }).collect(),
         nameservers: m.config.nameservers.clone(),
+        reported_nameservers: m.config.reported_nameservers.clone(),
         created_at: m.metadata.created_at,
         updated_at: m.metadata.updated_at,
         memorable_name: Some(m.config.memorable_name.clone()),
@@ -413,6 +497,19 @@ pub fn machine_to_common(m: &Machine) -> CommonMachine {
         proxmox_cluster: None,
         is_proxmox_host: false,
         reimage_requested: m.config.reimage_requested,
+        network_mode: Some(match &m.config.network_mode {
+            dragonfly_common::NetworkMode::Dhcp => "dhcp".to_string(),
+            dragonfly_common::NetworkMode::DhcpStaticDns => "dhcp_static_dns".to_string(),
+            dragonfly_common::NetworkMode::StaticIpv4 => "static_ipv4".to_string(),
+            dragonfly_common::NetworkMode::StaticIpv6 => "static_ipv6".to_string(),
+            dragonfly_common::NetworkMode::StaticDualStack => "static_dual_stack".to_string(),
+        }),
+        static_ipv4: m.config.static_ipv4.clone(),
+        static_ipv6: m.config.static_ipv6.clone(),
+        domain: m.config.domain.clone(),
+        network_id: m.config.network_id,
+        pending_apply: m.config.pending_apply,
+        pending_fields: m.config.pending_fields.clone(),
     }
 }
 

@@ -16,7 +16,7 @@ pub use memory::MemoryStore;
 pub use redb::RedbStore;
 
 use async_trait::async_trait;
-use dragonfly_common::{Machine, MachineState};
+use dragonfly_common::{Machine, MachineState, Network};
 use dragonfly_crd::{Template, Workflow};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -138,6 +138,20 @@ pub trait Store: Send + Sync {
 
     /// List settings with prefix
     async fn list_settings(&self, prefix: &str) -> Result<HashMap<String, String>>;
+
+    // === Network Operations ===
+
+    /// Get network by ID
+    async fn get_network(&self, id: Uuid) -> Result<Option<Network>>;
+
+    /// Create or update network
+    async fn put_network(&self, network: &Network) -> Result<()>;
+
+    /// List all networks
+    async fn list_networks(&self) -> Result<Vec<Network>>;
+
+    /// Delete network
+    async fn delete_network(&self, id: Uuid) -> Result<bool>;
 
     // === User Operations ===
 

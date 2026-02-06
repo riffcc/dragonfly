@@ -21,7 +21,7 @@
 
 use super::{Result, Store, StoreError, User};
 use async_trait::async_trait;
-use dragonfly_common::{normalize_mac, Machine, MachineState};
+use dragonfly_common::{normalize_mac, Machine, MachineState, Network};
 use dragonfly_crd::{Template, Workflow};
 use redb::{Database, MultimapTableDefinition, ReadableDatabase, ReadableMultimapTable, ReadableTable, TableDefinition};
 use std::collections::HashMap;
@@ -45,6 +45,8 @@ const WORKFLOWS: TableDefinition<&[u8; 16], &str> = TableDefinition::new("workfl
 const WORKFLOWS_BY_MACHINE: MultimapTableDefinition<&[u8; 16], &[u8; 16]> = MultimapTableDefinition::new("workflows_by_machine_v1");
 
 const SETTINGS: TableDefinition<&str, &str> = TableDefinition::new("settings_v1");
+
+const NETWORKS: TableDefinition<&[u8; 16], &str> = TableDefinition::new("networks_v1");
 
 const USERS: TableDefinition<&[u8; 16], &str> = TableDefinition::new("users_v1");
 const USERS_BY_USERNAME: TableDefinition<&str, &[u8; 16]> = TableDefinition::new("users_by_username_v1");
@@ -82,6 +84,7 @@ impl RedbStore {
             let _ = write_txn.open_table(WORKFLOWS);
             let _ = write_txn.open_multimap_table(WORKFLOWS_BY_MACHINE);
             let _ = write_txn.open_table(SETTINGS);
+            let _ = write_txn.open_table(NETWORKS);
             let _ = write_txn.open_table(USERS);
             let _ = write_txn.open_table(USERS_BY_USERNAME);
         }
@@ -845,6 +848,94 @@ impl Store for RedbStore {
             }
 
             Ok(settings)
+        })
+        .await
+        .map_err(|e| StoreError::Database(format!("Task join error: {}", e)))?
+    }
+
+    // === Network Operations ===
+
+    async fn get_network(&self, id: Uuid) -> Result<Option<Network>> {
+        let db = Arc::clone(&self.db);
+        let id_bytes = Self::uuid_to_bytes(id);
+
+        tokio::task::spawn_blocking(move || {
+            let read_txn = db.begin_read().map_err(|e| StoreError::Database(e.to_string()))?;
+            let table = read_txn.open_table(NETWORKS).map_err(|e| StoreError::Database(e.to_string()))?;
+
+            match table.get(&id_bytes) {
+                Ok(Some(access)) => {
+                    let network: Network = Self::from_json(access.value())?;
+                    Ok(Some(network))
+                }
+                Ok(None) => Ok(None),
+                Err(e) => Err(StoreError::Database(e.to_string())),
+            }
+        })
+        .await
+        .map_err(|e| StoreError::Database(format!("Task join error: {}", e)))?
+    }
+
+    async fn put_network(&self, network: &Network) -> Result<()> {
+        let _guard = self.acquire_write_lock("put_network").await;
+        let db = Arc::clone(&self.db);
+        let network = network.clone();
+
+        tokio::task::spawn_blocking(move || {
+            let write_txn = db.begin_write().map_err(|e| StoreError::Database(e.to_string()))?;
+            let id_bytes = Self::uuid_to_bytes(network.id);
+
+            {
+                let mut table = write_txn.open_table(NETWORKS).map_err(|e| StoreError::Database(e.to_string()))?;
+                let json = Self::to_json(&network)?;
+                table
+                    .insert(&id_bytes, json.as_str())
+                    .map_err(|e| StoreError::Database(e.to_string()))?;
+            }
+
+            write_txn.commit().map_err(|e| StoreError::Database(e.to_string()))?;
+            Ok(())
+        })
+        .await
+        .map_err(|e| StoreError::Database(format!("Task join error: {}", e)))?
+    }
+
+    async fn list_networks(&self) -> Result<Vec<Network>> {
+        let db = Arc::clone(&self.db);
+
+        tokio::task::spawn_blocking(move || {
+            let read_txn = db.begin_read().map_err(|e| StoreError::Database(e.to_string()))?;
+            let table = read_txn.open_table(NETWORKS).map_err(|e| StoreError::Database(e.to_string()))?;
+
+            let mut networks = Vec::new();
+            for entry in table.iter().map_err(|e| StoreError::Database(e.to_string()))? {
+                let (_, value) = entry.map_err(|e| StoreError::Database(e.to_string()))?;
+                let network: Network = Self::from_json(value.value())?;
+                networks.push(network);
+            }
+
+            Ok(networks)
+        })
+        .await
+        .map_err(|e| StoreError::Database(format!("Task join error: {}", e)))?
+    }
+
+    async fn delete_network(&self, id: Uuid) -> Result<bool> {
+        let _guard = self.acquire_write_lock("delete_network").await;
+        let db = Arc::clone(&self.db);
+        let id_bytes = Self::uuid_to_bytes(id);
+
+        tokio::task::spawn_blocking(move || {
+            let write_txn = db.begin_write().map_err(|e| StoreError::Database(e.to_string()))?;
+            let deleted = {
+                let mut table = write_txn.open_table(NETWORKS).map_err(|e| StoreError::Database(e.to_string()))?;
+                table
+                    .remove(&id_bytes)
+                    .map_err(|e| StoreError::Database(e.to_string()))?
+                    .is_some()
+            };
+            write_txn.commit().map_err(|e| StoreError::Database(e.to_string()))?;
+            Ok(deleted)
         })
         .await
         .map_err(|e| StoreError::Database(format!("Task join error: {}", e)))?

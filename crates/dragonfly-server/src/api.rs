@@ -14,7 +14,7 @@ use uuid::Uuid;
 use dragonfly_common::models::{MachineStatus, HostnameUpdateRequest, HostnameUpdateResponse, OsInstalledUpdateRequest, OsInstalledUpdateResponse, StatusUpdateRequest, BmcCredentialsUpdateRequest, InstallationProgressUpdateRequest, RegisterRequest, Machine};
 use crate::db::{self, ErrorResponse, OsAssignmentRequest};
 use crate::provisioning::HardwareCheckIn;
-use crate::store::conversions::machine_to_common;
+use crate::store::conversions::{machine_to_common, revert_pending_changes};
 use crate::AppState;
 use crate::auth::AuthSession;
 use std::collections::HashMap;
@@ -66,7 +66,7 @@ pub fn api_router() -> Router<crate::AppState> {
         .route("/machines/{id}/workflow-progress", get(get_workflow_progress))
         .route("/machines/{id}/tags", get(api_get_machine_tags).put(api_update_machine_tags))
         .route("/machines/{id}/tags/{tag}", delete(api_delete_machine_tag))
-        .route("/machines/{id}", get(get_machine).put(update_machine).delete(delete_machine))
+        .route("/machines/{id}", get(get_machine).put(update_machine).patch(patch_machine).delete(delete_machine))
         .route("/installation/progress", put(update_installation_progress))
         .route("/events", get(machine_events))
         .route("/heartbeat", get(heartbeat))
@@ -105,6 +105,12 @@ pub fn api_router() -> Router<crate::AppState> {
         .route("/templates", get(list_templates_handler))
         .route("/templates/{name}/toggle", post(toggle_template_handler))
         .route("/templates/{name}/content", get(get_template_content_handler).put(update_template_content_handler))
+        // --- Network Routes ---
+        .route("/networks", get(list_networks_handler).post(create_network_handler))
+        .route("/networks/{id}", get(get_network_handler).put(update_network_handler).delete(delete_network_handler))
+        // --- Machine Apply Route ---
+        .route("/machines/{id}/apply", post(apply_machine_config_handler))
+        .route("/machines/{id}/revert-pending", post(revert_pending_handler))
         .layer(DefaultBodyLimit::max(1024 * 1024 * 50)) // 50 MB
 }
 
@@ -1356,6 +1362,55 @@ async fn update_machine(
             let _ = state.event_manager.send(format!("machine_updated:{}", id));
 
             // Return the updated machine as common Machine
+            let response_machine = machine_to_common(&machine);
+            (StatusCode::OK, Json(response_machine)).into_response()
+        },
+        Err(e) => {
+            error!("Failed to update machine {}: {}", id, e);
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
+                "error": "Database Error",
+                "message": e.to_string()
+            }))).into_response()
+        }
+    }
+}
+
+/// PATCH /api/machines/{id} — partial update using UpdateMachineRequest
+async fn patch_machine(
+    State(state): State<AppState>,
+    auth_session: AuthSession,
+    Path(id): Path<Uuid>,
+    Json(req): Json<crate::store::conversions::UpdateMachineRequest>,
+) -> Response {
+    if auth_session.user.is_none() {
+        return (StatusCode::FORBIDDEN, Json(json!({
+            "error": "Forbidden",
+            "message": "Admin authentication required"
+        }))).into_response();
+    }
+
+    let mut machine = match state.store.get_machine(id).await {
+        Ok(Some(m)) => m,
+        Ok(None) => {
+            return (StatusCode::NOT_FOUND, Json(json!({
+                "error": "Not Found",
+                "message": format!("Machine {} not found", id)
+            }))).into_response();
+        },
+        Err(e) => {
+            error!("Store error: {}", e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
+                "error": "Database Error",
+                "message": e.to_string()
+            }))).into_response();
+        }
+    };
+
+    crate::store::conversions::apply_machine_update(&mut machine, req);
+
+    match state.store.put_machine(&machine).await {
+        Ok(()) => {
+            let _ = state.event_manager.send(format!("machine_updated:{}", id));
             let response_machine = machine_to_common(&machine);
             (StatusCode::OK, Json(response_machine)).into_response()
         },
@@ -2638,6 +2693,100 @@ pub struct TemplateQuery {
 /// Templates are stored in the database and loaded from YAML files on startup.
 /// Template variables {{ ssh_authorized_keys }}, {{ ssh_import_id }}, {{ default_user }},
 /// {{ friendly_name }}, and {{ instance_id }} are substituted before returning the template.
+/// Generate cloud-init v2 network-config for template substitution.
+///
+/// This produces YAML that goes into `/var/lib/cloud/seed/nocloud/network-config`.
+/// Cloud-init renders it to the distro's native format (ifupdown on Debian, Netplan on Ubuntu).
+fn generate_network_config(machine: &dragonfly_common::Machine) -> String {
+    use dragonfly_common::NetworkMode;
+
+    let mode = &machine.config.network_mode;
+    let nameservers = &machine.config.nameservers;
+    let domain = machine.config.domain.as_deref().unwrap_or("");
+
+    match mode {
+        NetworkMode::Dhcp => {
+            "version: 2\nethernets:\n  id0:\n    match:\n      name: e*\n    dhcp4: true".to_string()
+        }
+        NetworkMode::DhcpStaticDns => {
+            let mut cfg = "version: 2\nethernets:\n  id0:\n    match:\n      name: e*\n    dhcp4: true".to_string();
+            if !nameservers.is_empty() {
+                cfg.push_str("\n    nameservers:\n      addresses:");
+                for ns in nameservers {
+                    cfg.push_str(&format!("\n        - {}", ns));
+                }
+                if !domain.is_empty() {
+                    cfg.push_str(&format!("\n      search:\n        - {}", domain));
+                }
+            }
+            cfg
+        }
+        NetworkMode::StaticIpv4 => {
+            let c = machine.config.static_ipv4.as_ref();
+            let addr = c.map(|c| c.address.as_str()).unwrap_or("192.168.1.100");
+            let prefix = c.map(|c| c.prefix_len).unwrap_or(24);
+            let gw = c.and_then(|c| c.gateway.as_deref()).unwrap_or("192.168.1.1");
+
+            let mut cfg = format!(
+                "version: 2\nethernets:\n  id0:\n    match:\n      name: e*\n    addresses:\n      - {}/{}\n    routes:\n      - to: default\n        via: {}",
+                addr, prefix, gw
+            );
+            append_nameservers(&mut cfg, nameservers, domain);
+            cfg
+        }
+        NetworkMode::StaticIpv6 => {
+            let c = machine.config.static_ipv6.as_ref();
+            let addr = c.map(|c| c.address.as_str()).unwrap_or("::1");
+            let prefix = c.map(|c| c.prefix_len).unwrap_or(64);
+            let gw = c.and_then(|c| c.gateway.as_deref());
+
+            let mut cfg = format!(
+                "version: 2\nethernets:\n  id0:\n    match:\n      name: e*\n    addresses:\n      - {}/{}",
+                addr, prefix
+            );
+            if let Some(gw) = gw {
+                cfg.push_str(&format!("\n    routes:\n      - to: default\n        via: {}", gw));
+            }
+            append_nameservers(&mut cfg, nameservers, domain);
+            cfg
+        }
+        NetworkMode::StaticDualStack => {
+            let v4 = machine.config.static_ipv4.as_ref();
+            let v6 = machine.config.static_ipv6.as_ref();
+            let v4_addr = v4.map(|c| c.address.as_str()).unwrap_or("192.168.1.100");
+            let v4_prefix = v4.map(|c| c.prefix_len).unwrap_or(24);
+            let v4_gw = v4.and_then(|c| c.gateway.as_deref()).unwrap_or("192.168.1.1");
+            let v6_addr = v6.map(|c| c.address.as_str()).unwrap_or("::1");
+            let v6_prefix = v6.map(|c| c.prefix_len).unwrap_or(64);
+            let v6_gw = v6.and_then(|c| c.gateway.as_deref());
+
+            let mut cfg = format!(
+                "version: 2\nethernets:\n  id0:\n    match:\n      name: e*\n    addresses:\n      - {}/{}\n      - {}/{}",
+                v4_addr, v4_prefix, v6_addr, v6_prefix
+            );
+            cfg.push_str(&format!("\n    routes:\n      - to: default\n        via: {}", v4_gw));
+            if let Some(gw) = v6_gw {
+                cfg.push_str(&format!("\n      - to: default\n        via: {}", gw));
+            }
+            append_nameservers(&mut cfg, nameservers, domain);
+            cfg
+        }
+    }
+}
+
+/// Helper: append nameservers + search domain to a cloud-init v2 network config string
+fn append_nameservers(cfg: &mut String, nameservers: &[String], domain: &str) {
+    if !nameservers.is_empty() {
+        cfg.push_str("\n    nameservers:\n      addresses:");
+        for ns in nameservers {
+            cfg.push_str(&format!("\n        - {}", ns));
+        }
+        if !domain.is_empty() {
+            cfg.push_str(&format!("\n      search:\n        - {}", domain));
+        }
+    }
+}
+
 ///
 /// If `machine_id` query param is provided, machine-specific variables are substituted:
 /// - {{ friendly_name }} = hostname (if set) or memorable_name
@@ -2717,12 +2866,12 @@ pub async fn get_template_handler(
         }
     }
 
-    // Format ssh_import_id as YAML array value (templates have "ssh_import_id: {{ ssh_import_id }}")
+    // Format ssh_import_id as YAML array value — now inside user entry at 4-space indent,
+    // so list items go at 6-space indent
     let ssh_import_id_yaml = if import_ids.is_empty() {
         "[]".to_string()
     } else {
-        // Multiline array format with proper indentation for cloud-config root level
-        let ids: String = import_ids.iter().map(|id| format!("\n          - {}", id)).collect::<Vec<_>>().join("");
+        let ids: String = import_ids.iter().map(|id| format!("\n      - {}", id)).collect::<Vec<_>>().join("");
         ids
     };
 
@@ -2748,13 +2897,17 @@ pub async fn get_template_handler(
     let ssh_authorized_keys_yaml = if direct_keys.is_empty() {
         "[]".to_string()
     } else {
-        // Multiline array format with proper indentation for user entry level
-        let keys: String = direct_keys.iter().map(|k| format!("\n              - \"{}\"", k)).collect::<Vec<_>>().join("");
+        // Multiline array format: ssh_authorized_keys is at 4-space indent (inside users list entry),
+        // so list items go at 6-space indent
+        let keys: String = direct_keys.iter().map(|k| format!("\n      - \"{}\"", k)).collect::<Vec<_>>().join("");
         keys
     };
 
+    // Default cloud-init v2 network config (DHCP)
+    let default_network_config = "version: 2\nethernets:\n  id0:\n    match:\n      name: e*\n    dhcp4: true".to_string();
+
     // Fetch machine-specific variables if machine_id is provided
-    let (friendly_name, instance_id) = if let Some(ref machine_id_str) = query.machine_id {
+    let (friendly_name, instance_id, network_config_cloudinit) = if let Some(ref machine_id_str) = query.machine_id {
         match Uuid::parse_str(machine_id_str) {
             Ok(machine_uuid) => {
                 match state.store.get_machine(machine_uuid).await {
@@ -2768,27 +2921,34 @@ pub async fn get_template_handler(
                         } else {
                             name
                         };
-                        info!(machine_id = %machine_uuid, friendly_name = %name, "Using machine-specific hostname");
-                        (name, machine_uuid.to_string())
+                        info!(
+                            machine_id = %machine_uuid,
+                            friendly_name = %name,
+                            network_mode = ?machine.config.network_mode,
+                            "Using machine-specific config for template"
+                        );
+
+                        let net_cfg = generate_network_config(&machine);
+                        (name, machine_uuid.to_string(), net_cfg)
                     }
                     Ok(None) => {
                         warn!(machine_id = %machine_id_str, "Machine not found, using defaults");
-                        ("localhost".to_string(), machine_id_str.clone())
+                        ("localhost".to_string(), machine_id_str.clone(), default_network_config.clone())
                     }
                     Err(e) => {
                         warn!(machine_id = %machine_id_str, error = %e, "Failed to fetch machine, using defaults");
-                        ("localhost".to_string(), machine_id_str.clone())
+                        ("localhost".to_string(), machine_id_str.clone(), default_network_config.clone())
                     }
                 }
             }
             Err(e) => {
                 warn!(machine_id = %machine_id_str, error = %e, "Invalid machine UUID, using defaults");
-                ("localhost".to_string(), machine_id_str.clone())
+                ("localhost".to_string(), machine_id_str.clone(), default_network_config.clone())
             }
         }
     } else {
         // No machine_id provided - use placeholder values
-        ("localhost".to_string(), "00000000-0000-0000-0000-000000000000".to_string())
+        ("localhost".to_string(), "00000000-0000-0000-0000-000000000000".to_string(), default_network_config)
     };
 
     // Fetch template from store
@@ -2805,7 +2965,8 @@ pub async fn get_template_handler(
                             .replace("{{ ssh_authorized_keys }}", &ssh_authorized_keys_yaml)
                             .replace("{{ ssh_import_id }}", &ssh_import_id_yaml)
                             .replace("{{ friendly_name }}", &friendly_name)
-                            .replace("{{ instance_id }}", &instance_id);
+                            .replace("{{ instance_id }}", &instance_id)
+                            .replace("{{ network_config_cloudinit }}", &network_config_cloudinit);
                     }
                 }
             }
@@ -5961,6 +6122,196 @@ pub async fn delete_iso_handler(
             (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
                 "error": "Failed to delete file"
             }))).into_response()
+        }
+    }
+}
+
+// ============================================================================
+// Network CRUD Handlers
+// ============================================================================
+
+async fn list_networks_handler(
+    State(state): State<AppState>,
+    auth_session: AuthSession,
+) -> Response {
+    if auth_session.user.is_none() {
+        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Not authenticated"}))).into_response();
+    }
+
+    match state.store.list_networks().await {
+        Ok(networks) => Json(networks).into_response(),
+        Err(e) => {
+            error!("Failed to list networks: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response()
+        }
+    }
+}
+
+async fn get_network_handler(
+    State(state): State<AppState>,
+    auth_session: AuthSession,
+    Path(id): Path<Uuid>,
+) -> Response {
+    if auth_session.user.is_none() {
+        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Not authenticated"}))).into_response();
+    }
+
+    match state.store.get_network(id).await {
+        Ok(Some(network)) => Json(network).into_response(),
+        Ok(None) => (StatusCode::NOT_FOUND, Json(json!({"error": "Network not found"}))).into_response(),
+        Err(e) => {
+            error!("Failed to get network: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response()
+        }
+    }
+}
+
+async fn create_network_handler(
+    State(state): State<AppState>,
+    auth_session: AuthSession,
+    Json(payload): Json<dragonfly_common::Network>,
+) -> Response {
+    if auth_session.user.is_none() {
+        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Not authenticated"}))).into_response();
+    }
+
+    info!("Creating network: {}", payload.name);
+    match state.store.put_network(&payload).await {
+        Ok(()) => {
+            (StatusCode::CREATED, Json(&payload)).into_response()
+        }
+        Err(e) => {
+            error!("Failed to create network: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response()
+        }
+    }
+}
+
+async fn update_network_handler(
+    State(state): State<AppState>,
+    auth_session: AuthSession,
+    Path(id): Path<Uuid>,
+    Json(mut payload): Json<dragonfly_common::Network>,
+) -> Response {
+    if auth_session.user.is_none() {
+        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Not authenticated"}))).into_response();
+    }
+
+    // Ensure path ID matches payload
+    payload.id = id;
+    payload.updated_at = chrono::Utc::now();
+
+    match state.store.put_network(&payload).await {
+        Ok(()) => {
+            let _ = state.event_manager.send("network_updated".to_string());
+            Json(&payload).into_response()
+        }
+        Err(e) => {
+            error!("Failed to update network: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response()
+        }
+    }
+}
+
+async fn delete_network_handler(
+    State(state): State<AppState>,
+    auth_session: AuthSession,
+    Path(id): Path<Uuid>,
+) -> Response {
+    if auth_session.user.is_none() {
+        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Not authenticated"}))).into_response();
+    }
+
+    match state.store.delete_network(id).await {
+        Ok(true) => {
+            let _ = state.event_manager.send("network_deleted".to_string());
+            Json(json!({"success": true})).into_response()
+        }
+        Ok(false) => (StatusCode::NOT_FOUND, Json(json!({"error": "Network not found"}))).into_response(),
+        Err(e) => {
+            error!("Failed to delete network: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response()
+        }
+    }
+}
+
+// ============================================================================
+// Machine Apply Handler (stub - will execute Jetpack playbook)
+// ============================================================================
+
+async fn apply_machine_config_handler(
+    State(state): State<AppState>,
+    auth_session: AuthSession,
+    Path(id): Path<Uuid>,
+) -> Response {
+    if auth_session.user.is_none() {
+        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Not authenticated"}))).into_response();
+    }
+
+    // Get machine
+    let mut machine = match state.store.get_machine(id).await {
+        Ok(Some(m)) => m,
+        Ok(None) => return (StatusCode::NOT_FOUND, Json(json!({"error": "Machine not found"}))).into_response(),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
+    };
+
+    if !machine.config.pending_apply {
+        return Json(json!({"success": true, "message": "No pending changes to apply"})).into_response();
+    }
+
+    // Mark as applied — keep new values, clear pending tracking + snapshot
+    machine.config.pending_apply = false;
+    machine.config.pending_fields.clear();
+    machine.config.pending_snapshot = None;
+    machine.metadata.updated_at = chrono::Utc::now();
+
+    // Update current_ip to reflect the static config that will be applied
+    if let Some(ref static_ipv4) = machine.config.static_ipv4 {
+        if matches!(machine.config.network_mode, dragonfly_common::NetworkMode::StaticIpv4 | dragonfly_common::NetworkMode::StaticDualStack) {
+            machine.status.current_ip = Some(static_ipv4.address.clone());
+        }
+    }
+
+    match state.store.put_machine(&machine).await {
+        Ok(()) => {
+            let _ = state.event_manager.send(format!("machine_updated:{}", id));
+            let response_machine = machine_to_common(&machine);
+            Json(json!({"success": true, "message": "Configuration marked as applied", "machine": response_machine})).into_response()
+        }
+        Err(e) => {
+            error!("Failed to update machine after apply: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response()
+        }
+    }
+}
+
+/// POST /api/machines/{id}/revert-pending — clear pending state without applying
+async fn revert_pending_handler(
+    State(state): State<AppState>,
+    auth_session: AuthSession,
+    Path(id): Path<Uuid>,
+) -> Response {
+    if auth_session.user.is_none() {
+        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Not authenticated"}))).into_response();
+    }
+
+    let mut machine = match state.store.get_machine(id).await {
+        Ok(Some(m)) => m,
+        Ok(None) => return (StatusCode::NOT_FOUND, Json(json!({"error": "Machine not found"}))).into_response(),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
+    };
+
+    revert_pending_changes(&mut machine);
+
+    match state.store.put_machine(&machine).await {
+        Ok(()) => {
+            let _ = state.event_manager.send(format!("machine_updated:{}", id));
+            let response_machine = machine_to_common(&machine);
+            Json(serde_json::to_value(response_machine).unwrap_or(json!({}))).into_response()
+        }
+        Err(e) => {
+            error!("Failed to revert pending for machine {}: {}", id, e);
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response()
         }
     }
 }

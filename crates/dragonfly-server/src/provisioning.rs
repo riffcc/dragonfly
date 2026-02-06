@@ -508,9 +508,10 @@ impl ProvisioningService {
             virt_platform: info.virt_platform.clone(),
         };
 
-        // Store nameservers
+        // Store nameservers (both user-facing and DHCP-reported)
         if !info.nameservers.is_empty() {
             machine.config.nameservers = info.nameservers.clone();
+            machine.config.reported_nameservers = info.nameservers.clone();
         }
 
         // Set initial status
@@ -565,9 +566,13 @@ impl ProvisioningService {
             }).collect();
         }
 
-        // Update nameservers if reported
+        // Always update DHCP-reported nameservers
         if !info.nameservers.is_empty() {
-            machine.config.nameservers = info.nameservers.clone();
+            machine.config.reported_nameservers = info.nameservers.clone();
+            // Only overwrite user-facing nameservers if mode is plain DHCP (not user-customized)
+            if matches!(machine.config.network_mode, dragonfly_common::NetworkMode::Dhcp) {
+                machine.config.nameservers = info.nameservers.clone();
+            }
         }
 
         // Update last seen and current IP
@@ -726,7 +731,9 @@ mod tests {
             ip_address: Some("192.168.1.100".to_string()),
             cpu_model: Some("Intel Xeon".to_string()),
             cpu_cores: Some(8),
+            cpu_threads: Some(16),
             memory_bytes: Some(32 * 1024 * 1024 * 1024),
+            gpus: vec![],
             disks: vec![
                 DiskInfo {
                     name: "sda".to_string(),
@@ -854,7 +861,9 @@ mod tests {
             ip_address: None,
             cpu_model: None,
             cpu_cores: None,
+            cpu_threads: None,
             memory_bytes: None,
+            gpus: vec![],
             disks: vec![],
             interfaces: vec![],
             bmc_address: None,

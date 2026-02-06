@@ -5,7 +5,7 @@
 
 use super::{Result, Store, StoreError, User};
 use async_trait::async_trait;
-use dragonfly_common::{normalize_mac, Machine, MachineState};
+use dragonfly_common::{normalize_mac, Machine, MachineState, Network};
 use dragonfly_crd::{Template, Workflow};
 use std::collections::{HashMap, HashSet};
 use std::sync::RwLock;
@@ -25,6 +25,7 @@ pub struct MemoryStore {
     templates: RwLock<HashMap<String, Template>>,
     workflows: RwLock<HashMap<Uuid, Workflow>>,
     settings: RwLock<HashMap<String, String>>,
+    networks: RwLock<HashMap<Uuid, Network>>,
     users: RwLock<HashMap<Uuid, User>>,
 
     // Machine indices
@@ -56,6 +57,7 @@ impl MemoryStore {
             templates: RwLock::new(HashMap::new()),
             workflows: RwLock::new(HashMap::new()),
             settings: RwLock::new(HashMap::new()),
+            networks: RwLock::new(HashMap::new()),
             users: RwLock::new(HashMap::new()),
             identity_index: RwLock::new(HashMap::new()),
             mac_index: RwLock::new(HashMap::new()),
@@ -428,6 +430,29 @@ impl Store for MemoryStore {
             .filter(|(k, _)| k.starts_with(prefix))
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect())
+    }
+
+    // === Network Operations ===
+
+    async fn get_network(&self, id: Uuid) -> Result<Option<Network>> {
+        let guard = Self::read_lock(&self.networks)?;
+        Ok(guard.get(&id).cloned())
+    }
+
+    async fn put_network(&self, network: &Network) -> Result<()> {
+        let mut guard = Self::write_lock(&self.networks)?;
+        guard.insert(network.id, network.clone());
+        Ok(())
+    }
+
+    async fn list_networks(&self) -> Result<Vec<Network>> {
+        let guard = Self::read_lock(&self.networks)?;
+        Ok(guard.values().cloned().collect())
+    }
+
+    async fn delete_network(&self, id: Uuid) -> Result<bool> {
+        let mut guard = Self::write_lock(&self.networks)?;
+        Ok(guard.remove(&id).is_some())
     }
 
     // === User Operations ===
