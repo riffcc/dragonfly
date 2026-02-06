@@ -268,11 +268,12 @@ fn boot_flow_with_checkin(
         let elapsed = net::now().total_millis() - start_time;
 
         // Check for spacebar (scancode 0x39)
+        // Don't break - let the loop continue so checkin still happens.
+        // The machine must always register with the server.
         if let Some(scancode) = bios::read_scancode() {
-            if scancode == 0x39 {
-                serial::println("Boot flow: Spacebar pressed - showing menu");
+            if scancode == 0x39 && decided_action != Some(BootAction::ShowMenu) {
+                serial::println("Boot flow: Spacebar pressed - will show menu after checkin");
                 decided_action = Some(BootAction::ShowMenu);
-                break;
             }
         }
 
@@ -323,28 +324,34 @@ fn boot_flow_with_checkin(
                         detected_os,
                     ) {
                         serial::println("Boot flow: Server responded");
-                        decided_action = Some(match response.action {
-                            http::AgentAction::LocalBoot => {
-                                serial::println("  -> LocalBoot");
-                                BootAction::BootLocal
-                            }
-                            http::AgentAction::Execute => {
-                                serial::println("  -> Execute (imaging)");
-                                BootAction::Imaging
-                            }
-                            http::AgentAction::Reboot => {
-                                serial::println("  -> Reboot");
-                                BootAction::Reboot
-                            }
-                            http::AgentAction::Wait => {
-                                serial::println("  -> Wait (show menu)");
-                                BootAction::ShowMenu
-                            }
-                        });
+                        // Only use server's action if user hasn't pressed spacebar.
+                        // User's explicit menu request takes priority.
+                        if decided_action.is_none() {
+                            decided_action = Some(match response.action {
+                                http::AgentAction::LocalBoot => {
+                                    serial::println("  -> LocalBoot");
+                                    BootAction::BootLocal
+                                }
+                                http::AgentAction::Execute => {
+                                    serial::println("  -> Execute (imaging)");
+                                    BootAction::Imaging
+                                }
+                                http::AgentAction::Reboot => {
+                                    serial::println("  -> Reboot");
+                                    BootAction::Reboot
+                                }
+                                http::AgentAction::Wait => {
+                                    serial::println("  -> Wait (show menu)");
+                                    BootAction::ShowMenu
+                                }
+                            });
+                        } else {
+                            serial::println("  -> User override (spacebar), ignoring server action");
+                        }
                         break;
                     } else {
-                        // Server unreachable - proceed to autoboot
-                        serial::println("Boot flow: Server unreachable, proceeding to autoboot");
+                        // Server unreachable - proceed with whatever we have
+                        serial::println("Boot flow: Server unreachable");
                         break;
                     }
                 }
