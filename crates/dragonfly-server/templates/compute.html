@@ -3,225 +3,137 @@
 {% block title %}Compute Clusters | Dragonfly{% endblock %}
 
 {% block content %}
-<div class="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 py-8">
-    <div class="flex items-center justify-between mb-6">
-        <h1 class="text-2xl font-bold text-gray-900 dark:text-white">Compute Clusters</h1>
-        <div>
-            <a href="/machines" class="inline-flex items-center rounded-md bg-indigo-600 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600">
-                <svg class="mr-2 h-4 w-4" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                    <path d="M9 12H15M9 16H15M17 21H7C5.89543 21 5 20.1046 5 19V5C5 3.89543 5.89543 3 7 3H12.5858C12.851 3 13.1054 3.10536 13.2929 3.29289L18.7071 8.70711C18.8946 8.89464 19 9.149 19 9.41421V19C19 20.1046 18.1046 21 17 21Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-                </svg>
-                All Machines
-            </a>
-        </div>
+<div class="max-w-[1200px] mx-auto">
+
+    {# Page header #}
+    <div class="flex justify-between items-center mb-6">
+        <h1 class="text-3xl font-bold text-gray-900 dark:text-white">Compute</h1>
+        <a href="/machines"
+            class="px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white text-sm font-medium rounded-lg transition-colors">
+            All Machines
+        </a>
     </div>
 
-    {# Check if clusters is defined AND empty #}
     {% if clusters is defined and clusters|length == 0 %}
-    <div class="rounded-lg bg-gray-50 dark:bg-gray-800 p-8 text-center shadow-md">
-        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="mx-auto h-12 w-12 text-gray-400 dark:text-gray-500">
-            <path stroke-linecap="round" stroke-linejoin="round" d="M21.75 17.25v-.228a4.5 4.5 0 00-.12-1.03l-2.268-9.64a3.375 3.375 0 00-3.285-2.602H7.923a3.375 3.375 0 00-3.285 2.602l-2.268 9.64a4.5 4.5 0 00-.12 1.03v.228m19.5 0a3 3 0 01-3 3H5.25a3 3 0 01-3-3m19.5 0a3 3 0 00-3-3H5.25a3 3 0 00-3 3m16.5 0h.008v.008h-.008v-.008zm-3 0h.008v.008h-.008v-.008z" />
-        </svg>
-        <h3 class="mt-2 text-sm font-semibold text-gray-900 dark:text-white">No Proxmox clusters</h3>
-        <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">No Proxmox clusters have been discovered or added yet.</p>
-        <div class="mt-6">
-            <a href="/machines" class="inline-flex items-center rounded-md bg-indigo-600 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600">
-                <svg class="mr-2 h-4 w-4" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                    <path d="M9 12H15M9 16H15M17 21H7C5.89543 21 5 20.1046 5 19V5C5 3.89543 5.89543 3 7 3H12.5858C12.851 3 13.1054 3.10536 13.2929 3.29289L18.7071 8.70711C18.8946 8.89464 19 9.149 19 9.41421V19C19 20.1046 18.1046 21 17 21Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-                </svg>
-                View All Machines
-            </a>
-        </div>
+    <div class="rounded-xl border border-gray-200 dark:border-[#1a1a1a] bg-white dark:bg-[#111] p-12 text-center">
+        <p class="text-gray-500 dark:text-gray-400 text-lg mb-2">No clusters discovered</p>
+        <p class="text-gray-400 dark:text-gray-500 text-sm">Proxmox clusters will appear here when machines check in with cluster information.</p>
     </div>
-    {# Handle case where clusters is defined but might be non-empty #}
+
     {% elif clusters is defined %}
         {% for cluster in clusters %}
-        <div class="mb-8 rounded-lg overflow-hidden shadow-md border border-transparent dark:border-purple-800/30 bg-gradient-to-r from-indigo-500/5 to-purple-500/5 dark:from-indigo-900/20 dark:to-purple-900/20" 
+        <div class="mb-6 rounded-xl border border-gray-200 dark:border-[#1a1a1a] bg-white dark:bg-[#111] overflow-hidden"
              x-data="{ selectedHostNode: 'all' }">
-            <!-- Cluster Header -->
-            <div class="bg-indigo-600 dark:bg-indigo-700 px-4 py-3 flex items-center">
-                <svg class="h-5 w-5 mr-2 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5.25 14.25h13.5m-13.5 0a3 3 0 01-3-3m3 3a3 3 0 100 6h13.5a3 3 0 100-6m-16.5-3a3 3 0 013-3h13.5a3 3 0 013 3m-19.5 0a4.5 4.5 0 01.9-2.7L5.737 5.1a3.375 3.375 0 012.7-1.35h7.126c1.062 0 2.062.5 2.7 1.35l2.587 3.45a4.5 4.5 0 01.9 2.7m0 0a3 3 0 01-3 3m0 3h.008v.008h-.008v-.008zm0-6h.008v.008h-.008v-.008zm-3 6h.008v.008h-.008v-.008zm0-6h.008v.008h-.008v-.008z" />
-                </svg>
-                <h2 class="text-lg font-semibold text-white">
-                    {{ cluster.display_name }}
-                </h2>
-                <span class="ml-2 text-xs text-indigo-100 bg-indigo-800 rounded-full px-2 py-0.5">{{ cluster.hosts|length + cluster.vms|length }} machine(s)</span>
+
+            {# Cluster header #}
+            <div class="px-5 py-4 border-b border-gray-200 dark:border-[#1a1a1a] flex items-center gap-3">
+                <h2 class="text-lg font-semibold text-gray-900 dark:text-white">{{ cluster.display_name }}</h2>
+                <span class="text-xs px-2 py-0.5 rounded-full bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400 font-medium">
+                    {{ cluster.hosts|length + cluster.vms|length }} machines
+                </span>
             </div>
-            
-            <!-- Hosts Section -->
+
+            {# Hosts #}
             {% if cluster.hosts|length > 0 %}
-                <div class="bg-gray-800/50 px-4 py-2 text-white text-sm font-medium">
-                    Hosts
+            <div class="px-5 pt-4 pb-2">
+                <h3 class="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-3">Hosts</h3>
+                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                    {# "All VMs" filter button #}
+                    <div class="rounded-lg border p-3 cursor-pointer transition-colors"
+                         @click="selectedHostNode = 'all'"
+                         :class="selectedHostNode === 'all'
+                            ? 'bg-purple-50 dark:bg-purple-900/20 border-purple-300 dark:border-purple-700'
+                            : 'border-gray-200 dark:border-[#222] hover:border-purple-300 dark:hover:border-purple-800'">
+                        <div class="text-sm font-medium text-gray-900 dark:text-white">All Hosts</div>
+                        <div class="text-xs text-gray-500 dark:text-gray-400">Show all VMs in cluster</div>
+                    </div>
+
+                    {% for machine in cluster.hosts %}
+                    <div class="rounded-lg border p-3 cursor-pointer transition-colors"
+                         @click="selectedHostNode = '{{ machine.proxmox_node | default(machine.id) }}'"
+                         :class="selectedHostNode === '{{ machine.proxmox_node | default(machine.id) }}'
+                            ? 'bg-purple-50 dark:bg-purple-900/20 border-purple-300 dark:border-purple-700'
+                            : 'border-gray-200 dark:border-[#222] hover:border-purple-300 dark:hover:border-purple-800'">
+                        <div class="flex items-center justify-between">
+                            <div>
+                                <div class="text-sm font-medium text-gray-900 dark:text-white">
+                                    {{ machine.hostname | default(machine.proxmox_node, true) | default(machine.memorable_name, true) | default(machine.id, true) }}
+                                </div>
+                                {% if machine.memorable_name and machine.hostname != machine.memorable_name %}
+                                <div class="text-xs text-gray-500 dark:text-gray-400">{{ machine.memorable_name }}</div>
+                                {% endif %}
+                            </div>
+                            {% include "partials/_machine_status_badge.html" %}
+                        </div>
+                        <div class="mt-2 flex items-center gap-3 text-xs">
+                            <span class="text-cyan-600 dark:text-cyan-400 tech-mono">{{ machine.ip_address }}</span>
+                            <span class="text-gray-400 dark:text-gray-500 tech-mono">{{ machine.mac_address }}</span>
+                        </div>
+                        <div class="mt-1 flex items-center justify-between">
+                            <span class="text-xs text-gray-500 dark:text-gray-400">
+                                {{ machine.os_installed | default("Proxmox VE", true) }}
+                            </span>
+                            <a href="/machines/{{ machine.id }}" class="text-xs text-purple-500 dark:text-purple-400 hover:underline" @click.stop>Details</a>
+                        </div>
+                    </div>
+                    {% endfor %}
                 </div>
-                
-                <div class="overflow-x-auto">
-                    <table class="min-w-full divide-y divide-gray-700/30">
-                        <thead class="bg-gray-900/30">
-                            <tr>
-                                <th scope="col" class="px-4 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">Name</th>
-                                <th scope="col" class="px-4 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">MAC Address</th>
-                                <th scope="col" class="px-4 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">IP Address</th>
-                                <th scope="col" class="px-4 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">Status</th>
-                                <th scope="col" class="px-4 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">OS</th>
-                                <th scope="col" class="px-4 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">Type</th>
-                                <th scope="col" class="px-4 py-3 text-right text-xs font-medium text-gray-300 uppercase tracking-wider">Actions</th>
-                            </tr>
-                        </thead>
-                        <tbody class="divide-y divide-gray-700/30 bg-black/20">
-                             <tr class="hover:bg-black/30 transition-colors duration-150 cursor-pointer" 
-                                 @click="selectedHostNode = 'all'" 
-                                 :class="{ 'bg-indigo-900/50': selectedHostNode === 'all' }">
-                                <td class="px-4 py-3 whitespace-nowrap text-sm font-medium text-white" colspan="7">
-                                    View All VMs in Cluster
-                                </td>
-                            </tr>
-                            {% for machine in cluster.hosts %}
-                            {# Alpine: Click sets selectedHostNode to the host's proxmox_node or ID as fallback #}
-                            {# Alpine: Class binding highlights the selected host #}
-                            <tr class="hover:bg-black/30 transition-colors duration-150 cursor-pointer" 
-                                @click="selectedHostNode = '{{ machine.proxmox_node | default(machine.id) }}'" 
-                                :class="{ 'bg-indigo-900/50': selectedHostNode === '{{ machine.proxmox_node | default(machine.id) }}' }">
-                                <td class="px-4 py-3 whitespace-nowrap">
-                                    <div class="flex items-center">
-                                        <div>
-                                            <div class="text-sm font-medium text-white">
-                                                {# Prefer hostname, fallback to proxmox_node, then memorable_name, then ID #}
-                                                {{ machine.hostname | default(machine.proxmox_node, true) | default(machine.memorable_name, true) | default(machine.id, true) }}
-                                            </div>
-                                            {% if machine.memorable_name and machine.hostname != machine.memorable_name %}
-                                            <div class="text-xs text-gray-400">
-                                                {{ machine.memorable_name }}
-                                            </div>
-                                            {% endif %}
-                                        </div>
-                                    </div>
-                                </td>
-                                <td class="px-4 py-3 whitespace-nowrap">
-                                    <div class="text-sm text-gray-300 font-mono">{{ machine.mac_address }}</div>
-                                </td>
-                                <td class="px-4 py-3 whitespace-nowrap">
-                                    <div class="text-sm text-gray-300 font-mono">{{ machine.ip_address }}</div>
-                                </td>
-                                <td class="px-4 py-3 whitespace-nowrap">
-                                    {# Status Badge Logic (Simplified for brevity) #}
-                                    {% include "partials/_machine_status_badge.html" %}
-                                </td>
-                                <td class="px-4 py-3 whitespace-nowrap">
-                                    <div class="text-sm text-gray-300">
-                                        {{ machine.os_installed | default("Proxmox VE", true) }}
-                                    </div>
-                                </td>
-                                <td class="px-4 py-3 whitespace-nowrap">
-                                    <div class="text-sm text-gray-300">
-                                        <span class="inline-flex items-center text-xs rounded-md bg-purple-900/20 px-2 py-1 text-purple-300 ring-1 ring-inset ring-purple-600/30">
-                                            <svg class="w-3 h-3 mr-1" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                                                <path d="M20.25 6.375c0 2.278-3.694 4.125-8.25 4.125S3.75 8.653 3.75 6.375m16.5 0c0-2.278-3.694-4.125-8.25-4.125S3.75 4.097 3.75 6.375m16.5 0v11.25c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125V6.375m16.5 0v3.75m-16.5-3.75v3.75m16.5 0v3.75C20.25 16.153 16.556 18 12 18s-8.25-1.847-8.25-4.125v-3.75m16.5 0c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-                                            </svg>
-                                            Physical Host
-                                        </span>
-                                    </div>
-                                </td>
-                                <td class="px-4 py-3 whitespace-nowrap text-right text-sm font-medium">
-                                    <a href="/machines/{{ machine.id }}" class="text-indigo-400 hover:text-indigo-300" @click.stop>Details</a>
-                                </td>
-                            </tr>
-                            {% endfor %}
-                        </tbody>
-                    </table>
-                </div>
+            </div>
             {% endif %}
-            
-            <!-- Virtual Machines Section -->
+
+            {# Virtual Machines #}
             {% if cluster.vms|length > 0 %}
-                <div class="bg-gray-800/50 px-4 py-2 text-white text-sm font-medium">
-                    Virtual Machines <span x-text="selectedHostNode !== 'all' ? '(on host: ' + selectedHostNode + ')' : ''" class="text-gray-400 text-xs"></span>
+            <div class="px-5 pt-4 pb-4">
+                <h3 class="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-3">
+                    Virtual Machines
+                    <span x-show="selectedHostNode !== 'all'" class="text-gray-400 dark:text-gray-500" x-text="'on ' + selectedHostNode"></span>
+                </h3>
+                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                    {% for machine in cluster.vms %}
+                    <a href="/machines/{{ machine.id }}"
+                       class="rounded-lg border border-gray-200 dark:border-[#222] p-3 transition-colors hover:border-purple-300 dark:hover:border-purple-800 block"
+                       x-show="selectedHostNode === 'all' || selectedHostNode === '{{ machine.proxmox_node | default(machine.id) }}'"
+                       x-transition>
+                        <div class="flex items-center justify-between">
+                            <div>
+                                <div class="text-sm font-medium text-gray-900 dark:text-white">
+                                    {{ machine.hostname | default(machine.memorable_name, true) | default(machine.id, true) }}
+                                </div>
+                                {% if machine.proxmox_vmid %}
+                                <div class="text-xs text-gray-500 dark:text-gray-400">VMID {{ machine.proxmox_vmid }}</div>
+                                {% endif %}
+                            </div>
+                            {% include "partials/_machine_status_badge.html" %}
+                        </div>
+                        <div class="mt-2 flex items-center gap-3 text-xs">
+                            {% if machine.proxmox_node %}
+                            <span class="text-purple-500 dark:text-purple-400">{{ machine.proxmox_node }}</span>
+                            {% endif %}
+                            <span class="text-cyan-600 dark:text-cyan-400 tech-mono">{{ machine.ip_address }}</span>
+                        </div>
+                        <div class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                            {{ machine.os_installed | default("Unknown", true) }}
+                        </div>
+                    </a>
+                    {% endfor %}
                 </div>
-                
-                <div class="overflow-x-auto">
-                    <table class="min-w-full divide-y divide-gray-700/30">
-                        <thead class="bg-gray-900/30">
-                            <tr>
-                                <th scope="col" class="px-4 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">Name / VMID</th>
-                                <th scope="col" class="px-4 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">Node</th>
-                                <th scope="col" class="px-4 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">MAC Address</th>
-                                <th scope="col" class="px-4 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">IP Address</th>
-                                <th scope="col" class="px-4 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">Status</th>
-                                <th scope="col" class="px-4 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">OS</th>
-                                <th scope="col" class="px-4 py-3 text-right text-xs font-medium text-gray-300 uppercase tracking-wider">Actions</th>
-                            </tr>
-                        </thead>
-                        {# Alpine: Use x-ref to easily check if any VMs are visible #}
-                        <tbody class="divide-y divide-gray-700/30 bg-black/20" x-ref="vmTableBody">
-                            {% for machine in cluster.vms %}
-                            {# Alpine: Show only if 'all' is selected OR if machine's node matches selected host node/id #}
-                            <tr class="hover:bg-black/30 transition-colors duration-150 cursor-pointer" 
-                                x-show="selectedHostNode === 'all' || selectedHostNode === '{{ machine.proxmox_node | default(machine.id) }}'" 
-                                x-transition
-                                onclick="window.location='/machines/{{ machine.id }}'"
-                                data-vm-row> {# Add marker for Alpine to count visible VMs #}
-                                <td class="px-4 py-3 whitespace-nowrap">
-                                    <div class="flex items-center">
-                                        <div>
-                                            <div class="text-sm font-medium text-white">
-                                                {{ machine.hostname | default(machine.memorable_name, true) | default(machine.id, true) }}
-                                            </div>
-                                            {% if machine.proxmox_vmid %}
-                                            <div class="text-xs text-gray-400">
-                                                VMID: {{ machine.proxmox_vmid }}
-                                            </div>
-                                            {% endif %}
-                                        </div>
-                                    </div>
-                                </td>
-                                 <td class="px-4 py-3 whitespace-nowrap">
-                                    <div class="text-sm text-gray-300">{{ machine.proxmox_node | default('N/A') }}</div>
-                                </td>
-                                <td class="px-4 py-3 whitespace-nowrap">
-                                    <div class="text-sm text-gray-300 font-mono">{{ machine.mac_address }}</div>
-                                </td>
-                                <td class="px-4 py-3 whitespace-nowrap">
-                                    <div class="text-sm text-gray-300 font-mono">{{ machine.ip_address }}</div>
-                                </td>
-                                <td class="px-4 py-3 whitespace-nowrap">
-                                    {# Status Badge Logic (Simplified for brevity) #}
-                                     {% include "partials/_machine_status_badge.html" %}
-                                </td>
-                                <td class="px-4 py-3 whitespace-nowrap">
-                                    <div class="text-sm text-gray-300">
-                                        {{ machine.os_installed | default("Unknown", true) }}
-                                    </div>
-                                </td>
-                                <td class="px-4 py-3 whitespace-nowrap text-right text-sm font-medium">
-                                    <a href="/machines/{{ machine.id }}" class="text-indigo-400 hover:text-indigo-300" @click.stop>Details</a>
-                                </td>
-                            </tr>
-                            {% endfor %}
-                            {# Alpine: Message shown if no VMs match the current filter #}
-                            <tr x-show="$refs.vmTableBody.querySelectorAll('[data-vm-row][style*=\"display: none\"]').length === {{ cluster.vms|length }} && {{ cluster.vms|length }} >
-                                <td class="px-4 py-8 whitespace-nowrap text-center text-gray-400" colspan="7">
-                                    No VMs found on selected host <span x-text="selectedHostNode !== 'all' ? selectedHostNode : ''"></span>.
-                                </td>
-                            </tr>
-                        </tbody>
-                    </table>
-                </div>
+            </div>
             {% endif %}
-            
-            {# Message if cluster has neither hosts nor VMs (after grouping) #}
+
             {% if cluster.hosts|length == 0 and cluster.vms|length == 0 %}
-                <div class="py-16 text-center text-gray-400">
-                    No machines found in this cluster group.
-                </div>
+            <div class="p-12 text-center">
+                <p class="text-gray-400 dark:text-gray-500">No machines found in this cluster.</p>
+            </div>
             {% endif %}
         </div>
         {% endfor %}
-    {# Handle case where clusters itself was undefined #}
+
     {% else %}
-     <div class="rounded-lg bg-gray-50 dark:bg-gray-800 p-8 text-center shadow-md">
-        <h3 class="mt-2 text-sm font-semibold text-gray-900 dark:text-white">Error Loading Clusters</h3>
-        <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">Could not load cluster information. Please check server logs.</p>
+    <div class="rounded-xl border border-gray-200 dark:border-[#1a1a1a] bg-white dark:bg-[#111] p-12 text-center">
+        <p class="text-gray-500 dark:text-gray-400 text-lg mb-2">Error loading clusters</p>
+        <p class="text-gray-400 dark:text-gray-500 text-sm">Please check server logs.</p>
     </div>
     {% endif %}
+
 </div>
-{% endblock %} 
+{% endblock %}
