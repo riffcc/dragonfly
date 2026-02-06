@@ -111,6 +111,7 @@ pub fn api_router() -> Router<crate::AppState> {
         .route("/networks/{id}", get(get_network_handler).put(update_network_handler).delete(delete_network_handler))
         // --- Machine Apply Route ---
         .route("/machines/{id}/apply", post(apply_machine_config_handler))
+        .route("/machines/{id}/proxmox/apply-config", post(apply_proxmox_config))
         .route("/machines/{id}/revert-pending", post(revert_pending_handler))
         .layer(DefaultBodyLimit::max(1024 * 1024 * 50)) // 50 MB
 }
@@ -4244,6 +4245,12 @@ async fn api_update_machine_tags(
         Ok(()) => {
             // Emit machine updated event
             let _ = state.event_manager.send(format!("machine_updated:{}", id));
+            // Sync tags to Proxmox (fire-and-forget)
+            let state_clone = state.clone();
+            let machine_clone = machine.clone();
+            tokio::spawn(async move {
+                crate::handlers::proxmox::sync_tags_to_proxmox(&state_clone, &machine_clone).await;
+            });
             (StatusCode::OK, Json(json!({ "success": true, "message": "Tags updated" }))).into_response()
         }
         Err(e) => {
@@ -4317,6 +4324,12 @@ async fn api_delete_machine_tag(
                 Ok(()) => {
                     // Emit machine updated event
                     let _ = state.event_manager.send(format!("machine_updated:{}", id));
+                    // Sync tags to Proxmox (fire-and-forget)
+                    let state_clone = state.clone();
+                    let machine_clone = machine.clone();
+                    tokio::spawn(async move {
+                        crate::handlers::proxmox::sync_tags_to_proxmox(&state_clone, &machine_clone).await;
+                    });
                     (StatusCode::OK, Json(json!({"success": true, "message": "Tag deleted"})))
                 },
                 Err(e) => {
@@ -6344,6 +6357,83 @@ async fn apply_machine_config_handler(
         Err(e) => {
             error!("Failed to update machine after apply: {}", e);
             (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response()
+        }
+    }
+}
+
+/// POST /api/machines/{id}/proxmox/apply-config — push cores/RAM config to Proxmox API
+async fn apply_proxmox_config(
+    State(state): State<AppState>,
+    auth_session: AuthSession,
+    Path(id): Path<Uuid>,
+) -> Response {
+    use proxmox_client::HttpApiClient;
+
+    if auth_session.user.is_none() {
+        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Not authenticated"}))).into_response();
+    }
+
+    let machine = match state.store.get_machine(id).await {
+        Ok(Some(m)) => m,
+        Ok(None) => return (StatusCode::NOT_FOUND, Json(json!({"error": "Machine not found"}))).into_response(),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
+    };
+
+    let (node, vmid, is_lxc) = match &machine.metadata.source {
+        dragonfly_common::MachineSource::Proxmox { node, vmid, .. } => (node.clone(), *vmid, false),
+        dragonfly_common::MachineSource::ProxmoxLxc { node, ctid, .. } => (node.clone(), *ctid, true),
+        _ => return (StatusCode::BAD_REQUEST, Json(json!({"error": "Not a Proxmox VM or LXC"}))).into_response(),
+    };
+
+    // Build config JSON to push
+    let mut config = serde_json::Map::new();
+    if let Some(cores) = machine.hardware.cpu_cores {
+        config.insert("cores".to_string(), json!(cores));
+    }
+    if let Some(mem_bytes) = machine.hardware.memory_bytes {
+        // Proxmox uses megabytes
+        let mem_mb = mem_bytes / (1024 * 1024);
+        config.insert("memory".to_string(), json!(mem_mb));
+    }
+
+    if config.is_empty() {
+        return Json(json!({"success": true, "message": "No config changes to push"})).into_response();
+    }
+
+    let vm_type = if is_lxc { "lxc" } else { "qemu" };
+    let config_path = format!("/api2/json/nodes/{}/{}/{}/config", node, vm_type, vmid);
+    let params = serde_json::Value::Object(config.clone());
+
+    match crate::handlers::proxmox::connect_to_proxmox(&state, "config").await {
+        Ok(client) => {
+            match client.put(&config_path, &params).await {
+                Ok(response) => {
+                    if response.status >= 200 && response.status < 300 {
+                        info!("Successfully pushed config to Proxmox VM {} (node {}): {:?}", vmid, node, config);
+                        Json(json!({"success": true, "message": "Configuration pushed to Proxmox"})).into_response()
+                    } else {
+                        error!("Proxmox config push failed for VM {}: status {}", vmid, response.status);
+                        (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
+                            "error": "Proxmox returned error",
+                            "message": format!("Status {}", response.status)
+                        }))).into_response()
+                    }
+                },
+                Err(e) => {
+                    error!("Proxmox config push error for VM {}: {}", vmid, e);
+                    (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
+                        "error": "Failed to push config to Proxmox",
+                        "message": e.to_string()
+                    }))).into_response()
+                }
+            }
+        },
+        Err(e) => {
+            error!("Failed to connect to Proxmox for config push: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
+                "error": "Failed to connect to Proxmox",
+                "message": e.to_string()
+            }))).into_response()
         }
     }
 }

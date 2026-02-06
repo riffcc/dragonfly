@@ -200,6 +200,12 @@ pub fn machine_source_to_string(source: &MachineSource) -> String {
         MachineSource::Proxmox { cluster, node, vmid } => {
             format!("proxmox:{}:{}:{}", cluster, node, vmid)
         }
+        MachineSource::ProxmoxLxc { cluster, node, ctid } => {
+            format!("proxmox-lxc:{}:{}:{}", cluster, node, ctid)
+        }
+        MachineSource::ProxmoxNode { cluster, node } => {
+            format!("proxmox-node:{}:{}", cluster, node)
+        }
         MachineSource::Manual => "manual".to_string(),
     }
 }
@@ -312,6 +318,8 @@ pub struct UpdateMachineRequest {
     pub nameservers: Option<Vec<String>>,
     pub domain: Option<String>,
     pub network_id: Option<uuid::Uuid>,
+    pub cpu_cores: Option<u32>,
+    pub total_ram_bytes: Option<u64>,
 }
 
 /// Snapshot an old value and mark a field as pending-apply.
@@ -379,6 +387,14 @@ pub fn apply_machine_update(machine: &mut Machine, req: UpdateMachineRequest) {
     }
     if let Some(network_id) = req.network_id {
         machine.config.network_id = Some(network_id);
+    }
+    if let Some(cores) = req.cpu_cores {
+        machine.hardware.cpu_cores = Some(cores);
+        machine.config.pending_apply = true;
+    }
+    if let Some(ram) = req.total_ram_bytes {
+        machine.hardware.memory_bytes = Some(ram);
+        machine.config.pending_apply = true;
     }
 
     machine.metadata.updated_at = Utc::now();
@@ -492,10 +508,24 @@ pub fn machine_to_common(m: &Machine) -> CommonMachine {
         cpu_threads: m.hardware.cpu_threads,
         total_ram_bytes: m.hardware.memory_bytes,
         gpus: m.hardware.gpus.clone(),
-        proxmox_vmid: None, // TODO: extract from source if Proxmox
-        proxmox_node: None,
-        proxmox_cluster: None,
-        is_proxmox_host: false,
+        proxmox_vmid: match &m.metadata.source {
+            MachineSource::Proxmox { vmid, .. } => Some(*vmid),
+            MachineSource::ProxmoxLxc { ctid, .. } => Some(*ctid),
+            _ => None,
+        },
+        proxmox_node: match &m.metadata.source {
+            MachineSource::Proxmox { node, .. }
+            | MachineSource::ProxmoxLxc { node, .. }
+            | MachineSource::ProxmoxNode { node, .. } => Some(node.clone()),
+            _ => None,
+        },
+        proxmox_cluster: match &m.metadata.source {
+            MachineSource::Proxmox { cluster, .. }
+            | MachineSource::ProxmoxLxc { cluster, .. }
+            | MachineSource::ProxmoxNode { cluster, .. } => Some(cluster.clone()),
+            _ => None,
+        },
+        is_proxmox_host: matches!(&m.metadata.source, MachineSource::ProxmoxNode { .. }),
         reimage_requested: m.config.reimage_requested,
         network_mode: Some(match &m.config.network_mode {
             dragonfly_common::NetworkMode::Dhcp => "dhcp".to_string(),
@@ -569,13 +599,32 @@ pub fn machine_from_register_request(req: &CommonRegisterRequest) -> Machine {
         virt_platform: if req.proxmox_vmid.is_some() { Some("proxmox".to_string()) } else { None },
     };
 
-    // Set Proxmox source if VMID present
-    if let Some(vmid) = req.proxmox_vmid {
-        machine.metadata.source = MachineSource::Proxmox {
-            cluster: req.proxmox_cluster.clone().unwrap_or_default(),
-            node: req.proxmox_node.clone().unwrap_or_default(),
-            vmid,
-        };
+    // Set Proxmox source based on type
+    match req.proxmox_type.as_deref() {
+        Some("lxc") => {
+            if let Some(ctid) = req.proxmox_vmid {
+                machine.metadata.source = MachineSource::ProxmoxLxc {
+                    cluster: req.proxmox_cluster.clone().unwrap_or_default(),
+                    node: req.proxmox_node.clone().unwrap_or_default(),
+                    ctid,
+                };
+            }
+        }
+        Some("node") => {
+            machine.metadata.source = MachineSource::ProxmoxNode {
+                cluster: req.proxmox_cluster.clone().unwrap_or_default(),
+                node: req.proxmox_node.clone().unwrap_or_default(),
+            };
+        }
+        _ => {
+            if let Some(vmid) = req.proxmox_vmid {
+                machine.metadata.source = MachineSource::Proxmox {
+                    cluster: req.proxmox_cluster.clone().unwrap_or_default(),
+                    node: req.proxmox_node.clone().unwrap_or_default(),
+                    vmid,
+                };
+            }
+        }
     }
 
     machine

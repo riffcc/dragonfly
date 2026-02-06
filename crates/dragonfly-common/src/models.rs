@@ -181,6 +181,9 @@ pub struct RegisterRequest {
     pub proxmox_vmid: Option<u32>,
     pub proxmox_node: Option<String>,
     pub proxmox_cluster: Option<String>,
+    /// "vm", "lxc", or "node" — determines which MachineSource variant is used
+    #[serde(default)]
+    pub proxmox_type: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

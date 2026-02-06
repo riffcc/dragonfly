@@ -5,7 +5,7 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
-use proxmox_client::{HttpApiClient, Client as ProxmoxApiClient};
+use proxmox_client::{HttpApiClient, Client as ProxmoxApiClient, TlsOptions, Token as ProxmoxToken};
 use std::error::Error as StdError;
 use proxmox_login;
 use proxmox_client::Error as ProxmoxClientError;
@@ -173,6 +173,7 @@ pub struct ProxmoxConnectRequest {
     password: String,
     vm_selection_option: Option<String>,
     skip_tls_verify: Option<bool>,
+    import_guests: Option<bool>,
 }
 
 // Response with suggestion to disable TLS verification
@@ -370,18 +371,18 @@ pub async fn set_vm_next_boot(
         device.to_string()
     };
     
-    info!("DEBUG: Using boot parameter: {}", boot_param);
+    info!("Using boot parameter: {}", boot_param);
     
     // Use the correct API path format for Proxmox
     let path = format!("/api2/json/nodes/{}/qemu/{}/config", node, vmid);
-    info!("DEBUG: Using API path: {}", path);
+    info!("Using API path: {}", path);
     
     // Need to use URL-encoded form data for Proxmox API rather than JSON
     // This is critical for the VM configuration APIs to work properly
     let _params_map = vec![("boot", boot_param.as_str())];
     
     // First, try to make the request directly - API tokens may already be set up correctly
-    info!("DEBUG: Sending PUT request to set boot order");
+    info!("Sending PUT request to set boot order");
     
     // Convert params_map to JSON for the put method
     let params = serde_json::json!({ "boot": boot_param });
@@ -396,7 +397,7 @@ pub async fn set_vm_next_boot(
                 // Try to parse error from response body
                 let error_msg = match serde_json::from_slice::<serde_json::Value>(&response.body) {
                     Ok(val) => {
-                        info!("DEBUG: Error response body: {}", serde_json::to_string_pretty(&val).unwrap_or_default());
+                        warn!("Proxmox API error response for boot order change");
                         val.to_string()
                     },
                     Err(_) => format!("Received non-success status: {}", response.status),
@@ -505,6 +506,20 @@ pub async fn reboot_vm(
 
 // --- End NEW Proxmox Action Functions ---
 
+/// Create a ProxmoxApiClient with proper TLS settings.
+/// When `skip_tls_verify` is true, uses `TlsOptions::Insecure` to accept self-signed certs.
+fn create_proxmox_client(host_uri: Uri, skip_tls_verify: bool) -> Result<ProxmoxApiClient, String> {
+    if skip_tls_verify {
+        ProxmoxApiClient::with_options(
+            host_uri,
+            TlsOptions::Insecure,
+            proxmox_http::HttpOptions::default(),
+        ).map_err(|e| format!("Failed to create Proxmox client: {}", e))
+    } else {
+        Ok(ProxmoxApiClient::new(host_uri))
+    }
+}
+
 // Update the connect_proxmox_handler function to create tokens automatically
 pub async fn connect_proxmox_handler(
     State(state): State<crate::AppState>,
@@ -521,6 +536,7 @@ pub async fn connect_proxmox_handler(
     let password = request.password.clone();
     
     let skip_tls_verify = request.skip_tls_verify.unwrap_or(false);
+    let import_guests = request.import_guests.unwrap_or(false);
 
     // Same connection process as before - authenticate with provided credentials
     let result = authenticate_with_proxmox(state.store.as_ref(), &host, port as i32, &username, &password, skip_tls_verify).await;
@@ -528,11 +544,10 @@ pub async fn connect_proxmox_handler(
     match result {
         Ok(_) => {
             info!("Successfully authenticated with Proxmox API");
-            
-            // Now also create specialized tokens automatically
-            info!("Automatically creating specialized API tokens with minimal permissions");
-            
-            // Create a token request using the same credentials
+
+            // Create specialized API tokens with minimal permissions
+            info!("Creating specialized API tokens with minimal permissions");
+
             let token_request = ProxmoxTokensCreateRequest {
                 host: host.clone(),
                 port: port as i32,
@@ -540,194 +555,86 @@ pub async fn connect_proxmox_handler(
                 password: password.clone(),
                 skip_tls_verify,
             };
-            
-            // Attempt to create the tokens
-            let tokens_result = generate_proxmox_tokens_with_credentials(&token_request).await;
-            
-            // Create a client for discovery and registration
-            let host_url = format!("https://{}:{}", host, port);
-            let host_uri = match host_url.parse::<Uri>() {
-                Ok(uri) => uri,
-                Err(e) => {
-                    error!("Invalid Proxmox URL: {}", e);
-                    return (StatusCode::BAD_REQUEST, Json(json!({
-                        "success": false,
-                        "message": format!("Invalid Proxmox URL: {}", e)
-                    })));
-                }
-            };
-            
-            let client = ProxmoxApiClient::new(host_uri);
-            
-            // Create login request
-            let login_builder = proxmox_login::Login::new(
-                &host_url, 
-                username.to_string(), 
-                password.to_string()
-            );
-            
-            // Attempt login for the client we'll use for discovery
-            let login_result = client.login(login_builder).await;
-            
-            match login_result {
-                Ok(None) => {
-                    info!("Successfully authenticated client for VM discovery");
-                    
-                    // Determine cluster name (default to hostname if not available)
-                    let cluster_name = match client.get("/api2/json/cluster/status").await {
-                        Ok(response) => {
-                            if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&response.body) {
-                                if let Some(data) = value.get("data").and_then(|d| d.as_array()) {
-                                    // Try to find the cluster name in the response
-                                    let cluster_entry = data.iter().find(|item| {
-                                        item.get("type").and_then(|t| t.as_str()) == Some("cluster")
-                                    });
-                                    
-                                    if let Some(name) = cluster_entry.and_then(|e| e.get("name")).and_then(|n| n.as_str()) {
-                                        name.to_string()
-                                    } else {
-                                        host.clone() // Fallback to hostname
-                                    }
-                                } else {
-                                    host.clone() // Fallback to hostname
-                                }
-                            } else {
-                                host.clone() // Fallback to hostname
-                            }
-                        },
-                        Err(_) => host.clone() // Fallback to hostname on error
-                    };
 
-                    info!("Discovered Proxmox cluster name: {}", cluster_name);
-                    
-                    // Now discover and register VMs
-                    let state_ref = &state;
-                    match discover_and_register_proxmox_vms(&client, &cluster_name, state_ref).await {
-                        Ok((registered, failed, discovered)) => {
-                            info!("Successfully discovered and registered {} Proxmox VMs ({} failed)",
-                                 registered, failed);
-                            
-                            // Continue with token processing
-                            match tokens_result {
-                                Ok(token_set) => {
-                                    // Save tokens to database (encrypted) and also add to in-memory store
-                                    match save_proxmox_tokens(&state, token_set).await {
-                                        Ok(_) => {
-                                            info!("Successfully created and saved specialized Proxmox API tokens");
-                                        },
-                                        Err(e) => {
-                                            warn!("Successfully created tokens but failed to save them: {}", e);
-                                            return (StatusCode::OK, Json(json!({
-                                                "success": true,
-                                                "message": format!("Successfully connected to Proxmox API but failed to save tokens: {}", e),
-                                                "tokens_created": true,
-                                                "tokens_saved": false,
-                                                "added_vms": registered,
-                                                "failed_vms": failed,
-                                                "machines": discovered
-                                            })));
+            let tokens_result = generate_proxmox_tokens_with_credentials(&token_request).await;
+
+            match tokens_result {
+                Ok(token_set) => {
+                    match save_proxmox_tokens(&state, token_set).await {
+                        Ok(_) => {
+                            info!("Successfully created and saved specialized Proxmox API tokens");
+
+                            // Import guests if requested
+                            let mut import_result = None;
+                            if import_guests {
+                                info!("Import guests requested, starting discovery...");
+                                match connect_to_proxmox(&state, "sync").await {
+                                    Ok(client) => {
+                                        let cluster_name = host.clone();
+                                        match discover_and_register_proxmox_vms(&client, &cluster_name, &state).await {
+                                            Ok((registered, failed, _)) => {
+                                                info!("Guest import complete: {} registered, {} failed", registered, failed);
+                                                import_result = Some(json!({
+                                                    "imported": registered,
+                                                    "failed": failed,
+                                                }));
+                                            }
+                                            Err(e) => {
+                                                warn!("Guest import failed: {:?}", e);
+                                                import_result = Some(json!({
+                                                    "error": format!("Import failed: {:?}", e),
+                                                }));
+                                            }
                                         }
                                     }
-                                    
-                                    (StatusCode::OK, Json(json!({
-                                        "success": true,
-                                        "message": format!("Successfully connected to Proxmox API, created tokens, and imported {} VMs", registered),
-                                        "tokens_created": true,
-                                        "tokens_saved": true,
-                                        "added_vms": registered,
-                                        "failed_vms": failed,
-                                        "machines": discovered
-                                    })))
-                                },
-                                Err(e) => {
-                                    warn!("Successfully connected to Proxmox but failed to create API tokens: {}", e);
-                                    
-                                    // Provide clearer guidance in the error message
-                                    let error_message = if e.contains("Parameter verification failed") || e.contains("privileges") || e.contains("privs") {
-                                        format!("Failed to create API tokens: {}. This might be due to API version differences between Proxmox versions. Please check your Proxmox version and permissions.", e)
-                                    } else if e.contains("permission") || e.contains("unauthorized") || e.contains("access") {
-                                        format!("Failed to create API tokens: {}. The user needs permission to create API tokens in Proxmox. Please check that your account has administrative privileges.", e)
-            } else {
-                                        format!("Failed to create API tokens: {}. Please try again or check Proxmox documentation for your specific version.", e)
-                                    };
-                                    
-                                    // We still consider this a success since the main connection worked and VMs were imported
-                                    (StatusCode::OK, Json(json!({
-                                        "success": true,
-                                        "message": format!("Successfully connected to Proxmox API and imported {} VMs, but failed to create tokens: {}", registered, e),
-                                        "tokens_created": false,
-                                        "token_error": error_message,
-                                        "added_vms": registered,
-                                        "failed_vms": failed,
-                                        "machines": discovered
-                                    })))
+                                    Err(e) => {
+                                        warn!("Could not connect for guest import: {}", e);
+                                        import_result = Some(json!({
+                                            "error": format!("Could not connect for import: {}", e),
+                                        }));
+                                    }
                                 }
                             }
+
+                            let mut response = json!({
+                                "success": true,
+                                "message": "Successfully connected to Proxmox and created API tokens",
+                                "tokens_created": true,
+                                "tokens_saved": true
+                            });
+                            if let Some(ir) = import_result {
+                                response.as_object_mut().unwrap().insert("import_result".to_string(), ir);
+                            }
+                            (StatusCode::OK, Json(response))
                         },
                         Err(e) => {
-                            error!("Failed to discover and register Proxmox VMs: {}", e);
-                            // We still continue with token processing
-                            match tokens_result {
-                                Ok(token_set) => {
-                                    if let Err(e) = save_proxmox_tokens(&state, token_set).await {
-                                        warn!("Successfully created tokens but failed to save them: {}", e);
-                                    }
-                                    
-                                    (StatusCode::OK, Json(json!({
-                                        "success": true,
-                                        "message": format!("Successfully connected to Proxmox API and created tokens, but failed to discover VMs: {}", e),
-                                        "tokens_created": true,
-                                        "tokens_saved": true,
-                                        "vm_discovery_error": e.to_string()
-                                    })))
-                                },
-                                Err(token_err) => {
-                                    (StatusCode::OK, Json(json!({
-                                        "success": true,
-                                        "message": format!("Successfully connected to Proxmox API, but failed to create tokens and discover VMs"),
-                                        "tokens_created": false,
-                                        "token_error": token_err,
-                                        "vm_discovery_error": e.to_string()
-                                    })))
-                                }
-                            }
+                            warn!("Created tokens but failed to save them: {}", e);
+                            (StatusCode::OK, Json(json!({
+                                "success": true,
+                                "message": format!("Connected to Proxmox and created tokens, but failed to save: {}", e),
+                                "tokens_created": true,
+                                "tokens_saved": false
+                            })))
                         }
                     }
-                },
-                Ok(Some(_)) => {
-                    error!("Two-factor authentication is required but not supported");
-                    return (StatusCode::BAD_REQUEST, Json(json!({
-                        "success": false,
-                        "message": "Two-factor authentication is required but not supported"
-                    })));
                 },
                 Err(e) => {
-                    error!("Failed to authenticate client for VM discovery: {}", e);
-                    // Still try to process tokens
-                    match tokens_result {
-                        Ok(token_set) => {
-                            if let Err(e) = save_proxmox_tokens(&state, token_set).await {
-                                warn!("Successfully created tokens but failed to save them: {}", e);
-                            }
-                            
-                            (StatusCode::OK, Json(json!({
-                                "success": true,
-                                "message": format!("Successfully connected to Proxmox API and created tokens, but couldn't discover VMs: Authentication failed for discovery"),
-                                "tokens_created": true,
-                                "tokens_saved": true,
-                                "vm_discovery_error": format!("Authentication failed: {}", e)
-                            })))
-                        },
-                        Err(token_err) => {
-                            (StatusCode::OK, Json(json!({
-                                "success": true,
-                                "message": format!("Successfully connected to Proxmox API, but failed to create tokens and discover VMs"),
-                                "tokens_created": false,
-                                "token_error": token_err,
-                                "vm_discovery_error": format!("Authentication failed: {}", e)
-                            })))
-                        }
-                    }
+                    warn!("Connected to Proxmox but failed to create API tokens: {}", e);
+
+                    let error_message = if e.contains("Parameter verification failed") || e.contains("privileges") || e.contains("privs") {
+                        format!("Failed to create API tokens: {}. Check Proxmox version and permissions.", e)
+                    } else if e.contains("permission") || e.contains("unauthorized") || e.contains("access") {
+                        format!("Failed to create API tokens: {}. Account needs administrative privileges.", e)
+                    } else {
+                        format!("Failed to create API tokens: {}", e)
+                    };
+
+                    (StatusCode::OK, Json(json!({
+                        "success": true,
+                        "message": format!("Connected to Proxmox but failed to create tokens: {}", e),
+                        "tokens_created": false,
+                        "token_error": error_message
+                    })))
                 }
             }
         },
@@ -758,20 +665,20 @@ async fn authenticate_with_proxmox(
         Err(e) => return Err(format!("Invalid Proxmox URL: {}", e)),
     };
     
-    let client = ProxmoxApiClient::new(host_uri);
-    
+    let client = create_proxmox_client(host_uri, skip_tls_verify)?;
+
     // Create login request
     let login_builder = proxmox_login::Login::new(
-        &host_url, 
-        username.to_string(), 
+        &host_url,
+        username.to_string(),
         password.to_string()
     );
-    
+
     // Attempt login
     match client.login(login_builder).await {
         Ok(None) => {
             info!("Successfully authenticated with Proxmox API");
-            
+
             // No longer save the credentials - we only need them once to create tokens
             // Just add host, port, and whether to skip TLS verification (no credentials)
             match update_proxmox_connection_settings_in_store(
@@ -799,7 +706,7 @@ async fn authenticate_with_proxmox(
 pub async fn generate_proxmox_tokens_with_credentials(
     request: &ProxmoxTokensCreateRequest
 ) -> Result<ProxmoxTokenSet, String> {
-    info!("DEBUG: Starting token creation process");
+    info!("Starting token creation process");
     
     // Extract connection details
     let ProxmoxTokensCreateRequest {
@@ -817,15 +724,15 @@ pub async fn generate_proxmox_tokens_with_credentials(
         Err(e) => return Err(format!("Invalid Proxmox URL: {}", e)),
     };
     
-    let client = ProxmoxApiClient::new(host_uri);
-    
+    let client = create_proxmox_client(host_uri, *skip_tls_verify)?;
+
     // Create login request
     let login_builder = proxmox_login::Login::new(
-        &host_url, 
-        username.to_string(), 
+        &host_url,
+        username.to_string(),
         password.to_string()
     );
-    
+
     // Attempt login
     match client.login(login_builder).await {
         Ok(None) => {
@@ -841,7 +748,7 @@ pub async fn generate_proxmox_tokens_with_credentials(
             ];
             
             for (role_name, _role_description) in roles_to_create.iter() {
-                info!("DEBUG: Creating or checking for role: {}", role_name);
+                info!("Creating or checking for role: {}", role_name);
                 
                 // Check if role exists first
                 let role_check_path = format!("/api2/json/access/roles/{}", role_name);
@@ -906,7 +813,7 @@ pub async fn generate_proxmox_tokens_with_credentials(
             // 2. Update roles with proper permissions
             let role_permissions = [
                 ("DragonflyVMConfig", "VM.Config.Options,VM.Config.Disk"), // Changed VM.Config.Boot to VM.Config.Disk
-                ("DragonflySync", "VM.Audit,VM.Monitor,Sys.Audit"),
+                ("DragonflySync", "VM.Audit,Sys.Audit"),
             ];
             
             for (role_name, permissions) in role_permissions.iter() {
@@ -995,7 +902,7 @@ pub async fn generate_proxmox_tokens_with_credentials(
             };
             
             // Create specialized tokens for different operation types
-            info!("DEBUG: Creating VM creation token...");
+            info!("Creating VM creation token...");
             let create_token = match create_token_with_role(
                 &client, 
                 &user_part, 
@@ -1007,7 +914,7 @@ pub async fn generate_proxmox_tokens_with_credentials(
                 Err(e) => return Err(format!("Failed to create VM creation token: {}", e))
             };
             
-            info!("DEBUG: Creating VM power token...");
+            info!("Creating VM power token...");
             let power_token = match create_token_with_role(
                 &client, 
                 &user_part, 
@@ -1019,7 +926,7 @@ pub async fn generate_proxmox_tokens_with_credentials(
                 Err(e) => return Err(format!("Failed to create VM power token: {}", e))
             };
             
-            info!("DEBUG: Creating VM config token...");
+            info!("Creating VM config token...");
             let config_token = match create_token_with_role(
                 &client, 
                 &user_part, 
@@ -1031,12 +938,12 @@ pub async fn generate_proxmox_tokens_with_credentials(
                 Err(e) => return Err(format!("Failed to create VM config token: {}", e))
             };
             
-            info!("DEBUG: Creating VM sync token...");
+            info!("Creating VM sync token...");
             let sync_token = match create_token_with_role(
                 &client, 
                 &user_part, 
                 "dragonfly-sync", 
-                "Dragonfly automation token for VM.Audit VM.Monitor",
+                "Dragonfly automation token for VM.Audit Sys.Audit",
                 "DragonflySync"  // Use our new custom role
             ).await {
                 Ok(token) => token,
@@ -1066,6 +973,103 @@ pub async fn generate_proxmox_tokens_with_credentials(
             Err(format!("Failed to authenticate with Proxmox: {}", e))
         }
     }
+}
+
+/// Associative identity lookup: find an existing machine that matches ANY identity
+/// anchor from the new machine. Anchors are checked in priority order:
+///
+/// 1. **Proxmox source** (cluster + node + vmid/ctid/node_name) — strongest, never changes
+/// 2. **MAC address** — strong, but can change if NIC is replaced/regenerated
+///
+/// If ANY anchor matches, it's the same machine. This is associative, not hash-based.
+fn find_existing_machine<'a>(
+    existing_machines: &'a [dragonfly_common::Machine],
+    new_machine: &dragonfly_common::Machine,
+) -> Option<&'a dragonfly_common::Machine> {
+    use dragonfly_common::MachineSource;
+
+    // Priority 1: Match by Proxmox source tuple (strongest anchor)
+    match &new_machine.metadata.source {
+        MachineSource::Proxmox { cluster, node, vmid } => {
+            if let Some(m) = existing_machines.iter().find(|m| {
+                matches!(&m.metadata.source, MachineSource::Proxmox { cluster: c, node: n, vmid: v }
+                    if c == cluster && n == node && v == vmid)
+            }) {
+                return Some(m);
+            }
+        }
+        MachineSource::ProxmoxLxc { cluster, node, ctid } => {
+            if let Some(m) = existing_machines.iter().find(|m| {
+                matches!(&m.metadata.source, MachineSource::ProxmoxLxc { cluster: c, node: n, ctid: ct }
+                    if c == cluster && n == node && ct == ctid)
+            }) {
+                return Some(m);
+            }
+        }
+        MachineSource::ProxmoxNode { cluster, node } => {
+            if let Some(m) = existing_machines.iter().find(|m| {
+                matches!(&m.metadata.source, MachineSource::ProxmoxNode { cluster: c, node: n }
+                    if c == cluster && n == node)
+            }) {
+                return Some(m);
+            }
+        }
+        _ => {}
+    }
+
+    // Priority 2: Match by ANY MAC address (associative — any NIC could PXE boot)
+    for new_mac in &new_machine.identity.all_macs {
+        if new_mac.is_empty() || new_mac == "unknown" {
+            continue;
+        }
+        for existing in existing_machines.iter() {
+            if existing.identity.all_macs.iter().any(|m| m == new_mac) {
+                return Some(existing);
+            }
+        }
+    }
+
+    None
+}
+
+/// Merge a newly-discovered machine into an existing one, preserving user-configured
+/// fields while updating hardware/status from the fresh Proxmox data.
+fn merge_into_existing(existing: &dragonfly_common::Machine, new_machine: &mut dragonfly_common::Machine) {
+    // Keep the existing UUID — this IS the machine
+    new_machine.id = existing.id;
+
+    // Preserve user-configured fields
+    new_machine.config.memorable_name = existing.config.memorable_name.clone();
+    if existing.config.os_choice.is_some() {
+        new_machine.config.os_choice = existing.config.os_choice.clone();
+    }
+    if existing.config.hostname.is_some() && new_machine.config.hostname.is_none() {
+        new_machine.config.hostname = existing.config.hostname.clone();
+    }
+
+    // Merge tags: keep existing user tags, add new Proxmox-imported ones
+    for tag in &existing.config.tags {
+        if !new_machine.config.tags.contains(tag) {
+            new_machine.config.tags.push(tag.clone());
+        }
+    }
+
+    // Preserve timestamps, pending state, BMC, network config
+    new_machine.metadata.created_at = existing.metadata.created_at;
+    new_machine.config.pending_apply = existing.config.pending_apply;
+    new_machine.config.pending_fields = existing.config.pending_fields.clone();
+    new_machine.config.pending_snapshot = existing.config.pending_snapshot.clone();
+    if existing.config.bmc.is_some() {
+        new_machine.config.bmc = existing.config.bmc.clone();
+    }
+    new_machine.config.network_mode = existing.config.network_mode.clone();
+    new_machine.config.static_ipv4 = existing.config.static_ipv4.clone();
+    new_machine.config.static_ipv6 = existing.config.static_ipv6.clone();
+    if !existing.config.nameservers.is_empty() {
+        new_machine.config.nameservers = existing.config.nameservers.clone();
+    }
+    new_machine.config.domain = existing.config.domain.clone();
+    new_machine.config.network_id = existing.config.network_id;
 }
 
 // Helper function for discovery and registration
@@ -1100,10 +1104,36 @@ async fn discover_and_register_proxmox_vms(
     
     info!("Found {} nodes in Proxmox cluster", nodes_data.len());
     
+    // Load all existing machines ONCE for associative dedup during import
+    let existing_machines = state.store.list_machines().await
+        .unwrap_or_default();
+    info!("Loaded {} existing machines for dedup", existing_machines.len());
+
+    // Fetch cluster status to get node IPs (the /nodes/{node}/status endpoint
+    // does NOT include an IP field — /cluster/status does)
+    let mut node_ip_map = std::collections::HashMap::<String, String>::new();
+    if let Ok(cluster_status_resp) = client.get("/api2/json/cluster/status").await {
+        if let Ok(cluster_val) = serde_json::from_slice::<serde_json::Value>(&cluster_status_resp.body) {
+            if let Some(entries) = cluster_val.get("data").and_then(|d| d.as_array()) {
+                for entry in entries {
+                    if entry.get("type").and_then(|t| t.as_str()) == Some("node") {
+                        if let (Some(name), Some(ip)) = (
+                            entry.get("name").and_then(|n| n.as_str()),
+                            entry.get("ip").and_then(|i| i.as_str()),
+                        ) {
+                            info!("Cluster status: node '{}' has IP {}", name, ip);
+                            node_ip_map.insert(name.to_string(), ip.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     let mut registered_machines = 0;
     let mut failed_registrations = 0;
     let mut discovered_machines = Vec::new();
-    
+
     // For each node, get the VMs
     for node in nodes_data {
         let node_name = node.get("node")
@@ -1113,103 +1143,168 @@ async fn discover_and_register_proxmox_vms(
                 ProxmoxHandlerError::InternalError(anyhow::anyhow!("Node missing 'node' field"))
             })?;
         
-        // Get node details for more information
-        let node_details_path = format!("/api2/json/nodes/{}/status", node_name);
-        let mut host_ip_address = None; // Store as Option<String>
-        let mut host_hostname = node_name.to_string(); // Default to node name
+        // --- Gather host node hardware data ---
 
-        // Try to get more details about the node (like IP from status)
-        if let Ok(node_details_response) = client.get(&node_details_path).await {
-            if let Ok(node_details_value) = serde_json::from_slice::<serde_json::Value>(&node_details_response.body) {
-                if let Some(node_details_data) = node_details_value.get("data") {
-                    // Try to get IP address from the node details
-                    host_ip_address = node_details_data.get("ip").and_then(|i| i.as_str()).map(String::from);
-                    
-                    // Try to get version information
-                    if let Some(version) = node_details_data.get("pveversion").and_then(|v| v.as_str()) {
-                        info!("Node {} is running Proxmox version: {}", node_name, version);
-                        host_hostname = format!("{} (PVE {})", node_name, version); // Include version in hostname?
-                    } else {
-                        host_hostname = node_name.to_string(); // Fallback if no version
+        // IP from /cluster/status (already fetched above)
+        let host_ip = node_ip_map.get(node_name).cloned()
+            .unwrap_or_else(|| "Unknown".to_string());
+
+        // CPU, RAM, PVE version from /nodes/{node}/status
+        let node_status_path = format!("/api2/json/nodes/{}/status", node_name);
+        let mut host_hostname = node_name.to_string();
+        let mut host_cpu_model = None;
+        let mut host_cpu_cores = None;
+        let mut host_cpu_threads = None;
+        let mut host_ram_bytes = None;
+
+        if let Ok(resp) = client.get(&node_status_path).await {
+            if let Ok(val) = serde_json::from_slice::<serde_json::Value>(&resp.body) {
+                if let Some(data) = val.get("data") {
+                    // PVE version → hostname
+                    if let Some(ver) = data.get("pveversion").and_then(|v| v.as_str()) {
+                        host_hostname = format!("{} (PVE {})", node_name, ver);
+                    }
+                    // CPU info: { "model": "...", "cpus": N, "cores": N, "sockets": N }
+                    if let Some(cpuinfo) = data.get("cpuinfo") {
+                        host_cpu_model = cpuinfo.get("model").and_then(|m| m.as_str()).map(String::from);
+                        host_cpu_cores = cpuinfo.get("cores").and_then(|c| c.as_u64()).map(|c| c as u32);
+                        host_cpu_threads = cpuinfo.get("cpus").and_then(|c| c.as_u64()).map(|c| c as u32);
+                    }
+                    // Memory: { "total": bytes, "used": bytes, "free": bytes }
+                    if let Some(meminfo) = data.get("memory") {
+                        host_ram_bytes = meminfo.get("total").and_then(|t| t.as_u64());
                     }
                 }
-            } else {
-                warn!("Failed to parse node details JSON for {}: {:?}", node_name, node_details_response.body);
             }
-        } else {
-             warn!("Failed to get node details for {}", node_name);
         }
-        
-        // Get network interface information to find the primary MAC address
+
+        // Collect ALL physical NICs from /nodes/{node}/network
+        // Exclude virtual interfaces (tap, veth, fwbr, fwpr, fwln, docker, virbr, lo)
         let node_net_path = format!("/api2/json/nodes/{}/network", node_name);
-        let mut host_mac_address = None; // Store as Option<String>
+        let mut physical_nics: Vec<dragonfly_common::NetworkInterface> = Vec::new();
 
-        if let Ok(node_net_response) = client.get(&node_net_path).await {
-            if let Ok(node_net_value) = serde_json::from_slice::<serde_json::Value>(&node_net_response.body) {
-                if let Some(net_data) = node_net_value.get("data").and_then(|d| d.as_array()) {
-                    // Look for a physical interface (like eth0) or bridge (vmbr0) with a MAC
-                    for iface in net_data {
-                        let iface_type = iface.get("type").and_then(|t| t.as_str()).unwrap_or("");
-                        let iface_name = iface.get("iface").and_then(|n| n.as_str()).unwrap_or("");
-                        // Proxmox might store MAC in hwaddr or ether or address?
-                        let mac = iface.get("hwaddr")
-                            .or_else(|| iface.get("ether"))
-                            .or_else(|| iface.get("address")) // Less likely but check
-                            .and_then(|h| h.as_str());
+        if let Ok(resp) = client.get(&node_net_path).await {
+            if let Ok(val) = serde_json::from_slice::<serde_json::Value>(&resp.body) {
+                if let Some(ifaces) = val.get("data").and_then(|d| d.as_array()) {
+                    for iface in ifaces {
+                        let name = iface.get("iface").and_then(|n| n.as_str()).unwrap_or("");
+                        let itype = iface.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                        let hwaddr = iface.get("hwaddr").and_then(|h| h.as_str()).unwrap_or("");
+                        let active = iface.get("active").and_then(|a| a.as_u64()).unwrap_or(0) == 1;
 
-                        // Prioritize known physical/bridge interfaces
-                        if let Some(mac_str) = mac {
-                            if iface_type == "eth" || iface_type == "bond" || iface_name.starts_with("vmbr") {
-                                // Basic validation
-                                if mac_str.len() == 17 && mac_str.contains(':') {
-                                    host_mac_address = Some(mac_str.to_lowercase());
-                                    info!("Found potential host MAC {} on interface {} for node {}", host_mac_address.as_ref().unwrap(), iface_name, node_name);
-                                    break; // Found a likely candidate
-                                }
-                            }
+                        // Skip interfaces without a valid MAC
+                        if hwaddr.len() != 17 || !hwaddr.contains(':') {
+                            continue;
                         }
+
+                        // Skip virtual/container/VM interfaces
+                        let is_virtual = name.starts_with("tap")
+                            || name.starts_with("veth")
+                            || name.starts_with("fwbr")
+                            || name.starts_with("fwpr")
+                            || name.starts_with("fwln")
+                            || name.starts_with("docker")
+                            || name.starts_with("br-")
+                            || name.starts_with("virbr")
+                            || name == "lo";
+                        if is_virtual {
+                            continue;
+                        }
+
+                        // Accept physical NICs (eth), bonds, and bridges (vmbr)
+                        let is_physical = itype == "eth" || itype == "bond"
+                            || itype == "bridge" || name.starts_with("en");
+                        if !is_physical {
+                            continue;
+                        }
+
+                        info!("Node '{}': found NIC {} (type={}, hwaddr={}, active={})",
+                              node_name, name, itype, hwaddr, active);
+
+                        physical_nics.push(dragonfly_common::NetworkInterface {
+                            name: name.to_string(),
+                            mac: hwaddr.to_lowercase(),
+                            speed_mbps: None, // Proxmox API doesn't expose link speed
+                        });
                     }
                 }
-                 if host_mac_address.is_none() {
-                    warn!("Could not determine primary MAC for host node {} from network config.", node_name);
-                }
-            } else {
-                 warn!("Failed to parse node network JSON for {}: {:?}", node_name, node_net_response.body);
             }
-        } else {
-             warn!("Failed to get node network info for {}", node_name);
         }
-        
-        // --- Register the Host Node --- 
-        if let Some(mac) = host_mac_address {
-             let host_req = RegisterRequest {
-                mac_address: mac.clone(), // Already lowercased
-                // Use "Unknown" as default value instead of a fake IP
-                ip_address: host_ip_address.unwrap_or_else(|| "Unknown".to_string()), 
-                hostname: Some(host_hostname.clone()), // Use node name (potentially with version)
-                proxmox_vmid: None, 
-                proxmox_node: Some(node_name.to_string()),
-                proxmox_cluster: Some(cluster_name.to_string()),
-                cpu_cores: None, 
-                total_ram_bytes: None, 
-                                    disks: Vec::new(),
-                                    nameservers: Vec::new(),
-                                    cpu_model: None,
-                                };
-            info!("Host req: {:?}, Attempting to register Proxmox host node with v1 Store", host_req);
-            let machine = machine_from_register_request(&host_req);
+
+        if physical_nics.is_empty() {
+            warn!("No physical NICs found for node '{}', skipping registration", node_name);
+        } else {
+            info!("Node '{}': {} physical NICs, IP={}, CPU={:?}, RAM={:?}",
+                  node_name, physical_nics.len(), host_ip,
+                  host_cpu_model, host_ram_bytes);
+
+            // Build identity from ALL physical MACs (any could PXE boot)
+            let all_macs: Vec<String> = physical_nics.iter().map(|n| n.mac.clone()).collect();
+            let primary_mac = all_macs[0].clone();
+            let identity = dragonfly_common::MachineIdentity::new(
+                primary_mac.clone(),
+                all_macs,
+                None, None, None,
+            );
+
+            let now = chrono::Utc::now();
+            let mut machine = dragonfly_common::Machine {
+                id: dragonfly_common::new_machine_id(),
+                identity,
+                status: dragonfly_common::MachineStatus {
+                    state: dragonfly_common::MachineState::ExistingOs {
+                        os_name: "Proxmox VE".to_string(),
+                    },
+                    last_seen: Some(now),
+                    current_ip: Some(host_ip.clone()),
+                    current_workflow: None,
+                    last_workflow_result: None,
+                },
+                hardware: dragonfly_common::HardwareInfo {
+                    cpu_model: host_cpu_model,
+                    cpu_cores: host_cpu_cores,
+                    cpu_threads: host_cpu_threads,
+                    memory_bytes: host_ram_bytes,
+                    disks: Vec::new(),
+                    gpus: Vec::new(),
+                    network_interfaces: physical_nics,
+                    is_virtual: false,
+                    virt_platform: None,
+                },
+                config: {
+                    let mut cfg = dragonfly_common::MachineConfig::with_mac(&primary_mac);
+                    cfg.hostname = Some(host_hostname.clone());
+                    cfg
+                },
+                metadata: dragonfly_common::MachineMetadata {
+                    created_at: now,
+                    updated_at: now,
+                    labels: std::collections::HashMap::new(),
+                    source: dragonfly_common::MachineSource::ProxmoxNode {
+                        cluster: cluster_name.to_string(),
+                        node: node_name.to_string(),
+                    },
+                },
+            };
+
+            // Associative dedup
+            if let Some(existing) = find_existing_machine(&existing_machines, &machine) {
+                info!("Found existing machine {} for node '{}', updating", existing.id, node_name);
+                merge_into_existing(existing, &mut machine);
+            }
+
             let machine_id = machine.id;
             match state.store.put_machine(&machine).await {
                 Ok(()) => {
-                    info!("Successfully registered/updated Proxmox host node '{}' as machine ID {}", node_name, machine_id);
+                    info!("Registered Proxmox host node '{}' as machine {} ({} NICs)",
+                          node_name, machine_id, machine.hardware.network_interfaces.len());
+                    registered_machines += 1;
                 }
                 Err(e) => {
                     error!("Failed to register Proxmox host node '{}': {}", node_name, e);
-                    // Log error but continue to VMs for this node
+                    failed_registrations += 1;
                 }
             }
-        } else {
-             warn!("Skipping registration of host node '{}' because MAC address could not be determined.", node_name);
         }
 
         // --- Fetch and Register VMs for this node ---
@@ -1580,22 +1675,30 @@ async fn discover_and_register_proxmox_vms(
                 mac_address,
                 ip_address,
                 hostname: Some(name.to_string()),
-                disks: Vec::new(), // We don't know the disks yet
-                nameservers: Vec::new(), // We don't know the nameservers yet
-                cpu_model: Some("Proxmox Virtual CPU".to_string()), // Generic CPU model
+                disks: Vec::new(),
+                nameservers: Vec::new(),
+                cpu_model: Some("Proxmox Virtual CPU".to_string()),
                 cpu_cores: Some(vm_cpu_cores),
                 total_ram_bytes: Some(vm_mem_bytes),
                 proxmox_vmid: Some(vmid),
                 proxmox_node: Some(node_name.to_string()),
                 proxmox_cluster: Some(cluster_name.to_string()),
+                proxmox_type: Some("vm".to_string()),
             };
-
-            // DEBUG: Log the request before attempting registration
-            info!("Register request: {:?}, Attempting to register VM with v1 Store", register_request);
 
             // Create v1 Machine from register request
             let mut machine = machine_from_register_request(&register_request);
-            let machine_id = machine.id;
+
+            // Import tags from Proxmox (semicolon-separated string)
+            if let Some(tags_str) = config_data.get("tags").and_then(|t| t.as_str()) {
+                machine.config.tags = tags_str.split(';')
+                    .map(|t| t.trim().to_string())
+                    .filter(|t| !t.is_empty())
+                    .collect();
+                if !machine.config.tags.is_empty() {
+                    info!("Imported {} tags for VM {}: {:?}", machine.config.tags.len(), vmid, machine.config.tags);
+                }
+            }
 
             // Set the machine state based on VM status
             use dragonfly_common::MachineState;
@@ -1605,7 +1708,13 @@ async fn discover_and_register_proxmox_vms(
                 _ => MachineState::ExistingOs { os_name: "Unknown".to_string() },
             };
 
-            // Register the VM with v1 Store
+            // Associative dedup: match by Proxmox source tuple or MAC
+            if let Some(existing) = find_existing_machine(&existing_machines, &machine) {
+                info!("Found existing machine {} for VM {} ({}), updating", existing.id, vmid, name);
+                merge_into_existing(existing, &mut machine);
+            }
+
+            let machine_id = machine.id;
             match state.store.put_machine(&machine).await {
                 Ok(()) => {
                     info!("Successfully registered Proxmox VM {} as machine {}", vmid, machine_id);
@@ -1617,12 +1726,196 @@ async fn discover_and_register_proxmox_vms(
                 }
             }
         }
+
+        // --- Fetch and Register LXC containers for this node ---
+        info!("Processing LXC containers for node: {}", node_name);
+
+        let lxc_path = format!("/api2/json/nodes/{}/lxc", node_name);
+        let lxc_response = match client.get(&lxc_path).await {
+            Ok(response) => Some(response),
+            Err(e) => {
+                warn!("Failed to fetch LXC containers for node {}: {}", node_name, e);
+                None
+            }
+        };
+
+        if let Some(lxc_resp) = lxc_response {
+            let lxc_value: serde_json::Value = match serde_json::from_slice(&lxc_resp.body) {
+                Ok(value) => value,
+                Err(e) => {
+                    warn!("Failed to parse LXC response for node {}: {}", node_name, e);
+                    serde_json::Value::Null
+                }
+            };
+
+            if let Some(lxc_data) = lxc_value.get("data").and_then(|d| d.as_array()) {
+                info!("Found {} LXC containers on node {}", lxc_data.len(), node_name);
+
+                for ct in lxc_data {
+                    let ctid = match ct.get("vmid").and_then(|id| id.as_u64()).map(|id| id as u32) {
+                        Some(id) => id,
+                        None => { continue; }
+                    };
+
+                    let ct_name = ct.get("name").and_then(|n| n.as_str()).unwrap_or("unknown");
+                    let ct_status = ct.get("status").and_then(|s| s.as_str()).unwrap_or("unknown");
+
+                    // Get container config for MAC address and resources
+                    let ct_config_path = format!("/api2/json/nodes/{}/lxc/{}/config", node_name, ctid);
+                    let ct_config = match client.get(&ct_config_path).await {
+                        Ok(resp) => serde_json::from_slice::<serde_json::Value>(&resp.body).ok(),
+                        Err(e) => {
+                            warn!("Failed to fetch LXC {} config: {}", ctid, e);
+                            None
+                        }
+                    };
+
+                    // Extract MAC from LXC net config (format: "name=eth0,bridge=vmbr0,hwaddr=XX:XX:XX:XX:XX:XX,...")
+                    let mut ct_mac = None;
+                    let mut ct_mem_bytes: u64 = 0;
+                    let mut ct_cpu_cores: u32 = 0;
+
+                    if let Some(config_val) = &ct_config {
+                        if let Some(config_data) = config_val.get("data") {
+                            // Extract MAC from net0..net7
+                            for i in 0..8 {
+                                let net_key = format!("net{}", i);
+                                if let Some(net_cfg) = config_data.get(&net_key).and_then(|n| n.as_str()) {
+                                    // LXC net config: "name=eth0,bridge=vmbr0,hwaddr=AA:BB:CC:DD:EE:FF,..."
+                                    for part in net_cfg.split(',') {
+                                        if let Some(mac) = part.strip_prefix("hwaddr=") {
+                                            if mac.len() == 17 && mac.contains(':') {
+                                                ct_mac = Some(mac.to_lowercase());
+                                                break;
+                                            }
+                                        }
+                                    }
+                                    if ct_mac.is_some() { break; }
+                                }
+                            }
+
+                            // Memory (LXC uses megabytes in "memory" field)
+                            if let Some(mem_mb) = config_data.get("memory").and_then(|m| m.as_u64()) {
+                                ct_mem_bytes = mem_mb * 1024 * 1024;
+                            }
+
+                            // CPU cores
+                            if let Some(cores) = config_data.get("cores").and_then(|c| c.as_u64()) {
+                                ct_cpu_cores = cores as u32;
+                            }
+                        }
+                    }
+
+                    let mac_address = match ct_mac {
+                        Some(mac) => mac,
+                        None => {
+                            warn!("No MAC found for LXC container {}, skipping", ctid);
+                            continue;
+                        }
+                    };
+
+                    // Try to get IP from container status if running
+                    let mut ct_ip = "Unknown".to_string();
+                    if ct_status == "running" {
+                        let ct_ifaces_path = format!("/api2/json/nodes/{}/lxc/{}/interfaces", node_name, ctid);
+                        if let Ok(ifaces_resp) = client.get(&ct_ifaces_path).await {
+                            if let Ok(ifaces_val) = serde_json::from_slice::<serde_json::Value>(&ifaces_resp.body) {
+                                if let Some(ifaces) = ifaces_val.get("data").and_then(|d| d.as_array()) {
+                                    for iface in ifaces {
+                                        let iface_name = iface.get("name").and_then(|n| n.as_str()).unwrap_or("");
+                                        if iface_name == "lo" { continue; }
+                                        if let Some(inet) = iface.get("inet").and_then(|i| i.as_str()) {
+                                            // Format: "10.7.1.50/24"
+                                            if let Some(ip) = inet.split('/').next() {
+                                                if !ip.starts_with("127.") {
+                                                    ct_ip = ip.to_string();
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    discovered_machines.push(DiscoveredProxmox {
+                        host: format!("{}-lxc-{}", node_name, ctid),
+                        port: 0,
+                        hostname: Some(ct_name.to_string()),
+                        mac_address: Some(mac_address.clone()),
+                        machine_type: "proxmox-lxc".to_string(),
+                        vmid: Some(ctid),
+                        parent_host: Some(node_name.to_string()),
+                    });
+
+                    info!("Processing LXC container {} (ID: {}, Status: {}, IP: {})", ct_name, ctid, ct_status, ct_ip);
+
+                    let register_request = RegisterRequest {
+                        mac_address,
+                        ip_address: ct_ip,
+                        hostname: Some(ct_name.to_string()),
+                        disks: Vec::new(),
+                        nameservers: Vec::new(),
+                        cpu_model: Some("Proxmox LXC Container".to_string()),
+                        cpu_cores: Some(ct_cpu_cores),
+                        total_ram_bytes: Some(ct_mem_bytes),
+                        proxmox_vmid: Some(ctid),
+                        proxmox_node: Some(node_name.to_string()),
+                        proxmox_cluster: Some(cluster_name.to_string()),
+                        proxmox_type: Some("lxc".to_string()),
+                    };
+
+                    let mut machine = machine_from_register_request(&register_request);
+
+                    // Import tags from Proxmox LXC config (semicolon-separated string)
+                    if let Some(config_val) = &ct_config {
+                        if let Some(config_data) = config_val.get("data") {
+                            if let Some(tags_str) = config_data.get("tags").and_then(|t| t.as_str()) {
+                                machine.config.tags = tags_str.split(';')
+                                    .map(|t| t.trim().to_string())
+                                    .filter(|t| !t.is_empty())
+                                    .collect();
+                                if !machine.config.tags.is_empty() {
+                                    info!("Imported {} tags for LXC {}: {:?}", machine.config.tags.len(), ctid, machine.config.tags);
+                                }
+                            }
+                        }
+                    }
+
+                    use dragonfly_common::MachineState;
+                    machine.status.state = match ct_status {
+                        "running" => MachineState::ExistingOs { os_name: "Unknown".to_string() },
+                        "stopped" => MachineState::Offline,
+                        _ => MachineState::ExistingOs { os_name: "Unknown".to_string() },
+                    };
+
+                    // Associative dedup: match by Proxmox source tuple or MAC
+                    if let Some(existing) = find_existing_machine(&existing_machines, &machine) {
+                        info!("Found existing machine {} for LXC {} ({}), updating", existing.id, ctid, ct_name);
+                        merge_into_existing(existing, &mut machine);
+                    }
+
+                    let machine_id = machine.id;
+                    match state.store.put_machine(&machine).await {
+                        Ok(()) => {
+                            info!("Successfully registered Proxmox LXC {} as machine {}", ctid, machine_id);
+                            registered_machines += 1;
+                        },
+                        Err(e) => {
+                            error!("Failed to register Proxmox LXC {}: {}", ctid, e);
+                            failed_registrations += 1;
+                        }
+                    }
+                }
+            }
+        }
     }
-    
+
     // Return success with a summary
-    info!("Proxmox VM discovery and registration complete: {} successful, {} failed", 
+    info!("Proxmox guest discovery and registration complete: {} successful, {} failed",
            registered_machines, failed_registrations);
-    
+
     Ok((registered_machines, failed_registrations, discovered_machines))
 }
 
@@ -1938,30 +2231,26 @@ pub async fn connect_to_proxmox(
         let port = settings.proxmox_port.unwrap_or(8006);
         let skip_tls_verify = settings.proxmox_skip_tls_verify.unwrap_or(false);
         
-        // Create https connector with proper TLS settings
-        let _https = if skip_tls_verify {
-            info!("Using TLS connection with certificate validation disabled");
-            let mut connector = hyper_tls::HttpsConnector::new();
-            connector.https_only(true);
-            connector
-    } else {
-            info!("Using TLS connection with standard certificate validation");
-            hyper_tls::HttpsConnector::new()
-    };
-    
-        // Get host URL
-    let host_url = format!("https://{}:{}", host, port);
+        let host_url = format!("https://{}:{}", host, port);
         let base_uri = host_url.parse::<Uri>()
             .context(format!("Invalid Proxmox URL: {}", host_url))?;
-            
+
         // Parse the API token to extract user and token parts
-        // Format is usually: user@realm!tokenname=token_value
+        // Format: user@realm!tokenname=token_value
         if let Some(equals_pos) = token.find('=') {
-            let (_token_id, _token_value) = token.split_at(equals_pos + 1);
-            
-            // Create client with token authentication
-            let client = ProxmoxApiClient::new(base_uri);
-            
+            let token_id = &token[..equals_pos];
+            let token_value = &token[equals_pos + 1..];
+
+            // Create client with proper TLS settings and authenticate
+            let client = create_proxmox_client(base_uri, skip_tls_verify)
+                .map_err(|e| anyhow::anyhow!(e))?;
+            client.set_authentication(ProxmoxToken {
+                userid: token_id.to_string(),
+                prefix: "PVEAPIToken".to_string(),
+                value: token_value.to_string(),
+                perl_compat: true,
+            });
+
             info!("Successfully initialized Proxmox client with in-memory API token for {} operations", token_type);
             return Ok(client);
         }
@@ -1985,22 +2274,10 @@ pub async fn connect_to_proxmox(
     
     // If we have settings in the database, try using the appropriate API token
     if let Some(settings) = db_settings {
-        // Create https connector with proper TLS settings
-        let _https = if settings.skip_tls_verify {
-            info!("Using TLS connection with certificate validation disabled");
-            let mut connector = hyper_tls::HttpsConnector::new();
-            connector.https_only(true);
-            connector
-        } else {
-            info!("Using TLS connection with standard certificate validation");
-            hyper_tls::HttpsConnector::new()
-        };
-        
-        // Get host URL
         let host_url = format!("https://{}:{}", settings.host, settings.port);
         let base_uri = host_url.parse::<Uri>()
             .context(format!("Invalid Proxmox URL: {}", host_url))?;
-        
+
         // Select the appropriate API token based on operation type
         let token_opt = match token_type {
             "create" => settings.vm_create_token,
@@ -2012,29 +2289,34 @@ pub async fn connect_to_proxmox(
                 return Err(anyhow::anyhow!("Unknown token type: {}", token_type));
             }
         };
-        
+
         if let Some(encrypted_token) = token_opt {
             // Decrypt the token
             match decrypt_string(&encrypted_token) {
                 Ok(api_token) => {
                     info!("Using API token from database for {} operations", token_type);
-                    
+
                     // Also store it in memory for future use
                     let mut tokens = state.tokens.lock().await;
                     tokens.insert(token_key, api_token.clone());
                     drop(tokens);
-                    
+
                     // Parse the API token to extract user and token parts
-                    // Format is usually: user@realm!tokenname=token_value
+                    // Format: user@realm!tokenname=token_value
                     if let Some(equals_pos) = api_token.find('=') {
-                        let (_token_id, _token_value) = api_token.split_at(equals_pos + 1);
-                        
-                        // Create client with token authentication
-                        let client = ProxmoxApiClient::new(base_uri);
-                        
-                        // TODO: Set the token directly in the client if the API supports it
-                        // For now, we'll just return the client and handle token auth in the request
-                        
+                        let token_id = &api_token[..equals_pos];
+                        let token_value = &api_token[equals_pos + 1..];
+
+                        // Create client with proper TLS settings and authenticate
+                        let client = create_proxmox_client(base_uri, settings.skip_tls_verify)
+                            .map_err(|e| anyhow::anyhow!(e))?;
+                        client.set_authentication(ProxmoxToken {
+                            userid: token_id.to_string(),
+                            prefix: "PVEAPIToken".to_string(),
+                            value: token_value.to_string(),
+                            perl_compat: true,
+                        });
+
                         info!("Successfully initialized Proxmox client with API token for {} operations", token_type);
                         return Ok(client);
                     } else {
@@ -2490,7 +2772,7 @@ async fn create_token_with_role(
     description: &str,
     role_name: &str
 ) -> Result<String, String> {
-    info!("DEBUG: Creating token at path: /api2/json/access/users/{}/token/{}", user, token_name);
+    info!("Creating token {}/{}", user, token_name);
     
     // Set up token creation params
     let token_params = serde_json::json!({
@@ -2500,18 +2782,13 @@ async fn create_token_with_role(
     });
     
     let token_path = format!("/api2/json/access/users/{}/token/{}", user, token_name);
-    info!("DEBUG: Token creation params: {:?}", token_params);
+    info!("Creating API token: {}/{}", user, token_name);
     
     // Create the token
     match client.post(&token_path, &token_params).await {
         Ok(response) => {
-            info!("DEBUG: Token creation response status: {}", response.status);
-            
             if response.status == 200 {
-                // Parse the response to extract the token value
-                // Proxmox client automatically deserializes the body for us
                 let body_str = String::from_utf8_lossy(&response.body);
-                info!("DEBUG: Token creation response body: {}", body_str);
                 
                 match serde_json::from_str::<serde_json::Value>(&body_str) {
                     Ok(json) => {
@@ -2522,21 +2799,17 @@ async fn create_token_with_role(
                                 let full_token = format!("{}={}", full_token_id, token_value);
                                 
                                 // Set the ACL (permissions) for this token
-                                info!("DEBUG: Setting ACL for token at path: /api2/json/access/acl");
+                                info!("Setting ACL for token {} with role {}", token_name, role_name);
                                 let acl_params = serde_json::json!({
-                                    "path": "/",  // Root path (applies to all)
-                                    "propagate": "1",  // Propagate to sub-paths
-                                    "roles": role_name,  // Role name provided
-                                    "tokens": full_token_id  // Token ID
+                                    "path": "/",
+                                    "propagate": "1",
+                                    "roles": role_name,
+                                    "tokens": full_token_id
                                 });
-                                
-                                info!("DEBUG: ACL params: {:?}", acl_params);
                                 
                                 match client.put("/api2/json/access/acl", &acl_params).await {
                                     Ok(acl_response) => {
-                                        info!("DEBUG: ACL response status: {}", acl_response.status);
                                         let acl_body_str = String::from_utf8_lossy(&acl_response.body);
-                                        info!("DEBUG: ACL response body: {}", acl_body_str);
                                         
                                         if acl_response.status == 200 {
                                             Ok(full_token)
@@ -2560,7 +2833,7 @@ async fn create_token_with_role(
                                                             // Try to set permissions
                                                             let permissions = match role_name {
                                                                 "DragonflyVMConfig" => "VM.Config.Options,VM.Config.Disk",
-                                                                "DragonflySync" => "VM.Audit,VM.Monitor,Sys.Audit",
+                                                                "DragonflySync" => "VM.Audit,Sys.Audit",
                                                                 _ => "",
                                                             };
                                                             
@@ -2580,7 +2853,7 @@ async fn create_token_with_role(
                                                             match client.put("/api2/json/access/acl", &acl_params).await {
                                                                 Ok(retry_response) => {
                                                                     let retry_body = String::from_utf8_lossy(&retry_response.body);
-                                                                    info!("DEBUG: ACL retry response: {}", retry_body);
+                                                                    info!("ACL retry response status for {}", role_name);
                                                                     
                                                                     if retry_response.status == 200 {
                                                                         Ok(full_token)
@@ -2687,4 +2960,213 @@ pub struct ProxmoxTokenSet {
     pub config_token: String,
     pub sync_token: String,
     pub connection_info: ProxmoxConnectionInfo,
+}
+
+/// Sync tags from a Dragonfly machine to Proxmox.
+/// Called when tags are updated in Dragonfly to push the change back to Proxmox.
+pub async fn sync_tags_to_proxmox(
+    state: &AppState,
+    machine: &dragonfly_common::machine::Machine,
+) {
+    use dragonfly_common::MachineSource;
+
+    let (api_type, node, id) = match &machine.metadata.source {
+        MachineSource::Proxmox { node, vmid, .. } => ("qemu", node.clone(), *vmid),
+        MachineSource::ProxmoxLxc { node, ctid, .. } => ("lxc", node.clone(), *ctid),
+        _ => return, // Not a Proxmox guest, nothing to sync
+    };
+
+    let tags_str = machine.config.tags.join(";");
+    let path = format!("/api2/json/nodes/{}/{}/{}/config", node, api_type, id);
+
+    match connect_to_proxmox(state, "config").await {
+        Ok(client) => {
+            let body = json!({ "tags": tags_str });
+            match client.put(&path, &body).await {
+                Ok(resp) => {
+                    if resp.status >= 200 && resp.status < 300 {
+                        info!("Synced tags to Proxmox {} {}: {:?}", api_type, id, machine.config.tags);
+                    } else {
+                        warn!("Proxmox returned {} when syncing tags for {} {}", resp.status, api_type, id);
+                    }
+                }
+                Err(e) => {
+                    warn!("Failed to sync tags to Proxmox for {} {}: {}", api_type, id, e);
+                }
+            }
+        }
+        Err(e) => {
+            warn!("Could not connect to Proxmox to sync tags: {}", e);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dragonfly_common::{Machine, MachineIdentity, MachineSource};
+
+    fn make_vm(mac: &str, cluster: &str, node: &str, vmid: u32) -> Machine {
+        let identity = MachineIdentity::from_mac(mac);
+        let mut m = Machine::new(identity);
+        m.metadata.source = MachineSource::Proxmox {
+            cluster: cluster.to_string(),
+            node: node.to_string(),
+            vmid,
+        };
+        m
+    }
+
+    fn make_lxc(mac: &str, cluster: &str, node: &str, ctid: u32) -> Machine {
+        let identity = MachineIdentity::from_mac(mac);
+        let mut m = Machine::new(identity);
+        m.metadata.source = MachineSource::ProxmoxLxc {
+            cluster: cluster.to_string(),
+            node: node.to_string(),
+            ctid,
+        };
+        m
+    }
+
+    fn make_node(mac: &str, cluster: &str, node: &str) -> Machine {
+        let identity = MachineIdentity::from_mac(mac);
+        let mut m = Machine::new(identity);
+        m.metadata.source = MachineSource::ProxmoxNode {
+            cluster: cluster.to_string(),
+            node: node.to_string(),
+        };
+        m
+    }
+
+    /// Make a node with multiple NICs (realistic bare-metal host)
+    fn make_multi_nic_node(macs: &[&str], cluster: &str, node: &str) -> Machine {
+        let all_macs: Vec<String> = macs.iter().map(|m| m.to_string()).collect();
+        let identity = MachineIdentity::new(
+            all_macs[0].clone(),
+            all_macs,
+            None, None, None,
+        );
+        let mut m = Machine::new(identity);
+        m.metadata.source = MachineSource::ProxmoxNode {
+            cluster: cluster.to_string(),
+            node: node.to_string(),
+        };
+        m
+    }
+
+    #[test]
+    fn test_dedup_matches_node_by_any_nic_mac() {
+        // Existing node registered with 4 NICs
+        let existing = vec![make_multi_nic_node(
+            &["aa:bb:cc:00:00:01", "aa:bb:cc:00:00:02", "aa:bb:cc:00:00:03", "aa:bb:cc:00:00:04"],
+            "cluster1", "bee",
+        )];
+
+        // New import only sees NIC #3 (e.g. different bridge config exposed different MACs)
+        let new = make_node("aa:bb:cc:00:00:03", "cluster1", "bee");
+        let found = find_existing_machine(&existing, &new);
+        assert!(found.is_some(), "Should match when ANY MAC in all_macs overlaps");
+    }
+
+    #[test]
+    fn test_dedup_matches_pxe_boot_agent_to_node_by_mac() {
+        // Node was imported from Proxmox with multiple NICs
+        let existing = vec![make_multi_nic_node(
+            &["aa:bb:cc:00:00:01", "aa:bb:cc:00:00:02"],
+            "cluster1", "bee",
+        )];
+
+        // Agent PXE-booted on NIC #2 (different source type, but MAC matches)
+        let identity = MachineIdentity::from_mac("aa:bb:cc:00:00:02");
+        let agent_machine = Machine::new(identity);
+        let found = find_existing_machine(&existing, &agent_machine);
+        assert!(found.is_some(), "PXE boot on any NIC should find the existing node");
+    }
+
+    #[test]
+    fn test_dedup_matches_vm_by_source() {
+        let existing = vec![make_vm("aa:bb:cc:dd:ee:01", "cluster1", "node1", 100)];
+        let new = make_vm("aa:bb:cc:dd:ee:01", "cluster1", "node1", 100);
+        let found = find_existing_machine(&existing, &new);
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().id, existing[0].id);
+    }
+
+    #[test]
+    fn test_dedup_matches_vm_even_with_different_mac() {
+        // VM got its NIC regenerated — different MAC, same source tuple
+        let existing = vec![make_vm("aa:bb:cc:dd:ee:01", "cluster1", "node1", 100)];
+        let new = make_vm("ff:ff:ff:ff:ff:ff", "cluster1", "node1", 100);
+        let found = find_existing_machine(&existing, &new);
+        assert!(found.is_some(), "Should match by Proxmox source even when MAC differs");
+        assert_eq!(found.unwrap().id, existing[0].id);
+    }
+
+    #[test]
+    fn test_dedup_no_match_different_vmid() {
+        let existing = vec![make_vm("aa:bb:cc:dd:ee:01", "cluster1", "node1", 100)];
+        let new = make_vm("aa:bb:cc:dd:ee:02", "cluster1", "node1", 200);
+        let found = find_existing_machine(&existing, &new);
+        assert!(found.is_none(), "Different VMID = different machine");
+    }
+
+    #[test]
+    fn test_dedup_matches_lxc_by_source() {
+        let existing = vec![make_lxc("aa:bb:cc:dd:ee:01", "cluster1", "node1", 300)];
+        let new = make_lxc("aa:bb:cc:dd:ee:01", "cluster1", "node1", 300);
+        let found = find_existing_machine(&existing, &new);
+        assert!(found.is_some());
+    }
+
+    #[test]
+    fn test_dedup_matches_node_by_source() {
+        let existing = vec![make_node("aa:bb:cc:dd:ee:01", "cluster1", "bee")];
+        let new = make_node("ff:ff:ff:ff:ff:ff", "cluster1", "bee");
+        let found = find_existing_machine(&existing, &new);
+        assert!(found.is_some(), "Should match node by cluster+node_name");
+    }
+
+    #[test]
+    fn test_dedup_falls_back_to_mac() {
+        // Agent-registered machine (no Proxmox source) matched by MAC
+        let identity = MachineIdentity::from_mac("aa:bb:cc:dd:ee:01");
+        let agent_machine = Machine::new(identity);
+        let existing = vec![agent_machine];
+
+        let new = make_vm("aa:bb:cc:dd:ee:01", "cluster1", "node1", 100);
+        let found = find_existing_machine(&existing, &new);
+        assert!(found.is_some(), "Should fall back to MAC match when source doesn't match");
+    }
+
+    #[test]
+    fn test_dedup_vm_does_not_match_lxc_same_id() {
+        // VM 100 and LXC 100 are different machines
+        let existing = vec![make_lxc("aa:bb:cc:dd:ee:01", "cluster1", "node1", 100)];
+        let new = make_vm("aa:bb:cc:dd:ee:02", "cluster1", "node1", 100);
+        let found = find_existing_machine(&existing, &new);
+        // Source types differ (Proxmox vs ProxmoxLxc), and MACs differ → no match
+        assert!(found.is_none(), "VM and LXC with same numeric ID are different machines");
+    }
+
+    #[test]
+    fn test_merge_preserves_user_fields() {
+        let mut existing = make_vm("aa:bb:cc:dd:ee:01", "cluster1", "node1", 100);
+        existing.config.memorable_name = "my-cool-server".to_string();
+        existing.config.os_choice = Some("debian-12".to_string());
+        existing.config.tags = vec!["production".to_string(), "web".to_string()];
+
+        let mut new = make_vm("aa:bb:cc:dd:ee:01", "cluster1", "node1", 100);
+        new.config.tags = vec!["proxmox-imported".to_string()];
+        new.hardware.cpu_cores = Some(8); // Updated hardware from Proxmox
+
+        merge_into_existing(&existing, &mut new);
+
+        assert_eq!(new.id, existing.id, "UUID must be preserved");
+        assert_eq!(new.config.memorable_name, "my-cool-server", "User-set name must be preserved");
+        assert_eq!(new.config.os_choice, Some("debian-12".to_string()), "User-set OS must be preserved");
+        assert!(new.config.tags.contains(&"production".to_string()), "Existing tags must be kept");
+        assert!(new.config.tags.contains(&"web".to_string()), "Existing tags must be kept");
+        assert!(new.config.tags.contains(&"proxmox-imported".to_string()), "New tags must be added");
+        assert_eq!(new.hardware.cpu_cores, Some(8), "Fresh hardware data must be used");
+    }
 }

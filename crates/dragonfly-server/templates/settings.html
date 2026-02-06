@@ -883,6 +883,12 @@
                                         <input type="checkbox" x-model="form.skip_tls_verify" id="skip-tls" class="rounded border-purple-700 bg-transparent text-purple-600 focus:ring-purple-500">
                                         <label for="skip-tls" class="text-xs text-white/70">Skip TLS verification (self-signed certificates)</label>
                                     </div>
+                                    <div class="flex items-center gap-2">
+                                        <input type="checkbox" x-model="form.import_guests" id="import-guests"
+                                               @change="if (form.import_guests && !importDangerAccepted) { form.import_guests = false; importDangerModal = true; }"
+                                               class="rounded border-yellow-600 bg-transparent text-yellow-500 focus:ring-yellow-500">
+                                        <label for="import-guests" class="text-xs text-yellow-400/90">(Experimental) Import Proxmox guests</label>
+                                    </div>
                                     <div class="flex items-center gap-3">
                                         <button type="button" @click="connectAndCreateTokens()" :disabled="connecting"
                                                 class="px-4 py-2 text-sm font-medium text-white bg-purple-600 hover:bg-purple-700 disabled:opacity-50 rounded-lg transition-colors">
@@ -890,6 +896,41 @@
                                             <span x-show="connecting">Connecting...</span>
                                         </button>
                                         <span x-show="error" class="text-xs text-red-400" x-text="error"></span>
+                                    </div>
+                                </div>
+
+                                <!-- Import Guests Danger Modal -->
+                                <div x-show="importDangerModal" x-cloak class="fixed inset-0 z-50 overflow-y-auto">
+                                    <div class="fixed inset-0 bg-black/50" @click="importDangerModal = false"></div>
+                                    <div class="flex min-h-full items-center justify-center p-4">
+                                        <div class="relative bg-gray-900 rounded-lg p-6 max-w-md shadow-xl border border-yellow-600/50" @click.stop>
+                                            <div class="flex items-center gap-3 mb-4">
+                                                <div class="flex h-10 w-10 items-center justify-center rounded-full bg-yellow-900/40">
+                                                    <svg class="w-5 h-5 text-yellow-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z" />
+                                                    </svg>
+                                                </div>
+                                                <h3 class="text-lg font-semibold text-white">Experimental Feature</h3>
+                                            </div>
+                                            <p class="text-sm text-gray-300 mb-3">
+                                                This will import all VMs and LXC containers from your Proxmox cluster into Dragonfly. This feature is <strong class="text-yellow-400">experimental</strong>.
+                                            </p>
+                                            <ul class="text-xs text-gray-400 mb-4 space-y-1 list-disc list-inside">
+                                                <li>Existing machines with the same MAC address will be updated</li>
+                                                <li>Guest agent data is used when available for IP detection</li>
+                                                <li>Do not use this with production clusters you care about</li>
+                                            </ul>
+                                            <div class="flex gap-3">
+                                                <button type="button" @click="importDangerModal = false"
+                                                    class="flex-1 px-4 py-2 text-sm font-medium text-white/70 border border-gray-600 hover:bg-gray-800 rounded-lg">
+                                                    Cancel
+                                                </button>
+                                                <button type="button" @click="importDangerAccepted = true; form.import_guests = true; importDangerModal = false"
+                                                    class="flex-1 px-4 py-2 text-sm font-medium text-white bg-yellow-600 hover:bg-yellow-700 rounded-lg">
+                                                    I understand, enable import
+                                                </button>
+                                            </div>
+                                        </div>
                                     </div>
                                 </div>
 
@@ -1897,7 +1938,10 @@
                 username: 'root@pam',
                 password: '',
                 skip_tls_verify: false,
+                import_guests: false,
             },
+            importDangerModal: false,
+            importDangerAccepted: false,
             tokens: { power: '', create: '', config: '', sync: '' },
 
             async init() {
@@ -1935,12 +1979,26 @@
                             username: this.form.username,
                             password: this.form.password,
                             skip_tls_verify: this.form.skip_tls_verify,
+                            import_guests: this.form.import_guests,
                         }),
                     });
                     const data = await res.json();
                     if (res.ok && data.success) {
-                        showToast('Connected and created tokens', 'success');
+                        let msg = 'Connected and created tokens';
+                        if (data.import_result) {
+                            if (data.import_result.error) {
+                                msg += ` (import error: ${data.import_result.error})`;
+                            } else {
+                                msg += ` — imported ${data.import_result.imported} guests`;
+                                if (data.import_result.failed > 0) {
+                                    msg += ` (${data.import_result.failed} failed)`;
+                                }
+                            }
+                        }
+                        showToast(msg, 'success');
                         this.form.password = '';
+                        this.form.import_guests = false;
+                        this.importDangerAccepted = false;
                         await this.fetchStatus();
                     } else {
                         this.error = data.error || data.message || 'Connection failed';

@@ -532,6 +532,8 @@ pub struct MachineMetadata {
 pub enum MachineSource {
     Agent,
     Proxmox { cluster: String, node: String, vmid: u32 },
+    ProxmoxLxc { cluster: String, node: String, ctid: u32 },
+    ProxmoxNode { cluster: String, node: String },
     Manual,
 }
 
