@@ -7,20 +7,29 @@ use uuid::Uuid;
 /// A logical network definition (VLAN, subnet, etc.)
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Network {
+    #[serde(default = "Uuid::now_v7")]
     pub id: Uuid,
     pub name: String,
+    #[serde(default)]
     pub vlan_id: Option<u16>,
+    #[serde(default)]
     pub subnet: String,
+    #[serde(default)]
     pub gateway: Option<String>,
+    #[serde(default)]
     pub dns_servers: Vec<String>,
+    #[serde(default)]
     pub domain: Option<String>,
     /// This is the native/untagged VLAN for Dragonfly
     #[serde(default)]
     pub is_native: bool,
     #[serde(default)]
     pub dhcp_enabled: bool,
+    #[serde(default)]
     pub description: Option<String>,
+    #[serde(default = "Utc::now")]
     pub created_at: DateTime<Utc>,
+    #[serde(default = "Utc::now")]
     pub updated_at: DateTime<Utc>,
 }
 

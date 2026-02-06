@@ -51,6 +51,7 @@ pub mod store;
 pub mod provisioning;
 pub mod services;
 pub mod image_cache;
+pub mod network_detect;
 
 // Expose status module for integration tests
 pub mod status;
@@ -399,6 +400,14 @@ pub async fn run() -> anyhow::Result<()> {
                 warn!("Failed to initialize OS templates: {}", e);
             }
             let _ = event_manager_clone.send("templates_ready".to_string());
+        });
+
+        // Detect and create default network if none exists
+        let store_for_network = store.clone();
+        tokio::spawn(async move {
+            if let Err(e) = network_detect::init_default_network(store_for_network).await {
+                warn!("Failed to detect default network: {}", e);
+            }
         });
 
         // Verify/download Mage boot artifacts (x86_64 only)
