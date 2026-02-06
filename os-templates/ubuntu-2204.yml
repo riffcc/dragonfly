@@ -67,8 +67,5 @@ spec:
       mode: "0644"
       timeout: 90
 
-    - action: kexec
-      partition: 16
-      root_partition: "1"
-      cmdline: "ro quiet"
+    - action: reboot
       timeout: 90

@@ -67,8 +67,5 @@ spec:
       mode: "0644"
       timeout: 90
 
-    - action: kexec
-      partition: 16
-      root_partition: "1"
-      cmdline: "ro debug ignore_loglevel earlyprintk=vga,keep earlyprintk=serial,ttyS0,115200 acpi=off"
+    - action: reboot
       timeout: 90
