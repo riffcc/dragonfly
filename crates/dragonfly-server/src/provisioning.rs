@@ -57,8 +57,13 @@ pub struct HardwareCheckIn {
     /// CPU info
     pub cpu_model: Option<String>,
     pub cpu_cores: Option<u32>,
+    /// CPU logical thread count (hyperthreading)
+    pub cpu_threads: Option<u32>,
     /// Memory in bytes
     pub memory_bytes: Option<u64>,
+    /// GPU info
+    #[serde(default)]
+    pub gpus: Vec<dragonfly_common::GpuInfo>,
     /// Disk info
     #[serde(default)]
     pub disks: Vec<DiskInfo>,
@@ -483,7 +488,7 @@ impl ProvisioningService {
         machine.hardware = HardwareInfo {
             cpu_model: info.cpu_model.clone(),
             cpu_cores: info.cpu_cores,
-            cpu_threads: None,
+            cpu_threads: info.cpu_threads,
             memory_bytes: info.memory_bytes,
             disks: info.disks.iter().map(|d| Disk {
                 device: format!("/dev/{}", d.name),
@@ -491,7 +496,7 @@ impl ProvisioningService {
                 model: d.model.clone(),
                 serial: d.serial.clone(),
             }).collect(),
-            gpus: Vec::new(),
+            gpus: info.gpus.clone(),
             network_interfaces: info.interfaces.iter()
                 .filter(|i| i.mac != info.mac)
                 .map(|i| NetworkInterface {
@@ -540,9 +545,15 @@ impl ProvisioningService {
         // Update hardware info
         machine.hardware.cpu_model = info.cpu_model.clone().or(machine.hardware.cpu_model.clone());
         machine.hardware.cpu_cores = info.cpu_cores.or(machine.hardware.cpu_cores);
+        machine.hardware.cpu_threads = info.cpu_threads.or(machine.hardware.cpu_threads);
         machine.hardware.memory_bytes = info.memory_bytes.or(machine.hardware.memory_bytes);
         machine.hardware.is_virtual = info.is_virtual;
         machine.hardware.virt_platform = info.virt_platform.clone().or(machine.hardware.virt_platform.clone());
+
+        // Update GPUs if reported
+        if !info.gpus.is_empty() {
+            machine.hardware.gpus = info.gpus.clone();
+        }
 
         // Update disks if we have new info
         if !info.disks.is_empty() {
@@ -612,6 +623,15 @@ impl ProvisioningService {
             .map_err(ProvisioningError::Store)?
             .ok_or_else(|| ProvisioningError::NotFound(format!("template: {}", template_name)))?;
 
+        // Only allow workflow assignment for Discovered machines (no existing OS).
+        // Machines with an existing OS must go through the reimage path instead.
+        if !matches!(machine.status.state, MachineState::Discovered) {
+            return Err(ProvisioningError::Workflow(format!(
+                "Machine {} is in state {:?}, not Discovered. Cannot assign workflow to a machine with an existing OS.",
+                machine_id, machine.status.state
+            )));
+        }
+
         // Cancel any existing active workflows — one active workflow per machine
         self.cancel_active_workflows(machine_id).await?;
 
@@ -623,14 +643,12 @@ impl ProvisioningService {
         self.store.put_workflow(&workflow).await
             .map_err(ProvisioningError::Store)?;
 
-        // Update machine state to ReadyToInstall (has workflow assigned, waiting for boot)
+        // Update machine state to ReadyToInstall
         let mut machine = machine;
-        if matches!(machine.status.state, MachineState::Discovered) {
-            machine.status.state = MachineState::ReadyToInstall;
-            machine.status.current_workflow = Some(workflow_id);
-            self.store.put_machine(&machine).await
-                .map_err(ProvisioningError::Store)?;
-        }
+        machine.status.state = MachineState::ReadyToInstall;
+        machine.status.current_workflow = Some(workflow_id);
+        self.store.put_machine(&machine).await
+            .map_err(ProvisioningError::Store)?;
 
         info!("Assigned workflow {} to machine {} using template {}",
               workflow_id, machine_id, template_name);
