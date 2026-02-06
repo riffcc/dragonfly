@@ -50,6 +50,8 @@
             document.documentElement.style.display = 'block';
         })();
     </script>
+    <!-- MiniSearch for client-side universal search -->
+    <script src="https://cdn.jsdelivr.net/npm/minisearch@7.2.0/dist/umd/index.min.js"></script>
     <!-- Alpine.js for UI interactivity -->
     <script src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js" defer></script>
     <!-- Inter font from Google Fonts -->
@@ -707,6 +709,285 @@
         });
     </script>
     
+    <!-- Universal Search (MiniSearch) -->
+    <div x-data="universalSearch()" x-cloak>
+        <!-- Search overlay -->
+        <div x-show="open" x-transition:enter="ease-out duration-150" x-transition:enter-start="opacity-0" x-transition:enter-end="opacity-100"
+             x-transition:leave="ease-in duration-100" x-transition:leave-start="opacity-100" x-transition:leave-end="opacity-0"
+             class="fixed inset-0 z-[900] bg-black/40 backdrop-blur-[2px]" @click="close()"></div>
+
+        <div x-show="open" x-transition:enter="ease-out duration-150" x-transition:enter-start="opacity-0 scale-95" x-transition:enter-end="opacity-100 scale-100"
+             x-transition:leave="ease-in duration-100" x-transition:leave-start="opacity-100 scale-100" x-transition:leave-end="opacity-0 scale-95"
+             class="fixed top-[15%] left-1/2 -translate-x-1/2 z-[910] w-full max-w-xl" @click.stop>
+            <div class="bg-white dark:bg-[#111] rounded-xl shadow-2xl border border-gray-200 dark:border-[#333] overflow-hidden">
+                <!-- Search input -->
+                <div class="flex items-center px-4 border-b border-gray-200 dark:border-[#333]">
+                    <svg class="w-5 h-5 text-gray-400 dark:text-gray-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+                    </svg>
+                    <input x-ref="searchInput" x-model="query" @input="doSearch()" @keydown.escape="close()" @keydown.arrow-down.prevent="moveSelection(1)" @keydown.arrow-up.prevent="moveSelection(-1)" @keydown.enter.prevent="goToSelected()"
+                           type="text" placeholder="Search machines, tags, templates..." autocomplete="off" spellcheck="false"
+                           class="w-full px-3 py-3.5 bg-transparent text-gray-900 dark:text-white text-sm placeholder:text-gray-400 dark:placeholder:text-gray-500 focus:outline-none font-mono">
+                    <div class="flex items-center gap-1 shrink-0">
+                        <kbd x-show="!query" class="hidden sm:inline-flex items-center px-1.5 py-0.5 text-[10px] font-mono text-gray-400 dark:text-gray-500 bg-gray-100 dark:bg-[#222] rounded border border-gray-200 dark:border-[#444]">ESC</kbd>
+                        <span x-show="query" @click="query = ''; doSearch(); $refs.searchInput.focus()" class="cursor-pointer text-gray-400 hover:text-gray-600 dark:hover:text-gray-300">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+                        </span>
+                    </div>
+                </div>
+
+                <!-- Results -->
+                <div class="max-h-[50vh] overflow-y-auto" x-show="query.length > 0">
+                    <template x-if="results.length === 0 && query.length > 0">
+                        <div class="px-4 py-8 text-center text-sm text-gray-400 dark:text-gray-500">
+                            No results for "<span x-text="query" class="text-gray-600 dark:text-gray-300"></span>"
+                        </div>
+                    </template>
+                    <template x-for="(result, idx) in results" :key="result.id">
+                        <a :href="result.url" @mouseenter="selectedIdx = idx"
+                           :class="idx === selectedIdx ? 'bg-purple-50 dark:bg-purple-900/20' : 'hover:bg-gray-50 dark:hover:bg-[#1a1a1a]'"
+                           class="flex items-center gap-3 px-4 py-2.5 cursor-pointer transition-colors border-b border-gray-100 dark:border-[#222] last:border-0">
+                            <!-- Type icon -->
+                            <div class="shrink-0 w-8 h-8 rounded-lg flex items-center justify-center"
+                                 :class="result.type === 'machine' ? 'bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400' : result.type === 'template' ? 'bg-green-100 dark:bg-green-900/30 text-green-600 dark:text-green-400' : 'bg-purple-100 dark:bg-purple-900/30 text-purple-600 dark:text-purple-400'">
+                                <svg x-show="result.type === 'machine'" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 3v2m6-2v2M9 19v2m6-2v2M5 9H3m2 6H3m18-6h-2m2 6h-2M7 19h10a2 2 0 002-2V7a2 2 0 00-2-2H7a2 2 0 00-2 2v10a2 2 0 002 2z"/></svg>
+                                <svg x-show="result.type === 'template'" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2 1 3 3 3h10c2 0 3-1 3-3V7c0-2-1-3-3-3H7C5 4 4 5 4 7z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h8M8 8h8M8 16h4"/></svg>
+                                <svg x-show="result.type === 'tag'" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A2 2 0 013 12V7a4 4 0 014-4z"/></svg>
+                            </div>
+                            <!-- Result content -->
+                            <div class="min-w-0 flex-1">
+                                <div class="text-sm font-medium text-gray-900 dark:text-white truncate" x-text="result.title"></div>
+                                <div class="text-xs text-gray-500 dark:text-gray-400 truncate" x-text="result.subtitle"></div>
+                            </div>
+                            <!-- Match score indicator -->
+                            <div class="shrink-0 text-[10px] font-mono text-gray-300 dark:text-gray-600" x-text="result.type"></div>
+                        </a>
+                    </template>
+                </div>
+
+                <!-- Hints bar -->
+                <div class="px-4 py-2 bg-gray-50 dark:bg-[#0d0d0d] border-t border-gray-200 dark:border-[#333] flex items-center gap-4 text-[10px] text-gray-400 dark:text-gray-500 font-mono">
+                    <span><kbd class="px-1 py-0.5 bg-gray-200 dark:bg-[#222] rounded text-[9px]">&uarr;&darr;</kbd> navigate</span>
+                    <span><kbd class="px-1 py-0.5 bg-gray-200 dark:bg-[#222] rounded text-[9px]">Enter</kbd> open</span>
+                    <span><kbd class="px-1 py-0.5 bg-gray-200 dark:bg-[#222] rounded text-[9px]">Esc</kbd> close</span>
+                    <span class="ml-auto">prefix, fuzzy, <code>-exclude</code></span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        function universalSearch() {
+            let _index = null;
+            let _allDocs = [];
+            let _loaded = false;
+
+            function buildIndex(machines, templates, tags) {
+                _index = new MiniSearch({
+                    fields: ['hostname', 'mac_address', 'ip_address', 'os_installed', 'os_choice', 'tags_text', 'memorable_name', 'proxmox_node', 'name', 'description'],
+                    storeFields: ['title', 'subtitle', 'type', 'url'],
+                    idField: '_searchId',
+                    searchOptions: {
+                        boost: { hostname: 3, name: 3, memorable_name: 2, mac_address: 1.5, ip_address: 1.5, tags_text: 2 },
+                        prefix: true,
+                        fuzzy: 0.2,
+                        combineWith: 'OR',
+                    },
+                });
+
+                _allDocs = [];
+                let searchId = 0;
+
+                // Index machines
+                for (const m of machines) {
+                    const hostname = m.hostname || m.reported_hostname || 'unnamed';
+                    const tagsArr = m.tags || [];
+                    _allDocs.push({
+                        _searchId: searchId++,
+                        type: 'machine',
+                        title: hostname,
+                        subtitle: [m.mac_address, m.ip_address, m.os_installed, m.proxmox_node ? `node:${m.proxmox_node}` : '', ...tagsArr].filter(Boolean).join(' \u00b7 '),
+                        url: `/machines/${m.id}`,
+                        hostname: hostname,
+                        memorable_name: m.memorable_name || '',
+                        mac_address: m.mac_address || '',
+                        ip_address: m.ip_address || '',
+                        os_installed: m.os_installed || '',
+                        os_choice: m.os_choice || '',
+                        tags_text: tagsArr.join(' '),
+                        proxmox_node: m.proxmox_node || '',
+                        name: '', description: '',
+                    });
+                }
+
+                // Index templates
+                for (const t of templates) {
+                    _allDocs.push({
+                        _searchId: searchId++,
+                        type: 'template',
+                        title: t.name || t.id,
+                        subtitle: t.description || 'OS template',
+                        url: '/settings',
+                        hostname: '', memorable_name: '', mac_address: '', ip_address: '',
+                        os_installed: '', os_choice: '', tags_text: '', proxmox_node: '',
+                        name: t.name || t.id || '',
+                        description: t.description || '',
+                    });
+                }
+
+                // Index tags
+                for (const tag of tags) {
+                    _allDocs.push({
+                        _searchId: searchId++,
+                        type: 'tag',
+                        title: tag,
+                        subtitle: 'Tag',
+                        url: '/tags',
+                        hostname: '', memorable_name: '', mac_address: '', ip_address: '',
+                        os_installed: '', os_choice: '', tags_text: tag, proxmox_node: '',
+                        name: tag, description: '',
+                    });
+                }
+
+                _index.addAll(_allDocs);
+            }
+
+            async function loadData() {
+                if (_loaded) return;
+                try {
+                    const [machinesRes, templatesRes, tagsRes] = await Promise.all([
+                        fetch('/api/machines', { credentials: 'include' }),
+                        fetch('/api/templates', { credentials: 'include' }),
+                        fetch('/api/tags', { credentials: 'include' }),
+                    ]);
+                    const machines = machinesRes.ok ? await machinesRes.json() : [];
+                    const templates = templatesRes.ok ? await templatesRes.json() : [];
+                    const tags = tagsRes.ok ? await tagsRes.json() : [];
+                    buildIndex(machines, templates, tags);
+                    _loaded = true;
+                } catch (e) {
+                    console.error('Failed to load search data:', e);
+                }
+            }
+
+            return {
+                open: false,
+                query: '',
+                results: [],
+                selectedIdx: 0,
+
+                init() {
+                    // "Just type" listener - open search when typing outside inputs
+                    document.addEventListener('keydown', (e) => {
+                        // Skip if already open, or user is in an input/textarea/editable
+                        if (this.open) return;
+                        const tag = document.activeElement?.tagName;
+                        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || document.activeElement?.isContentEditable) return;
+                        // Skip modifier keys, function keys, navigation keys
+                        if (e.ctrlKey || e.metaKey || e.altKey) return;
+                        if (e.key.length > 1 && e.key !== '/') return;
+
+                        // Open search
+                        e.preventDefault();
+                        this.openSearch(e.key === '/' ? '' : e.key);
+                    });
+
+                    // Listen for SSE machine updates to invalidate index
+                    window.addEventListener('machine-updated', () => { _loaded = false; });
+                    window.addEventListener('machine-registered', () => { _loaded = false; });
+                },
+
+                async openSearch(initialChar) {
+                    this.open = true;
+                    this.query = initialChar || '';
+                    this.results = [];
+                    this.selectedIdx = 0;
+                    await loadData();
+                    this.$nextTick(() => {
+                        this.$refs.searchInput?.focus();
+                        if (this.query) this.doSearch();
+                    });
+                },
+
+                close() {
+                    this.open = false;
+                    this.query = '';
+                    this.results = [];
+                },
+
+                doSearch() {
+                    if (!_index || !this.query.trim()) {
+                        this.results = [];
+                        return;
+                    }
+
+                    // Handle negative search terms: parse "-term" as exclusions
+                    const rawQuery = this.query.trim();
+                    const terms = rawQuery.split(/\s+/);
+                    const includeParts = [];
+                    const excludeParts = [];
+                    for (const t of terms) {
+                        if (t.startsWith('-') && t.length > 1) {
+                            excludeParts.push(t.slice(1));
+                        } else {
+                            includeParts.push(t);
+                        }
+                    }
+
+                    let results;
+                    if (includeParts.length === 0 && excludeParts.length > 0) {
+                        // Only exclusions: search all, then filter
+                        results = _index.search(MiniSearch.wildcard);
+                    } else {
+                        results = _index.search(includeParts.join(' '), {
+                            prefix: true,
+                            fuzzy: 0.2,
+                        });
+                    }
+
+                    // Apply exclusions
+                    if (excludeParts.length > 0) {
+                        const excludeIds = new Set();
+                        for (const ex of excludeParts) {
+                            for (const r of _index.search(ex, { prefix: true, fuzzy: 0.15 })) {
+                                excludeIds.add(r.id);
+                            }
+                        }
+                        results = results.filter(r => !excludeIds.has(r.id));
+                    }
+
+                    this.results = results.slice(0, 20).map(r => ({
+                        id: r.id,
+                        title: r.title,
+                        subtitle: r.subtitle,
+                        type: r.type,
+                        url: r.url,
+                        score: r.score,
+                    }));
+                    this.selectedIdx = 0;
+                },
+
+                moveSelection(delta) {
+                    if (this.results.length === 0) return;
+                    this.selectedIdx = (this.selectedIdx + delta + this.results.length) % this.results.length;
+                    // Scroll selected into view
+                    this.$nextTick(() => {
+                        const el = this.$el.querySelector(`a:nth-child(${this.selectedIdx + 1})`);
+                        el?.scrollIntoView({ block: 'nearest' });
+                    });
+                },
+
+                goToSelected() {
+                    if (this.results.length === 0) return;
+                    const result = this.results[this.selectedIdx];
+                    if (result?.url) {
+                        window.location.href = result.url;
+                    }
+                },
+            };
+        }
+    </script>
+
     <!-- Gamepad Support -->
     <script src="/static/js/gamepad.js"></script>
 
