@@ -368,6 +368,18 @@ fn build_checkin_json(
         }
     }
 
+    // Hostname detected from disk
+    if let Some(hostname) = disk::detected_hostname() {
+        write_bytes(buf, &mut pos, b",\"hostname\":\"");
+        let hn_bytes = hostname.as_bytes();
+        let hn_len = hn_bytes.len().min(buf.len().saturating_sub(pos + 10));
+        if hn_len > 0 && pos + hn_len <= buf.len() {
+            buf[pos..pos + hn_len].copy_from_slice(&hn_bytes[..hn_len]);
+            pos += hn_len;
+        }
+        write_bytes(buf, &mut pos, b"\"");
+    }
+
     // Close main object
     write_bytes(buf, &mut pos, b"}");
 

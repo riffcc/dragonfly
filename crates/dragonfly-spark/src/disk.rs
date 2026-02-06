@@ -85,6 +85,21 @@ static mut EXT4_CTX: Ext4FsContext = Ext4FsContext {
 static mut OS_NAME_BUF: [u8; 64] = [0u8; 64];
 static mut OS_NAME_LEN: usize = 0;
 
+/// Static buffer for detected hostname from /etc/hostname or /etc/hosts
+static mut HOSTNAME_BUF: [u8; 256] = [0u8; 256];
+static mut HOSTNAME_LEN: usize = 0;
+
+/// Get detected hostname (for checkin reporting)
+pub fn detected_hostname() -> Option<&'static str> {
+    unsafe {
+        if HOSTNAME_LEN > 0 {
+            core::str::from_utf8(&HOSTNAME_BUF[..HOSTNAME_LEN]).ok()
+        } else {
+            None
+        }
+    }
+}
+
 /// Detected disk information for reporting (independent of OS detection)
 pub struct DetectedDisk {
     pub disk_type: DiskType,
@@ -1770,8 +1785,14 @@ fn detect_os_from_ext4(controller: &mut DiskReader, target: u8, lun: u8, partiti
     if read_os_release(controller, target, lun, partition_lba, &superblock) {
         // OS info is now in OS_NAME_BUF and OS_NAME_LEN globals
         serial::println("DBG: detect_os_from_ext4 success");
+        // Also try to detect hostname while we have the ext4 context
+        try_read_hostname(controller, target, lun, partition_lba, &superblock);
         return true;
     }
+
+    // Even if OS detection failed, try hostname detection (might find /etc/hostname
+    // on a partition that doesn't have /etc/os-release or /boot/grub/grub.cfg)
+    try_read_hostname(controller, target, lun, partition_lba, &superblock);
 
     // Fallback: check volume label - write directly to globals
     unsafe {
@@ -2108,6 +2129,223 @@ fn read_usr_lib_os_release(
 
     // Parse PRETTY_NAME from os-release (writes to global OS_NAME_BUF/LEN)
     parse_pretty_name(contents)
+}
+
+/// Try to read hostname from ext4 filesystem.
+/// Reads /etc/hostname first, falls back to /etc/hosts.
+/// Writes to HOSTNAME_BUF/HOSTNAME_LEN globals.
+fn try_read_hostname(
+    controller: &mut DiskReader,
+    target: u8,
+    lun: u8,
+    partition_lba: u64,
+    superblock: &Ext4Superblock,
+) {
+    // Skip if we already have a hostname from a previous partition
+    if unsafe { HOSTNAME_LEN } > 0 {
+        return;
+    }
+
+    serial::println("Trying hostname detection...");
+
+    let block_size = 1024u32 << superblock.s_log_block_size;
+    let inode_size = superblock.s_inode_size as u32;
+
+    // Read BG0 descriptor to get inode table location
+    let bgdt_block = if block_size == 1024 { 2 } else { 1 };
+    let bgdt_lba = partition_lba + (bgdt_block as u64 * block_size as u64 / 512);
+
+    let mut bgdt_sector = [0u8; 512];
+    if !controller.read_sector(bgdt_lba as u32, &mut bgdt_sector) {
+        return;
+    }
+
+    let inode_table_block = u32::from_le_bytes([bgdt_sector[8], bgdt_sector[9], bgdt_sector[10], bgdt_sector[11]]);
+
+    // Read root inode (inode 2)
+    let root_inode = match read_inode(controller, target, lun, partition_lba, block_size, inode_table_block, inode_size, 2) {
+        Some(i) => i,
+        None => return,
+    };
+
+    // Find /etc directory
+    let etc_inode_num = match find_dir_entry(controller, target, lun, partition_lba, block_size, &root_inode, b"etc") {
+        Some(n) => n,
+        None => return,
+    };
+
+    let etc_inode = match read_inode(controller, target, lun, partition_lba, block_size, inode_table_block, inode_size, etc_inode_num) {
+        Some(i) => i,
+        None => return,
+    };
+
+    // Try /etc/hostname first
+    if try_read_etc_hostname(controller, target, lun, partition_lba, block_size, inode_table_block, inode_size, &etc_inode) {
+        return;
+    }
+
+    // Fallback: try /etc/hosts
+    try_read_etc_hosts(controller, target, lun, partition_lba, block_size, inode_table_block, inode_size, &etc_inode);
+}
+
+/// Read /etc/hostname and parse the hostname from it
+fn try_read_etc_hostname(
+    controller: &mut DiskReader,
+    target: u8,
+    lun: u8,
+    partition_lba: u64,
+    block_size: u32,
+    inode_table_block: u32,
+    inode_size: u32,
+    etc_inode: &Ext4Inode,
+) -> bool {
+    let hostname_inode_num = match find_dir_entry(controller, target, lun, partition_lba, block_size, etc_inode, b"hostname") {
+        Some(n) => n,
+        None => return false,
+    };
+
+    serial::print("Found /etc/hostname at inode ");
+    serial::print_dec(hostname_inode_num);
+    serial::println("");
+
+    let hostname_inode = match read_inode(controller, target, lun, partition_lba, block_size, inode_table_block, inode_size, hostname_inode_num) {
+        Some(i) => i,
+        None => return false,
+    };
+
+    let contents = match read_file_contents(controller, target, lun, partition_lba, block_size, &hostname_inode) {
+        Some(c) => c,
+        None => return false,
+    };
+
+    // /etc/hostname is just the hostname with an optional trailing newline
+    parse_hostname_file(contents)
+}
+
+/// Parse hostname from /etc/hostname contents (single line, trim whitespace)
+fn parse_hostname_file(contents: &[u8; 512]) -> bool {
+    // Skip leading whitespace
+    let mut start = 0;
+    while start < 512 && (contents[start] == b' ' || contents[start] == b'\t' || contents[start] == b'\n' || contents[start] == b'\r') {
+        start += 1;
+    }
+
+    // Find end (first newline, null, or whitespace after hostname)
+    let mut end = start;
+    while end < 512 && contents[end] != 0 && contents[end] != b'\n' && contents[end] != b'\r' {
+        end += 1;
+    }
+
+    // Trim trailing whitespace
+    while end > start && (contents[end - 1] == b' ' || contents[end - 1] == b'\t') {
+        end -= 1;
+    }
+
+    let len = end - start;
+    if len == 0 || len > 255 {
+        return false;
+    }
+
+    // Skip "localhost" — not a useful hostname
+    if len == 9 && contents[start] == b'l' && &contents[start..end] == b"localhost" {
+        return false;
+    }
+
+    unsafe {
+        for i in 0..len {
+            HOSTNAME_BUF[i] = contents[start + i];
+        }
+        HOSTNAME_LEN = len;
+    }
+
+    serial::print("Detected hostname: ");
+    if let Ok(s) = core::str::from_utf8(&contents[start..end]) {
+        serial::println(s);
+    }
+
+    true
+}
+
+/// Read /etc/hosts and extract hostname from 127.0.1.1 line
+fn try_read_etc_hosts(
+    controller: &mut DiskReader,
+    target: u8,
+    lun: u8,
+    partition_lba: u64,
+    block_size: u32,
+    inode_table_block: u32,
+    inode_size: u32,
+    etc_inode: &Ext4Inode,
+) -> bool {
+    let hosts_inode_num = match find_dir_entry(controller, target, lun, partition_lba, block_size, etc_inode, b"hosts") {
+        Some(n) => n,
+        None => return false,
+    };
+
+    serial::print("Found /etc/hosts at inode ");
+    serial::print_dec(hosts_inode_num);
+    serial::println("");
+
+    let hosts_inode = match read_inode(controller, target, lun, partition_lba, block_size, inode_table_block, inode_size, hosts_inode_num) {
+        Some(i) => i,
+        None => return false,
+    };
+
+    let contents = match read_file_contents(controller, target, lun, partition_lba, block_size, &hosts_inode) {
+        Some(c) => c,
+        None => return false,
+    };
+
+    parse_hostname_from_hosts(contents)
+}
+
+/// Parse hostname from /etc/hosts — look for 127.0.1.1 line
+fn parse_hostname_from_hosts(contents: &[u8; 512]) -> bool {
+    let pattern = b"127.0.1.1";
+
+    let mut i = 0;
+    while i + 9 <= 512 {
+        // Match pattern at start of line
+        if (i == 0 || contents[i - 1] == b'\n') && &contents[i..i + 9] == pattern {
+            // Skip whitespace/tabs after the IP
+            let mut pos = i + 9;
+            while pos < 512 && (contents[pos] == b' ' || contents[pos] == b'\t') {
+                pos += 1;
+            }
+
+            // Read hostname (until whitespace, newline, or null)
+            let name_start = pos;
+            while pos < 512 && contents[pos] != 0 && contents[pos] != b' ' && contents[pos] != b'\t' && contents[pos] != b'\n' && contents[pos] != b'\r' {
+                pos += 1;
+            }
+
+            let len = pos - name_start;
+            if len > 0 && len <= 255 {
+                // Skip "localhost"
+                if len == 9 && &contents[name_start..pos] == b"localhost" {
+                    i = pos;
+                    continue;
+                }
+
+                unsafe {
+                    for k in 0..len {
+                        HOSTNAME_BUF[k] = contents[name_start + k];
+                    }
+                    HOSTNAME_LEN = len;
+                }
+
+                serial::print("Detected hostname from /etc/hosts: ");
+                if let Ok(s) = core::str::from_utf8(&contents[name_start..pos]) {
+                    serial::println(s);
+                }
+
+                return true;
+            }
+        }
+        i += 1;
+    }
+
+    false
 }
 
 /// Read an inode from the filesystem
