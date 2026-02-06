@@ -5,7 +5,7 @@
 {% block content %}
 
 
-<div class="px-4 sm:px-6 lg:px-8" x-data="{
+<div x-data="{
     isAuthenticated: {{ is_authenticated }},
     updateDebounceTimer: null,
     statusModal: false,
@@ -218,7 +218,12 @@
                 throw new Error('Failed to save hostname');
             }
             showToast('Hostname saved', 'success');
-            // Update original value so display stays correct
+            // Update fieldChanges so Alpine reactively updates the display
+            if (!this.fieldChanges[machineId]) {
+                this.fieldChanges[machineId] = {};
+            }
+            this.fieldChanges[machineId].hostname = hostname;
+            // Update original value
             if (!this.originalValues[machineId]) {
                 this.originalValues[machineId] = {};
             }
@@ -774,8 +779,8 @@
    @click.window="stopEditing()">
     <div class="sm:flex sm:items-center">
         <div class="sm:flex-auto">
-            <h1 class="text-xl font-semibold text-gray-900 dark:text-white">Machines</h1>
-            <p class="mt-2 text-sm text-gray-700 dark:text-gray-300">A list of all machines that have been discovered or added.</p>
+            <h1 class="text-3xl font-bold text-gray-900 dark:text-white">Machines</h1>
+            <p class="mt-1 text-sm text-gray-700 dark:text-gray-300">All machines that have been discovered or added.</p>
         </div>
         <div class="flex items-center space-x-3">
             {# Action Chiclets - show when any machines selected #}
@@ -851,12 +856,14 @@
                                 @click="window.location='/machines/{{ machine.id }}'"
                                 data-machine-id="{{ machine.id }}">
                                 <td class="px-6 py-4 whitespace-nowrap relative {% if loop.last %}rounded-bl-xl{% endif %}">
-                                        <div x-on:click.stop="startEditing('{{ machine.id }}', 'hostname', '{{ machine.hostname|default('') }}')" class="inline-block" {# Make hostname inline #}
+                                        <div x-on:click.stop="startEditing('{{ machine.id }}', 'hostname', '{{ machine.hostname|default('', true) }}')" class="inline-block" {# Make hostname inline #}
                                              :class="{'cursor-text': isAuthenticated}"
                                              class="hover:text-indigo-600 dark:hover:text-indigo-400">
                                             <span x-show="editingField !== '{{ machine.id }}-hostname'"
-                                                  class="{% if machine.hostname and machine.hostname != 'localhost' and machine.hostname != machine.reported_hostname %}text-purple-700 dark:text-purple-400 font-medium{% endif %}">
-                                                {% if machine.hostname %}{{ machine.hostname }}{% else %}localhost{% endif %}
+                                                  :class="{'text-purple-700 dark:text-purple-400 font-medium': hasFieldChanged('{{ machine.id }}', 'hostname')}">
+                                                <span x-text="fieldChanges['{{ machine.id }}'] && fieldChanges['{{ machine.id }}'].hostname !== undefined ?
+                                                             fieldChanges['{{ machine.id }}'].hostname :
+                                                             '{{ machine.hostname|default('localhost', true) }}'"></span>
                                             </span>
                                             <input x-show="editingField === '{{ machine.id }}-hostname'"
                                                    x-ref="hostname{{ machine.id }}"
@@ -866,19 +873,19 @@
                                                    x-on:blur="validateHostname($event.target.value) ? (saveHostname('{{ machine.id }}', $event.target.value), stopEditing()) : (showToast('Invalid hostname. Must follow RFC-1123 format.', 'error'), stopEditing())"
                                                    x-effect="if(editingField === '{{ machine.id }}-hostname') setTimeout(() => $refs['hostname{{ machine.id }}'].focus(), 50)"
                                                    type="text"
-                                                   value="{{ machine.hostname|default('') }}"
+                                                   value="{{ machine.hostname|default('', true) }}"
                                                    class="border-b border-indigo-500 bg-transparent focus:outline-none focus:border-indigo-700 dark:text-white">
                                         </div>
                                         {# Display memorable_name below if it exists #}
                                         {% if machine.memorable_name %}
-                                        <div x-on:click.stop="startEditing('{{ machine.id }}', 'memorable_name', '{{ machine.memorable_name }}')" 
+                                        <div x-on:click.stop="startEditing('{{ machine.id }}', 'memorable_name', '{{ machine.memorable_name|default('', true) }}')"
                                              :class="{'cursor-text': isAuthenticated}"
                                              class="mt-1 text-xs text-gray-500 dark:text-gray-400 tracking-tight italic">
                                             <span x-show="editingField !== '{{ machine.id }}-memorable_name'"
                                                   :class="{'text-purple-700 dark:text-purple-400 font-medium': hasFieldChanged('{{ machine.id }}', 'memorable_name')}">
-                                                <span x-text="fieldChanges['{{ machine.id }}'] && fieldChanges['{{ machine.id }}'].memorable_name !== undefined ? 
-                                                             fieldChanges['{{ machine.id }}'].memorable_name : 
-                                                             '{{ machine.memorable_name }}'"></span>
+                                                <span x-text="fieldChanges['{{ machine.id }}'] && fieldChanges['{{ machine.id }}'].memorable_name !== undefined ?
+                                                             fieldChanges['{{ machine.id }}'].memorable_name :
+                                                             '{{ machine.memorable_name|default('', true) }}'"></span>
                                             </span>
                                             <input x-show="editingField === '{{ machine.id }}-memorable_name'"
                                                    x-ref="memorableName{{ machine.id }}"
@@ -888,21 +895,21 @@
                                                    x-on:blur="updateField('{{ machine.id }}', 'memorable_name', $event.target.value); stopEditing();"
                                                    x-effect="if(editingField === '{{ machine.id }}-memorable_name') setTimeout(() => $refs['memorableName{{ machine.id }}'].focus(), 50)"
                                                    type="text"
-                                                   value="{{ machine.memorable_name }}"
+                                                   value="{{ machine.memorable_name|default('', true) }}"
                                                    class="w-full border-b border-indigo-500 bg-transparent focus:outline-none focus:border-indigo-700 dark:text-white text-xs">
                                         </div>
                                         {% endif %}
                                     </div>
                                 </td>
                                 <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400 tech-mono">
-                                    <div x-on:click.stop="startEditing('{{ machine.id }}', 'mac_address', '{{ machine.mac_address }}')" 
+                                    <div x-on:click.stop="startEditing('{{ machine.id }}', 'mac_address', '{{ machine.mac_address|default('', true) }}')"
                                          :class="{'cursor-text': isAuthenticated}">
                                         <span x-show="editingField !== '{{ machine.id }}-mac_address'"
                                               :class="{'text-purple-700 dark:text-purple-400 font-medium': hasFieldChanged('{{ machine.id }}', 'mac_address')}"
                                               class="tech-mono">
-                                            <span x-text="fieldChanges['{{ machine.id }}'] && fieldChanges['{{ machine.id }}'].mac_address !== undefined ? 
-                                                         fieldChanges['{{ machine.id }}'].mac_address : 
-                                                         '{{ machine.mac_address }}'" class="tech-mono"></span>
+                                            <span x-text="fieldChanges['{{ machine.id }}'] && fieldChanges['{{ machine.id }}'].mac_address !== undefined ?
+                                                         fieldChanges['{{ machine.id }}'].mac_address :
+                                                         '{{ machine.mac_address|default('', true) }}'" class="tech-mono"></span>
                                         </span>
                                         <input x-show="editingField === '{{ machine.id }}-mac_address'"
                                                x-ref="macAddress{{ machine.id }}"
@@ -912,19 +919,19 @@
                                                x-on:blur="validateMac($event.target.value) ? (updateField('{{ machine.id }}', 'mac_address', $event.target.value), stopEditing()) : (showToast('Invalid MAC address format. Must be XX:XX:XX:XX:XX:XX', 'error'), $event.target.value = originalValues['{{ machine.id }}']['mac_address'], stopEditing())"
                                                x-effect="if(editingField === '{{ machine.id }}-mac_address') setTimeout(() => $refs['macAddress{{ machine.id }}'].focus(), 50)"
                                                type="text"
-                                               value="{{ machine.mac_address }}"
+                                               value="{{ machine.mac_address|default('', true) }}"
                                                class="w-full border-b border-indigo-500 bg-transparent focus:outline-none focus:border-indigo-700 dark:text-white tech-mono">
                                     </div>
                                 </td>
                                 <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400 tech-mono">
-                                    <div x-on:click.stop="startEditing('{{ machine.id }}', 'ip_address', '{{ machine.ip_address }}')" 
+                                    <div x-on:click.stop="startEditing('{{ machine.id }}', 'ip_address', '{{ machine.ip_address|default('', true) }}')"
                                          :class="{'cursor-text': isAuthenticated}">
                                         <span x-show="editingField !== '{{ machine.id }}-ip_address'"
                                               :class="{'text-purple-700 dark:text-purple-400 font-medium': hasFieldChanged('{{ machine.id }}', 'ip_address')}"
                                               class="tech-mono">
-                                            <span x-text="fieldChanges['{{ machine.id }}'] && fieldChanges['{{ machine.id }}'].ip_address !== undefined ? 
-                                                         fieldChanges['{{ machine.id }}'].ip_address : 
-                                                         '{{ machine.ip_address }}'" class="tech-mono"></span>
+                                            <span x-text="fieldChanges['{{ machine.id }}'] && fieldChanges['{{ machine.id }}'].ip_address !== undefined ?
+                                                         fieldChanges['{{ machine.id }}'].ip_address :
+                                                         '{{ machine.ip_address|default('', true) }}'" class="tech-mono"></span>
                                         </span>
                                         <input x-show="editingField === '{{ machine.id }}-ip_address'"
                                                x-ref="ipAddress{{ machine.id }}"
@@ -934,7 +941,7 @@
                                                x-on:blur="validateIp($event.target.value) ? (updateField('{{ machine.id }}', 'ip_address', $event.target.value), stopEditing()) : (showToast('Invalid IP address format. Must be a valid IPv4 address.', 'error'), $event.target.value = originalValues['{{ machine.id }}']['ip_address'], stopEditing())"
                                                x-effect="if(editingField === '{{ machine.id }}-ip_address') setTimeout(() => $refs['ipAddress{{ machine.id }}'].focus(), 50)"
                                                type="text"
-                                               value="{{ machine.ip_address }}"
+                                               value="{{ machine.ip_address|default('', true) }}"
                                                class="w-full border-b border-indigo-500 bg-transparent focus:outline-none focus:border-indigo-700 dark:text-white tech-mono">
                                     </div>
                                 </td>
