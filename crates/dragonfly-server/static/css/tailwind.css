@@ -3198,6 +3198,11 @@
       padding-inline: calc(var(--spacing) * 8);
     }
   }
+  .lg\:px-10 {
+    @media (width >= 64rem) {
+      padding-inline: calc(var(--spacing) * 10);
+    }
+  }
   .dark\:block {
     &:where(.dark, .dark *) {
       display: block;

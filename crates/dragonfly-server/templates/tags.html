@@ -12,21 +12,22 @@
 
   .node-card {
     cursor: grab;
-    padding: 0.5rem 0.75rem;
+    container-type: inline-size;
+    padding: 3% 3.5%;
     display: flex;
-    gap: 0.5rem;
-    width: fit-content;
+    gap: 2cqi;
     background: #111;
     border: 2px solid #1a1a1a;
-    margin: 0.125rem;
+    font-size: clamp(0.65rem, 3.2cqi, 1rem);
+    overflow: visible;
   }
-  
+
   .node-card:active {
     cursor: grabbing;
     transform: scale(0.97);
     z-index: 10;
   }
-  
+
   .node-card.dragging {
     opacity: 0.4;
     box-shadow: 0 0 0 1px rgba(139, 92, 246, 0.5);
@@ -37,44 +38,44 @@
     transition: all 0.2s ease;
   }
 
-  /* Node card inner layout */
+  /* Node card inner layout — all sizes in cqi (scale with card width) */
   .node-card .node-left {
     display: flex;
     flex-direction: column;
-    gap: 0.125rem;
+    gap: 0.5cqi;
     min-width: 0;
+    flex: 1;
   }
   .node-card .node-row {
     display: flex;
     align-items: center;
-    gap: 0.25rem;
+    gap: 1cqi;
     min-width: 0;
   }
   .node-card .node-row-indent {
     display: flex;
     align-items: center;
-    gap: 0.25rem;
+    gap: 1cqi;
     flex-wrap: wrap;
-    padding-left: 0.75rem;
-    margin-top: 0.0625rem;
+    padding-left: 3cqi;
+    margin-top: 0.25cqi;
   }
   .node-card .node-dot {
-    width: 0.5rem;
-    height: 0.5rem;
+    width: 2cqi;
+    height: 2cqi;
     border-radius: 50%;
     flex-shrink: 0;
     display: inline-block;
   }
   .node-card .node-emoji {
-    font-size: 0.875rem;
+    font-size: 3.5cqi;
     flex-shrink: 0;
   }
   .node-card .node-hostname {
     font-weight: 600;
     color: white;
     white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    font-size: 0.75rem;
   }
   .node-card .node-domain {
     font-weight: 400;
@@ -84,14 +85,14 @@
     overflow: hidden;
     text-overflow: ellipsis;
     color: #34d399;
-    font-size: 0.725rem;
-    padding-left: 0.75rem;
+    font-size: 0.85em;
+    padding-left: 3cqi;
   }
   .node-card .node-tag {
-    padding: 0.125rem 0.375rem;
-    font-size: 0.6rem;
-    line-height: 0.875rem;
-    border-radius: 0.25rem;
+    padding: 0.5cqi 1.5cqi;
+    font-size: 0.75em;
+    line-height: 1.4;
+    border-radius: 1cqi;
     white-space: nowrap;
   }
 
@@ -101,10 +102,10 @@
     flex-direction: column;
     align-items: flex-end;
     color: #444;
-    font-size: 0.625rem;
+    font-size: 0.8em;
     font-weight: 500;
-    padding-top: 0.125rem;
-    margin-left: 0.025rem;
+    padding-top: 0.5cqi;
+    margin-left: 0.5cqi;
     justify-content: space-between;
     height: 100%;
   }
@@ -112,24 +113,24 @@
     display: flex;
     flex-direction: column;
     align-items: flex-end;
-    gap: 0.0625rem;
+    gap: 0.25cqi;
   }
   .node-card .node-hw-row {
     display: flex;
     align-items: center;
-    gap: 0.1875rem;
+    gap: 0.75cqi;
   }
   .node-card .node-hw-num {
     text-align: right;
-    min-width: 1.5rem;
+    min-width: 5cqi;
     color: white;
   }
   .node-card .node-hw svg {
-    width: 0.6875rem;
-    height: 0.6875rem;
+    width: 1.1em;
+    height: 1.1em;
   }
   .node-card .node-status {
-    font-size: 0.65rem;
+    font-size: 0.85em;
     font-weight: 500;
     flex-shrink: 0;
   }
@@ -208,8 +209,8 @@
   }
   
   .emoji-dropdown {
-    position: absolute;
-    z-index: 50;
+    position: fixed;
+    z-index: 999;
     background-color: white;
     border: 1px solid rgba(0, 0, 0, 0.1);
     border-radius: 0.375rem;
@@ -340,11 +341,12 @@
     50% { opacity: 0.7; }
   }
   
-  /* Node grid */
+  /* Node grid — uniform card widths, fills full viewport */
   .node-grid {
-    display: flex;
-    flex-wrap: wrap;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(18rem, 1fr));
     gap: 0.375rem;
+    padding: 3px; /* prevent selection ring clipping at edges */
   }
   
   /* Tag grid */
@@ -403,7 +405,8 @@
 </style>
 {% endblock %}
 
-{% block content %}
+{% block main_content %}
+<main class="w-full px-6 lg:px-10 py-6 transition-all duration-200 dark:bg-[#0a0a0a]">
 <div class="h-full flex flex-col">
   <div class="flex justify-between items-center mb-6 flex-shrink-0">
     <div>
@@ -579,7 +582,7 @@
         <!-- Node Grid -->
         <div 
           id="nodes-container"
-          class="flex-grow overflow-y-auto pr-1 relative" 
+          class="flex-grow overflow-y-auto pr-1 relative"
           @dragover.prevent
           @click="handleContainerClick($event)"
         >
@@ -629,6 +632,7 @@
                     <div
                       x-show="showEmojiDropdown && currentEmojiNode === node.id"
                       class="emoji-dropdown"
+                      :style="`top:${emojiDropdownPos.top}px;left:${emojiDropdownPos.left}px`"
                       @click.away="showEmojiDropdown = false"
                     >
                       <template x-for="emoji in emojis" :key="emoji">
@@ -1528,16 +1532,27 @@
           // Dropped on "New Tag" card: Prompt for name, then create & assign
           this.promptNewTag(nodeIds);
         } else {
-          // Dropped on an existing tag: Assign node(s) to this tag
-          // Use the assignSelectedNodesToTag function repurposed for this list of IDs
+          // Dropped on an existing tag: toggle tag on all dropped nodes
           try {
             const promises = nodeIds.map(nodeId => this.assignNodeToTag(nodeId, targetTag));
             await Promise.all(promises);
-            this.showToast(`Assigned ${nodeIds.length} node${nodeIds.length > 1 ? 's' : ''} to tag '${targetTag}'`);
+            this.showToast(`Updated ${nodeIds.length} node${nodeIds.length > 1 ? 's' : ''} for tag '${targetTag}'`);
           } catch (error) {
             console.error('Error assigning nodes:', error);
             this.showToast('Some nodes could not be assigned to the tag', 'error');
           }
+
+          // Single refresh after ALL API calls complete
+          await this.refreshTagBucket(targetTag);
+
+          // Auto-delete empty tags
+          if (!this.tagBuckets[targetTag] || this.tagBuckets[targetTag].length === 0) {
+            await this.deleteTagFromAPI(targetTag);
+            delete this.tagBuckets[targetTag];
+            this.showToast(`Tag '${targetTag}' deleted (no remaining nodes)`);
+          }
+
+          this.forceRefresh();
         }
 
         this.endDrag();
@@ -1731,94 +1746,62 @@
         return node ? (node.hostname || node.memorable_name || node.id) : '';
       },
 
-      // Assigns a node to a tag (API call + UI update)
+      // Assigns a node to a tag (API call + optimistic UI update)
+      // Does NOT refresh tag bucket — caller is responsible for refreshing after bulk ops complete.
       async assignNodeToTag(nodeId, tag) {
           const node = this.availableNodes.find(n => n.id === nodeId);
           if (!node) return;
 
           // Check if already tagged - if so, REMOVE the tag (toggle behavior)
           if (node.tags && node.tags.includes(tag)) {
-              // Remove the tag instead of showing "already has tag" message
               try {
-                  // Optimistic UI update first
+                  // Optimistic UI update
                   node.tags = node.tags.filter(t => t !== tag);
                   this.tagBuckets[tag] = this.tagBuckets[tag].filter(id => id !== nodeId);
-                  
+
                   const filteredIndex = this.filteredNodes.findIndex(n => n.id === nodeId);
                   if (filteredIndex !== -1) {
                       this.filteredNodes[filteredIndex] = { ...node };
                   }
-                  
-                  this.showToast(`Removed tag '${tag}' from ${node.hostname || nodeId}`);
-                  
-                  // Call API to persist change
+
+                  // Persist to API
                   await this.removeTagFromNodeAPI(nodeId, tag);
-                  
-                  // Refresh the tag bucket by fetching the machines with this tag
-                  await this.refreshTagBucket(tag);
-
-                  // Auto-delete empty tags
-                  if (!this.tagBuckets[tag] || this.tagBuckets[tag].length === 0) {
-                    await this.deleteTagFromAPI(tag);
-                    delete this.tagBuckets[tag];
-                    this.showToast(`Tag '${tag}' deleted (no remaining nodes)`);
-                  }
-
-                  // Force UI update
-                  this.forceRefresh();
-
-                  return; // Exit after removing
+                  return;
               } catch (error) {
                   console.error(`Failed to remove tag '${tag}' from node ${nodeId}:`, error);
-                  this.showToast(`API Error: Failed to remove tag '${tag}'`, 'error');
-                  // Revert optimistic UI update
+                  // Revert optimistic update
                   if (!node.tags) node.tags = [];
                   if (!node.tags.includes(tag)) node.tags.push(tag);
-                  if (!this.tagBuckets[tag].includes(nodeId)) this.tagBuckets[tag].push(nodeId);
-                  if (filteredIndex !== -1) {
-                      this.filteredNodes[filteredIndex] = { ...node };
-                  }
-                  return;
+                  if (this.tagBuckets[tag] && !this.tagBuckets[tag].includes(nodeId)) this.tagBuckets[tag].push(nodeId);
+                  const ri = this.filteredNodes.findIndex(n => n.id === nodeId);
+                  if (ri !== -1) this.filteredNodes[ri] = { ...node };
+                  throw error;
               }
           }
 
-          // If not already tagged, add the tag as before
-          // Optimistic UI update first
-          if (!node.tags) node.tags = [];
-          node.tags.push(tag);
-          
-          if (!this.tagBuckets[tag]) {
-              this.tagBuckets[tag] = [];
-          }
-          if (!this.tagBuckets[tag].includes(nodeId)) {
-              this.tagBuckets[tag].push(nodeId);
-          }
-          
-          const filteredIndex = this.filteredNodes.findIndex(n => n.id === nodeId);
-          if (filteredIndex !== -1) {
-               this.filteredNodes[filteredIndex] = { ...node };
-          }
-
-          this.showToast(`Assigned ${node.hostname || nodeId} to '${tag}'`);
-
-          // Call API to persist change
+          // Not tagged yet — add tag
           try {
+              if (!node.tags) node.tags = [];
+              node.tags.push(tag);
+
+              if (!this.tagBuckets[tag]) this.tagBuckets[tag] = [];
+              if (!this.tagBuckets[tag].includes(nodeId)) this.tagBuckets[tag].push(nodeId);
+
+              const filteredIndex = this.filteredNodes.findIndex(n => n.id === nodeId);
+              if (filteredIndex !== -1) {
+                  this.filteredNodes[filteredIndex] = { ...node };
+              }
+
+              // Persist to API
               await this.addTagToNodeAPI(nodeId, tag);
-              
-              // Refresh the tag bucket by fetching the machines with this tag
-              await this.refreshTagBucket(tag);
-              
-              // Force UI refresh
-              this.forceRefresh();
           } catch (error) {
               console.error(`Failed to add tag '${tag}' to node ${nodeId}:`, error);
-              this.showToast(`API Error: Failed to add tag '${tag}'`, 'error');
-              // Revert optimistic UI update
+              // Revert optimistic update
               node.tags = node.tags.filter(t => t !== tag);
-              this.tagBuckets[tag] = this.tagBuckets[tag].filter(id => id !== nodeId);
-               if (filteredIndex !== -1) {
-                   this.filteredNodes[filteredIndex] = { ...node };
-               }
+              this.tagBuckets[tag] = (this.tagBuckets[tag] || []).filter(id => id !== nodeId);
+              const ri = this.filteredNodes.findIndex(n => n.id === nodeId);
+              if (ri !== -1) this.filteredNodes[ri] = { ...node };
+              throw error;
           }
       },
       
@@ -1843,18 +1826,26 @@
           this.showToast('No nodes selected', 'warning');
           return;
         }
-        
-        // Use Promise.all to assign all nodes in parallel
+
         try {
           const promises = this.selectedNodeIds.map(nodeId => this.assignNodeToTag(nodeId, tag));
           await Promise.all(promises);
-          
-          // Don't show a generic success message, as individual success/removal messages are shown
-          // by the assignNodeToTag function
         } catch (error) {
           console.error('Error managing tags for multiple nodes:', error);
           this.showToast('Some nodes could not be processed', 'error');
         }
+
+        // Single refresh after all API calls complete
+        await this.refreshTagBucket(tag);
+
+        // Auto-delete empty tags
+        if (!this.tagBuckets[tag] || this.tagBuckets[tag].length === 0) {
+          await this.deleteTagFromAPI(tag);
+          delete this.tagBuckets[tag];
+          this.showToast(`Tag '${tag}' deleted (no remaining nodes)`);
+        }
+
+        this.forceRefresh();
       },
 
       // --- API Calls ---
@@ -1926,20 +1917,21 @@
       },
 
       // --- Emoji Selector Functions ---
+      emojiDropdownPos: { top: 0, left: 0 },
+
       toggleEmojiDropdown(event, nodeId) {
         // Don't allow emoji selection while holding modifier keys
         if (event.ctrlKey || event.metaKey || event.shiftKey) {
-          // If modifier key is pressed, ignore the emoji click and 
-          // let the selection logic handle it instead
           return;
         }
-        
+
         if (this.currentEmojiNode === nodeId && this.showEmojiDropdown) {
           this.showEmojiDropdown = false;
         } else {
-          // If multiple nodes are selected, use the clicked node for dropdown
-          // but we'll apply changes to all selected nodes
           this.currentEmojiNode = nodeId;
+          // Position dropdown at click target
+          const rect = event.currentTarget.getBoundingClientRect();
+          this.emojiDropdownPos = { top: rect.bottom + 4, left: rect.left };
           this.showEmojiDropdown = true;
         }
       },
@@ -2216,4 +2208,5 @@
     };
   }
 </script>
-{% endblock %} 
+</main>
+{% endblock %}
