@@ -13,7 +13,8 @@ RUN apt-get update && apt-get install -y \
     libclang-dev \
     nodejs \
     npm \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && ln -sf /usr/bin/nodejs /usr/bin/node
 
 # Copy source (build context is repo root, cargo fetches jetpack via git)
 COPY . /workspace/dragonfly/
