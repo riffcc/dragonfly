@@ -1853,7 +1853,7 @@ dependencies = [
 
 [[package]]
 name = "dragonfly-server"
-version = "0.2.3"
+version = "0.3.0-alpha0"
 dependencies = [
  "aes-gcm",
  "anyhow",

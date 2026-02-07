@@ -385,8 +385,74 @@ fn cidr_to_subnet_mask(subnet: &str) -> Option<std::net::Ipv4Addr> {
     Some(std::net::Ipv4Addr::from(mask))
 }
 
-/// Start network services (DHCP/TFTP) for Flight mode
-/// This can be called at startup or dynamically when Flight mode is activated
+/// Download Spark ELF kernel for bare metal discovery.
+/// Idempotent — skips if the correct version is already present.
+async fn download_spark_elf() -> anyhow::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dest = "/var/lib/dragonfly/spark.elf";
+    let tmp_dest = "/var/lib/dragonfly/spark.elf.tmp";
+    let version_file = "/var/lib/dragonfly/spark.elf.version";
+    let current_version = env!("CARGO_PKG_VERSION");
+
+    // Check if we already have the right version
+    if std::path::Path::new(dest).exists() {
+        if let Ok(cached_version) = tokio::fs::read_to_string(version_file).await {
+            if cached_version.trim() == current_version {
+                debug!("Spark ELF already at v{}", current_version);
+                return Ok(());
+            }
+            info!(
+                "Spark ELF outdated (cached: v{}, need: v{}), re-downloading",
+                cached_version.trim(),
+                current_version
+            );
+        } else {
+            info!("Spark ELF exists but no version marker, re-downloading");
+        }
+    } else {
+        info!("Spark ELF not found, downloading");
+    }
+
+    let download_url = format!(
+        "https://github.com/riffcc/dragonfly/releases/download/v{}/spark.elf",
+        current_version
+    );
+    info!("Downloading Spark v{} from {}", current_version, download_url);
+
+    let client = reqwest::Client::new();
+    let response = client.get(&download_url).send().await
+        .map_err(|e| anyhow!("Failed to connect to GitHub for Spark download: {}", e))?;
+
+    if !response.status().is_success() {
+        warn!("Failed to download Spark: HTTP {} ({})", response.status(), download_url);
+        return Ok(());
+    }
+
+    let bytes = response.bytes().await?;
+
+    // Validate: must be non-empty and start with ELF magic
+    if bytes.len() < 4 || &bytes[..4] != b"\x7fELF" {
+        warn!(
+            "Downloaded Spark is invalid ({} bytes, not an ELF file). Keeping existing copy.",
+            bytes.len()
+        );
+        return Ok(());
+    }
+
+    // Atomic write: download to temp, validate, then rename
+    tokio::fs::write(tmp_dest, &bytes).await?;
+    let mut perms = tokio::fs::metadata(tmp_dest).await?.permissions();
+    perms.set_mode(0o755);
+    tokio::fs::set_permissions(tmp_dest, perms).await?;
+    tokio::fs::rename(tmp_dest, dest).await?;
+    tokio::fs::write(version_file, current_version).await?;
+    info!("Spark ELF v{} downloaded ({} bytes)", current_version, bytes.len());
+    Ok(())
+}
+
+/// Start network services (DHCP/TFTP)
+/// This can be called at startup or dynamically when settings change
 pub async fn start_network_services(app_state: &AppState, shutdown_rx: watch::Receiver<()>) {
     // Check if services are already running
     if app_state
@@ -918,6 +984,11 @@ pub async fn run() -> anyhow::Result<()> {
                 "Failed to download iPXE binaries: {} — PXE boot may not work",
                 e
             ),
+        }
+
+        // Download Spark ELF (idempotent — skips if correct version already present)
+        if let Err(e) = download_spark_elf().await {
+            warn!("Failed to download Spark ELF: {} — bare metal discovery may not work", e);
         }
 
         start_network_services(&app_state, shutdown_rx.clone()).await;

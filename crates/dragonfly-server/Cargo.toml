@@ -1,8 +1,8 @@
 [package]
 name = "dragonfly-server"
-version = "0.2.3"
+version.workspace = true
 edition = "2024"
-authors = ["Sparx"]
+authors = ["Riff.CC"]
 description = "API server for Dragonfly bare metal infrastructure management"
 
 [features]
