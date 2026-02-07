@@ -10,13 +10,13 @@ use std::error::Error as StdError;
 use proxmox_login;
 use proxmox_client::Error as ProxmoxClientError;
 use serde::{Serialize, Deserialize};
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 use std::net::Ipv4Addr;
 use serde_json::json;
 
 use crate::AppState;
-use crate::store::conversions::{machine_from_register_request, machine_to_common};
-use dragonfly_common::models::{RegisterRequest, MachineStatus, ErrorResponse};
+use crate::store::conversions::machine_from_register_request;
+use dragonfly_common::models::{RegisterRequest, ErrorResponse};
 
 /// Proxmox connection settings stored as JSON in the Store's settings KV.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -1160,10 +1160,8 @@ async fn discover_and_register_proxmox_vms(
         if let Ok(resp) = client.get(&node_status_path).await {
             if let Ok(val) = serde_json::from_slice::<serde_json::Value>(&resp.body) {
                 if let Some(data) = val.get("data") {
-                    // PVE version → hostname
-                    if let Some(ver) = data.get("pveversion").and_then(|v| v.as_str()) {
-                        host_hostname = format!("{} (PVE {})", node_name, ver);
-                    }
+                    // Hostname is just the node name — PVE version is metadata, not identity
+                    let _ = data.get("pveversion"); // available if needed later
                     // CPU info: { "model": "...", "cpus": N, "cores": N, "sockets": N }
                     if let Some(cpuinfo) = data.get("cpuinfo") {
                         host_cpu_model = cpuinfo.get("model").and_then(|m| m.as_str()).map(String::from);
@@ -1189,15 +1187,32 @@ async fn discover_and_register_proxmox_vms(
                     for iface in ifaces {
                         let name = iface.get("iface").and_then(|n| n.as_str()).unwrap_or("");
                         let itype = iface.get("type").and_then(|t| t.as_str()).unwrap_or("");
-                        let hwaddr = iface.get("hwaddr").and_then(|h| h.as_str()).unwrap_or("");
                         let active = iface.get("active").and_then(|a| a.as_u64()).unwrap_or(0) == 1;
 
-                        // Skip interfaces without a valid MAC
-                        if hwaddr.len() != 17 || !hwaddr.contains(':') {
-                            continue;
-                        }
+                        // Extract MAC: try hwaddr first, then derive from altnames (enxMACADDR format)
+                        let hwaddr_direct = iface.get("hwaddr").and_then(|h| h.as_str()).unwrap_or("");
+                        let hwaddr = if hwaddr_direct.len() == 17 && hwaddr_direct.contains(':') {
+                            hwaddr_direct.to_string()
+                        } else {
+                            // Proxmox often omits hwaddr for host interfaces.
+                            // Derive MAC from altnames: "enxc8ffbf0120dc" → "c8:ff:bf:01:20:dc"
+                            iface.get("altnames")
+                                .and_then(|v| v.as_array())
+                                .and_then(|arr| arr.iter().find_map(|a| {
+                                    let s = a.as_str()?;
+                                    if s.starts_with("enx") && s.len() == 15 {
+                                        let hex = &s[3..]; // 12 hex chars
+                                        Some(format!("{}:{}:{}:{}:{}:{}",
+                                            &hex[0..2], &hex[2..4], &hex[4..6],
+                                            &hex[6..8], &hex[8..10], &hex[10..12]))
+                                    } else {
+                                        None
+                                    }
+                                }))
+                                .unwrap_or_default()
+                        };
 
-                        // Skip virtual/container/VM interfaces
+                        // Skip virtual/container/VM interfaces by name prefix
                         let is_virtual = name.starts_with("tap")
                             || name.starts_with("veth")
                             || name.starts_with("fwbr")
@@ -1211,20 +1226,49 @@ async fn discover_and_register_proxmox_vms(
                             continue;
                         }
 
-                        // Accept physical NICs (eth), bonds, and bridges (vmbr)
-                        let is_physical = itype == "eth" || itype == "bond"
-                            || itype == "bridge" || name.starts_with("en");
-                        if !is_physical {
+                        // Include any non-virtual interface we find.
+                        // Ethernet NICs should have a MAC (from hwaddr or altnames).
+                        // Bonds/bridges may not have their own MAC — that's fine,
+                        // they inherit from member interfaces at runtime.
+                        if hwaddr.is_empty() && itype == "eth" {
+                            debug!("Node '{}': skipping eth '{}' — no MAC from hwaddr or altnames", node_name, name);
                             continue;
                         }
 
-                        info!("Node '{}': found NIC {} (type={}, hwaddr={}, active={})",
-                              node_name, name, itype, hwaddr, active);
+                        // Extract topology fields from Proxmox API
+                        let members: Vec<String> = iface.get("bridge_ports")
+                            .or_else(|| iface.get("slaves"))
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.split_whitespace().map(String::from).collect())
+                            .unwrap_or_default();
+                        let ip_address = iface.get("cidr")
+                            .and_then(|v| v.as_str())
+                            .or_else(|| iface.get("address").and_then(|v| v.as_str()))
+                            .map(String::from);
+                        let bond_mode = iface.get("bond_mode")
+                            .and_then(|v| v.as_str())
+                            .map(String::from);
+                        let mtu = iface.get("mtu")
+                            .and_then(|v| v.as_str().and_then(|s| s.parse().ok()).or_else(|| v.as_u64().map(|n| n as u32)));
+
+                        info!("Node '{}': found NIC {} (type={}, hwaddr={}, active={}, members={:?})",
+                              node_name, name, itype, hwaddr, active, members);
 
                         physical_nics.push(dragonfly_common::NetworkInterface {
                             name: name.to_string(),
                             mac: hwaddr.to_lowercase(),
                             speed_mbps: None, // Proxmox API doesn't expose link speed
+                            interface_type: match itype {
+                                "eth" => dragonfly_common::InterfaceType::Ether,
+                                "bond" => dragonfly_common::InterfaceType::Bond,
+                                "bridge" => dragonfly_common::InterfaceType::Bridge,
+                                _ => dragonfly_common::InterfaceType::Unknown,
+                            },
+                            members,
+                            ip_address,
+                            active: Some(active),
+                            bond_mode,
+                            mtu,
                         });
                     }
                 }
@@ -1238,8 +1282,19 @@ async fn discover_and_register_proxmox_vms(
                   node_name, physical_nics.len(), host_ip,
                   host_cpu_model, host_ram_bytes);
 
-            // Build identity from ALL physical MACs (any could PXE boot)
-            let all_macs: Vec<String> = physical_nics.iter().map(|n| n.mac.clone()).collect();
+            // Build identity from interfaces that have a valid MAC (any could PXE boot).
+            // Bonds/bridges may have empty MACs — they inherit from members at runtime.
+            let all_macs: Vec<String> = physical_nics.iter()
+                .map(|n| n.mac.clone())
+                .filter(|m| !m.is_empty() && m.contains(':'))
+                .collect::<std::collections::HashSet<_>>() // deduplicate (LACP bonds share MAC)
+                .into_iter()
+                .collect();
+            if all_macs.is_empty() {
+                warn!("Node '{}': found {} interfaces but none have a valid MAC, skipping registration",
+                      node_name, physical_nics.len());
+                continue;
+            }
             let primary_mac = all_macs[0].clone();
             let identity = dragonfly_common::MachineIdentity::new(
                 primary_mac.clone(),
@@ -2171,29 +2226,34 @@ pub async fn start_proxmox_sync_task(
                         }
                     };
 
-                    // Filter to only Proxmox-sourced machines and convert to common Machine type
-                    let proxmox_machines: Vec<dragonfly_common::models::Machine> = machines.iter()
-                        .filter(|m| matches!(m.metadata.source, MachineSource::Proxmox { .. }))
-                        .map(|m| machine_to_common(m))
+                    // Filter to all Proxmox-sourced machines (VMs, LXCs, and physical hosts)
+                    let proxmox_machines: Vec<&dragonfly_common::Machine> = machines.iter()
+                        .filter(|m| matches!(m.metadata.source,
+                            MachineSource::Proxmox { .. } |
+                            MachineSource::ProxmoxLxc { .. } |
+                            MachineSource::ProxmoxNode { .. }
+                        ))
                         .collect();
-                    
+
                     if proxmox_machines.is_empty() {
                         info!("No Proxmox machines found, skipping sync check");
                         continue;
                     }
-                    
-                    // Connect to Proxmox and get current machine list
-                    // Use the 'sync' token type which has VM.Audit and VM.Monitor permissions
-                    match connect_to_proxmox(&state_clone, "sync").await {
-                        Ok(client) => {
-                            // Process each cluster and its machines
-                            if let Err(e) = sync_proxmox_machines(&client, &proxmox_machines, &state_clone).await {
-                                error!("Error during Proxmox sync check: {}", e);
+
+                    // Connect to Proxmox — try "config" token first (needed for tag write-back),
+                    // fall back to "sync" token (read-only)
+                    let client = match connect_to_proxmox(&state_clone, "config").await {
+                        Ok(c) => c,
+                        Err(_) => match connect_to_proxmox(&state_clone, "sync").await {
+                            Ok(c) => c,
+                            Err(e) => {
+                                error!("Failed to connect to Proxmox for sync check: {}", e);
+                                continue;
                             }
-                        },
-                        Err(e) => {
-                            error!("Failed to connect to Proxmox for sync check: {}", e);
                         }
+                    };
+                    if let Err(e) = sync_proxmox_machines(&client, &proxmox_machines, &state_clone).await {
+                        error!("Error during Proxmox sync check: {}", e);
                     }
                 }
                 _ = shutdown_rx.changed() => {
@@ -2347,15 +2407,68 @@ pub async fn connect_to_proxmox(
     Err(anyhow::anyhow!("Proxmox is not configured. Please set up a connection to Proxmox first."))
 }
 
-// NEW function to handle both updates and pruning
+/// Extract the first non-loopback IPv4 address from a QEMU agent network-get-interfaces response
+fn extract_agent_ip(ip_val: &serde_json::Value) -> Option<String> {
+    let result_array = ip_val.get("data")
+        .and_then(|d| d.get("result"))
+        .and_then(|r| r.as_array())?;
+    for iface_info in result_array {
+        if let Some(ip_addrs) = iface_info.get("ip-addresses").and_then(|a| a.as_array()) {
+            for addr_info in ip_addrs {
+                if addr_info.get("ip-address-type").and_then(|t| t.as_str()) == Some("ipv4") {
+                    if let Some(ip_str) = addr_info.get("ip-address").and_then(|i| i.as_str()) {
+                        if !ip_str.starts_with("127.") {
+                            return Some(ip_str.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Parse semicolon-separated Proxmox tags into a sorted Vec
+fn parse_proxmox_tags(tags_str: Option<&str>) -> Vec<String> {
+    let mut tags: Vec<String> = tags_str
+        .map(|s| s.split(';').map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).collect())
+        .unwrap_or_default();
+    tags.sort();
+    tags
+}
+
+/// Merge two tag sets (union). Returns (merged, db_changed, api_changed).
+fn merge_tags(db_tags: &[String], api_tags: &[String]) -> (Vec<String>, bool, bool) {
+    let mut merged: Vec<String> = db_tags.to_vec();
+    for tag in api_tags {
+        if !merged.contains(tag) {
+            merged.push(tag.clone());
+        }
+    }
+    merged.sort();
+
+    let mut sorted_db = db_tags.to_vec();
+    sorted_db.sort();
+    let mut sorted_api = api_tags.to_vec();
+    sorted_api.sort();
+
+    let db_changed = merged != sorted_db;
+    let api_changed = merged != sorted_api;
+    (merged, db_changed, api_changed)
+}
+
+/// Bidirectional Proxmox sync: status, IP, tags for VMs, LXCs, and physical hosts.
 async fn sync_proxmox_machines(
     client: &ProxmoxApiClient,
-    db_machines: &[dragonfly_common::models::Machine],
+    db_machines: &[&dragonfly_common::Machine],
     state: &crate::AppState,
 ) -> Result<(), anyhow::Error> {
+    use dragonfly_common::{MachineSource, MachineState};
+
     info!("Starting Proxmox machine synchronization...");
 
-    // Get current nodes from Proxmox
+    // ── Phase 1: Enumerate current Proxmox state ────────────────────────
+
     let nodes_response = client.get("/api2/json/nodes").await
         .map_err(|e| anyhow::anyhow!("Sync: Failed to fetch nodes: {}", e))?;
     let nodes_value: serde_json::Value = serde_json::from_slice(&nodes_response.body)
@@ -2364,208 +2477,288 @@ async fn sync_proxmox_machines(
         .and_then(|d| d.as_array())
         .ok_or_else(|| anyhow::anyhow!("Sync: Invalid nodes response format"))?;
 
-    // Build sets of existing nodes and VMs from Proxmox API
     let mut existing_node_names = std::collections::HashSet::new();
-    let mut existing_vm_ids = std::collections::HashSet::new();
-    let mut current_vm_details = std::collections::HashMap::new(); // Store {vmid: (node_name, status, agent_running, config_data)}
+    // VM details: vmid → (node, status, agent_running, tags)
+    let mut vm_details: std::collections::HashMap<u32, (String, String, bool, Vec<String>)> = std::collections::HashMap::new();
+    // LXC details: ctid → (node, status, tags)
+    let mut lxc_details: std::collections::HashMap<u32, (String, String, Vec<String>)> = std::collections::HashMap::new();
+    // Track which nodes we successfully enumerated VMs/LXCs for.
+    // Only prune machines from nodes where we got a confirmed successful API response.
+    let mut nodes_with_successful_vm_enum: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut nodes_with_successful_lxc_enum: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     for node in nodes_data {
         let node_name = node.get("node")
             .and_then(|n| n.as_str())
             .ok_or_else(|| anyhow::anyhow!("Sync: Node missing 'node' field"))?;
-        
         existing_node_names.insert(node_name.to_string());
 
-        // Get VMs for this node
+        // ── VMs (qemu) ──────────────────────────────────────────────────
         let vms_path = format!("/api2/json/nodes/{}/qemu", node_name);
         match client.get(&vms_path).await {
-            Ok(vms_response) => {
-                match serde_json::from_slice::<serde_json::Value>(&vms_response.body) {
-                    Ok(vms_value) => {
-                        if let Some(vms_data) = vms_value.get("data").and_then(|d| d.as_array()) {
+            Ok(vms_resp) => {
+                match serde_json::from_slice::<serde_json::Value>(&vms_resp.body) {
+                    Ok(vms_val) => {
+                        if let Some(vms_data) = vms_val.get("data").and_then(|d| d.as_array()) {
+                            // Successful enumeration — we can trust this list
+                            nodes_with_successful_vm_enum.insert(node_name.to_string());
                             for vm in vms_data {
-                                if let Some(vmid) = vm.get("vmid").and_then(|id| id.as_u64()).map(|id| id as u32) {
-                                    existing_vm_ids.insert(vmid);
-                                    let status = vm.get("status").and_then(|s| s.as_str()).unwrap_or("unknown").to_string();
-                                    
-                                    // Get config to check agent enablement
-                                    let vm_config_path = format!("/api2/json/nodes/{}/qemu/{}/config", node_name, vmid);
-                                    let agent_enabled = match client.get(&vm_config_path).await {
-                                        Ok(cfg_resp) => {
-                                            match serde_json::from_slice::<serde_json::Value>(&cfg_resp.body) {
-                                                Ok(cfg_val) => {
-                                                    if let Some(agent_str) = cfg_val.get("data").and_then(|d| d.get("agent")).and_then(|a| a.as_str()) {
-                                                        agent_str.contains("enabled=1") || agent_str.contains("enabled=true")
-                                                    } else { false }
-                                                }, 
-                                                Err(_) => false
-                                            }
-                                        }, 
-                                        Err(_) => false
-                                    };
+                                let Some(vmid) = vm.get("vmid").and_then(|id| id.as_u64()).map(|id| id as u32) else { continue };
+                                let status = vm.get("status").and_then(|s| s.as_str()).unwrap_or("unknown").to_string();
 
-                                    let mut agent_running = false;
-                                    if status == "running" && agent_enabled {
-                                        let agent_ping_path = format!("/api2/json/nodes/{}/qemu/{}/agent/ping", node_name, vmid);
-                                        agent_running = match client.get(&agent_ping_path).await {
-                                            Ok(ping_resp) => serde_json::from_slice::<serde_json::Value>(&ping_resp.body)
-                                                .map_or(false, |v| v.get("data").is_some() && !v.get("data").and_then(|d| d.get("error")).is_some()),
-                                            Err(_) => false
-                                        };
+                                // Fetch VM config for agent check + tags
+                                let cfg_path = format!("/api2/json/nodes/{}/qemu/{}/config", node_name, vmid);
+                                let (agent_enabled, api_tags) = match client.get(&cfg_path).await {
+                                    Ok(cfg_resp) => {
+                                        match serde_json::from_slice::<serde_json::Value>(&cfg_resp.body) {
+                                            Ok(cfg_val) => {
+                                                let agent = cfg_val.get("data")
+                                                    .and_then(|d| d.get("agent"))
+                                                    .and_then(|a| a.as_str())
+                                                    .map(|s| s.contains("enabled=1") || s.contains("enabled=true"))
+                                                    .unwrap_or(false);
+                                                let tags = parse_proxmox_tags(
+                                                    cfg_val.get("data").and_then(|d| d.get("tags")).and_then(|t| t.as_str())
+                                                );
+                                                (agent, tags)
+                                            }
+                                            Err(_) => (false, Vec::new()),
+                                        }
                                     }
-                                    
-                                    current_vm_details.insert(vmid, (node_name.to_string(), status, agent_running));
+                                    Err(_) => (false, Vec::new()),
+                                };
+
+                                let mut agent_running = false;
+                                if status == "running" && agent_enabled {
+                                    let ping_path = format!("/api2/json/nodes/{}/qemu/{}/agent/ping", node_name, vmid);
+                                    agent_running = client.get(&ping_path).await
+                                        .ok()
+                                        .and_then(|r| serde_json::from_slice::<serde_json::Value>(&r.body).ok())
+                                        .map(|v| v.get("data").is_some() && v.get("data").and_then(|d| d.get("error")).is_none())
+                                        .unwrap_or(false);
                                 }
+
+                                vm_details.insert(vmid, (node_name.to_string(), status, agent_running, api_tags));
                             }
                         } else {
-                            warn!("Sync: Invalid VMs data format for node {}", node_name);
+                            warn!("Sync: Node '{}' VM response missing 'data' array — skipping VM sync for this node", node_name);
                         }
-                    },
-                    Err(e) => warn!("Sync: Failed to parse VMs response for node {}: {}", node_name, e),
+                    }
+                    Err(e) => warn!("Sync: Failed to parse VM response for node '{}': {} — skipping VM sync for this node", node_name, e),
                 }
-            },
-            Err(e) => warn!("Sync: Failed to get VMs for node {}: {}", node_name, e),
+            }
+            Err(e) => warn!("Sync: Failed to fetch VMs for node '{}': {} — skipping VM sync for this node", node_name, e),
+        }
+
+        // ── LXC containers ──────────────────────────────────────────────
+        let lxc_path = format!("/api2/json/nodes/{}/lxc", node_name);
+        match client.get(&lxc_path).await {
+            Ok(lxc_resp) => {
+                match serde_json::from_slice::<serde_json::Value>(&lxc_resp.body) {
+                    Ok(lxc_val) => {
+                        if let Some(lxc_data) = lxc_val.get("data").and_then(|d| d.as_array()) {
+                            // Successful enumeration — we can trust this list
+                            nodes_with_successful_lxc_enum.insert(node_name.to_string());
+                            for ct in lxc_data {
+                                let Some(ctid) = ct.get("vmid").and_then(|id| id.as_u64()).map(|id| id as u32) else { continue };
+                                let status = ct.get("status").and_then(|s| s.as_str()).unwrap_or("unknown").to_string();
+
+                                // Fetch LXC config for tags
+                                let cfg_path = format!("/api2/json/nodes/{}/lxc/{}/config", node_name, ctid);
+                                let api_tags = match client.get(&cfg_path).await {
+                                    Ok(cfg_resp) => serde_json::from_slice::<serde_json::Value>(&cfg_resp.body)
+                                        .ok()
+                                        .map(|v| parse_proxmox_tags(v.get("data").and_then(|d| d.get("tags")).and_then(|t| t.as_str())))
+                                        .unwrap_or_default(),
+                                    Err(_) => Vec::new(),
+                                };
+
+                                lxc_details.insert(ctid, (node_name.to_string(), status, api_tags));
+                            }
+                        } else {
+                            warn!("Sync: Node '{}' LXC response missing 'data' array — skipping LXC sync for this node", node_name);
+                        }
+                    }
+                    Err(e) => warn!("Sync: Failed to parse LXC response for node '{}': {} — skipping LXC sync for this node", node_name, e),
+                }
+            }
+            Err(e) => warn!("Sync: Failed to fetch LXCs for node '{}': {} — skipping LXC sync for this node", node_name, e),
         }
     }
 
-    info!("Sync: Found {} nodes and {} VMs in Proxmox API", existing_node_names.len(), existing_vm_ids.len());
+    info!("Sync: Found {} nodes, {} VMs (from {}/{} nodes), {} LXCs (from {}/{} nodes)",
+          existing_node_names.len(),
+          vm_details.len(), nodes_with_successful_vm_enum.len(), existing_node_names.len(),
+          lxc_details.len(), nodes_with_successful_lxc_enum.len(), existing_node_names.len());
 
-    // Iterate through machines stored in Dragonfly DB
-    let mut pruned_count = 0;
-    let mut updated_ip_count = 0;
-    let mut updated_status_count = 0;
-    let mut machines_to_prune = Vec::new();
+    // ── Phase 2: Compare with DB machines ───────────────────────────────
+
+    let mut updated_count = 0u32;
+    let mut tag_sync_count = 0u32;
+    let mut pruned_count = 0u32;
+    let mut machines_to_prune: Vec<uuid::Uuid> = Vec::new();
 
     for db_machine in db_machines {
-        // Handle Proxmox Hosts
-        if db_machine.is_proxmox_host {
-            if let Some(node_name) = &db_machine.proxmox_node {
-                if !existing_node_names.contains(node_name) {
-                    info!("Sync: Proxmox host node '{}' (ID: {}) no longer exists in API. Marking for pruning.", 
-                          node_name, db_machine.id);
+        match &db_machine.metadata.source {
+            // ── Physical hosts ───────────────────────────────────────
+            MachineSource::ProxmoxNode { node, .. } => {
+                // The /nodes endpoint succeeded (we parsed nodes_data above),
+                // so if a node isn't listed, it's genuinely removed from the cluster.
+                if !existing_node_names.contains(node) {
+                    info!("Sync: Proxmox host '{}' (ID: {}) removed from cluster, deleting",
+                          node, db_machine.id);
                     machines_to_prune.push(db_machine.id);
                 }
-                // TODO: Update host status/IP if needed? (Requires more API calls)
-                } else {
-                warn!("Sync: DB machine {} marked as Proxmox host but missing node name.", db_machine.id);
             }
-        }
-        // Handle Proxmox VMs
-        else if let Some(vmid) = db_machine.proxmox_vmid {
-            if let Some((_node_name, api_status, agent_running)) = current_vm_details.get(&vmid) {
-                 // VM exists in API, update status and potentially IP
-                let new_db_status = match api_status.as_str() {
-                    "running" => MachineStatus::Installed,
-                    "stopped" => MachineStatus::Offline,
-                    _ => MachineStatus::ExistingOS, // Use ExistingOS as fallback instead of Unknown
-                };
 
-                // Update DB status if it changed
-                if db_machine.status != new_db_status {
-                    info!(
-                        "Sync: Updating status for VM {} (ID: {}) from {:?} to {:?}",
-                        vmid, db_machine.id, db_machine.status, new_db_status
-                    );
-                    // Update via v1 Store
-                    if let Ok(Some(mut machine)) = state.store.get_machine(db_machine.id).await {
-                        use dragonfly_common::MachineState;
-                        machine.status.state = match new_db_status {
-                            MachineStatus::Installed => MachineState::Installed,
-                            MachineStatus::Offline => MachineState::Offline,
-                            MachineStatus::ExistingOS => MachineState::ExistingOs { os_name: "Unknown".to_string() },
-                            MachineStatus::Discovered => MachineState::Discovered,
-                            MachineStatus::ReadyToInstall => MachineState::ReadyToInstall,
-                            MachineStatus::Initializing => MachineState::Initializing,
-                            MachineStatus::Installing => MachineState::Installing,
-                            MachineStatus::Writing => MachineState::Writing,
-                            MachineStatus::Failed(ref msg) => MachineState::Failed { message: msg.clone() },
-                        };
-                        machine.metadata.updated_at = chrono::Utc::now();
-                        if let Err(e) = state.store.put_machine(&machine).await {
-                            error!("Sync: Failed to update status for VM {}: {}", vmid, e);
-                        } else {
-                            updated_status_count += 1;
-                        }
+            // ── QEMU VMs ────────────────────────────────────────────
+            MachineSource::Proxmox { node, vmid, .. } => {
+                if let Some((api_node, api_status, agent_running, api_tags)) = vm_details.get(vmid) {
+                    let mut machine = match state.store.get_machine(db_machine.id).await {
+                        Ok(Some(m)) => m,
+                        _ => continue,
+                    };
+                    let mut changed = false;
+
+                    // Status sync
+                    let new_state = match api_status.as_str() {
+                        "running" => MachineState::Installed,
+                        "stopped" => MachineState::Offline,
+                        _ => MachineState::ExistingOs { os_name: "Proxmox VM".to_string() },
+                    };
+                    if machine.status.state != new_state {
+                        info!("Sync: VM {} status {:?} → {:?}", vmid, machine.status.state, new_state);
+                        machine.status.state = new_state;
+                        changed = true;
                     }
-                }
 
-                // Update IP address if agent is running and IP is different
-                if *agent_running {
-                     let agent_ip_path = format!("/api2/json/nodes/{}/qemu/{}/agent/network-get-interfaces", _node_name, vmid);
-                     match client.get(&agent_ip_path).await {
-                        Ok(ip_resp) => {
-                            match serde_json::from_slice::<serde_json::Value>(&ip_resp.body) {
-                                Ok(ip_val) => {
-                                    if let Some(result_array) = ip_val.get("data").and_then(|d| d.get("result")).and_then(|r| r.as_array()) {
-                                        // Find the first valid non-loopback IPv4 address
-                                        let mut found_ip = None;
-                                        for iface_info in result_array {
-                                            if let Some(ip_addrs) = iface_info.get("ip-addresses").and_then(|a| a.as_array()) {
-                                                for addr_info in ip_addrs {
-                                                    if addr_info.get("ip-address-type").and_then(|t| t.as_str()) == Some("ipv4") {
-                                                        if let Some(ip_str) = addr_info.get("ip-address").and_then(|i| i.as_str()) {
-                                                            // Check if it's not a loopback address
-                                                            if !ip_str.starts_with("127.") {
-                                                                found_ip = Some(ip_str.to_string());
-                                                            break;
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                            }
-                                            if found_ip.is_some() { break; }
-                                        }
-
-                                        if let Some(current_ip) = found_ip {
-                                            // TODO: v1 Store doesn't track IP addresses yet
-                                            // When IP tracking is added to v1 schema, update here
-                                            info!(
-                                                "Sync: Found IP {} for VM {} (ID: {}) via agent (IP tracking not yet in v1 schema)",
-                                                current_ip, vmid, db_machine.id
-                                            );
-                                            // For now, just count it as seen but don't try to update
-                                            let _ = updated_ip_count; // Suppress unused warning
-                                        }
+                    // IP sync via QEMU agent
+                    if *agent_running {
+                        let ip_path = format!("/api2/json/nodes/{}/qemu/{}/agent/network-get-interfaces", api_node, vmid);
+                        if let Ok(ip_resp) = client.get(&ip_path).await {
+                            if let Ok(ip_val) = serde_json::from_slice::<serde_json::Value>(&ip_resp.body) {
+                                if let Some(ip) = extract_agent_ip(&ip_val) {
+                                    if machine.status.current_ip.as_deref() != Some(&ip) {
+                                        info!("Sync: VM {} IP → {}", vmid, ip);
+                                        machine.status.current_ip = Some(ip);
+                                        changed = true;
                                     }
                                 }
-                                Err(e) => warn!("Sync: Failed to parse agent IP response for VM {}: {}", vmid, e),
                             }
-                        },
-                        Err(e) => warn!("Sync: Failed to get agent IP for VM {}: {}", vmid, e),
+                        }
                     }
+
+                    // Bidirectional tag sync
+                    let (merged, db_changed, api_changed) = merge_tags(&machine.config.tags, api_tags);
+                    if db_changed {
+                        machine.config.tags = merged.clone();
+                        changed = true;
+                        tag_sync_count += 1;
+                    }
+                    if api_changed {
+                        let tags_str = merged.join(";");
+                        let path = format!("/api2/json/nodes/{}/qemu/{}/config", api_node, vmid);
+                        if let Err(e) = client.put(&path, &serde_json::json!({ "tags": tags_str })).await {
+                            warn!("Sync: Failed to push tags to Proxmox VM {}: {}", vmid, e);
+                        } else {
+                            tag_sync_count += 1;
+                        }
+                    }
+
+                    if changed {
+                        machine.metadata.updated_at = chrono::Utc::now();
+                        if let Err(e) = state.store.put_machine(&machine).await {
+                            error!("Sync: Failed to save VM {}: {}", vmid, e);
+                        } else {
+                            updated_count += 1;
+                        }
+                    }
+                } else if nodes_with_successful_vm_enum.contains(node) {
+                    // We successfully enumerated VMs on this node and this VM wasn't there → deleted
+                    info!("Sync: VM {} on node '{}' (ID: {}) deleted in Proxmox, removing", vmid, node, db_machine.id);
+                    machines_to_prune.push(db_machine.id);
+                } else {
+                    // We couldn't enumerate VMs on this node — don't assume anything
+                    debug!("Sync: VM {} on node '{}' — node VM enumeration failed, skipping", vmid, node);
                 }
-                                            } else {
-                // VM exists in DB but not in API result
-                info!("Sync: Proxmox VM {} (ID: {}) not found in API. Marking for pruning.", vmid, db_machine.id);
-                machines_to_prune.push(db_machine.id);
             }
+
+            // ── LXC containers ──────────────────────────────────────
+            MachineSource::ProxmoxLxc { node, ctid, .. } => {
+                if let Some((api_node, api_status, api_tags)) = lxc_details.get(ctid) {
+                    let mut machine = match state.store.get_machine(db_machine.id).await {
+                        Ok(Some(m)) => m,
+                        _ => continue,
+                    };
+                    let mut changed = false;
+
+                    // Status sync
+                    let new_state = match api_status.as_str() {
+                        "running" => MachineState::Installed,
+                        "stopped" => MachineState::Offline,
+                        _ => MachineState::ExistingOs { os_name: "Proxmox LXC".to_string() },
+                    };
+                    if machine.status.state != new_state {
+                        info!("Sync: LXC {} status {:?} → {:?}", ctid, machine.status.state, new_state);
+                        machine.status.state = new_state;
+                        changed = true;
+                    }
+
+                    // Bidirectional tag sync
+                    let (merged, db_changed, api_changed) = merge_tags(&machine.config.tags, api_tags);
+                    if db_changed {
+                        machine.config.tags = merged.clone();
+                        changed = true;
+                        tag_sync_count += 1;
+                    }
+                    if api_changed {
+                        let tags_str = merged.join(";");
+                        let path = format!("/api2/json/nodes/{}/lxc/{}/config", api_node, ctid);
+                        if let Err(e) = client.put(&path, &serde_json::json!({ "tags": tags_str })).await {
+                            warn!("Sync: Failed to push tags to Proxmox LXC {}: {}", ctid, e);
+                        } else {
+                            tag_sync_count += 1;
+                        }
+                    }
+
+                    if changed {
+                        machine.metadata.updated_at = chrono::Utc::now();
+                        if let Err(e) = state.store.put_machine(&machine).await {
+                            error!("Sync: Failed to save LXC {}: {}", ctid, e);
+                        } else {
+                            updated_count += 1;
+                        }
+                    }
+                } else if nodes_with_successful_lxc_enum.contains(node) {
+                    // We successfully enumerated LXCs on this node and this CT wasn't there → deleted
+                    info!("Sync: LXC {} on node '{}' (ID: {}) deleted in Proxmox, removing", ctid, node, db_machine.id);
+                    machines_to_prune.push(db_machine.id);
+                } else {
+                    debug!("Sync: LXC {} on node '{}' — node LXC enumeration failed, skipping", ctid, node);
+                }
+            }
+
+            _ => {} // Not a Proxmox machine
         }
-        // Ignore non-Proxmox machines for this sync
     }
 
-    // Prune machines that are no longer in Proxmox
+    // ── Phase 3: Delete machines confirmed gone from Proxmox ─────────────
     if !machines_to_prune.is_empty() {
-        info!("Sync: Pruning {} machines not found in Proxmox API...", machines_to_prune.len());
-        for machine_id in machines_to_prune {
-            match state.store.delete_machine(machine_id).await {
+        info!("Sync: Deleting {} machines confirmed removed from Proxmox", machines_to_prune.len());
+        for machine_id in &machines_to_prune {
+            match state.store.delete_machine(*machine_id).await {
                 Ok(true) => {
-                    info!("Sync: Successfully pruned machine {}", machine_id);
+                    info!("Sync: Deleted machine {}", machine_id);
                     pruned_count += 1;
-                },
-                Ok(false) => {
-                    warn!("Sync: Machine {} was already deleted", machine_id);
-                },
-                Err(e) => {
-                    error!("Sync: Failed to prune machine {}: {}", machine_id, e);
                 }
+                Ok(false) => warn!("Sync: Machine {} already deleted", machine_id),
+                Err(e) => error!("Sync: Failed to delete machine {}: {}", machine_id, e),
             }
         }
     }
 
-    info!(
-        "Proxmox sync finished. Status updates: {}, IP updates: {}, Pruned: {}",
-        updated_status_count, updated_ip_count, pruned_count
-    );
+    info!("Proxmox sync finished. Updated: {}, Tags synced: {}, Pruned: {}",
+          updated_count, tag_sync_count, pruned_count);
 
     Ok(())
 }
