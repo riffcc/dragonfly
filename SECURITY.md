@@ -5,7 +5,7 @@ We are currently supporting the following versions:
 
 | Version | Supported          |
 | ------- | ------------------ |
-| v0.1.0   | :white_check_mark: |
+| v0.1.x   | :white_check_mark: |
 
 Note, at this early stage of development, we may not backport patches to old minor versions.
 
