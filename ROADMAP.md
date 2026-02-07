@@ -4,6 +4,16 @@ Here's things we would like to work on and add to Dragonfly next.
 This is speculative and subject to change.
 
 ## Upcoming planned features
+
+- 📊 (WIP) Granular reporting and monitoring of your machines.
+- 📦 (WIP) Built in image management for OS and drivers.
+- 🎮 (WIP) Gamepad and touchscreeen support for easy navigation of the UI.
+- 🧸 (WIP) **Safety Mode (Molly Guard)** — avoid accidentally nuking a machine
+- 🚀 (WIP) Built-in IPMI/BMC/Redfish power control
+  and SSH control support for flexible node power operations.
+- 🌍 (WIP) Uses DNS to find machine hostnames automatically
+- 🖼️ (WIP) Ready for Retina, ultrawide and kiosk displays 
+- 🎨 (WIP) Tailwind-powered theming — pick your aesthetic or import your own.
 * First run wizard:
 
 * Wild looking electric green bar on the front page that shows the status of the last 100 deployments
