@@ -34,6 +34,7 @@ mod menu;
 mod net;
 mod pci;
 mod serial;
+mod svga;
 mod ui;
 mod vector_font;
 mod vbe;
@@ -112,6 +113,12 @@ pub extern "C" fn _start(multiboot_magic: u32, multiboot_info: u32) -> ! {
         if !framebuffer::is_available() {
             serial::println("MB1: No VBE from boot.s, trying MB1 info...");
             framebuffer::init_mb1(multiboot_info);
+        }
+
+        // Fallback: try VMware SVGA II direct register interface
+        if !framebuffer::is_available() {
+            serial::println("MB1: Trying VMware SVGA II...");
+            svga::init();
         }
 
         // Parse MB1 cmdline for server= parameter
