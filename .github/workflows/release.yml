@@ -72,15 +72,17 @@ jobs:
         if: runner.os == 'Linux' && !matrix.cross
         run: |
           sudo apt-get update
-          sudo apt-get install -y libssl-dev pkg-config
+          sudo apt-get install -y pkg-config
           if [ -n "${{ matrix.agent-target }}" ]; then
             sudo apt-get install -y musl-tools
           fi
 
-      # Pre-build Tailwind CSS on the host so cross containers don't need npm
+      # Pre-build Tailwind CSS on the host, then remove node_modules so
+      # build.rs uses the pre-built CSS instead of trying to invoke node
       - name: Pre-build Tailwind CSS
-        if: matrix.cross
-        run: npx tailwindcss -i crates/dragonfly-server/src/input.css -o crates/dragonfly-server/static/css/tailwind.css -c tailwind.config.js
+        run: |
+          npx tailwindcss -i crates/dragonfly-server/src/input.css -o crates/dragonfly-server/static/css/tailwind.css -c tailwind.config.js
+          rm -rf node_modules
 
       # ── Main dragonfly binary ──
       - name: Build dragonfly (native)
