@@ -11,10 +11,12 @@ RUN apt-get update && apt-get install -y \
     curl \
     clang \
     libclang-dev \
-    nodejs \
-    npm \
-    && rm -rf /var/lib/apt/lists/* \
-    && ln -sf /usr/bin/nodejs /usr/bin/node
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Node.js 24.x via NodeSource
+RUN curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
+    && apt-get install -y nodejs \
+    && rm -rf /var/lib/apt/lists/*
 
 # Copy source (build context is repo root, cargo fetches jetpack via git)
 COPY . /workspace/dragonfly/
