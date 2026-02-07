@@ -87,6 +87,16 @@ jobs:
           name: ${{ matrix.artifact }}
           path: target/${{ matrix.target }}/release/dragonfly
 
+      # Upload static assets (only once, from linux-amd64)
+      - name: Upload static assets
+        if: matrix.name == 'linux-amd64'
+        uses: actions/upload-artifact@v4
+        with:
+          name: dragonfly-static
+          path: |
+            crates/dragonfly-server/static/
+            crates/dragonfly-server/templates/
+
       # ── Agent binary (linux only, static musl) ──
       - name: Build agent
         if: matrix.agent-target
@@ -152,10 +162,14 @@ jobs:
           name: dragonfly-spark-iso
           path: crates/dragonfly-spark/spark.iso
 
-  # ── Docker images (multi-arch) ────────────────────────────────────
+  # ── Docker images (from pre-built binaries) ───────────────────────
   docker:
     name: Docker ${{ matrix.image }}
+    needs: build
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
     strategy:
       fail-fast: false
       matrix:
@@ -167,6 +181,24 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Prepare binaries
+        run: |
+          # Server binaries
+          cp artifacts/dragonfly-linux-amd64/dragonfly dragonfly-amd64
+          cp artifacts/dragonfly-linux-arm64/dragonfly dragonfly-arm64
+          chmod +x dragonfly-amd64 dragonfly-arm64
+          # Agent binaries
+          cp artifacts/dragonfly-agent-linux-amd64/dragonfly-agent dragonfly-agent-amd64
+          cp artifacts/dragonfly-agent-linux-arm64/dragonfly-agent dragonfly-agent-arm64
+          chmod +x dragonfly-agent-amd64 dragonfly-agent-arm64
+          # Static assets (with pre-built Tailwind CSS)
+          cp -r artifacts/dragonfly-static/crates/dragonfly-server/static .
+          cp -r artifacts/dragonfly-static/crates/dragonfly-server/templates .
 
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
@@ -197,13 +229,11 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
 
   # ── GitHub Release ────────────────────────────────────────────────
   release:
     name: Create Release
-    needs: [build, spark, docker]
+    needs: [build, spark]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
