@@ -1,5 +1,5 @@
 # Use the official Rust image.
-FROM rust:slim-bookworm AS builder
+FROM rust:slim-trixie AS builder
 
 # Set the working directory in the container.
 WORKDIR /workspace
@@ -7,7 +7,6 @@ WORKDIR /workspace
 # Install dependencies.
 RUN apt-get update && apt-get install -y \
     build-essential \
-    libssl-dev \
     pkg-config \
     curl \
     clang \
@@ -29,7 +28,7 @@ RUN npm install
 RUN cargo build --release
 
 # New container
-FROM rust:slim-bookworm AS runner
+FROM debian:trixie-slim AS runner
 
 # Copy the binary from the builder container.
 COPY --from=builder /workspace/dragonfly/target/release/dragonfly /usr/local/bin/dragonfly

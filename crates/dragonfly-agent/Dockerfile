@@ -2,10 +2,9 @@
 # docker build --platform linux/amd64 -f crates/dragonfly-agent/Dockerfile .
 # for amd64 specific builds.
 
-FROM rust:1.85.1-alpine3.21 AS builder
+FROM rust:1.93-alpine AS builder
 
 RUN apk add --no-cache \
-    openssl-dev \
     musl-dev \
     gcc \
     wget
@@ -21,7 +20,6 @@ RUN wget -O /usr/local/share/ipxe.lkrn https://boot.alpinelinux.org/alpine-ipxe/
 
 FROM alpine:3.21
 RUN apk add --no-cache \
-    openssl \
     libgcc \
     kexec-tools
 
