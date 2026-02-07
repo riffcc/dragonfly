@@ -804,18 +804,18 @@
 
                             <div class="space-y-6">
                                 <!-- Connection Status -->
-                                <div class="border rounded-lg p-4" :class="status.configured ? 'border-green-500/50 bg-green-950/20' : 'border-purple-500/30 dark:border-purple-700/50'">
+                                <div class="border rounded-lg p-4" :class="status.configured ? 'border-green-500/50 bg-green-50 dark:bg-green-950/20' : 'border-purple-300 dark:border-purple-700/50'">
                                     <div class="flex items-center gap-3">
                                         <div class="w-3 h-3 rounded-full" :class="status.configured ? 'bg-green-500' : 'bg-gray-500'"></div>
                                         <div>
                                             <template x-if="status.configured">
                                                 <div>
-                                                    <span class="text-sm font-medium text-white" x-text="'Connected to ' + status.host + ':' + status.port"></span>
-                                                    <span class="text-xs text-white/50 ml-2" x-text="'as ' + status.username"></span>
+                                                    <span class="text-sm font-medium text-black dark:text-white" x-text="'Connected to ' + status.host + ':' + status.port"></span>
+                                                    <span class="text-xs text-black/50 dark:text-white/50 ml-2" x-text="'as ' + status.username"></span>
                                                 </div>
                                             </template>
                                             <template x-if="!status.configured">
-                                                <span class="text-sm text-white/70">Not configured</span>
+                                                <span class="text-sm text-black/70 dark:text-white/70">Not configured</span>
                                             </template>
                                         </div>
                                     </div>
@@ -823,19 +823,19 @@
                                     <!-- Token status badges -->
                                     <template x-if="status.configured">
                                         <div class="flex flex-wrap gap-2 mt-3 ml-6">
-                                            <span class="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full" :class="status.has_power_token ? 'bg-green-900/50 text-green-300' : 'bg-red-900/50 text-red-300'">
+                                            <span class="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full" :class="status.has_power_token ? 'bg-green-100 text-green-700 dark:bg-green-900/50 dark:text-green-300' : 'bg-red-100 text-red-700 dark:bg-red-900/50 dark:text-red-300'">
                                                 <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 20 20"><path x-show="status.has_power_token" fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/><path x-show="!status.has_power_token" fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd"/></svg>
                                                 Power
                                             </span>
-                                            <span class="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full" :class="status.has_create_token ? 'bg-green-900/50 text-green-300' : 'bg-red-900/50 text-red-300'">
+                                            <span class="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full" :class="status.has_create_token ? 'bg-green-100 text-green-700 dark:bg-green-900/50 dark:text-green-300' : 'bg-red-100 text-red-700 dark:bg-red-900/50 dark:text-red-300'">
                                                 <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 20 20"><path x-show="status.has_create_token" fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/><path x-show="!status.has_create_token" fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd"/></svg>
                                                 Create
                                             </span>
-                                            <span class="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full" :class="status.has_config_token ? 'bg-green-900/50 text-green-300' : 'bg-red-900/50 text-red-300'">
+                                            <span class="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full" :class="status.has_config_token ? 'bg-green-100 text-green-700 dark:bg-green-900/50 dark:text-green-300' : 'bg-red-100 text-red-700 dark:bg-red-900/50 dark:text-red-300'">
                                                 <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 20 20"><path x-show="status.has_config_token" fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/><path x-show="!status.has_config_token" fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd"/></svg>
                                                 Config
                                             </span>
-                                            <span class="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full" :class="status.has_sync_token ? 'bg-green-900/50 text-green-300' : 'bg-red-900/50 text-red-300'">
+                                            <span class="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full" :class="status.has_sync_token ? 'bg-green-100 text-green-700 dark:bg-green-900/50 dark:text-green-300' : 'bg-red-100 text-red-700 dark:bg-red-900/50 dark:text-red-300'">
                                                 <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 20 20"><path x-show="status.has_sync_token" fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/><path x-show="!status.has_sync_token" fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd"/></svg>
                                                 Sync
                                             </span>
@@ -845,10 +845,10 @@
 
                                 <!-- Mode Toggle -->
                                 <div class="flex gap-2">
-                                    <button type="button" @click="mode = 'login'" :class="mode === 'login' ? 'bg-purple-600 text-white' : 'text-white/70 border border-purple-700 hover:bg-purple-900/30'" class="px-3 py-1.5 text-xs font-medium rounded-lg transition-colors">
+                                    <button type="button" @click="mode = 'login'" :class="mode === 'login' ? 'bg-purple-600 text-white' : 'text-black/70 dark:text-white/70 border border-purple-300 dark:border-purple-700 hover:bg-purple-100 dark:hover:bg-purple-900/30'" class="px-3 py-1.5 text-xs font-medium rounded-lg transition-colors">
                                         Login to Create Tokens
                                     </button>
-                                    <button type="button" @click="mode = 'token'" :class="mode === 'token' ? 'bg-purple-600 text-white' : 'text-white/70 border border-purple-700 hover:bg-purple-900/30'" class="px-3 py-1.5 text-xs font-medium rounded-lg transition-colors">
+                                    <button type="button" @click="mode = 'token'" :class="mode === 'token' ? 'bg-purple-600 text-white' : 'text-black/70 dark:text-white/70 border border-purple-300 dark:border-purple-700 hover:bg-purple-100 dark:hover:bg-purple-900/30'" class="px-3 py-1.5 text-xs font-medium rounded-lg transition-colors">
                                         Paste API Token
                                     </button>
                                 </div>
@@ -857,37 +857,37 @@
                                 <div x-show="mode === 'login'" class="space-y-4">
                                     <div class="grid grid-cols-2 gap-4">
                                         <div>
-                                            <label class="block text-xs font-medium text-white mb-1.5">Host</label>
+                                            <label class="block text-xs font-medium text-black dark:text-white mb-1.5">Host</label>
                                             <input type="text" x-model="form.host" placeholder="10.7.1.1 or proxmox.local"
-                                                   class="w-full rounded-lg border border-purple-700 bg-transparent text-white text-sm px-3 py-2 focus:border-purple-500 focus:ring-1 focus:ring-purple-500 focus:outline-none placeholder:text-white/40">
+                                                   class="w-full rounded-lg border border-purple-300 dark:border-purple-700 bg-transparent text-black dark:text-white text-sm px-3 py-2 focus:border-purple-500 focus:ring-1 focus:ring-purple-500 focus:outline-none placeholder:text-black/40 dark:placeholder:text-white/40">
                                         </div>
                                         <div>
-                                            <label class="block text-xs font-medium text-white mb-1.5">Port</label>
+                                            <label class="block text-xs font-medium text-black dark:text-white mb-1.5">Port</label>
                                             <input type="number" x-model="form.port" placeholder="8006"
-                                                   class="w-full rounded-lg border border-purple-700 bg-transparent text-white text-sm px-3 py-2 focus:border-purple-500 focus:ring-1 focus:ring-purple-500 focus:outline-none placeholder:text-white/40">
+                                                   class="w-full rounded-lg border border-purple-300 dark:border-purple-700 bg-transparent text-black dark:text-white text-sm px-3 py-2 focus:border-purple-500 focus:ring-1 focus:ring-purple-500 focus:outline-none placeholder:text-black/40 dark:placeholder:text-white/40">
                                         </div>
                                     </div>
                                     <div class="grid grid-cols-2 gap-4">
                                         <div>
-                                            <label class="block text-xs font-medium text-white mb-1.5">Username</label>
+                                            <label class="block text-xs font-medium text-black dark:text-white mb-1.5">Username</label>
                                             <input type="text" x-model="form.username" placeholder="root@pam"
-                                                   class="w-full rounded-lg border border-purple-700 bg-transparent text-white text-sm px-3 py-2 focus:border-purple-500 focus:ring-1 focus:ring-purple-500 focus:outline-none placeholder:text-white/40">
+                                                   class="w-full rounded-lg border border-purple-300 dark:border-purple-700 bg-transparent text-black dark:text-white text-sm px-3 py-2 focus:border-purple-500 focus:ring-1 focus:ring-purple-500 focus:outline-none placeholder:text-black/40 dark:placeholder:text-white/40">
                                         </div>
                                         <div>
-                                            <label class="block text-xs font-medium text-white mb-1.5">Password</label>
+                                            <label class="block text-xs font-medium text-black dark:text-white mb-1.5">Password</label>
                                             <input type="password" x-model="form.password" placeholder="Password"
-                                                   class="w-full rounded-lg border border-purple-700 bg-transparent text-white text-sm px-3 py-2 focus:border-purple-500 focus:ring-1 focus:ring-purple-500 focus:outline-none placeholder:text-white/40">
+                                                   class="w-full rounded-lg border border-purple-300 dark:border-purple-700 bg-transparent text-black dark:text-white text-sm px-3 py-2 focus:border-purple-500 focus:ring-1 focus:ring-purple-500 focus:outline-none placeholder:text-black/40 dark:placeholder:text-white/40">
                                         </div>
                                     </div>
                                     <div class="flex items-center gap-2">
-                                        <input type="checkbox" x-model="form.skip_tls_verify" id="skip-tls" class="rounded border-purple-700 bg-transparent text-purple-600 focus:ring-purple-500">
-                                        <label for="skip-tls" class="text-xs text-white/70">Skip TLS verification (self-signed certificates)</label>
+                                        <input type="checkbox" x-model="form.skip_tls_verify" id="skip-tls" class="rounded border-purple-300 dark:border-purple-700 bg-transparent text-purple-600 focus:ring-purple-500">
+                                        <label for="skip-tls" class="text-xs text-black/70 dark:text-white/70">Skip TLS verification (self-signed certificates)</label>
                                     </div>
                                     <div class="flex items-center gap-2">
                                         <input type="checkbox" x-model="form.import_guests" id="import-guests"
                                                @change="if (form.import_guests && !importDangerAccepted) { form.import_guests = false; importDangerModal = true; }"
                                                class="rounded border-yellow-600 bg-transparent text-yellow-500 focus:ring-yellow-500">
-                                        <label for="import-guests" class="text-xs text-yellow-400/90">(Experimental) Import Proxmox guests</label>
+                                        <label for="import-guests" class="text-xs text-yellow-600 dark:text-yellow-400/90">(Experimental) Import Proxmox guests</label>
                                     </div>
                                     <div class="flex items-center gap-3">
                                         <button type="button" @click="connectAndCreateTokens()" :disabled="connecting"
@@ -895,7 +895,7 @@
                                             <span x-show="!connecting">Connect & Create Tokens</span>
                                             <span x-show="connecting">Connecting...</span>
                                         </button>
-                                        <span x-show="error" class="text-xs text-red-400" x-text="error"></span>
+                                        <span x-show="error" class="text-xs text-red-600 dark:text-red-400" x-text="error"></span>
                                     </div>
                                 </div>
 
@@ -903,26 +903,26 @@
                                 <div x-show="importDangerModal" x-cloak class="fixed inset-0 z-50 overflow-y-auto">
                                     <div class="fixed inset-0 bg-black/50" @click="importDangerModal = false"></div>
                                     <div class="flex min-h-full items-center justify-center p-4">
-                                        <div class="relative bg-gray-900 rounded-lg p-6 max-w-md shadow-xl border border-yellow-600/50" @click.stop>
+                                        <div class="relative bg-white dark:bg-gray-900 rounded-lg p-6 max-w-md shadow-xl border border-yellow-600/50" @click.stop>
                                             <div class="flex items-center gap-3 mb-4">
-                                                <div class="flex h-10 w-10 items-center justify-center rounded-full bg-yellow-900/40">
-                                                    <svg class="w-5 h-5 text-yellow-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <div class="flex h-10 w-10 items-center justify-center rounded-full bg-yellow-100 dark:bg-yellow-900/40">
+                                                    <svg class="w-5 h-5 text-yellow-500 dark:text-yellow-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z" />
                                                     </svg>
                                                 </div>
-                                                <h3 class="text-lg font-semibold text-white">Experimental Feature</h3>
+                                                <h3 class="text-lg font-semibold text-black dark:text-white">Experimental Feature</h3>
                                             </div>
-                                            <p class="text-sm text-gray-300 mb-3">
-                                                This will import all VMs and LXC containers from your Proxmox cluster into Dragonfly. This feature is <strong class="text-yellow-400">experimental</strong>.
+                                            <p class="text-sm text-gray-600 dark:text-gray-300 mb-3">
+                                                This will import all VMs and LXC containers from your Proxmox cluster into Dragonfly. This feature is <strong class="text-yellow-600 dark:text-yellow-400">experimental</strong>.
                                             </p>
-                                            <ul class="text-xs text-gray-400 mb-4 space-y-1 list-disc list-inside">
+                                            <ul class="text-xs text-gray-500 dark:text-gray-400 mb-4 space-y-1 list-disc list-inside">
                                                 <li>Existing machines with the same MAC address will be updated</li>
                                                 <li>Guest agent data is used when available for IP detection</li>
                                                 <li>Do not use this with production clusters you care about</li>
                                             </ul>
                                             <div class="flex gap-3">
                                                 <button type="button" @click="importDangerModal = false"
-                                                    class="flex-1 px-4 py-2 text-sm font-medium text-white/70 border border-gray-600 hover:bg-gray-800 rounded-lg">
+                                                    class="flex-1 px-4 py-2 text-sm font-medium text-black/70 dark:text-white/70 border border-gray-300 dark:border-gray-600 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg">
                                                     Cancel
                                                 </button>
                                                 <button type="button" @click="importDangerAccepted = true; form.import_guests = true; importDangerModal = false"
@@ -938,54 +938,54 @@
                                 <div x-show="mode === 'token'" class="space-y-4">
                                     <div class="grid grid-cols-2 gap-4">
                                         <div>
-                                            <label class="block text-xs font-medium text-white mb-1.5">Host</label>
+                                            <label class="block text-xs font-medium text-black dark:text-white mb-1.5">Host</label>
                                             <input type="text" x-model="form.host" placeholder="10.7.1.1 or proxmox.local"
-                                                   class="w-full rounded-lg border border-purple-700 bg-transparent text-white text-sm px-3 py-2 focus:border-purple-500 focus:ring-1 focus:ring-purple-500 focus:outline-none placeholder:text-white/40">
+                                                   class="w-full rounded-lg border border-purple-300 dark:border-purple-700 bg-transparent text-black dark:text-white text-sm px-3 py-2 focus:border-purple-500 focus:ring-1 focus:ring-purple-500 focus:outline-none placeholder:text-black/40 dark:placeholder:text-white/40">
                                         </div>
                                         <div>
-                                            <label class="block text-xs font-medium text-white mb-1.5">Port</label>
+                                            <label class="block text-xs font-medium text-black dark:text-white mb-1.5">Port</label>
                                             <input type="number" x-model="form.port" placeholder="8006"
-                                                   class="w-full rounded-lg border border-purple-700 bg-transparent text-white text-sm px-3 py-2 focus:border-purple-500 focus:ring-1 focus:ring-purple-500 focus:outline-none placeholder:text-white/40">
+                                                   class="w-full rounded-lg border border-purple-300 dark:border-purple-700 bg-transparent text-black dark:text-white text-sm px-3 py-2 focus:border-purple-500 focus:ring-1 focus:ring-purple-500 focus:outline-none placeholder:text-black/40 dark:placeholder:text-white/40">
                                         </div>
                                     </div>
-                                    <p class="text-xs text-white/50">Paste a Proxmox API token for each capability you want to enable. Create tokens in Proxmox under Datacenter &rarr; Permissions &rarr; API Tokens.</p>
+                                    <p class="text-xs text-black/50 dark:text-white/50">Paste a Proxmox API token for each capability you want to enable. Create tokens in Proxmox under Datacenter &rarr; Permissions &rarr; API Tokens.</p>
                                     <div class="space-y-3">
                                         <div>
-                                            <label class="block text-xs font-medium text-white mb-1">Power Token <span class="text-white/40">(start, stop, reboot)</span></label>
+                                            <label class="block text-xs font-medium text-black dark:text-white mb-1">Power Token <span class="text-black/40 dark:text-white/40">(start, stop, reboot)</span></label>
                                             <div class="flex gap-2">
                                                 <input type="text" x-model="tokens.power" placeholder="user@pam!token-name=secret-value"
-                                                       class="flex-1 rounded-lg border border-purple-700 bg-transparent text-white text-sm px-3 py-2 font-mono focus:border-purple-500 focus:ring-1 focus:ring-purple-500 focus:outline-none placeholder:text-white/30">
+                                                       class="flex-1 rounded-lg border border-purple-300 dark:border-purple-700 bg-transparent text-black dark:text-white text-sm px-3 py-2 font-mono focus:border-purple-500 focus:ring-1 focus:ring-purple-500 focus:outline-none placeholder:text-black/30 dark:placeholder:text-white/30">
                                                 <button type="button" @click="saveToken('power', tokens.power)" class="px-3 py-2 text-xs font-medium text-white bg-purple-600 hover:bg-purple-700 rounded-lg transition-colors">Save</button>
                                             </div>
                                         </div>
                                         <div>
-                                            <label class="block text-xs font-medium text-white mb-1">Create Token <span class="text-white/40">(create/delete VMs)</span></label>
+                                            <label class="block text-xs font-medium text-black dark:text-white mb-1">Create Token <span class="text-black/40 dark:text-white/40">(create/delete VMs)</span></label>
                                             <div class="flex gap-2">
                                                 <input type="text" x-model="tokens.create" placeholder="user@pam!token-name=secret-value"
-                                                       class="flex-1 rounded-lg border border-purple-700 bg-transparent text-white text-sm px-3 py-2 font-mono focus:border-purple-500 focus:ring-1 focus:ring-purple-500 focus:outline-none placeholder:text-white/30">
+                                                       class="flex-1 rounded-lg border border-purple-300 dark:border-purple-700 bg-transparent text-black dark:text-white text-sm px-3 py-2 font-mono focus:border-purple-500 focus:ring-1 focus:ring-purple-500 focus:outline-none placeholder:text-black/30 dark:placeholder:text-white/30">
                                                 <button type="button" @click="saveToken('create', tokens.create)" class="px-3 py-2 text-xs font-medium text-white bg-purple-600 hover:bg-purple-700 rounded-lg transition-colors">Save</button>
                                             </div>
                                         </div>
                                         <div>
-                                            <label class="block text-xs font-medium text-white mb-1">Config Token <span class="text-white/40">(VM configuration)</span></label>
+                                            <label class="block text-xs font-medium text-black dark:text-white mb-1">Config Token <span class="text-black/40 dark:text-white/40">(VM configuration)</span></label>
                                             <div class="flex gap-2">
                                                 <input type="text" x-model="tokens.config" placeholder="user@pam!token-name=secret-value"
-                                                       class="flex-1 rounded-lg border border-purple-700 bg-transparent text-white text-sm px-3 py-2 font-mono focus:border-purple-500 focus:ring-1 focus:ring-purple-500 focus:outline-none placeholder:text-white/30">
+                                                       class="flex-1 rounded-lg border border-purple-300 dark:border-purple-700 bg-transparent text-black dark:text-white text-sm px-3 py-2 font-mono focus:border-purple-500 focus:ring-1 focus:ring-purple-500 focus:outline-none placeholder:text-black/30 dark:placeholder:text-white/30">
                                                 <button type="button" @click="saveToken('config', tokens.config)" class="px-3 py-2 text-xs font-medium text-white bg-purple-600 hover:bg-purple-700 rounded-lg transition-colors">Save</button>
                                             </div>
                                         </div>
                                         <div>
-                                            <label class="block text-xs font-medium text-white mb-1">Sync Token <span class="text-white/40">(audit/monitoring)</span></label>
+                                            <label class="block text-xs font-medium text-black dark:text-white mb-1">Sync Token <span class="text-black/40 dark:text-white/40">(audit/monitoring)</span></label>
                                             <div class="flex gap-2">
                                                 <input type="text" x-model="tokens.sync" placeholder="user@pam!token-name=secret-value"
-                                                       class="flex-1 rounded-lg border border-purple-700 bg-transparent text-white text-sm px-3 py-2 font-mono focus:border-purple-500 focus:ring-1 focus:ring-purple-500 focus:outline-none placeholder:text-white/30">
+                                                       class="flex-1 rounded-lg border border-purple-300 dark:border-purple-700 bg-transparent text-black dark:text-white text-sm px-3 py-2 font-mono focus:border-purple-500 focus:ring-1 focus:ring-purple-500 focus:outline-none placeholder:text-black/30 dark:placeholder:text-white/30">
                                                 <button type="button" @click="saveToken('sync', tokens.sync)" class="px-3 py-2 text-xs font-medium text-white bg-purple-600 hover:bg-purple-700 rounded-lg transition-colors">Save</button>
                                             </div>
                                         </div>
                                     </div>
                                     <div class="flex items-center gap-2">
-                                        <input type="checkbox" x-model="form.skip_tls_verify" id="skip-tls-token" class="rounded border-purple-700 bg-transparent text-purple-600 focus:ring-purple-500">
-                                        <label for="skip-tls-token" class="text-xs text-white/70">Skip TLS verification</label>
+                                        <input type="checkbox" x-model="form.skip_tls_verify" id="skip-tls-token" class="rounded border-purple-300 dark:border-purple-700 bg-transparent text-purple-600 focus:ring-purple-500">
+                                        <label for="skip-tls-token" class="text-xs text-black/70 dark:text-white/70">Skip TLS verification</label>
                                     </div>
                                 </div>
                             </div>
