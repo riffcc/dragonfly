@@ -292,7 +292,10 @@ mod tests {
 
         // Custom filename overrides all
         let config = DhcpConfig::default().with_boot_filename("custom.pxe");
-        assert_eq!(config.boot_file_for_arch(true, Some("x86_64")), "custom.pxe");
+        assert_eq!(
+            config.boot_file_for_arch(true, Some("x86_64")),
+            "custom.pxe"
+        );
         assert_eq!(config.boot_file_for_arch(false, None), "custom.pxe");
     }
 

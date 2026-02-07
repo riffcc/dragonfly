@@ -7,4 +7,4 @@ fn main() {
             println!("cargo:rerun-if-changed={}", entry.path().display());
         }
     }
-} 
+}

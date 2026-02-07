@@ -23,4 +23,4 @@ pub fn unwrap_or<'a>(opt: &'a Option<String>, default: &'a str) -> Result<&'a st
 pub fn format_datetime(dt: &DateTime<Utc>) -> Result<String> {
     Ok(dt.format("%Y-%m-%d %H:%M:%S UTC").to_string())
 }
-*/ 
+*/

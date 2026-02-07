@@ -16,17 +16,17 @@
 //!
 //! Inspired by Tinkerbell (tinkerbell.org) bare metal provisioning system.
 
-pub mod hardware;
-pub mod workflow;
-pub mod template;
-pub mod metadata;
 pub mod error;
+pub mod hardware;
+pub mod metadata;
+pub mod template;
+pub mod workflow;
 
-pub use hardware::*;
-pub use workflow::*;
-pub use template::*;
-pub use metadata::*;
 pub use error::*;
+pub use hardware::*;
+pub use metadata::*;
+pub use template::*;
+pub use workflow::*;
 
 /// API version for all Dragonfly CRDs
 pub const API_VERSION: &str = "dragonfly.computer/v1";

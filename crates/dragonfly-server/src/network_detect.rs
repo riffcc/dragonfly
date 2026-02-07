@@ -2,7 +2,7 @@ use std::process::Command;
 use std::sync::Arc;
 
 use anyhow::Result;
-use tracing::{info, warn, debug};
+use tracing::{debug, info, warn};
 
 use crate::store::v1::Store;
 use dragonfly_common::Network;
@@ -15,12 +15,19 @@ pub async fn init_default_network(store: Arc<dyn Store>) -> Result<()> {
     for net in &networks {
         if net.is_native {
             // Clean up stale auto-generated descriptions from earlier versions
-            if net.description.as_deref().map_or(false, |d| d.starts_with("Management network on ")) {
+            if net
+                .description
+                .as_deref()
+                .map_or(false, |d| d.starts_with("Management network on "))
+            {
                 let mut updated = net.clone();
                 updated.description = None;
                 updated.updated_at = chrono::Utc::now();
                 store.put_network(&updated).await?;
-                info!("Cleared stale description from native network '{}'", net.name);
+                info!(
+                    "Cleared stale description from native network '{}'",
+                    net.name
+                );
             }
             debug!("Native network already exists, skipping auto-detection");
             return Ok(());
@@ -33,7 +40,11 @@ pub async fn init_default_network(store: Arc<dyn Store>) -> Result<()> {
     let gateway = detect_default_gateway();
     let dns_servers = detect_dns_servers();
 
-    let subnet = format!("{}/{}", network_address(&iface_info.address, iface_info.prefix_len), iface_info.prefix_len);
+    let subnet = format!(
+        "{}/{}",
+        network_address(&iface_info.address, iface_info.prefix_len),
+        iface_info.prefix_len
+    );
 
     let mut network = Network::new("Default".to_string(), subnet.clone());
     network.is_native = true;
@@ -76,13 +87,16 @@ fn detect_primary_interface() -> Result<InterfaceInfo> {
     }
 
     let route_json: serde_json::Value = serde_json::from_slice(&route_output.stdout)?;
-    let routes = route_json.as_array()
+    let routes = route_json
+        .as_array()
         .ok_or_else(|| anyhow::anyhow!("No default routes found"))?;
 
-    let first_route = routes.first()
+    let first_route = routes
+        .first()
         .ok_or_else(|| anyhow::anyhow!("Empty default route list"))?;
 
-    let iface = first_route["dev"].as_str()
+    let iface = first_route["dev"]
+        .as_str()
         .ok_or_else(|| anyhow::anyhow!("No 'dev' in default route"))?;
 
     debug!("Primary interface from default route: {}", iface);
@@ -98,20 +112,25 @@ fn detect_primary_interface() -> Result<InterfaceInfo> {
     }
 
     let addr_json: serde_json::Value = serde_json::from_slice(&addr_output.stdout)?;
-    let interfaces = addr_json.as_array()
+    let interfaces = addr_json
+        .as_array()
         .ok_or_else(|| anyhow::anyhow!("No address info for {}", iface))?;
 
-    let first_iface = interfaces.first()
+    let first_iface = interfaces
+        .first()
         .ok_or_else(|| anyhow::anyhow!("Empty address list for {}", iface))?;
 
-    let addr_info = first_iface["addr_info"].as_array()
+    let addr_info = first_iface["addr_info"]
+        .as_array()
         .and_then(|a| a.first())
         .ok_or_else(|| anyhow::anyhow!("No addr_info for {}", iface))?;
 
-    let address = addr_info["local"].as_str()
+    let address = addr_info["local"]
+        .as_str()
         .ok_or_else(|| anyhow::anyhow!("No 'local' address for {}", iface))?;
 
-    let prefix_len = addr_info["prefixlen"].as_u64()
+    let prefix_len = addr_info["prefixlen"]
+        .as_u64()
         .ok_or_else(|| anyhow::anyhow!("No 'prefixlen' for {}", iface))? as u8;
 
     Ok(InterfaceInfo {
@@ -129,10 +148,7 @@ fn detect_default_gateway() -> Option<String> {
         .ok()?;
 
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
-    let gateway = json.as_array()?
-        .first()?
-        ["gateway"].as_str()?
-        .to_string();
+    let gateway = json.as_array()?.first()?["gateway"].as_str()?.to_string();
 
     Some(gateway)
 }
@@ -147,7 +163,8 @@ fn detect_dns_servers() -> Vec<String> {
         }
     };
 
-    content.lines()
+    content
+        .lines()
         .filter_map(|line| {
             let line = line.trim();
             if line.starts_with("nameserver ") {
@@ -162,16 +179,18 @@ fn detect_dns_servers() -> Vec<String> {
 /// Compute the network address from an IP and prefix length.
 /// e.g. "10.7.1.37" with prefix 24 → "10.7.1.0"
 fn network_address(ip: &str, prefix_len: u8) -> String {
-    let octets: Vec<u8> = ip.split('.')
-        .filter_map(|o| o.parse().ok())
-        .collect();
+    let octets: Vec<u8> = ip.split('.').filter_map(|o| o.parse().ok()).collect();
 
     if octets.len() != 4 || prefix_len > 32 {
         return ip.to_string();
     }
 
     let ip_u32 = u32::from_be_bytes([octets[0], octets[1], octets[2], octets[3]]);
-    let mask = if prefix_len == 0 { 0 } else { !0u32 << (32 - prefix_len) };
+    let mask = if prefix_len == 0 {
+        0
+    } else {
+        !0u32 << (32 - prefix_len)
+    };
     let net = ip_u32 & mask;
     let bytes = net.to_be_bytes();
 

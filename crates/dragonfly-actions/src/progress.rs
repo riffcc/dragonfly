@@ -107,11 +107,7 @@ impl Progress {
     pub fn transfer_rate(&self, elapsed: Duration) -> Option<f64> {
         self.bytes_transferred.map(|bytes| {
             let secs = elapsed.as_secs_f64();
-            if secs > 0.0 {
-                bytes as f64 / secs
-            } else {
-                0.0
-            }
+            if secs > 0.0 { bytes as f64 / secs } else { 0.0 }
         })
     }
 }
@@ -197,7 +193,8 @@ mod tests {
 
     #[test]
     fn test_progress_with_bytes() {
-        let p = Progress::new("image", 0, "Downloading").with_bytes(512 * 1024 * 1024, 1024 * 1024 * 1024);
+        let p = Progress::new("image", 0, "Downloading")
+            .with_bytes(512 * 1024 * 1024, 1024 * 1024 * 1024);
         assert_eq!(p.bytes_transferred, Some(512 * 1024 * 1024));
         assert_eq!(p.bytes_total, Some(1024 * 1024 * 1024));
         assert_eq!(p.percentage, 50);
@@ -205,8 +202,7 @@ mod tests {
 
     #[test]
     fn test_progress_with_phase() {
-        let p = Progress::new("image", 25, "Phase 1")
-            .with_phase("Downloading", 1, 4);
+        let p = Progress::new("image", 25, "Phase 1").with_phase("Downloading", 1, 4);
         assert_eq!(p.phase, Some("Downloading".to_string()));
         assert_eq!(p.phase_number, Some(1));
         assert_eq!(p.total_phases, Some(4));

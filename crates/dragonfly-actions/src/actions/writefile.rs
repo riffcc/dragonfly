@@ -55,7 +55,16 @@ impl Action for WriteFileAction {
     }
 
     fn optional_env_vars(&self) -> Vec<&str> {
-        vec!["CONTENTS", "CONTENTS_B64", "MODE", "UID", "GID", "CREATE_DIRS", "DEST_DISK", "FS_TYPE"]
+        vec![
+            "CONTENTS",
+            "CONTENTS_B64",
+            "MODE",
+            "UID",
+            "GID",
+            "CREATE_DIRS",
+            "DEST_DISK",
+            "FS_TYPE",
+        ]
     }
 
     fn validate(&self, ctx: &ActionContext) -> Result<()> {
@@ -201,7 +210,11 @@ impl Action for WriteFileAction {
         ));
 
         fs::write(&actual_path, &content).await.map_err(|e| {
-            ActionError::ExecutionFailed(format!("Failed to write file {}: {}", actual_path.display(), e))
+            ActionError::ExecutionFailed(format!(
+                "Failed to write file {}: {}",
+                actual_path.display(),
+                e
+            ))
         })?;
 
         // Set permissions if specified
@@ -214,22 +227,25 @@ impl Action for WriteFileAction {
             ));
 
             let permissions = std::fs::Permissions::from_mode(mode);
-            fs::set_permissions(&actual_path, permissions).await.map_err(|e| {
-                ActionError::ExecutionFailed(format!(
-                    "Failed to set permissions on {}: {}",
-                    actual_path.display(), e
-                ))
-            })?;
+            fs::set_permissions(&actual_path, permissions)
+                .await
+                .map_err(|e| {
+                    ActionError::ExecutionFailed(format!(
+                        "Failed to set permissions on {}: {}",
+                        actual_path.display(),
+                        e
+                    ))
+                })?;
         }
 
         // Set ownership if specified
         if let (Some(uid_str), Some(gid_str)) = (ctx.env("UID"), ctx.env("GID")) {
-            let uid: u32 = uid_str.parse().map_err(|_| {
-                ActionError::ValidationFailed(format!("Invalid UID: {}", uid_str))
-            })?;
-            let gid: u32 = gid_str.parse().map_err(|_| {
-                ActionError::ValidationFailed(format!("Invalid GID: {}", gid_str))
-            })?;
+            let uid: u32 = uid_str
+                .parse()
+                .map_err(|_| ActionError::ValidationFailed(format!("Invalid UID: {}", uid_str)))?;
+            let gid: u32 = gid_str
+                .parse()
+                .map_err(|_| ActionError::ValidationFailed(format!("Invalid GID: {}", gid_str)))?;
 
             reporter.report(Progress::new(
                 self.name(),
@@ -240,7 +256,8 @@ impl Action for WriteFileAction {
             std::os::unix::fs::chown(&actual_path, Some(uid), Some(gid)).map_err(|e| {
                 ActionError::ExecutionFailed(format!(
                     "Failed to set ownership on {}: {}",
-                    actual_path.display(), e
+                    actual_path.display(),
+                    e
                 ))
             })?;
         }
@@ -323,7 +340,10 @@ async fn do_mount(disk: &str) -> Result<()> {
     // Create mount point if it doesn't exist
     if !Path::new(MOUNT_POINT).exists() {
         fs::create_dir_all(MOUNT_POINT).await.map_err(|e| {
-            ActionError::ExecutionFailed(format!("Failed to create mount point {}: {}", MOUNT_POINT, e))
+            ActionError::ExecutionFailed(format!(
+                "Failed to create mount point {}: {}",
+                MOUNT_POINT, e
+            ))
         })?;
     }
 

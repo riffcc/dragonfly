@@ -163,9 +163,7 @@ async fn handle_request(
             filename,
             mode: _,
             options,
-        } => {
-            handle_read_request(client, &filename, options, file_provider, event_sender).await
-        }
+        } => handle_read_request(client, &filename, options, file_provider, event_sender).await,
         TftpPacket::WriteRequest { .. } => {
             // We don't accept writes
             send_error(client, ErrorCode::AccessViolation, "Write not supported").await

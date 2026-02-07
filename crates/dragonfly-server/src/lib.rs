@@ -1,30 +1,30 @@
-use axum::{routing::{get}, extract::Extension, Router, response::{IntoResponse}, http::StatusCode};
-use axum_login::{AuthManagerLayerBuilder};
-use tower_sessions::{SessionManagerLayer};
-use tower_sessions_sqlx_store::SqliteStore;
-use std::sync::{Arc};
-use tokio::sync::Mutex;
-use tower_http::trace::{TraceLayer, DefaultOnRequest, DefaultOnResponse};
-use tracing::{info, error, warn, debug, Level, Span};
+use anyhow::{Context, anyhow};
+use axum::extract::MatchedPath;
+use axum::{Router, extract::Extension, http::StatusCode, response::IntoResponse, routing::get};
+use axum_login::AuthManagerLayerBuilder;
+use listenfd::ListenFd;
 use std::net::SocketAddr;
+use std::sync::Arc;
+use tokio::signal::unix::{SignalKind, signal};
+use tokio::sync::Mutex;
+use tokio::sync::watch;
 use tower_cookies::CookieManagerLayer;
 use tower_http::services::ServeDir;
-use tokio::signal::unix::{signal, SignalKind};
-use tokio::sync::watch;
-use anyhow::{Context, anyhow};
-use listenfd::ListenFd;
-use axum::extract::MatchedPath;
+use tower_http::trace::{DefaultOnRequest, DefaultOnResponse, TraceLayer};
+use tower_sessions::SessionManagerLayer;
+use tower_sessions_sqlx_store::SqliteStore;
+use tracing::{Level, Span, debug, error, info, warn};
 
-use crate::auth::{AdminBackend, auth_router, Settings};
+use crate::auth::{AdminBackend, Settings, auth_router};
 // Legacy db module removed — all storage via Store trait
 use crate::event_manager::EventManager;
-use crate::services::{ServiceRunner, ServicesConfig, DhcpServiceConfig, TftpServiceConfig};
+use crate::services::{DhcpServiceConfig, ServiceRunner, ServicesConfig, TftpServiceConfig};
 use dragonfly_dhcp::DhcpMode;
 use std::path::PathBuf;
 
 // Add MiniJinja imports
+use minijinja::Environment;
 use minijinja::path_loader;
-use minijinja::{Environment};
 use minijinja_autoreload::AutoReloader;
 
 // Add Serialize for the enum
@@ -33,24 +33,24 @@ use serde::Serialize;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 // Add back necessary tracing_subscriber imports
-use tracing_subscriber::{fmt, layer::SubscriberExt, EnvFilter};
+use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt};
 
 // Ensure prelude is still imported if needed elsewhere
 // use tracing_subscriber::prelude::*;
 
-mod auth;
 mod api;
+mod auth;
+pub mod event_manager;
 mod filters; // Uncomment unused module
 pub mod handlers;
-pub mod ui;
-pub mod event_manager;
-pub mod os_templates;
+pub mod image_cache;
 pub mod mode;
-pub mod store;
+pub mod network_detect;
+pub mod os_templates;
 pub mod provisioning;
 pub mod services;
-pub mod image_cache;
-pub mod network_detect;
+pub mod store;
+pub mod ui;
 
 // Expose status module for integration tests
 pub mod status;
@@ -59,16 +59,14 @@ pub mod status;
 use tokio::fs as async_fs;
 
 // Global static for accessing event manager from other modules
-use std::sync::RwLock;
 use once_cell::sync::Lazy;
-pub static EVENT_MANAGER_REF: Lazy<RwLock<Option<std::sync::Arc<EventManager>>>> = Lazy::new(|| {
-    RwLock::new(None)
-});
+use std::sync::RwLock;
+pub static EVENT_MANAGER_REF: Lazy<RwLock<Option<std::sync::Arc<EventManager>>>> =
+    Lazy::new(|| RwLock::new(None));
 
 // Global static for installation state (used ONLY during install process itself)
-pub static INSTALL_STATE_REF: Lazy<RwLock<Option<Arc<Mutex<InstallationState>>>>> = Lazy::new(|| {
-    RwLock::new(None)
-});
+pub static INSTALL_STATE_REF: Lazy<RwLock<Option<Arc<Mutex<InstallationState>>>>> =
+    Lazy::new(|| RwLock::new(None));
 
 const CONFIG_PATH: &str = "/var/lib/dragonfly/config.toml";
 
@@ -123,10 +121,13 @@ pub async fn is_dragonfly_installed() -> bool {
         Err(e) => {
             // Log specific error only if it's NOT NotFound
             if e.kind() != std::io::ErrorKind::NotFound {
-                warn!("Installation check: Error checking directory {}: {}", dir_path, e);
+                warn!(
+                    "Installation check: Error checking directory {}: {}",
+                    dir_path, e
+                );
             }
             false
-        },
+        }
     };
 
     if dir_exists {
@@ -136,24 +137,30 @@ pub async fn is_dragonfly_installed() -> bool {
     }
 
     // 3. Check if we can connect to Kubernetes with KUBECONFIG and find Tinkerbell
-    debug!("Installation check: Local directory not found, checking for remote Kubernetes with Tinkerbell...");
+    debug!(
+        "Installation check: Local directory not found, checking for remote Kubernetes with Tinkerbell..."
+    );
     if let Ok(client) = kube::Client::try_default().await {
         // Check if tink-system namespace exists (indicates Tinkerbell is deployed)
-        use kube::api::Api;
         use k8s_openapi::api::core::v1::Namespace;
+        use kube::api::Api;
 
         let namespaces: Api<Namespace> = Api::all(client);
         if let Ok(_) = namespaces.get("tink-system").await {
             debug!("Detected Kubernetes with Tinkerbell");
             return true;
         } else {
-            debug!("Installation check: Connected to Kubernetes but tink-system namespace not found.");
+            debug!(
+                "Installation check: Connected to Kubernetes but tink-system namespace not found."
+            );
         }
     } else {
         debug!("Installation check: Could not connect to Kubernetes cluster.");
     }
 
-    debug!("Installation check: Not installed (no local directory, no remote Kubernetes with Tinkerbell).");
+    debug!(
+        "Installation check: Not installed (no local directory, no remote Kubernetes with Tinkerbell)."
+    );
     false
 }
 
@@ -182,9 +189,13 @@ impl InstallationState {
     pub fn get_message(&self) -> &str {
         match self {
             // Phase 1
-            InstallationState::WaitingSudo => "Dragonfly is ready to install. Enter your password in your install window — let's do this.",
+            InstallationState::WaitingSudo => {
+                "Dragonfly is ready to install. Enter your password in your install window — let's do this."
+            }
             // Phase (Implied, added previously)
-            InstallationState::DetectingNetwork => "Dragonfly is detecting network configuration...",
+            InstallationState::DetectingNetwork => {
+                "Dragonfly is detecting network configuration..."
+            }
             // Phase 2
             InstallationState::InstallingK3s => "Dragonfly is installing k3s.",
             // Phase 3
@@ -196,7 +207,9 @@ impl InstallationState {
             // Phase 6
             InstallationState::Ready => "Dragonfly is ready.",
             // Error
-            InstallationState::Failed(_) => "Installation failed. Check installer logs for details.",
+            InstallationState::Failed(_) => {
+                "Installation failed. Check installer logs for details."
+            }
         }
     }
     pub fn get_animation_class(&self) -> &str {
@@ -226,10 +239,10 @@ impl InstallationState {
 pub struct AppState {
     pub settings: Arc<Mutex<Settings>>,
     pub event_manager: Arc<EventManager>,
-    pub setup_mode: bool,  // Explicit CLI setup mode
-    pub first_run: bool,   // First run based on settings
-    pub shutdown_tx: watch::Sender<()>,  // Channel to signal shutdown
-    pub shutdown_rx: watch::Receiver<()>,  // Receiver for shutdown (clonable for services)
+    pub setup_mode: bool,                 // Explicit CLI setup mode
+    pub first_run: bool,                  // First run based on settings
+    pub shutdown_tx: watch::Sender<()>,   // Channel to signal shutdown
+    pub shutdown_rx: watch::Receiver<()>, // Receiver for shutdown (clonable for services)
     // Use the new enum for the environment
     pub template_env: TemplateEnv,
     // Add flags for Scenario B
@@ -254,7 +267,10 @@ pub struct AppState {
 /// This can be called at startup or dynamically when Flight mode is activated
 pub async fn start_network_services(app_state: &AppState, shutdown_rx: watch::Receiver<()>) {
     // Check if services are already running
-    if app_state.network_services_started.swap(true, Ordering::SeqCst) {
+    if app_state
+        .network_services_started
+        .swap(true, Ordering::SeqCst)
+    {
         return;
     }
 
@@ -270,7 +286,7 @@ pub async fn start_network_services(app_state: &AppState, shutdown_rx: watch::Re
             boot_dir: PathBuf::from("/var/lib/dragonfly/tftp"),
         }),
         server_ip: std::net::Ipv4Addr::new(0, 0, 0, 0), // Bind to all interfaces
-        http_port: read_port_from_config(), // Use same port as HTTP server
+        http_port: read_port_from_config(),             // Use same port as HTTP server
     };
 
     // Create service runner with native store for hardware lookup
@@ -306,16 +322,15 @@ pub async fn start_network_services(app_state: &AppState, shutdown_rx: watch::Re
 }
 
 pub async fn run() -> anyhow::Result<()> {
-    // --- Initialize Logging FIRST --- 
+    // --- Initialize Logging FIRST ---
     // Use EnvFilter to respect RUST_LOG, defaulting to INFO if not set.
-    let env_filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("info"));
+    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
 
     // Build the subscriber
     tracing_subscriber::registry()
         .with(env_filter)
         .with(fmt::layer());
-    // --- Logging Initialized --- 
+    // --- Logging Initialized ---
 
     // Determine modes SECOND (after logging is set up)
     let is_installation_server = std::env::var("DRAGONFLY_INSTALL_SERVER_MODE").is_ok();
@@ -330,34 +345,41 @@ pub async fn run() -> anyhow::Result<()> {
     let is_demo_mode = is_explicit_demo_mode || (!is_installed && !is_installation_server);
 
     // --- Populate Install State IMMEDIATELY if needed ---
-    if is_installation_server { 
+    if is_installation_server {
         let state = Arc::new(Mutex::new(InstallationState::WaitingSudo));
-        match INSTALL_STATE_REF.write() { 
-            Ok(mut global_ref) => { *global_ref = Some(state.clone()); },
-            Err(e) => { eprintln!("CRITICAL: Failed ... INSTALL_STATE_REF ...: {}", e); }
+        match INSTALL_STATE_REF.write() {
+            Ok(mut global_ref) => {
+                *global_ref = Some(state.clone());
+            }
+            Err(e) => {
+                eprintln!("CRITICAL: Failed ... INSTALL_STATE_REF ...: {}", e);
+            }
         }
     }
-    
-    // --- Create and Store Event Manager EARLY --- 
+
+    // --- Create and Store Event Manager EARLY ---
     // Create event manager (needed even if installing for SSE updates)
     let event_manager = Arc::new(EventManager::new());
     // Store the event manager in the global static ASAP
-    match EVENT_MANAGER_REF.write() { 
-        Ok(mut global_ref) => { 
+    match EVENT_MANAGER_REF.write() {
+        Ok(mut global_ref) => {
             *global_ref = Some(event_manager.clone());
             // eprintln!("[DEBUG lib.rs] EVENT_MANAGER_REF populated.");
-        }, 
-        Err(e) => { 
+        }
+        Err(e) => {
             // Use eprintln! as tracing might not be set up
-            eprintln!("CRITICAL: Failed to acquire write lock for EVENT_MANAGER_REF: {}. SSE events may not send.", e);
+            eprintln!(
+                "CRITICAL: Failed to acquire write lock for EVENT_MANAGER_REF: {}. SSE events may not send.",
+                e
+            );
         }
     }
     // -------------------------------------------
 
-    // --- COMPLETELY REMOVED LOGGING INITIALIZATION FROM LIB.RS --- 
+    // --- COMPLETELY REMOVED LOGGING INITIALIZATION FROM LIB.RS ---
     // Calls like info!() etc. will use whatever global dispatcher exists (or none).
 
-    // --- Start Server Setup --- 
+    // --- Start Server Setup ---
     // Conditional info!() calls remain appropriate for specific verbose messages
     // during install, but general logging now respects RUST_LOG.
 
@@ -365,7 +387,8 @@ pub async fn run() -> anyhow::Result<()> {
 
     // Initialize unified SQLite storage
     const SQLITE_PATH: &str = "/var/lib/dragonfly/dragonfly.sqlite3";
-    let sqlite_store = store::v1::SqliteStore::open(SQLITE_PATH).await
+    let sqlite_store = store::v1::SqliteStore::open(SQLITE_PATH)
+        .await
         .map_err(|e| anyhow!("Failed to open SQLite store: {}", e))?;
     let db_pool = sqlite_store.pool().clone();
     let store: Arc<dyn store::v1::Store> = Arc::new(sqlite_store);
@@ -440,7 +463,10 @@ pub async fn run() -> anyhow::Result<()> {
                         Err(e) => warn!("Failed to read agent binary response: {}", e),
                     }
                 }
-                Ok(response) => warn!("Failed to download agent binary: HTTP {}", response.status()),
+                Ok(response) => warn!(
+                    "Failed to download agent binary: HTTP {}",
+                    response.status()
+                ),
                 Err(e) => warn!("Failed to download agent binary: {}", e),
             }
         }
@@ -470,7 +496,9 @@ pub async fn run() -> anyhow::Result<()> {
         }
         _ => {
             let s = auth::Settings::default();
-            let _ = store.put_setting("require_login", &s.require_login.to_string()).await;
+            let _ = store
+                .put_setting("require_login", &s.require_login.to_string())
+                .await;
             s
         }
     };
@@ -483,14 +511,15 @@ pub async fn run() -> anyhow::Result<()> {
     // Determine first run status
     let first_run = !settings.setup_completed || setup_mode; // Essential
 
-    // --- MiniJinja Setup --- 
+    // --- MiniJinja Setup ---
     let preferred_template_path = "/opt/dragonfly/templates";
     let fallback_template_path = "crates/dragonfly-server/templates";
     let template_path = if std::path::Path::new(preferred_template_path).exists() {
         preferred_template_path
     } else {
         fallback_template_path
-    }.to_string();
+    }
+    .to_string();
 
     let template_env = {
         #[cfg(debug_assertions)]
@@ -563,11 +592,8 @@ pub async fn run() -> anyhow::Result<()> {
         // Always use Flight mode
         let provisioning_mode = mode::DeploymentMode::Flight;
 
-        let service = provisioning::ProvisioningService::new(
-            store.clone(),
-            ipxe_config,
-            provisioning_mode,
-        );
+        let service =
+            provisioning::ProvisioningService::new(store.clone(), ipxe_config, provisioning_mode);
 
         Some(Arc::new(service))
     } else {
@@ -582,7 +608,10 @@ pub async fn run() -> anyhow::Result<()> {
     // JIT conversion of QCOW2 images (Ubuntu cloud images) to raw format
     let image_cache_dir = PathBuf::from("/var/lib/dragonfly/image-cache");
     let image_cache_url = mode::get_base_url(Some(store.as_ref())).await;
-    let image_cache = Arc::new(image_cache::ImageCache::new(image_cache_dir, image_cache_url));
+    let image_cache = Arc::new(image_cache::ImageCache::new(
+        image_cache_dir,
+        image_cache_url,
+    ));
     if let Err(e) = image_cache.init().await {
         warn!("Failed to initialize image cache: {}", e);
     }
@@ -591,7 +620,7 @@ pub async fn run() -> anyhow::Result<()> {
     // Create application state
     let app_state = AppState {
         settings: Arc::new(Mutex::new(settings.clone())), // Clone settings here
-        event_manager: event_manager.clone(), // Use the one created earlier
+        event_manager: event_manager.clone(),             // Use the one created earlier
         setup_mode,
         first_run,
         shutdown_tx: shutdown_tx.clone(),
@@ -621,7 +650,11 @@ pub async fn run() -> anyhow::Result<()> {
     }
 
     // Start the Proxmox sync task
-    handlers::proxmox::start_proxmox_sync_task(std::sync::Arc::new(app_state.clone()), shutdown_rx.clone()).await;
+    handlers::proxmox::start_proxmox_sync_task(
+        std::sync::Arc::new(app_state.clone()),
+        shutdown_rx.clone(),
+    )
+    .await;
 
     // Session store setup
     let session_store = SqliteStore::new(db_pool.clone()); // Create store from the pool
@@ -631,17 +664,16 @@ pub async fn run() -> anyhow::Result<()> {
     let session_layer = SessionManagerLayer::new(session_store)
         .with_secure(false)
         .with_same_site(tower_sessions::cookie::SameSite::Lax)
-        .with_http_only(false);  // Allow JavaScript access to cookies
+        .with_http_only(false); // Allow JavaScript access to cookies
 
     // Auth backend setup
     // Pass the store for authentication
     let backend = AdminBackend::new(app_state.store.clone());
-    
-    // Build the auth layer
-    let auth_layer = AuthManagerLayerBuilder::new(backend, session_layer)
-        .build();
 
-    // --- Build Router --- 
+    // Build the auth layer
+    let auth_layer = AuthManagerLayerBuilder::new(backend, session_layer).build();
+
+    // --- Build Router ---
     let app = Router::new()
         .merge(auth_router())
         .merge(ui::ui_router())
@@ -690,7 +722,7 @@ pub async fn run() -> anyhow::Result<()> {
                         .get::<MatchedPath>()
                         .map(MatchedPath::as_str)
                         .unwrap_or(request.uri().path());
-                    
+
                     tracing::debug_span!(
                         "http-request",
                         method = %request.method(),
@@ -725,10 +757,13 @@ pub async fn run() -> anyhow::Result<()> {
     let mut listenfd = ListenFd::from_env();
     let socket_activation = std::env::var("LISTEN_FDS").is_ok();
 
-    let listener = match listenfd.take_tcp_listener(0).context("Failed to take TCP listener from env") {
+    let listener = match listenfd
+        .take_tcp_listener(0)
+        .context("Failed to take TCP listener from env")
+    {
         Ok(Some(listener)) => {
             tokio::net::TcpListener::from_std(listener).context("Failed to convert TCP listener")?
-        },
+        }
         Ok(None) | Err(_) => {
             let mut port = default_port;
             loop {
@@ -743,7 +778,10 @@ pub async fn run() -> anyhow::Result<()> {
                             }
                             suggested += 1;
                         }
-                        eprintln!("Port {} in use. Enter port (or Enter for {}): ", port, suggested);
+                        eprintln!(
+                            "Port {} in use. Enter port (or Enter for {}): ",
+                            port, suggested
+                        );
                         let mut input = String::new();
                         if std::io::stdin().read_line(&mut input).is_ok() {
                             let input = input.trim();
@@ -756,7 +794,9 @@ pub async fn run() -> anyhow::Result<()> {
                             return Err(anyhow::anyhow!("Port {} is already in use", port));
                         }
                     }
-                    Err(e) => return Err(anyhow::anyhow!("Failed to bind to port {}: {}", port, e)),
+                    Err(e) => {
+                        return Err(anyhow::anyhow!("Failed to bind to port {}: {}", port, e));
+                    }
                 }
             }
         }
@@ -764,7 +804,12 @@ pub async fn run() -> anyhow::Result<()> {
 
     // Main startup message
     if !is_installation_server {
-        println!("🐉 Dragonfly listening on http://{}", listener.local_addr().context("Failed to get local address")?);
+        println!(
+            "🐉 Dragonfly listening on http://{}",
+            listener
+                .local_addr()
+                .context("Failed to get local address")?
+        );
     }
 
     // Shutdown signal handling
@@ -799,10 +844,13 @@ pub async fn run() -> anyhow::Result<()> {
         });
     };
 
-    axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
-        .with_graceful_shutdown(shutdown_signal)
-        .await
-        .context("Server error")?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal)
+    .await
+    .context("Server error")?;
 
     Ok(())
 }
@@ -814,8 +862,13 @@ async fn handle_favicon() -> impl IntoResponse {
     let path = "/opt/dragonfly/static/favicon/favicon.ico";
 
     match tokio::fs::read(path).await {
-        Ok(contents) => (StatusCode::OK, [(axum::http::header::CONTENT_TYPE, "image/x-icon")], contents).into_response(),
-        Err(_) => (StatusCode::NOT_FOUND, "Favicon not found").into_response()
+        Ok(contents) => (
+            StatusCode::OK,
+            [(axum::http::header::CONTENT_TYPE, "image/x-icon")],
+            contents,
+        )
+            .into_response(),
+        Err(_) => (StatusCode::NOT_FOUND, "Favicon not found").into_response(),
     }
 }
 

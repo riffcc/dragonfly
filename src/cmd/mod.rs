@@ -5,4 +5,4 @@ pub mod network;
 pub mod install;
 
 // Dev command
-pub mod dev; 
+pub mod dev;

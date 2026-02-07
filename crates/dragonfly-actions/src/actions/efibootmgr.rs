@@ -12,7 +12,7 @@ use crate::traits::Action;
 use async_trait::async_trait;
 use std::path::Path;
 use tokio::process::Command;
-use tracing::{info, warn, debug};
+use tracing::{debug, info, warn};
 
 /// Native EFI boot order configuration action
 ///
@@ -52,7 +52,8 @@ impl Action for EfibootmgrAction {
         let reporter = ctx.progress_reporter();
 
         // Check if we should set PXE first (default: true)
-        let set_pxe_first = ctx.env("SET_PXE_FIRST")
+        let set_pxe_first = ctx
+            .env("SET_PXE_FIRST")
             .map(|v| v.to_lowercase() != "false")
             .unwrap_or(true);
 
@@ -89,17 +90,16 @@ impl Action for EfibootmgrAction {
         ));
 
         // Get current boot entries
-        let output = Command::new("efibootmgr")
-            .output()
-            .await
-            .map_err(|e| ActionError::ExecutionFailed(
-                format!("Failed to run efibootmgr: {}", e),
-            ))?;
+        let output = Command::new("efibootmgr").output().await.map_err(|e| {
+            ActionError::ExecutionFailed(format!("Failed to run efibootmgr: {}", e))
+        })?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             warn!("efibootmgr failed: {}", stderr);
-            return Ok(ActionResult::success("Skipped - efibootmgr not available or failed"));
+            return Ok(ActionResult::success(
+                "Skipped - efibootmgr not available or failed",
+            ));
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -114,7 +114,15 @@ impl Action for EfibootmgrAction {
         // Parse boot entries to find PXE option
         // Common PXE entry labels: "Network", "PXE", "IPv4", "UEFI PXE", "EFI Network"
         let custom_label = ctx.env("PXE_BOOT_LABEL");
-        let default_labels = vec!["PXE", "Network", "IPv4", "EFI Network", "UEFI PXE", "Ethernet", "LAN"];
+        let default_labels = vec![
+            "PXE",
+            "Network",
+            "IPv4",
+            "EFI Network",
+            "UEFI PXE",
+            "Ethernet",
+            "LAN",
+        ];
         let pxe_labels: Vec<&str> = match &custom_label {
             Some(label) => vec![label],
             None => default_labels,
@@ -201,15 +209,16 @@ impl Action for EfibootmgrAction {
             .arg(&order_string)
             .output()
             .await
-            .map_err(|e| ActionError::ExecutionFailed(
-                format!("Failed to set boot order: {}", e),
-            ))?;
+            .map_err(|e| {
+                ActionError::ExecutionFailed(format!("Failed to set boot order: {}", e))
+            })?;
 
         if !set_output.status.success() {
             let stderr = String::from_utf8_lossy(&set_output.stderr);
-            return Err(ActionError::ExecutionFailed(
-                format!("efibootmgr -o failed: {}", stderr),
-            ));
+            return Err(ActionError::ExecutionFailed(format!(
+                "efibootmgr -o failed: {}",
+                stderr
+            )));
         }
 
         reporter.report(Progress::new(

@@ -79,29 +79,36 @@ impl SeabiosAction {
             .read(true)
             .write(true)
             .open("/dev/port")
-            .map_err(|e| ActionError::ExecutionFailed(
-                format!("Failed to open /dev/port: {}. Need root privileges.", e)
-            ))?;
+            .map_err(|e| {
+                ActionError::ExecutionFailed(format!(
+                    "Failed to open /dev/port: {}. Need root privileges.",
+                    e
+                ))
+            })?;
 
         // NMI disable + address selection (port 0x70)
         // Set bit 7 to disable NMI during CMOS access
         let addr_with_nmi = 0x80 | (address as u8 & 0x7F);
 
-        port.seek(SeekFrom::Start(0x70))
-            .map_err(|e| ActionError::ExecutionFailed(format!("Failed to seek to port 0x70: {}", e)))?;
-        port.write_all(&[addr_with_nmi])
-            .map_err(|e| ActionError::ExecutionFailed(format!("Failed to write CMOS address: {}", e)))?;
+        port.seek(SeekFrom::Start(0x70)).map_err(|e| {
+            ActionError::ExecutionFailed(format!("Failed to seek to port 0x70: {}", e))
+        })?;
+        port.write_all(&[addr_with_nmi]).map_err(|e| {
+            ActionError::ExecutionFailed(format!("Failed to write CMOS address: {}", e))
+        })?;
 
         // Small delay for CMOS to respond (not strictly necessary but safe)
         std::thread::sleep(std::time::Duration::from_micros(10));
 
         // Read data from port 0x71
-        port.seek(SeekFrom::Start(0x71))
-            .map_err(|e| ActionError::ExecutionFailed(format!("Failed to seek to port 0x71: {}", e)))?;
+        port.seek(SeekFrom::Start(0x71)).map_err(|e| {
+            ActionError::ExecutionFailed(format!("Failed to seek to port 0x71: {}", e))
+        })?;
 
         let mut buf = [0u8; 1];
-        port.read_exact(&mut buf)
-            .map_err(|e| ActionError::ExecutionFailed(format!("Failed to read CMOS data: {}", e)))?;
+        port.read_exact(&mut buf).map_err(|e| {
+            ActionError::ExecutionFailed(format!("Failed to read CMOS data: {}", e))
+        })?;
 
         Ok(buf[0])
     }
@@ -112,26 +119,33 @@ impl SeabiosAction {
             .read(true)
             .write(true)
             .open("/dev/port")
-            .map_err(|e| ActionError::ExecutionFailed(
-                format!("Failed to open /dev/port: {}. Need root privileges.", e)
-            ))?;
+            .map_err(|e| {
+                ActionError::ExecutionFailed(format!(
+                    "Failed to open /dev/port: {}. Need root privileges.",
+                    e
+                ))
+            })?;
 
         // NMI disable + address selection (port 0x70)
         let addr_with_nmi = 0x80 | (address as u8 & 0x7F);
 
-        port.seek(SeekFrom::Start(0x70))
-            .map_err(|e| ActionError::ExecutionFailed(format!("Failed to seek to port 0x70: {}", e)))?;
-        port.write_all(&[addr_with_nmi])
-            .map_err(|e| ActionError::ExecutionFailed(format!("Failed to write CMOS address: {}", e)))?;
+        port.seek(SeekFrom::Start(0x70)).map_err(|e| {
+            ActionError::ExecutionFailed(format!("Failed to seek to port 0x70: {}", e))
+        })?;
+        port.write_all(&[addr_with_nmi]).map_err(|e| {
+            ActionError::ExecutionFailed(format!("Failed to write CMOS address: {}", e))
+        })?;
 
         // Small delay
         std::thread::sleep(std::time::Duration::from_micros(10));
 
         // Write data to port 0x71
-        port.seek(SeekFrom::Start(0x71))
-            .map_err(|e| ActionError::ExecutionFailed(format!("Failed to seek to port 0x71: {}", e)))?;
-        port.write_all(&[value])
-            .map_err(|e| ActionError::ExecutionFailed(format!("Failed to write CMOS data: {}", e)))?;
+        port.seek(SeekFrom::Start(0x71)).map_err(|e| {
+            ActionError::ExecutionFailed(format!("Failed to seek to port 0x71: {}", e))
+        })?;
+        port.write_all(&[value]).map_err(|e| {
+            ActionError::ExecutionFailed(format!("Failed to write CMOS data: {}", e))
+        })?;
 
         Ok(())
     }
@@ -140,14 +154,12 @@ impl SeabiosAction {
     fn parse_boot_order(order: &str) -> Vec<u8> {
         order
             .split(',')
-            .filter_map(|s| {
-                match s.trim().to_lowercase().as_str() {
-                    "bev" | "pxe" | "network" | "net" => Some(BOOT_BEV),
-                    "hdd" | "disk" | "hard" => Some(BOOT_HDD),
-                    "cdrom" | "cd" | "dvd" => Some(BOOT_CDROM),
-                    "floppy" | "fd" => Some(BOOT_FLOPPY),
-                    _ => None,
-                }
+            .filter_map(|s| match s.trim().to_lowercase().as_str() {
+                "bev" | "pxe" | "network" | "net" => Some(BOOT_BEV),
+                "hdd" | "disk" | "hard" => Some(BOOT_HDD),
+                "cdrom" | "cd" | "dvd" => Some(BOOT_CDROM),
+                "floppy" | "fd" => Some(BOOT_FLOPPY),
+                _ => None,
             })
             .collect()
     }
@@ -205,7 +217,8 @@ impl Action for SeabiosAction {
         let reporter = ctx.progress_reporter();
 
         // Check if we should set PXE first (default: true)
-        let set_pxe_first = ctx.env("SET_PXE_FIRST")
+        let set_pxe_first = ctx
+            .env("SET_PXE_FIRST")
             .map(|v| v.to_lowercase() != "false")
             .unwrap_or(true);
 
@@ -232,7 +245,9 @@ impl Action for SeabiosAction {
                 100,
                 "UEFI system - use efibootmgr instead".to_string(),
             ));
-            return Ok(ActionResult::success("Skipped - UEFI system (use efibootmgr)"));
+            return Ok(ActionResult::success(
+                "Skipped - UEFI system (use efibootmgr)",
+            ));
         }
 
         // Check if this is a SeaBIOS/QEMU system
@@ -266,7 +281,10 @@ impl Action for SeabiosAction {
         // Read current values
         let current_flag1 = Self::cmos_read(CMOS_BIOS_BOOTFLAG1)?;
         let current_flag2 = Self::cmos_read(CMOS_BIOS_BOOTFLAG2)?;
-        debug!("Current CMOS boot flags: flag1=0x{:02x}, flag2=0x{:02x}", current_flag1, current_flag2);
+        debug!(
+            "Current CMOS boot flags: flag1=0x{:02x}, flag2=0x{:02x}",
+            current_flag1, current_flag2
+        );
 
         reporter.report(Progress::new(
             self.name(),
@@ -275,7 +293,8 @@ impl Action for SeabiosAction {
         ));
 
         // Parse boot order from env or use default (PXE first)
-        let boot_order = ctx.env("BOOT_ORDER")
+        let boot_order = ctx
+            .env("BOOT_ORDER")
             .map(|s| Self::parse_boot_order(&s))
             .unwrap_or_else(|| vec![BOOT_BEV, BOOT_HDD, BOOT_CDROM, BOOT_FLOPPY]);
 
@@ -296,7 +315,10 @@ impl Action for SeabiosAction {
         reporter.report(Progress::new(
             self.name(),
             70,
-            format!("Setting CMOS boot flags: flag1=0x{:02x}, flag2=0x{:02x}", new_flag1, new_flag2),
+            format!(
+                "Setting CMOS boot flags: flag1=0x{:02x}, flag2=0x{:02x}",
+                new_flag1, new_flag2
+            ),
         ));
 
         // Preserve lower nibble of flag1 (floppy signature check setting)
@@ -324,13 +346,16 @@ impl Action for SeabiosAction {
             "PXE set as first boot option".to_string(),
         ));
 
-        let order_names: Vec<&str> = boot_order.iter().map(|&n| match n {
-            BOOT_BEV => "PXE",
-            BOOT_HDD => "HDD",
-            BOOT_CDROM => "CDROM",
-            BOOT_FLOPPY => "Floppy",
-            _ => "Unknown",
-        }).collect();
+        let order_names: Vec<&str> = boot_order
+            .iter()
+            .map(|&n| match n {
+                BOOT_BEV => "PXE",
+                BOOT_HDD => "HDD",
+                BOOT_CDROM => "CDROM",
+                BOOT_FLOPPY => "Floppy",
+                _ => "Unknown",
+            })
+            .collect();
 
         Ok(ActionResult::success(format!(
             "Set SeaBIOS boot order: {}. CMOS flags: 0x{:02x}, 0x{:02x}",

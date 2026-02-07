@@ -5,9 +5,7 @@
 
 use crate::config::PxeOptions;
 use crate::error::{DhcpError, Result};
-use dhcproto::v4::{
-    DhcpOption, Message, MessageType, Opcode, OptionCode,
-};
+use dhcproto::v4::{DhcpOption, Message, MessageType, Opcode, OptionCode};
 use dhcproto::{Decodable, Encodable};
 use std::net::Ipv4Addr;
 
@@ -96,8 +94,8 @@ pub struct DhcpRequest {
 impl DhcpRequest {
     /// Parse a DHCP request from raw bytes
     pub fn parse(data: &[u8]) -> Result<Self> {
-        let message = Message::from_bytes(data)
-            .map_err(|e| DhcpError::ParseError(e.to_string()))?;
+        let message =
+            Message::from_bytes(data).map_err(|e| DhcpError::ParseError(e.to_string()))?;
 
         // Extract message type
         let message_type = message
@@ -116,8 +114,7 @@ impl DhcpRequest {
         let mac_bytes = message.chaddr();
         let mac_address = format!(
             "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
-            mac_bytes[0], mac_bytes[1], mac_bytes[2],
-            mac_bytes[3], mac_bytes[4], mac_bytes[5]
+            mac_bytes[0], mac_bytes[1], mac_bytes[2], mac_bytes[3], mac_bytes[4], mac_bytes[5]
         );
 
         // Extract client architecture (option 93)
@@ -272,10 +269,14 @@ impl DhcpResponseBuilder {
         response.set_siaddr(self.server_ip);
 
         // Add message type
-        response.opts_mut().insert(DhcpOption::MessageType(self.message_type));
+        response
+            .opts_mut()
+            .insert(DhcpOption::MessageType(self.message_type));
 
         // Add server identifier
-        response.opts_mut().insert(DhcpOption::ServerIdentifier(self.server_ip));
+        response
+            .opts_mut()
+            .insert(DhcpOption::ServerIdentifier(self.server_ip));
 
         // Add subnet mask
         if let Some(mask) = self.subnet_mask {
@@ -284,17 +285,23 @@ impl DhcpResponseBuilder {
 
         // Add gateway (router)
         if let Some(gateway) = self.gateway {
-            response.opts_mut().insert(DhcpOption::Router(vec![gateway]));
+            response
+                .opts_mut()
+                .insert(DhcpOption::Router(vec![gateway]));
         }
 
         // Add DNS servers
         if !self.dns_servers.is_empty() {
-            response.opts_mut().insert(DhcpOption::DomainNameServer(self.dns_servers));
+            response
+                .opts_mut()
+                .insert(DhcpOption::DomainNameServer(self.dns_servers));
         }
 
         // Add lease time
         if let Some(lease_time) = self.lease_time {
-            response.opts_mut().insert(DhcpOption::AddressLeaseTime(lease_time));
+            response
+                .opts_mut()
+                .insert(DhcpOption::AddressLeaseTime(lease_time));
         }
 
         // Add PXE options
@@ -303,18 +310,24 @@ impl DhcpResponseBuilder {
             if let Some(tftp) = pxe.tftp_server {
                 response.set_siaddr(tftp);
                 // Also set as string for some clients
-                response.opts_mut().insert(DhcpOption::TFTPServerName(tftp.to_string().into_bytes()));
+                response
+                    .opts_mut()
+                    .insert(DhcpOption::TFTPServerName(tftp.to_string().into_bytes()));
             }
 
             // Boot filename (option 67)
             if let Some(filename) = pxe.boot_filename {
                 response.set_fname_str(&filename);
-                response.opts_mut().insert(DhcpOption::BootfileName(filename.into_bytes()));
+                response
+                    .opts_mut()
+                    .insert(DhcpOption::BootfileName(filename.into_bytes()));
             }
 
             // Vendor class
             if let Some(vendor) = pxe.vendor_class {
-                response.opts_mut().insert(DhcpOption::ClassIdentifier(vendor.into_bytes()));
+                response
+                    .opts_mut()
+                    .insert(DhcpOption::ClassIdentifier(vendor.into_bytes()));
             }
         }
 
@@ -368,8 +381,12 @@ mod tests {
         let mut discover = Message::default();
         discover.set_opcode(Opcode::BootRequest);
         discover.set_xid(0x12345678);
-        discover.set_chaddr(&[0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
-        discover.opts_mut().insert(DhcpOption::MessageType(MessageType::Discover));
+        discover.set_chaddr(&[
+            0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        ]);
+        discover
+            .opts_mut()
+            .insert(DhcpOption::MessageType(MessageType::Discover));
 
         let bytes = encode_message(&discover);
         let request = DhcpRequest::parse(&bytes).unwrap();
@@ -379,17 +396,14 @@ mod tests {
         assert_eq!(request.xid, 0x12345678);
 
         // Build offer response
-        let response = DhcpResponseBuilder::new(
-            request,
-            MessageType::Offer,
-            Ipv4Addr::new(192, 168, 1, 1),
-        )
-        .with_offered_ip(Ipv4Addr::new(192, 168, 1, 100))
-        .with_subnet_mask(Ipv4Addr::new(255, 255, 255, 0))
-        .with_gateway(Ipv4Addr::new(192, 168, 1, 1))
-        .with_lease_time(86400)
-        .build()
-        .unwrap();
+        let response =
+            DhcpResponseBuilder::new(request, MessageType::Offer, Ipv4Addr::new(192, 168, 1, 1))
+                .with_offered_ip(Ipv4Addr::new(192, 168, 1, 100))
+                .with_subnet_mask(Ipv4Addr::new(255, 255, 255, 0))
+                .with_gateway(Ipv4Addr::new(192, 168, 1, 1))
+                .with_lease_time(86400)
+                .build()
+                .unwrap();
 
         assert_eq!(response.opcode(), Opcode::BootReply);
         assert_eq!(response.xid(), 0x12345678);
@@ -401,9 +415,15 @@ mod tests {
         let mut discover = Message::default();
         discover.set_opcode(Opcode::BootRequest);
         discover.set_xid(0xAABBCCDD);
-        discover.set_chaddr(&[0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
-        discover.opts_mut().insert(DhcpOption::MessageType(MessageType::Discover));
-        discover.opts_mut().insert(DhcpOption::ClassIdentifier(b"PXEClient:Arch:00007".to_vec()));
+        discover.set_chaddr(&[
+            0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        ]);
+        discover
+            .opts_mut()
+            .insert(DhcpOption::MessageType(MessageType::Discover));
+        discover.opts_mut().insert(DhcpOption::ClassIdentifier(
+            b"PXEClient:Arch:00007".to_vec(),
+        ));
 
         let bytes = encode_message(&discover);
         let request = DhcpRequest::parse(&bytes).unwrap();
@@ -417,15 +437,12 @@ mod tests {
             boot_servers: vec![Ipv4Addr::new(192, 168, 1, 1)],
         };
 
-        let response = DhcpResponseBuilder::new(
-            request,
-            MessageType::Offer,
-            Ipv4Addr::new(192, 168, 1, 1),
-        )
-        .with_offered_ip(Ipv4Addr::new(192, 168, 1, 100))
-        .with_pxe_options(pxe_opts)
-        .build()
-        .unwrap();
+        let response =
+            DhcpResponseBuilder::new(request, MessageType::Offer, Ipv4Addr::new(192, 168, 1, 1))
+                .with_offered_ip(Ipv4Addr::new(192, 168, 1, 100))
+                .with_pxe_options(pxe_opts)
+                .build()
+                .unwrap();
 
         // Verify PXE options are set
         assert_eq!(response.siaddr(), Ipv4Addr::new(192, 168, 1, 1));

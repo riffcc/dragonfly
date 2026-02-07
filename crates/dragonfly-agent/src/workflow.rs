@@ -5,7 +5,7 @@
 //! the agent will execute it using the dragonfly-workflow crate.
 
 use anyhow::Result;
-use dragonfly_actions::{ActionEngine, create_engine_with_actions, cleanup_mount};
+use dragonfly_actions::{ActionEngine, cleanup_mount, create_engine_with_actions};
 use dragonfly_crd::{Hardware, Template, Workflow};
 use dragonfly_workflow::{MemoryStateStore, WorkflowEvent, WorkflowExecutor, WorkflowStateStore};
 use reqwest::Client;
@@ -57,7 +57,12 @@ impl AgentWorkflowRunner {
             "Fetched workflow from server"
         );
 
-        let template = self.fetch_template(&workflow.spec.template_ref, Some(&workflow.spec.hardware_ref)).await?;
+        let template = self
+            .fetch_template(
+                &workflow.spec.template_ref,
+                Some(&workflow.spec.hardware_ref),
+            )
+            .await?;
         info!(
             template = %template.metadata.name,
             actions = template.spec.actions.len(),
@@ -154,9 +159,16 @@ impl AgentWorkflowRunner {
     ///
     /// If machine_id is provided, it's passed as a query parameter so the server
     /// can substitute machine-specific variables like {{ friendly_name }}.
-    async fn fetch_template(&self, template_name: &str, machine_id: Option<&str>) -> Result<Template> {
+    async fn fetch_template(
+        &self,
+        template_name: &str,
+        machine_id: Option<&str>,
+    ) -> Result<Template> {
         let url = match machine_id {
-            Some(id) => format!("{}/api/templates/{}?machine_id={}", self.server_url, template_name, id),
+            Some(id) => format!(
+                "{}/api/templates/{}?machine_id={}",
+                self.server_url, template_name, id
+            ),
             None => format!("{}/api/templates/{}", self.server_url, template_name),
         };
         debug!(url = %url, machine_id = ?machine_id, "Fetching template");
@@ -171,7 +183,10 @@ impl AgentWorkflowRunner {
 
         // Get raw JSON to debug deserialization
         let body = response.text().await?;
-        info!(template_json_length = body.len(), "Raw template JSON from server (length)");
+        info!(
+            template_json_length = body.len(),
+            "Raw template JSON from server (length)"
+        );
 
         // Log a snippet of the JSON to see structure (first 500 chars)
         let json_preview: String = body.chars().take(500).collect();
@@ -372,15 +387,19 @@ pub async fn checkin_native(
             obj.insert("memory_bytes".into(), serde_json::json!(hw.memory_bytes));
         }
         if !hw.disks.is_empty() {
-            let disks: Vec<_> = hw.disks.iter().map(|d| {
-                // Server expects "name" not "device", and without /dev/ prefix
-                let name = d.device.strip_prefix("/dev/").unwrap_or(&d.device);
-                serde_json::json!({
-                    "name": name,
-                    "size_bytes": d.size_bytes,
-                    "model": d.model,
+            let disks: Vec<_> = hw
+                .disks
+                .iter()
+                .map(|d| {
+                    // Server expects "name" not "device", and without /dev/ prefix
+                    let name = d.device.strip_prefix("/dev/").unwrap_or(&d.device);
+                    serde_json::json!({
+                        "name": name,
+                        "size_bytes": d.size_bytes,
+                        "model": d.model,
+                    })
                 })
-            }).collect();
+                .collect();
             obj.insert("disks".into(), serde_json::json!(disks));
         }
         if !hw.nameservers.is_empty() {

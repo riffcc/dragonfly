@@ -32,7 +32,10 @@ mod tests {
     #[test]
     fn test_error_display() {
         let err = IpxeError::MissingConfig("kernel_url".to_string());
-        assert_eq!(err.to_string(), "missing required configuration: kernel_url");
+        assert_eq!(
+            err.to_string(),
+            "missing required configuration: kernel_url"
+        );
 
         let err = IpxeError::InvalidUrl("not a url".to_string());
         assert_eq!(err.to_string(), "invalid URL: not a url");

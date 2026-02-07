@@ -10,11 +10,11 @@
 //! Templates use `{{ server }}` as a placeholder for the Dragonfly server address,
 //! which is substituted at workflow execution time based on the machine's context.
 
-use anyhow::{anyhow, Result};
-use tracing::{info, error, warn, debug};
+use anyhow::{Result, anyhow};
 use std::path::Path;
-use tokio::fs;
 use std::sync::Arc;
+use tokio::fs;
+use tracing::{debug, error, info, warn};
 
 use crate::store::v1::Store;
 use dragonfly_crd::Template;
@@ -23,9 +23,7 @@ use dragonfly_crd::Template;
 const TEMPLATE_DIR: &str = "/var/lib/dragonfly/os-templates";
 
 /// Fallback template directory for development
-const FALLBACK_TEMPLATE_DIRS: &[&str] = &[
-    "os-templates",
-];
+const FALLBACK_TEMPLATE_DIRS: &[&str] = &["os-templates"];
 
 /// Initialize the OS templates using the provided store
 ///
@@ -75,7 +73,8 @@ async fn find_template_dir() -> Option<std::path::PathBuf> {
 
 /// Load all templates from a directory
 async fn load_templates_from_dir(store: Arc<dyn Store>, dir: &Path) -> Result<()> {
-    let mut entries = fs::read_dir(dir).await
+    let mut entries = fs::read_dir(dir)
+        .await
         .map_err(|e| anyhow!("Failed to read template directory: {}", e))?;
 
     while let Some(entry) = entries.next_entry().await? {
@@ -86,7 +85,8 @@ async fn load_templates_from_dir(store: Arc<dyn Store>, dir: &Path) -> Result<()
             continue;
         }
 
-        let template_name = path.file_stem()
+        let template_name = path
+            .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or("unknown");
 
@@ -96,7 +96,11 @@ async fn load_templates_from_dir(store: Arc<dyn Store>, dir: &Path) -> Result<()
                 if let Err(e) = store.put_template(&template).await {
                     warn!("Failed to store template '{}': {}", template_name, e);
                 } else {
-                    info!("Loaded template '{}' from {}", template_name, path.display());
+                    info!(
+                        "Loaded template '{}' from {}",
+                        template_name,
+                        path.display()
+                    );
                 }
             }
             Err(e) => {
@@ -110,13 +114,15 @@ async fn load_templates_from_dir(store: Arc<dyn Store>, dir: &Path) -> Result<()
 
 /// Load and validate a template from a file path
 async fn load_template_from_path(path: &Path) -> Result<Template> {
-    let content = fs::read_to_string(path).await
+    let content = fs::read_to_string(path)
+        .await
         .map_err(|e| anyhow!("Failed to read template file: {}", e))?;
 
     let template: Template = serde_yaml::from_str(&content)
         .map_err(|e| anyhow!("Failed to parse template YAML: {}", e))?;
 
-    template.validate()
+    template
+        .validate()
         .map_err(|e| anyhow!("Template validation failed: {}", e))?;
 
     Ok(template)
@@ -127,13 +133,19 @@ async fn install_template_if_missing(store: Arc<dyn Store>, template_name: &str)
     // Check if template already exists in store
     match store.get_template(template_name).await {
         Ok(Some(_)) => {
-            debug!("Template '{}' already exists in store, skipping", template_name);
+            debug!(
+                "Template '{}' already exists in store, skipping",
+                template_name
+            );
             Ok(())
-        },
+        }
         Ok(None) => {
-            info!("Template '{}' not found in store, downloading...", template_name);
+            info!(
+                "Template '{}' not found in store, downloading...",
+                template_name
+            );
             install_template_from_download(store, template_name).await
-        },
+        }
         Err(e) => {
             error!("Error checking for template '{}': {}", template_name, e);
             Err(anyhow!("Error checking for template: {}", e))
@@ -147,11 +159,10 @@ async fn install_template_from_download(store: Arc<dyn Store>, template_name: &s
     let yaml_content = download_template(template_name).await?;
 
     // Parse YAML to Template
-    let template: Template = serde_yaml::from_str(&yaml_content)
-        .map_err(|e| {
-            error!("Failed to parse template '{}': {}", template_name, e);
-            anyhow!("Failed to parse template YAML: {}", e)
-        })?;
+    let template: Template = serde_yaml::from_str(&yaml_content).map_err(|e| {
+        error!("Failed to parse template '{}': {}", template_name, e);
+        anyhow!("Failed to parse template YAML: {}", e)
+    })?;
 
     // Validate the template
     if let Err(e) = template.validate() {
@@ -160,11 +171,10 @@ async fn install_template_from_download(store: Arc<dyn Store>, template_name: &s
     }
 
     // Store the template
-    store.put_template(&template).await
-        .map_err(|e| {
-            error!("Failed to store template '{}': {}", template_name, e);
-            anyhow!("Failed to store template: {}", e)
-        })?;
+    store.put_template(&template).await.map_err(|e| {
+        error!("Failed to store template '{}': {}", template_name, e);
+        anyhow!("Failed to store template: {}", e)
+    })?;
 
     info!("Successfully installed template '{}'", template_name);
     Ok(())
@@ -189,24 +199,29 @@ async fn download_template(template_name: &str) -> Result<String> {
 
         match reqwest::get(url).await {
             Ok(response) if response.status().is_success() => {
-                let content = response.text().await
+                let content = response
+                    .text()
+                    .await
                     .map_err(|e| anyhow!("Failed to read response: {}", e))?;
 
                 // Try to save locally for future use
                 save_template_locally(template_name, &content).await;
 
                 return Ok(content);
-            },
+            }
             Ok(response) => {
                 debug!("Got {} from {}", response.status(), url);
-            },
+            }
             Err(e) => {
                 debug!("Failed to fetch {}: {}", url, e);
             }
         }
     }
 
-    Err(anyhow!("Failed to download template '{}' from any source", template_name))
+    Err(anyhow!(
+        "Failed to download template '{}' from any source",
+        template_name
+    ))
 }
 
 /// Save a downloaded template locally for future use

@@ -38,6 +38,9 @@ mod tests {
         assert_eq!(err.to_string(), "invalid metadata path: /bad/path");
 
         let err = MetadataError::NoUserData("instance-1".to_string());
-        assert_eq!(err.to_string(), "no user-data configured for instance: instance-1");
+        assert_eq!(
+            err.to_string(),
+            "no user-data configured for instance: instance-1"
+        );
     }
 }

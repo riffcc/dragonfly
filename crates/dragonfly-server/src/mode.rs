@@ -1,20 +1,20 @@
-use std::process::Command;
-use std::path::{Path, PathBuf};
-use tokio::sync::watch;
-use tokio::signal::unix::{signal, SignalKind};
-use anyhow::{Result, Context, anyhow, bail};
-use tracing::{info, error, warn, debug};
-use tracing_appender;
-use tracing_subscriber::{fmt, prelude::*, EnvFilter};
-use dirs;
-use std::os::unix::fs::PermissionsExt;
-use nix::libc;
-use std::str;
-use tokio::fs;
-use serde_yaml;
-use std::path::Path as StdPath;
 use crate::status::{check_kubernetes_connectivity, get_webui_address};
 use crate::store::v1::Store;
+use anyhow::{Context, Result, anyhow, bail};
+use dirs;
+use nix::libc;
+use serde_yaml;
+use std::os::unix::fs::PermissionsExt;
+use std::path::Path as StdPath;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::str;
+use tokio::fs;
+use tokio::signal::unix::{SignalKind, signal};
+use tokio::sync::watch;
+use tracing::{debug, error, info, warn};
+use tracing_appender;
+use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
 // The different deployment modes
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,23 +56,21 @@ pub async fn get_current_mode() -> Result<Option<DeploymentMode>> {
 
     if Path::new(SQLITE_PATH).exists() {
         match crate::store::SqliteStore::open(SQLITE_PATH).await {
-            Ok(store) => {
-                match store.get_setting("deployment_mode").await {
-                    Ok(Some(mode_str)) => {
-                        let mode = DeploymentMode::from_str(&mode_str);
-                        if mode.is_some() {
-                            debug!("Found deployment mode '{}' in SQLite", mode_str);
-                            return Ok(mode);
-                        }
-                    }
-                    Ok(None) => {
-                        debug!("No deployment mode found in SQLite");
-                    }
-                    Err(e) => {
-                        warn!("Failed to read deployment mode from SQLite: {}", e);
+            Ok(store) => match store.get_setting("deployment_mode").await {
+                Ok(Some(mode_str)) => {
+                    let mode = DeploymentMode::from_str(&mode_str);
+                    if mode.is_some() {
+                        debug!("Found deployment mode '{}' in SQLite", mode_str);
+                        return Ok(mode);
                     }
                 }
-            }
+                Ok(None) => {
+                    debug!("No deployment mode found in SQLite");
+                }
+                Err(e) => {
+                    warn!("Failed to read deployment mode from SQLite: {}", e);
+                }
+            },
             Err(e) => {
                 warn!("Failed to open SQLite for mode check: {}", e);
             }
@@ -104,7 +102,10 @@ pub async fn save_mode(mode: DeploymentMode, already_elevated: bool) -> Result<(
     let db_dir_path = Path::new(DB_DIR);
     if !db_dir_path.exists() {
         if !already_elevated && !nix::unistd::geteuid().is_root() {
-            bail!("Database directory {} does not exist. Please run with sudo or as root to create it.", DB_DIR);
+            bail!(
+                "Database directory {} does not exist. Please run with sudo or as root to create it.",
+                DB_DIR
+            );
         }
         tokio::fs::create_dir_all(db_dir_path)
             .await
@@ -118,11 +119,15 @@ pub async fn save_mode(mode: DeploymentMode, already_elevated: bool) -> Result<(
         .map_err(|e| anyhow!("Failed to open SQLite at {}: {}", SQLITE_PATH, e))?;
 
     let mode_str = mode.as_str();
-    store.put_setting("deployment_mode", mode_str)
+    store
+        .put_setting("deployment_mode", mode_str)
         .await
         .map_err(|e| anyhow!("Failed to save deployment mode: {}", e))?;
 
-    info!("Successfully saved deployment mode '{}' to SQLite: {}", mode_str, SQLITE_PATH);
+    info!(
+        "Successfully saved deployment mode '{}' to SQLite: {}",
+        mode_str, SQLITE_PATH
+    );
     Ok(())
 }
 
@@ -133,10 +138,7 @@ fn is_macos() -> bool {
 }
 
 // Generate systemd socket unit for Simple mode
-pub async fn generate_systemd_socket_unit(
-    service_name: &str,
-    description: &str
-) -> Result<()> {
+pub async fn generate_systemd_socket_unit(service_name: &str, description: &str) -> Result<()> {
     // Create the socket file for socket activation
     let socket_content = format!(
         r#"[Unit]
@@ -161,21 +163,21 @@ WantedBy=sockets.target
     tokio::fs::write(&socket_file, socket_content)
         .await
         .context("Failed to write systemd socket file")?;
-    
+
     info!("Generated systemd socket unit file: {}", socket_file);
-    
+
     Ok(())
 }
 
 // Generate systemd service unit for Simple mode
 pub async fn generate_systemd_unit(
-    service_name: &str, 
-    exec_path: &str, 
-    description: &str
+    service_name: &str,
+    exec_path: &str,
+    description: &str,
 ) -> Result<()> {
     // First create the socket unit
     generate_systemd_socket_unit(service_name, description).await?;
-    
+
     // Now create the service file
     let unit_content = format!(
         r#"[Unit]
@@ -220,11 +222,14 @@ WantedBy=multi-user.target
         .context("Failed to reload systemd")?;
 
     if !output.status.success() {
-        warn!("Failed to reload systemd: {}", String::from_utf8_lossy(&output.stderr));
+        warn!(
+            "Failed to reload systemd: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     info!("Generated systemd service unit file: {}", unit_file);
-    
+
     Ok(())
 }
 
@@ -245,7 +250,8 @@ pub fn ensure_log_directory() -> Result<String, anyhow::Error> {
             .join(".dragonfly/logs")
     };
 
-    let log_dir_str = log_dir.to_str()
+    let log_dir_str = log_dir
+        .to_str()
         .ok_or_else(|| anyhow!("Log directory path is not valid UTF-8"))?
         .to_string();
 
@@ -256,26 +262,53 @@ pub fn ensure_log_directory() -> Result<String, anyhow::Error> {
                 #[cfg(target_os = "linux")]
                 {
                     if !has_root_privileges() {
-                        warn!("Log directory created, but running without root. Cannot set ownership/permissions for /var/log/dragonfly. Logs might not be writable.");
+                        warn!(
+                            "Log directory created, but running without root. Cannot set ownership/permissions for /var/log/dragonfly. Logs might not be writable."
+                        );
                     } else {
                         let current_uid = unsafe { libc::getuid() };
                         let current_gid = unsafe { libc::getgid() };
-                        match nix::unistd::chown(log_dir.as_path(), Some(current_uid.into()), Some(current_gid.into())) {
-                            Ok(_) => info!("Set ownership of log directory to current user ({}:{})", current_uid, current_gid),
-                            Err(e) => warn!("Failed to set ownership of log directory {}: {}. This might be okay if already owned correctly.", log_dir.display(), e),
+                        match nix::unistd::chown(
+                            log_dir.as_path(),
+                            Some(current_uid.into()),
+                            Some(current_gid.into()),
+                        ) {
+                            Ok(_) => info!(
+                                "Set ownership of log directory to current user ({}:{})",
+                                current_uid, current_gid
+                            ),
+                            Err(e) => warn!(
+                                "Failed to set ownership of log directory {}: {}. This might be okay if already owned correctly.",
+                                log_dir.display(),
+                                e
+                            ),
                         }
-                        match std::fs::set_permissions(&log_dir, std::fs::Permissions::from_mode(0o775)) {
+                        match std::fs::set_permissions(
+                            &log_dir,
+                            std::fs::Permissions::from_mode(0o775),
+                        ) {
                             Ok(_) => info!("Set permissions of log directory to 775"),
-                            Err(e) => warn!("Failed to set permissions for log directory {}: {}", log_dir.display(), e),
+                            Err(e) => warn!(
+                                "Failed to set permissions for log directory {}: {}",
+                                log_dir.display(),
+                                e
+                            ),
                         }
                     }
                 }
             }
             Err(e) => {
                 if !log_dir.exists() {
-                    return Err(anyhow!("Failed to create log directory {}: {}", log_dir.display(), e));
+                    return Err(anyhow!(
+                        "Failed to create log directory {}: {}",
+                        log_dir.display(),
+                        e
+                    ));
                 } else {
-                    warn!("Log directory {} already existed or was created concurrently.", log_dir.display());
+                    warn!(
+                        "Log directory {} already existed or was created concurrently.",
+                        log_dir.display()
+                    );
                 }
             }
         }
@@ -296,53 +329,53 @@ pub fn start_service() -> Result<()> {
 
     // For non-macOS Unix systems, use systemctl to start the socket and service
     info!("Starting dragonfly systemd socket and service...");
-    
+
     // Enable and start the socket first
     let socket_enable = Command::new("systemctl")
         .args(["enable", "dragonfly.socket"])
         .output()
         .context("Failed to enable systemd socket")?;
-        
+
     if !socket_enable.status.success() {
         let stderr = String::from_utf8_lossy(&socket_enable.stderr);
         warn!("Failed to enable systemd socket: {}", stderr);
     }
-    
+
     // Enable the service too
     let service_enable = Command::new("systemctl")
         .args(["enable", "dragonfly.service"])
         .output()
         .context("Failed to enable systemd service")?;
-        
+
     if !service_enable.status.success() {
         let stderr = String::from_utf8_lossy(&service_enable.stderr);
         warn!("Failed to enable systemd service: {}", stderr);
     }
-    
+
     // Start the socket first for socket activation
     let socket_output = Command::new("systemctl")
         .args(["start", "dragonfly.socket"])
         .output()
         .context("Failed to start systemd socket")?;
-        
+
     if !socket_output.status.success() {
         let stderr = String::from_utf8_lossy(&socket_output.stderr);
         return Err(anyhow!("Failed to start systemd socket: {}", stderr));
     }
-    
+
     // Start the service
     let output = Command::new("systemctl")
         .args(["start", "dragonfly.service"])
         .output()
         .context("Failed to start systemd service")?;
-        
+
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(anyhow!("Failed to start systemd service: {}", stderr));
     }
-    
+
     info!("Socket and service started successfully");
-    
+
     // Exit this process now that the service is started
     info!("Exiting current process as the service is now running in the background");
     std::process::exit(0);
@@ -361,17 +394,20 @@ async fn ensure_var_lib_ownership() -> Result<()> {
     if !is_macos() {
         return Ok(());
     }
-    
+
     let var_lib_dir = PathBuf::from("/var/lib/dragonfly");
-    
+
     // First try to create the directory if it doesn't exist
     if !var_lib_dir.exists() {
         info!("Creating /var/lib/dragonfly directory");
-        
+
         // Try to create with regular permissions first
         if let Err(e) = tokio::fs::create_dir_all(&var_lib_dir).await {
-            info!("Failed to create /var/lib/dragonfly directly, using elevated permissions: {}", e);
-            
+            info!(
+                "Failed to create /var/lib/dragonfly directly, using elevated permissions: {}",
+                e
+            );
+
             // Need to use admin privileges
             let user = std::env::var("USER").context("Failed to get current username")?;
             let script = format!(
@@ -381,7 +417,7 @@ async fn ensure_var_lib_ownership() -> Result<()> {
                 var_lib_dir.display(),
                 var_lib_dir.display()
             );
-            
+
             let osa_output_result = Command::new("osascript")
                 .arg("-e")
                 .arg(&script)
@@ -393,10 +429,16 @@ async fn ensure_var_lib_ownership() -> Result<()> {
                 Ok(osa_output) => {
                     if !osa_output.status.success() {
                         let stderr_str = String::from_utf8_lossy(&osa_output.stderr);
-                        warn!("Failed to create and chown /var/lib/dragonfly: {}", stderr_str);
+                        warn!(
+                            "Failed to create and chown /var/lib/dragonfly: {}",
+                            stderr_str
+                        );
                         // Continue anyway since this is not critical
                     } else {
-                        info!("Created and set ownership of /var/lib/dragonfly to user {}", user);
+                        info!(
+                            "Created and set ownership of /var/lib/dragonfly to user {}",
+                            user
+                        );
                     }
                 }
                 Err(e) => {
@@ -411,69 +453,72 @@ async fn ensure_var_lib_ownership() -> Result<()> {
                 user,
                 var_lib_dir.display()
             );
-            
-            let osa_output = Command::new("osascript")
-                .arg("-e")
-                .arg(&script)
-                .output();
-            
+
+            let osa_output = Command::new("osascript").arg("-e").arg(&script).output();
+
             if let Ok(output) = osa_output {
                 if output.status.success() {
                     info!("Set ownership of /var/lib/dragonfly to user {}", user);
                 } else {
                     let stderr_str = String::from_utf8_lossy(&output.stderr);
-                    warn!("Failed to set ownership of /var/lib/dragonfly: {}", stderr_str);
+                    warn!(
+                        "Failed to set ownership of /var/lib/dragonfly: {}",
+                        stderr_str
+                    );
                     // Continue anyway since this is not critical
                 }
             } else if let Err(e) = osa_output {
-                 warn!("Error executing osascript for ownership setting: {}", e);
+                warn!("Error executing osascript for ownership setting: {}", e);
             }
         }
     } else {
         // Directory already exists, just ensure ownership
         let user = std::env::var("USER").context("Failed to get current username")?;
-        
+
         // Check current ownership
         let stat_output = Command::new("stat")
             .args(["-f", "%Su", var_lib_dir.to_str().unwrap()])
             .output();
-            
+
         if let Ok(output) = stat_output {
             let current_owner = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            
+
             if current_owner != user {
-                info!("Changing ownership of /var/lib/dragonfly from {} to {}", current_owner, user);
-                
+                info!(
+                    "Changing ownership of /var/lib/dragonfly from {} to {}",
+                    current_owner, user
+                );
+
                 let script = format!(
                     r#"do shell script "chown -R '{}' '{}'" with administrator privileges with prompt \"Dragonfly needs permission to set ownership of data directory\""#,
                     user,
                     var_lib_dir.display()
                 );
-                
-                let osa_output = Command::new("osascript")
-                    .arg("-e")
-                    .arg(&script)
-                    .output();
-                
+
+                let osa_output = Command::new("osascript").arg("-e").arg(&script).output();
+
                 if let Ok(output) = osa_output {
                     if output.status.success() {
                         info!("Set ownership of /var/lib/dragonfly to user {}", user);
                     } else {
                         let stderr_str = String::from_utf8_lossy(&output.stderr);
-                        warn!("Failed to set ownership of /var/lib/dragonfly: {}", stderr_str);
+                        warn!(
+                            "Failed to set ownership of /var/lib/dragonfly: {}",
+                            stderr_str
+                        );
                         // Continue anyway since this is not critical
                     }
-                 } else if let Err(e) = osa_output {
-                     warn!("Error executing osascript for ownership change: {}", e);
-                 }
+                } else if let Err(e) = osa_output {
+                    warn!("Error executing osascript for ownership change: {}", e);
+                }
             } else {
                 info!("/var/lib/dragonfly is already owned by user {}", user);
             }
         } else if let Err(e) = stat_output {
-             warn!("Error executing stat command for ownership check: {}", e);
+            warn!("Error executing stat command for ownership check: {}", e);
         }
     }
-    
+
     Ok(())
 }
 
@@ -482,21 +527,18 @@ fn has_root_privileges() -> bool {
     #[cfg(unix)]
     {
         // Check if we can access a typically root-only directory
-        if let Ok(uid) = std::process::Command::new("id")
-            .args(["-u"])
-            .output()
-        {
+        if let Ok(uid) = std::process::Command::new("id").args(["-u"]).output() {
             if let Ok(uid_str) = String::from_utf8(uid.stdout) {
                 if let Ok(uid_num) = uid_str.trim().parse::<u32>() {
                     return uid_num == 0;
                 }
             }
         }
-        
+
         // Fallback to checking if we can write to a protected directory
         std::fs::metadata("/root").is_ok()
     }
-    
+
     #[cfg(not(unix))]
     {
         // On other platforms, always return false
@@ -509,17 +551,17 @@ pub async fn configure_simple_mode() -> Result<()> {
     info!("Configuring system for Simple mode");
 
     // Get the path to the current executable
-    let current_exec_path = std::env::current_exe()
-        .context("Failed to get current executable path")?;
-    
+    let current_exec_path =
+        std::env::current_exe().context("Failed to get current executable path")?;
+
     // Initialize logger
     let log_dir_path = ensure_log_directory()?;
-    
+
     // Copy executable to /usr/local/bin if needed
     let target_path = Path::new(EXECUTABLE_TARGET_PATH);
     if !target_path.exists() {
         info!("Copying executable to {}", EXECUTABLE_TARGET_PATH);
-        
+
         // Check if we're on macOS
         if is_macos() {
             // For macOS, try a normal copy first
@@ -529,27 +571,32 @@ pub async fn configure_simple_mode() -> Result<()> {
             {
                 Ok(output) if output.status.success() => {
                     info!("Executable copied to {}", EXECUTABLE_TARGET_PATH);
-                    
+
                     // Set executable permissions
                     if let Ok(chmod_output) = Command::new("chmod")
                         .args(["+x", EXECUTABLE_TARGET_PATH])
                         .output()
                     {
                         if !chmod_output.status.success() {
-                            warn!("Failed to set executable permissions: {}", 
-                                  String::from_utf8_lossy(&chmod_output.stderr));
+                            warn!(
+                                "Failed to set executable permissions: {}",
+                                String::from_utf8_lossy(&chmod_output.stderr)
+                            );
                         }
                     }
-                },
+                }
                 _ => {
-                    info!("Need elevated permissions to copy executable to {}", EXECUTABLE_TARGET_PATH);
+                    info!(
+                        "Need elevated permissions to copy executable to {}",
+                        EXECUTABLE_TARGET_PATH
+                    );
 
                     // Need to use sudo, with one command that does everything:
                     // 1. Copy executable
                     // 2. Set executable permissions
                     // 3. Create mode directory and set mode file
                     let source_path = current_exec_path.to_string_lossy().replace("'", "'\\''");
-                    
+
                     // Build a script that does everything we need with a single privilege elevation
                     let script = format!(
                         r#"do shell script "cp '{}' '{}' && chmod +x '{}' && mkdir -p {} && echo {} > {} && chmod 755 {} && mkdir -p '{}' && chmod 755 '{}'" with administrator privileges with prompt \"Dragonfly needs permission to configure Simple mode\""#,
@@ -563,18 +610,21 @@ pub async fn configure_simple_mode() -> Result<()> {
                         log_dir_path,
                         log_dir_path
                     );
-                    
+
                     let osa_output = Command::new("osascript")
                         .arg("-e")
                         .arg(&script)
                         .output()
                         .context("Failed to execute osascript for sudo prompt")?;
-                        
+
                     if !osa_output.status.success() {
                         let stderr = String::from_utf8_lossy(&osa_output.stderr);
-                        return Err(anyhow!("Failed to configure with admin privileges: {}", stderr));
+                        return Err(anyhow!(
+                            "Failed to configure with admin privileges: {}",
+                            stderr
+                        ));
                     }
-                    
+
                     info!("System configured with admin privileges");
                 }
             }
@@ -583,20 +633,25 @@ pub async fn configure_simple_mode() -> Result<()> {
             match tokio::fs::copy(&current_exec_path, EXECUTABLE_TARGET_PATH).await {
                 Ok(_) => {
                     info!("Executable copied to {}", EXECUTABLE_TARGET_PATH);
-                    
+
                     // Set executable permissions
                     let chmod_output = Command::new("chmod")
                         .args(["+x", EXECUTABLE_TARGET_PATH])
                         .output()
                         .context("Failed to set executable permissions")?;
-                        
+
                     if !chmod_output.status.success() {
-                        warn!("Failed to set executable permissions: {}", 
-                              String::from_utf8_lossy(&chmod_output.stderr));
+                        warn!(
+                            "Failed to set executable permissions: {}",
+                            String::from_utf8_lossy(&chmod_output.stderr)
+                        );
                     }
-                },
+                }
                 Err(e) => {
-                    info!("Need elevated permissions to copy executable to {}: {}", EXECUTABLE_TARGET_PATH, e);
+                    info!(
+                        "Need elevated permissions to copy executable to {}: {}",
+                        EXECUTABLE_TARGET_PATH, e
+                    );
 
                     // Try with pkexec first (graphical sudo)
                     let pkexec_available = Command::new("which")
@@ -604,10 +659,10 @@ pub async fn configure_simple_mode() -> Result<()> {
                         .output()
                         .map(|output| output.status.success())
                         .unwrap_or(false);
-                        
+
                     if pkexec_available {
                         info!("Trying with pkexec for graphical sudo prompt");
-                        
+
                         // Do everything in one command
                         let script = format!(
                             "pkexec sh -c 'cp \"{}\" \"{}\" && chmod +x \"{}\" && mkdir -p {} && echo {} > {} && chmod 755 {} && mkdir -p {} && chmod 755 {}'",
@@ -621,19 +676,16 @@ pub async fn configure_simple_mode() -> Result<()> {
                             log_dir_path,
                             log_dir_path
                         );
-                        
-                        let pkexec_output = Command::new("sh")
-                            .arg("-c")
-                            .arg(&script)
-                            .output();
-                            
+
+                        let pkexec_output = Command::new("sh").arg("-c").arg(&script).output();
+
                         match pkexec_output {
                             Ok(output) if output.status.success() => {
                                 info!("System configured with pkexec");
-                            },
+                            }
                             _ => {
                                 info!("pkexec failed or was cancelled, trying regular sudo");
-                                
+
                                 // Try with regular sudo, doing everything in one command
                                 let sudo_script = format!(
                                     "sudo sh -c 'cp \"{}\" \"{}\" && chmod +x \"{}\" && mkdir -p {} && echo {} > {} && chmod 755 {} && mkdir -p {} && chmod 755 {}'",
@@ -647,18 +699,21 @@ pub async fn configure_simple_mode() -> Result<()> {
                                     log_dir_path,
                                     log_dir_path
                                 );
-                                
+
                                 let sudo_output = Command::new("sh")
                                     .arg("-c")
                                     .arg(&sudo_script)
                                     .output()
                                     .context("Failed to execute sudo command")?;
-                                    
+
                                 if !sudo_output.status.success() {
                                     let stderr = String::from_utf8_lossy(&sudo_output.stderr);
-                                    return Err(anyhow!("Failed to configure with sudo: {}", stderr));
+                                    return Err(anyhow!(
+                                        "Failed to configure with sudo: {}",
+                                        stderr
+                                    ));
                                 }
-                                
+
                                 info!("System configured with sudo");
                             }
                         }
@@ -676,18 +731,18 @@ pub async fn configure_simple_mode() -> Result<()> {
                             log_dir_path,
                             log_dir_path
                         );
-                        
+
                         let sudo_output = Command::new("sh")
                             .arg("-c")
                             .arg(&sudo_script)
                             .output()
                             .context("Failed to execute sudo command")?;
-                            
+
                         if !sudo_output.status.success() {
                             let stderr = String::from_utf8_lossy(&sudo_output.stderr);
                             return Err(anyhow!("Failed to configure with sudo: {}", stderr));
                         }
-                        
+
                         info!("System configured with sudo");
                     }
                 }
@@ -696,42 +751,41 @@ pub async fn configure_simple_mode() -> Result<()> {
     } else {
         info!("Executable already exists at {}", EXECUTABLE_TARGET_PATH);
     }
-    
+
     // Use the target path for service configuration if it exists, otherwise use current path
     let exec_path = if target_path.exists() {
         target_path.to_path_buf()
     } else {
         current_exec_path
     };
-    
+
     // Create log directory before setting up services if not already handled by elevated commands
-        let log_dir = "/var/log/dragonfly";
-        if !std::path::Path::new(log_dir).exists() {
-            // Create directory with appropriate permissions
-            if let Err(e) = tokio::fs::create_dir_all(log_dir).await {
-                warn!("Could not create log directory {}: {}", log_dir, e);
-                // Try with sudo
-                let _ = Command::new("sudo")
-                    .args(["mkdir", "-p", log_dir])
-                    .output();
-                let _ = Command::new("sudo")
-                    .args(["chmod", "755", log_dir])
-                    .output();
-            }
+    let log_dir = "/var/log/dragonfly";
+    if !std::path::Path::new(log_dir).exists() {
+        // Create directory with appropriate permissions
+        if let Err(e) = tokio::fs::create_dir_all(log_dir).await {
+            warn!("Could not create log directory {}: {}", log_dir, e);
+            // Try with sudo
+            let _ = Command::new("sudo").args(["mkdir", "-p", log_dir]).output();
+            let _ = Command::new("sudo")
+                .args(["chmod", "755", log_dir])
+                .output();
         }
-        info!("Log directory ready at {}", log_dir);
-    
+    }
+    info!("Log directory ready at {}", log_dir);
+
     // Check if we're on macOS
     let is_macos = std::env::consts::OS == "macos" || std::env::consts::OS == "darwin";
-    
+
     if !is_macos {
         info!("Setting up systemd socket and service");
         generate_systemd_unit(
-            "dragonfly", 
-            exec_path.to_str().unwrap(), 
-            "Dragonfly Simple Mode"
-        ).await?;
-        
+            "dragonfly",
+            exec_path.to_str().unwrap(),
+            "Dragonfly Simple Mode",
+        )
+        .await?;
+
         // Enable the socket first (for socket activation)
         info!("Enabling systemd socket and service");
         let socket_enable = Command::new("systemctl")
@@ -740,11 +794,14 @@ pub async fn configure_simple_mode() -> Result<()> {
             .context("Failed to enable dragonfly.socket")?;
 
         if !socket_enable.status.success() {
-            warn!("Failed to enable dragonfly.socket: {}", String::from_utf8_lossy(&socket_enable.stderr));
+            warn!(
+                "Failed to enable dragonfly.socket: {}",
+                String::from_utf8_lossy(&socket_enable.stderr)
+            );
         } else {
             info!("Systemd socket enabled successfully");
         }
-        
+
         // Enable the service
         let service_enable = Command::new("systemctl")
             .args(["enable", "dragonfly.service"])
@@ -752,36 +809,45 @@ pub async fn configure_simple_mode() -> Result<()> {
             .context("Failed to enable dragonfly.service")?;
 
         if !service_enable.status.success() {
-            warn!("Failed to enable dragonfly.service: {}", String::from_utf8_lossy(&service_enable.stderr));
+            warn!(
+                "Failed to enable dragonfly.service: {}",
+                String::from_utf8_lossy(&service_enable.stderr)
+            );
         } else {
             info!("Systemd service enabled successfully");
         }
-        
+
         // Start the socket first (this is important for socket activation)
         let socket_start = Command::new("systemctl")
             .args(["start", "dragonfly.socket"])
             .output()
             .context("Failed to start dragonfly.socket")?;
-            
+
         if !socket_start.status.success() {
-            warn!("Failed to start dragonfly.socket: {}", String::from_utf8_lossy(&socket_start.stderr));
+            warn!(
+                "Failed to start dragonfly.socket: {}",
+                String::from_utf8_lossy(&socket_start.stderr)
+            );
         } else {
             info!("Systemd socket started successfully");
         }
-        
+
         // Now start the service
         let service_start = Command::new("systemctl")
             .args(["start", "dragonfly.service"])
             .output()
             .context("Failed to start dragonfly.service")?;
-            
+
         if !service_start.status.success() {
-            warn!("Failed to start dragonfly.service: {}", String::from_utf8_lossy(&service_start.stderr));
+            warn!(
+                "Failed to start dragonfly.service: {}",
+                String::from_utf8_lossy(&service_start.stderr)
+            );
         } else {
             info!("Systemd service started successfully");
         }
     }
-    
+
     // Create a directory for data storage
     if is_macos {
         let home = std::env::var("HOME").context("Failed to get user home directory")?;
@@ -796,10 +862,10 @@ pub async fn configure_simple_mode() -> Result<()> {
     // Do NOT call save_mode() here as it would try to open SQLite separately and cause a lock conflict
 
     let is_macos = std::env::consts::OS == "macos" || std::env::consts::OS == "darwin";
-    
+
     info!("System configured for Simple mode. Dragonfly will run as a service on startup.");
     info!("Logs will be written to {}/dragonfly.log", log_dir_path);
-    
+
     if !is_macos {
         info!("Starting service now...");
         // Start the service via the service manager (which will exit this process on non-macOS)
@@ -807,27 +873,27 @@ pub async fn configure_simple_mode() -> Result<()> {
     } else {
         info!("Running in foreground mode on macOS");
     }
-    
+
     Ok(())
 }
 
 // Start the handoff server for Flight mode
 pub async fn start_handoff_listener(mut shutdown_rx: watch::Receiver<()>) -> Result<()> {
     // Set up a signal handler for SIGUSR1
-    let mut sigusr1 = signal(SignalKind::user_defined1())
-        .context("Failed to install SIGUSR1 handler")?;
-    
+    let mut sigusr1 =
+        signal(SignalKind::user_defined1()).context("Failed to install SIGUSR1 handler")?;
+
     let handoff_file = PathBuf::from(HANDOFF_READY_FILE);
-    
+
     info!("Starting handoff listener");
-    
+
     tokio::select! {
         // Wait for the handoff file to be created
         _ = async {
             loop {
                 if tokio::fs::metadata(&handoff_file).await.is_ok() {
                     info!("Handoff file detected - initiating handoff");
-                    
+
                     // Read the content to get the pid if available
                     if let Ok(content) = tokio::fs::read_to_string(&handoff_file).await {
                         if let Ok(pid) = content.trim().parse::<i32>() {
@@ -838,10 +904,10 @@ pub async fn start_handoff_listener(mut shutdown_rx: watch::Receiver<()>) -> Res
                                 .output();
                         }
                     }
-                    
+
                     // Remove the handoff file
                     let _ = tokio::fs::remove_file(&handoff_file).await;
-                    
+
                     break;
                 }
                 tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
@@ -850,26 +916,26 @@ pub async fn start_handoff_listener(mut shutdown_rx: watch::Receiver<()>) -> Res
             info!("Handoff initiated by file - gracefully shutting down");
             return Ok(());
         },
-        
+
         // Wait for SIGUSR1 signal
         _ = sigusr1.recv() => {
             info!("Received SIGUSR1 signal - initiating handoff");
-            
+
             // ACK the signal by writing to a file
             let _ = tokio::fs::write(handoff_file, format!("{}", std::process::id()))
                 .await
                 .context("Failed to write handoff ACK file");
-                
+
             return Ok(());
         },
-        
+
         // Wait for shutdown signal
         _ = shutdown_rx.changed() => {
             info!("Shutdown received - terminating handoff listener");
             return Ok(());
         }
     }
-    
+
     // Remove the unreachable code
 }
 
@@ -879,22 +945,27 @@ pub async fn configure_flight_mode(store: std::sync::Arc<dyn Store>) -> Result<(
 
     // Always attempt the configuration steps for Flight mode
     // The checks inside these functions (like artifact download) will handle idempotency.
-    
+
     // Execute multiple prerequisite tasks in parallel
     let k8s_check_fut = async {
         info!("Checking Kubernetes connectivity...");
         match check_kubernetes_connectivity().await {
             Ok(()) => {
-                info!("Kubernetes connectivity confirmed. Will use K8s/etcd for storage if configured.");
-            },
+                info!(
+                    "Kubernetes connectivity confirmed. Will use K8s/etcd for storage if configured."
+                );
+            }
             Err(e) => {
                 // K8s is OPTIONAL - Flight mode works fine with SQLite as storage backend
-                info!("Kubernetes not available ({}). Using SQLite for storage.", e);
+                info!(
+                    "Kubernetes not available ({}). Using SQLite for storage.",
+                    e
+                );
             }
         }
         Ok::<(), anyhow::Error>(()) // Always succeed - K8s is optional
     };
-    
+
     // Add WebUI check future
     let webui_check_fut = async {
         info!("Checking WebUI service status...");
@@ -902,56 +973,72 @@ pub async fn configure_flight_mode(store: std::sync::Arc<dyn Store>) -> Result<(
             Ok(true) => {
                 info!("WebUI service status confirmed as ready.");
                 Ok(())
-            },
+            }
             Ok(false) => {
                 warn!("WebUI service is not ready, but continuing with Flight mode configuration.");
                 // Return Ok since this is not fatal for the configuration
                 Ok(())
-            },
+            }
             Err(e) => {
-                warn!("Error checking WebUI service status: {}. Continuing with Flight mode configuration.", e);
+                warn!(
+                    "Error checking WebUI service status: {}. Continuing with Flight mode configuration.",
+                    e
+                );
                 // Return Ok since this is not fatal for the configuration
                 Ok(())
             }
         }
     };
-    
+
     // Add the agent builder task
     let agent_builder_fut = async {
         info!("Building Dragonfly Agent APK overlay...");
-        
+
         // Create the artifacts directory if it doesn't exist
         let artifacts_dir = StdPath::new("/var/lib/dragonfly/ipxe-artifacts");
         if !artifacts_dir.exists() {
             match fs::create_dir_all(artifacts_dir).await {
                 Ok(_) => debug!("Created artifacts directory: {:?}", artifacts_dir),
-                Err(e) => warn!("Failed to create artifacts directory: {}", e)
+                Err(e) => warn!("Failed to create artifacts directory: {}", e),
             }
         }
-        
+
         // Set the target path for the APK overlay
         let target_apkovl_path = artifacts_dir.join("localhost.apkovl.tar.gz");
-        
+
         // Determine the base URL for the agent to connect back to
         let base_url = format!("http://{}:3000", get_loadbalancer_ip().await?);
-        
+
         // URL for the agent binary
-        let agent_binary_url = "https://github.com/riffcc/dragonfly/releases/download/latest/dragonfly-agent-x86_64";
-        
+        let agent_binary_url =
+            "https://github.com/riffcc/dragonfly/releases/download/latest/dragonfly-agent-x86_64";
+
         // Generate the APK overlay
-        match crate::api::generate_agent_apkovl(&target_apkovl_path, &base_url, crate::api::AgentSource::Url(agent_binary_url)).await {
+        match crate::api::generate_agent_apkovl(
+            &target_apkovl_path,
+            &base_url,
+            crate::api::AgentSource::Url(agent_binary_url),
+        )
+        .await
+        {
             Ok(_) => {
-                info!("Successfully built Dragonfly Agent APK overlay at {:?}", target_apkovl_path);
+                info!(
+                    "Successfully built Dragonfly Agent APK overlay at {:?}",
+                    target_apkovl_path
+                );
                 Ok(())
-            },
+            }
             Err(e) => {
-                warn!("Failed to build Dragonfly Agent APK overlay: {}. PXE booting might not work correctly.", e);
+                warn!(
+                    "Failed to build Dragonfly Agent APK overlay: {}. PXE booting might not work correctly.",
+                    e
+                );
                 // This is non-fatal for Flight mode configuration
                 Ok(())
             }
         }
     };
-    
+
     // Add iPXE binaries download future
     let ipxe_download_fut = async {
         info!("Checking/Downloading iPXE binaries...");
@@ -968,7 +1055,8 @@ pub async fn configure_flight_mode(store: std::sync::Arc<dyn Store>) -> Result<(
     // Download Mage (Alpine netboot) artifacts for x86_64
     let mage_download_fut = async {
         debug!("Downloading Mage boot environment...");
-        crate::api::download_mage_artifacts("3.23", "x86_64").await
+        crate::api::download_mage_artifacts("3.23", "x86_64")
+            .await
             .map_err(|e| anyhow::anyhow!("Failed to download Mage artifacts: {}", e))?;
 
         // Verify files actually exist
@@ -992,7 +1080,8 @@ pub async fn configure_flight_mode(store: std::sync::Arc<dyn Store>) -> Result<(
         }
 
         // Download from GitHub releases
-        let download_url = "https://github.com/riffcc/dragonfly/releases/download/latest/dragonfly-agent-x86_64";
+        let download_url =
+            "https://github.com/riffcc/dragonfly/releases/download/latest/dragonfly-agent-x86_64";
         debug!("Downloading agent from {}", download_url);
 
         let client = reqwest::Client::new();
@@ -1007,7 +1096,10 @@ pub async fn configure_flight_mode(store: std::sync::Arc<dyn Store>) -> Result<(
             debug!("Agent binary downloaded");
             Ok(())
         } else {
-            Err(anyhow!("Failed to download agent: HTTP {}", response.status()))
+            Err(anyhow!(
+                "Failed to download agent: HTTP {}",
+                response.status()
+            ))
         }
     };
 
@@ -1015,7 +1107,8 @@ pub async fn configure_flight_mode(store: std::sync::Arc<dyn Store>) -> Result<(
     let mage_apkovl_fut = async {
         let base_url = get_base_url(None).await;
         debug!("Generating APK overlay...");
-        crate::api::generate_mage_apkovl_arch(&base_url, "x86_64").await
+        crate::api::generate_mage_apkovl_arch(&base_url, "x86_64")
+            .await
             .map_err(|e| anyhow!("Failed to generate APK overlay: {}", e))?;
         debug!("APK overlay generated");
         Ok::<(), anyhow::Error>(())
@@ -1030,13 +1123,18 @@ pub async fn configure_flight_mode(store: std::sync::Arc<dyn Store>) -> Result<(
                 match enter_flight_mode().await {
                     Ok(_) => info!("Tinkerbell stack update completed"),
                     Err(e) => {
-                        warn!("Tinkerbell stack update failed: {}. Continuing with native provisioning.", e);
+                        warn!(
+                            "Tinkerbell stack update failed: {}. Continuing with native provisioning.",
+                            e
+                        );
                     }
                 }
             }
             Err(_) => {
                 // K8s not available - skip Tinkerbell update, use native provisioning
-                info!("K8s not available - skipping Tinkerbell stack update, using native SQLite provisioning");
+                info!(
+                    "K8s not available - skipping Tinkerbell stack update, using native SQLite provisioning"
+                );
             }
         }
         Ok::<(), anyhow::Error>(())
@@ -1064,7 +1162,7 @@ pub async fn configure_flight_mode(store: std::sync::Arc<dyn Store>) -> Result<(
     match tokio::try_join!(mage_apkovl_fut) {
         Ok(_) => {
             info!("Successfully configured Flight mode.");
-        },
+        }
         Err(e) => {
             error!("Failed during Flight mode configuration: {}", e);
             return Err(e);
@@ -1091,7 +1189,10 @@ pub async fn enter_flight_mode() -> Result<()> {
     match check_kubernetes_connectivity().await {
         Ok(()) => info!("Kubernetes connectivity confirmed."),
         Err(e) => {
-            error!("Error checking Kubernetes connectivity: {}. Cannot enter Flight mode.", e);
+            error!(
+                "Error checking Kubernetes connectivity: {}. Cannot enter Flight mode.",
+                e
+            );
             // Convert color_eyre error to anyhow
             return Err(anyhow!("Error checking Kubernetes connectivity: {}", e));
         }
@@ -1105,7 +1206,10 @@ pub async fn enter_flight_mode() -> Result<()> {
             bail!("WebUI service is not ready");
         }
         Err(e) => {
-            error!("Error checking WebUI service status: {}. Cannot enter Flight mode.", e);
+            error!(
+                "Error checking WebUI service status: {}. Cannot enter Flight mode.",
+                e
+            );
             return Err(anyhow!("Error checking WebUI service status: {}", e));
         }
     }
@@ -1113,14 +1217,22 @@ pub async fn enter_flight_mode() -> Result<()> {
     // --- Check current Helm values for Smee DHCP ---
     info!("Checking current Helm values for tinkerbell...");
     let helm_get_values_output = Command::new("helm")
-        .args(["get", "values", "tinkerbell", "-n", "tinkerbell", "-o", "yaml"])
+        .args([
+            "get",
+            "values",
+            "tinkerbell",
+            "-n",
+            "tinkerbell",
+            "-o",
+            "yaml",
+        ])
         .output();
-        
+
     let needs_upgrade = match helm_get_values_output {
         Ok(output) if output.status.success() => {
             let values_yaml = String::from_utf8_lossy(&output.stdout);
             debug!("Current Helm values:\n{}", values_yaml);
-            
+
             // Parse YAML to check smee.dhcp.enabled
             match serde_yaml::from_str::<serde_yaml::Value>(&values_yaml) {
                 Ok(values) => {
@@ -1131,7 +1243,7 @@ pub async fn enter_flight_mode() -> Result<()> {
                         .and_then(|dhcp| dhcp.get("enabled"))
                         .and_then(|enabled| enabled.as_bool())
                         .unwrap_or(true); // Default to true if not found (conservative)
-                        
+
                     if smee_dhcp_enabled {
                         info!("Smee DHCP is already enabled in Helm values. No upgrade needed.");
                         false // No upgrade needed
@@ -1141,18 +1253,26 @@ pub async fn enter_flight_mode() -> Result<()> {
                     }
                 }
                 Err(e) => {
-                    warn!("Failed to parse Helm values YAML: {}. Assuming upgrade is needed.", e);
+                    warn!(
+                        "Failed to parse Helm values YAML: {}. Assuming upgrade is needed.",
+                        e
+                    );
                     true // Assume upgrade needed if parsing fails
                 }
             }
         }
         Ok(output) => {
-             warn!("'helm get values' command failed: {}. Assuming upgrade is needed.", 
-                   String::from_utf8_lossy(&output.stderr));
+            warn!(
+                "'helm get values' command failed: {}. Assuming upgrade is needed.",
+                String::from_utf8_lossy(&output.stderr)
+            );
             true // Assume upgrade needed if command fails
         }
         Err(e) => {
-            warn!("Failed to execute 'helm get values': {}. Assuming upgrade is needed.", e);
+            warn!(
+                "Failed to execute 'helm get values': {}. Assuming upgrade is needed.",
+                e
+            );
             true // Assume upgrade needed if execution fails
         }
     };
@@ -1160,64 +1280,94 @@ pub async fn enter_flight_mode() -> Result<()> {
     // Only proceed with upgrade if needed
     if needs_upgrade {
         info!("Proceeding with Helm upgrade to enable Smee DHCP...");
-        
+
         // --- Activate Smee's DHCP service in Flight mode using Helm ---
         // Check if the Tinkerbell stack release actually exists (redundant but safe)
-    let release_exists = {
-        let release_check = Command::new("helm")
-            .args(["list", "-n", "tinkerbell", "--filter", "tinkerbell", "--short"])
+        let release_exists = {
+            let release_check = Command::new("helm")
+                .args([
+                    "list",
+                    "-n",
+                    "tinkerbell",
+                    "--filter",
+                    "tinkerbell",
+                    "--short",
+                ])
                 .output()
                 .with_context(|| "Failed to check deployment status after upgrade")?;
 
-        release_check.status.success() &&
-        !String::from_utf8_lossy(&release_check.stdout).trim().is_empty()
-    };
+            release_check.status.success()
+                && !String::from_utf8_lossy(&release_check.stdout)
+                    .trim()
+                    .is_empty()
+        };
 
         if !release_exists {
             // This shouldn't happen if get values succeeded, but check anyway
-             return Err(anyhow!("Tinkerbell stack release 'tinkerbell' not found. Cannot upgrade."));
-    }
+            return Err(anyhow!(
+                "Tinkerbell stack release 'tinkerbell' not found. Cannot upgrade."
+            ));
+        }
 
-    // --- Clone the GitHub repository for the Helm chart ---
-    info!("Fetching Dragonfly Helm charts from GitHub for upgrade...");
-    let repo_dir = std::env::temp_dir().join("dragonfly-charts");
-    if repo_dir.exists() {
+        // --- Clone the GitHub repository for the Helm chart ---
+        info!("Fetching Dragonfly Helm charts from GitHub for upgrade...");
+        let repo_dir = std::env::temp_dir().join("dragonfly-charts");
+        if repo_dir.exists() {
             fs::remove_dir_all(&repo_dir).await.ok(); // Clean up previous clone if necessary
         }
-        let clone_cmd = format!("git clone --depth 1 https://github.com/riffcc/dragonfly-charts.git {}", repo_dir.display());
+        let clone_cmd = format!(
+            "git clone --depth 1 https://github.com/riffcc/dragonfly-charts.git {}",
+            repo_dir.display()
+        );
         run_shell_command(&clone_cmd, "clone Dragonfly Helm charts")?;
         let chart_path = repo_dir.join("tinkerbell");
         let upgrade_chart_path = chart_path.join("stack");
         if !upgrade_chart_path.exists() {
-            bail!("Helm chart stack directory not found in expected location: {:?}", upgrade_chart_path);
-    }
+            bail!(
+                "Helm chart stack directory not found in expected location: {:?}",
+                upgrade_chart_path
+            );
+        }
 
-    // --- Build the Helm chart dependencies ---
-    info!("Building Helm chart dependencies...");
-        let dependency_build_cmd = format!("cd {} && helm dependency build stack/", chart_path.display());
+        // --- Build the Helm chart dependencies ---
+        info!("Building Helm chart dependencies...");
+        let dependency_build_cmd = format!(
+            "cd {} && helm dependency build stack/",
+            chart_path.display()
+        );
         run_shell_command(&dependency_build_cmd, "build Helm chart dependencies")?;
 
         // --- Run Helm Upgrade ---
-    let helm_args = [
-        "upgrade", "tinkerbell",
-            upgrade_chart_path.to_str().ok_or_else(|| anyhow!("Chart path is not valid UTF-8"))?,
-        "--namespace", "tinkerbell",
-        "--wait",
-        "--timeout", "10m",
-        "--reuse-values",
-            "--set", "smee.dhcp.enabled=true"
+        let helm_args = [
+            "upgrade",
+            "tinkerbell",
+            upgrade_chart_path
+                .to_str()
+                .ok_or_else(|| anyhow!("Chart path is not valid UTF-8"))?,
+            "--namespace",
+            "tinkerbell",
+            "--wait",
+            "--timeout",
+            "10m",
+            "--reuse-values",
+            "--set",
+            "smee.dhcp.enabled=true",
         ];
 
         info!("Upgrading Dragonfly Tinkerbell stack to enable Smee DHCP...");
-        match run_command("helm", &helm_args, "upgrade Dragonfly Tinkerbell Helm chart") {
+        match run_command(
+            "helm",
+            &helm_args,
+            "upgrade Dragonfly Tinkerbell Helm chart",
+        ) {
             Ok(output) => {
                 let stdout = String::from_utf8_lossy(&output.stdout);
                 debug!("Helm upgrade output: {}", stdout);
                 info!("Helm upgrade completed successfully");
-            },
+            }
             Err(e) => {
                 error!("Helm upgrade failed: {}", e);
-                
+
                 // Try to get more diagnostic information
                 let helm_list = Command::new("helm")
                     .args(["list", "-n", "tinkerbell", "-a"])
@@ -1226,28 +1376,34 @@ pub async fn enter_flight_mode() -> Result<()> {
                 if let Ok(list_output) = helm_list {
                     if list_output.status.success() {
                         let list_stdout = String::from_utf8_lossy(&list_output.stdout);
-                        error!("Current Helm releases in tinkerbell namespace:\n{}", list_stdout);
+                        error!(
+                            "Current Helm releases in tinkerbell namespace:\n{}",
+                            list_stdout
+                        );
                     }
                 }
 
                 let pod_list = Command::new("kubectl")
                     .args(["get", "pods", "-n", "tinkerbell", "-o", "wide"])
                     .output();
-                
+
                 if let Ok(pod_output) = pod_list {
                     if pod_output.status.success() {
                         let pod_stdout = String::from_utf8_lossy(&pod_output.stdout);
                         error!("Current pods in tink namespace:\n{}", pod_stdout);
                     }
                 }
-                
+
                 // Return the original error with context
-                return Err(anyhow!("Failed to upgrade Tinkerbell stack: {}. Check logs for diagnostics.", e));
+                return Err(anyhow!(
+                    "Failed to upgrade Tinkerbell stack: {}. Check logs for diagnostics.",
+                    e
+                ));
             }
         }
 
-        // --- Clean up --- 
-    debug!("Cleaning up temporary chart repository...");
+        // --- Clean up ---
+        debug!("Cleaning up temporary chart repository...");
         let _ = fs::remove_dir_all(&repo_dir).await; // Best effort cleanup
 
         info!("Helm upgrade completed successfully.");
@@ -1263,69 +1419,93 @@ pub async fn enter_flight_mode() -> Result<()> {
 pub async fn deploy_k3s_and_handoff() -> Result<()> {
     // Get the current process ID for ACK
     let my_pid = std::process::id();
-    
+
     // Check if we're on macOS
     if is_macos() {
         // macOS-specific code for using k3s in Docker
         info!("Running on macOS, setting up k3s in Docker");
-        
+
         // Check if Docker is installed and running
         let docker_running = Command::new("docker")
             .args(["info"])
             .output()
             .map(|output| output.status.success())
             .unwrap_or(false);
-            
+
         if !docker_running {
-            return Err(anyhow!("Docker is not installed or not running. Please install and start Docker Desktop."));
+            return Err(anyhow!(
+                "Docker is not installed or not running. Please install and start Docker Desktop."
+            ));
         }
-        
+
         // Check if k3s container is already running
         let k3s_exists = Command::new("docker")
             .args(["ps", "-q", "--filter", "name=k3s-server"])
             .output()
             .map(|output| !String::from_utf8_lossy(&output.stdout).trim().is_empty())
             .unwrap_or(false);
-        
+
         if !k3s_exists {
             // Run k3s in Docker
             info!("Starting k3s in Docker");
             let run_output = Command::new("docker")
                 .args([
-                    "run", "--name", "k3s-server", 
-                    "-d", "--privileged",
-                    "-p", "6443:6443",       // Kubernetes API
-                    "-p", "80:80",           // HTTP
-                    "-p", "443:443",         // HTTPS
-                    "-p", "8080:8080",       // Tinkerbell Hook service
-                    "-p", "69:69/udp",       // TFTP (for PXE)
-                    "-p", "53:53/udp",       // DNS
-                    "-p", "67:67/udp",       // DHCP
-                    "-v", "k3s-server:/var/lib/rancher/k3s",
-                    "--restart", "always",
-                    "rancher/k3s:latest", "server", "--disable", "traefik"
+                    "run",
+                    "--name",
+                    "k3s-server",
+                    "-d",
+                    "--privileged",
+                    "-p",
+                    "6443:6443", // Kubernetes API
+                    "-p",
+                    "80:80", // HTTP
+                    "-p",
+                    "443:443", // HTTPS
+                    "-p",
+                    "8080:8080", // Tinkerbell Hook service
+                    "-p",
+                    "69:69/udp", // TFTP (for PXE)
+                    "-p",
+                    "53:53/udp", // DNS
+                    "-p",
+                    "67:67/udp", // DHCP
+                    "-v",
+                    "k3s-server:/var/lib/rancher/k3s",
+                    "--restart",
+                    "always",
+                    "rancher/k3s:latest",
+                    "server",
+                    "--disable",
+                    "traefik",
                 ])
                 .output()
                 .context("Failed to start k3s Docker container")?;
-                
+
             if !run_output.status.success() {
                 let stderr = String::from_utf8_lossy(&run_output.stderr);
                 return Err(anyhow!("Failed to start k3s in Docker: {}", stderr));
             }
-            
+
             // Wait for k3s to start
             info!("Waiting for k3s container to initialize...");
             tokio::time::sleep(tokio::time::Duration::from_secs(15)).await;
         } else {
             info!("k3s Docker container already exists");
-            
+
             // Check if it's running
             let is_running = Command::new("docker")
-                .args(["ps", "-q", "--filter", "name=k3s-server", "--filter", "status=running"])
+                .args([
+                    "ps",
+                    "-q",
+                    "--filter",
+                    "name=k3s-server",
+                    "--filter",
+                    "status=running",
+                ])
                 .output()
                 .map(|output| !String::from_utf8_lossy(&output.stdout).trim().is_empty())
                 .unwrap_or(false);
-                
+
             if !is_running {
                 // Start the container if it exists but isn't running
                 info!("Starting existing k3s container");
@@ -1333,23 +1513,26 @@ pub async fn deploy_k3s_and_handoff() -> Result<()> {
                     .args(["start", "k3s-server"])
                     .output()
                     .context("Failed to start existing k3s container")?;
-                    
+
                 if !start_output.status.success() {
                     let stderr = String::from_utf8_lossy(&start_output.stderr);
-                    return Err(anyhow!("Failed to start existing k3s container: {}", stderr));
+                    return Err(anyhow!(
+                        "Failed to start existing k3s container: {}",
+                        stderr
+                    ));
                 }
-                
+
                 // Wait for k3s to start
                 tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
             }
         }
-        
+
         // Copy the kubeconfig from the container
         info!("Extracting kubeconfig from k3s container");
         let home = std::env::var("HOME").context("Failed to get home directory")?;
         let kubeconfig_dir = format!("{}/.kube", home);
         tokio::fs::create_dir_all(&kubeconfig_dir).await.ok(); // Ignore error if dir exists
-        
+
         // First, copy the kubeconfig file
         let copy_cmd = format!(
             "docker cp k3s-server:/etc/rancher/k3s/k3s.yaml {}/.kube/config",
@@ -1361,10 +1544,13 @@ pub async fn deploy_k3s_and_handoff() -> Result<()> {
             .arg(&copy_cmd)
             .output()
             .context("Failed to copy kubeconfig from container")?;
-            
+
         if !copy_output.status.success() {
             let stderr = String::from_utf8_lossy(&copy_output.stderr);
-            return Err(anyhow!("Failed to copy kubeconfig from container: {}", stderr));
+            return Err(anyhow!(
+                "Failed to copy kubeconfig from container: {}",
+                stderr
+            ));
         }
 
         // Then, modify the kubeconfig file using sed
@@ -1379,71 +1565,77 @@ pub async fn deploy_k3s_and_handoff() -> Result<()> {
             .arg(&sed_cmd)
             .output()
             .context("Failed to update kubeconfig server address")?;
-            
+
         if !sed_output.status.success() {
             let stderr = String::from_utf8_lossy(&sed_output.stderr);
             info!("Warning when updating kubeconfig: {}", stderr);
             // This is non-fatal, the user might need to manually edit the file
         }
-        
+
         // Set KUBECONFIG environment variable for kubectl and helm
         let kubeconfig_path = format!("{}/.kube/config", home);
         // SAFETY: Single-threaded initialization before spawning async tasks
-        unsafe { std::env::set_var("KUBECONFIG", &kubeconfig_path); }
-        info!("Set KUBECONFIG environment variable to: {}", kubeconfig_path);
+        unsafe {
+            std::env::set_var("KUBECONFIG", &kubeconfig_path);
+        }
+        info!(
+            "Set KUBECONFIG environment variable to: {}",
+            kubeconfig_path
+        );
 
         // Add kubernetes.docker.internal to /etc/hosts if not already there
         let hosts_check = Command::new("grep")
             .args(["kubernetes.docker.internal", "/etc/hosts"])
             .output();
-            
-        if hosts_check.map(|output| !output.status.success()).unwrap_or(true) {
+
+        if hosts_check
+            .map(|output| !output.status.success())
+            .unwrap_or(true)
+        {
             info!("Adding kubernetes.docker.internal to /etc/hosts");
             let hosts_cmd = "echo '127.0.0.1 kubernetes.docker.internal' | sudo tee -a /etc/hosts";
-            let _ = Command::new("sh")
-                .arg("-c")
-                .arg(hosts_cmd)
-                .output();
+            let _ = Command::new("sh").arg("-c").arg(hosts_cmd).output();
             // We don't check for errors here because it might require sudo
             // The user can add this manually if needed
         }
-        
+
         // Install Helm if needed
         info!("Installing Helm if needed");
         install_helm().await?;
-        
+
         // Install Tinkerbell stack (would normally happen here)
         info!("Installing Tinkerbell stack");
         // This would call tinkerbell stack installation function
     } else {
         // Linux native k3s installation
         info!("Installing k3s for Flight mode (Linux native)");
-        
+
         // Check if k3s is already installed
-        let k3s_installed = Path::new("/etc/rancher/k3s/k3s.yaml").exists() && 
-                          check_service_running("k3s").await;
-        
+        let k3s_installed =
+            Path::new("/etc/rancher/k3s/k3s.yaml").exists() && check_service_running("k3s").await;
+
         if !k3s_installed {
             // Install k3s
             info!("Installing k3s (single-node)");
-            let script = r#"curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC='--disable traefik' sh -"#;
+            let script =
+                r#"curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC='--disable traefik' sh -"#;
             let output = Command::new("sh")
                 .arg("-c")
                 .arg(script)
                 .output()
                 .context("Failed to execute k3s installation script")?;
-                
+
             if !output.status.success() {
                 let stderr = String::from_utf8_lossy(&output.stderr);
                 return Err(anyhow!("k3s installation failed: {}", stderr));
             }
-            
+
             // Wait for k3s to start
             tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
         } else {
             info!("k3s is already installed, skipping installation");
         }
-        
+
         // Verify k3s is running
         if !check_service_running("k3s").await {
             // Try to restart k3s
@@ -1452,49 +1644,49 @@ pub async fn deploy_k3s_and_handoff() -> Result<()> {
                 .args(["restart", "k3s"])
                 .output()
                 .context("Failed to restart k3s service")?;
-                
+
             if !restart_output.status.success() {
                 let stderr = String::from_utf8_lossy(&restart_output.stderr);
                 return Err(anyhow!("Failed to restart k3s service: {}", stderr));
             }
-            
+
             // Wait for the service to start
             tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
-            
+
             // Check again
             if !check_service_running("k3s").await {
                 return Err(anyhow!("k3s service failed to start after installation"));
             }
         }
-        
+
         // Configure kubectl
         info!("Configuring kubectl");
         let kubeconfig_path = configure_kubectl().await?;
-        
+
         // Wait for node to be ready
         info!("Waiting for Kubernetes node to become ready");
         wait_for_node_ready(&kubeconfig_path).await?;
-        
+
         // Install helm if needed
         info!("Installing Helm if needed");
         install_helm().await?;
-        
+
         // Install Tinkerbell stack
         info!("Installing Tinkerbell stack");
         // This would normally call the tinkerbell stack installation function
     }
-    
+
     // Write the handoff ready file with our PID
     tokio::fs::write(HANDOFF_READY_FILE, format!("{}", my_pid))
         .await
         .context("Failed to write handoff ready file")?;
-    
+
     info!("K3s deployment completed - handoff ready file created");
-    
+
     // Set up a signal handler for SIGUSR2 (ACK)
-    let mut sigusr2 = signal(SignalKind::user_defined2())
-        .context("Failed to install SIGUSR2 handler")?;
-    
+    let mut sigusr2 =
+        signal(SignalKind::user_defined2()).context("Failed to install SIGUSR2 handler")?;
+
     // Wait for ACK or timeout
     let ack_received = tokio::select! {
         _ = sigusr2.recv() => {
@@ -1506,7 +1698,7 @@ pub async fn deploy_k3s_and_handoff() -> Result<()> {
             false
         }
     };
-    
+
     // If no ACK received, it might mean the Rust server is already terminated
     if !ack_received {
         // Check if the handoff file still exists and remove it
@@ -1514,12 +1706,12 @@ pub async fn deploy_k3s_and_handoff() -> Result<()> {
             let _ = tokio::fs::remove_file(HANDOFF_READY_FILE).await;
         }
     }
-    
+
     // Start the server in k3s
     info!("Starting Dragonfly server in k3s");
-    
+
     // TODO: Add code to start server in k3s
-    
+
     Ok(())
 }
 
@@ -1528,16 +1720,13 @@ async fn check_service_running(service_name: &str) -> bool {
     // Check if we're on macOS
     if std::env::consts::OS == "macos" || std::env::consts::OS == "darwin" {
         // For macOS, use pgrep to check if process is running
-        let output = Command::new("pgrep")
-            .arg("-f")
-            .arg(service_name)
-            .output();
-            
+        let output = Command::new("pgrep").arg("-f").arg(service_name).output();
+
         match output {
             Ok(output) => {
                 let stdout = String::from_utf8_lossy(&output.stdout);
                 !stdout.trim().is_empty()
-            },
+            }
             Err(_) => false,
         }
     } else {
@@ -1545,12 +1734,12 @@ async fn check_service_running(service_name: &str) -> bool {
         let output = Command::new("systemctl")
             .args(["is-active", service_name])
             .output();
-            
+
         match output {
             Ok(output) => {
                 let stdout = String::from_utf8_lossy(&output.stdout);
                 stdout.trim() == "active"
-            },
+            }
             Err(_) => false,
         }
     }
@@ -1567,7 +1756,7 @@ async fn configure_kubectl() -> Result<PathBuf> {
         let test_result = Command::new("kubectl")
             .args(["--kubeconfig", dest_path.to_str().unwrap(), "cluster-info"])
             .output();
-            
+
         if let Ok(output) = test_result {
             if output.status.success() {
                 return Ok(dest_path);
@@ -1581,7 +1770,7 @@ async fn configure_kubectl() -> Result<PathBuf> {
         tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
         attempts += 1;
     }
-    
+
     if !source_path.exists() {
         return Err(anyhow!("k3s config file not found after 60 seconds"));
     }
@@ -1590,7 +1779,7 @@ async fn configure_kubectl() -> Result<PathBuf> {
     // This avoids using libc directly for better musl compatibility
     let needs_sudo = match tokio::fs::metadata(&source_path).await {
         Ok(_) => false, // If we can stat the file, we likely have access
-        Err(_) => true,  // If we can't, we likely need sudo
+        Err(_) => true, // If we can't, we likely need sudo
     };
 
     // Copy the file
@@ -1600,16 +1789,18 @@ async fn configure_kubectl() -> Result<PathBuf> {
         source_path.display(),
         dest_path.display()
     );
-    
+
     let cp_output = Command::new("sh")
         .arg("-c")
         .arg(cp_cmd.trim())
         .output()
         .context("Failed to copy k3s.yaml")?;
-        
+
     if !cp_output.status.success() {
-        return Err(anyhow!("Failed to copy k3s.yaml: {}", 
-            String::from_utf8_lossy(&cp_output.stderr)));
+        return Err(anyhow!(
+            "Failed to copy k3s.yaml: {}",
+            String::from_utf8_lossy(&cp_output.stderr)
+        ));
     }
 
     // Get current user for chown
@@ -1624,16 +1815,18 @@ async fn configure_kubectl() -> Result<PathBuf> {
         user,
         dest_path.display()
     );
-    
+
     let chown_output = Command::new("sh")
         .arg("-c")
         .arg(chown_cmd.trim())
         .output()
         .context("Failed to chown k3s.yaml")?;
-        
+
     if !chown_output.status.success() {
-        return Err(anyhow!("Failed to change ownership of k3s.yaml: {}", 
-            String::from_utf8_lossy(&chown_output.stderr)));
+        return Err(anyhow!(
+            "Failed to change ownership of k3s.yaml: {}",
+            String::from_utf8_lossy(&chown_output.stderr)
+        ));
     }
 
     Ok(dest_path)
@@ -1643,7 +1836,7 @@ async fn configure_kubectl() -> Result<PathBuf> {
 async fn wait_for_node_ready(kubeconfig_path: &PathBuf) -> Result<()> {
     let max_wait = std::time::Duration::from_secs(300); // 5 minutes timeout
     let start_time = std::time::Instant::now();
-    
+
     let mut node_ready = false;
     let mut coredns_ready = false;
 
@@ -1657,10 +1850,11 @@ async fn wait_for_node_ready(kubeconfig_path: &PathBuf) -> Result<()> {
 
             if let Ok(output) = output_result {
                 let stdout = String::from_utf8_lossy(&output.stdout);
-                
-                if output.status.success() && 
-                   stdout.contains(" Ready") && 
-                   !stdout.contains("NotReady") {
+
+                if output.status.success()
+                    && stdout.contains(" Ready")
+                    && !stdout.contains("NotReady")
+                {
                     info!("Kubernetes node is ready");
                     node_ready = true;
                 }
@@ -1670,24 +1864,42 @@ async fn wait_for_node_ready(kubeconfig_path: &PathBuf) -> Result<()> {
         // Check if CoreDNS is ready
         if node_ready && !coredns_ready {
             let coredns_exists_result = Command::new("kubectl")
-                .args(["get", "pods", "-n", "kube-system", "-l", "k8s-app=kube-dns", "--no-headers"])
+                .args([
+                    "get",
+                    "pods",
+                    "-n",
+                    "kube-system",
+                    "-l",
+                    "k8s-app=kube-dns",
+                    "--no-headers",
+                ])
                 .env("KUBECONFIG", kubeconfig_path)
                 .output();
-                
+
             if let Ok(output) = &coredns_exists_result {
-                if output.status.success() && !String::from_utf8_lossy(&output.stdout).trim().is_empty() {
+                if output.status.success()
+                    && !String::from_utf8_lossy(&output.stdout).trim().is_empty()
+                {
                     let coredns_status = Command::new("kubectl")
-                        .args(["get", "pods", "-n", "kube-system", "-l", "k8s-app=kube-dns", 
-                               "-o", "jsonpath='{.items[*].status.conditions[?(@.type==\"Ready\")].status}'"])
+                        .args([
+                            "get",
+                            "pods",
+                            "-n",
+                            "kube-system",
+                            "-l",
+                            "k8s-app=kube-dns",
+                            "-o",
+                            "jsonpath='{.items[*].status.conditions[?(@.type==\"Ready\")].status}'",
+                        ])
                         .env("KUBECONFIG", kubeconfig_path)
                         .output();
-                        
+
                     if let Ok(status) = coredns_status {
                         let status_str = String::from_utf8_lossy(&status.stdout)
                             .trim()
                             .trim_matches('\'')
                             .to_string();
-                            
+
                         if status_str.contains("True") {
                             info!("CoreDNS is ready");
                             coredns_ready = true;
@@ -1707,7 +1919,9 @@ async fn wait_for_node_ready(kubeconfig_path: &PathBuf) -> Result<()> {
     }
 
     // If we get here, we timed out
-    Err(anyhow!("Timed out waiting for Kubernetes node to become ready"))
+    Err(anyhow!(
+        "Timed out waiting for Kubernetes node to become ready"
+    ))
 }
 
 // Helper function to install Helm
@@ -1718,25 +1932,26 @@ async fn install_helm() -> Result<()> {
         .output()
         .map(|output| output.status.success())
         .unwrap_or(false);
-        
+
     if helm_installed {
         info!("Helm is already installed");
         return Ok(());
     }
-    
+
     info!("Installing Helm");
-    let script = r#"curl -sSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash"#;
+    let script =
+        r#"curl -sSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash"#;
     let output = Command::new("sh")
         .arg("-c")
         .arg(script)
         .output()
         .context("Failed to execute Helm installation script")?;
-        
+
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(anyhow!("Helm installation failed: {}", stderr));
     }
-    
+
     info!("Helm installed successfully");
     Ok(())
 }
@@ -1744,7 +1959,7 @@ async fn install_helm() -> Result<()> {
 // Configure the system for Swarm mode
 pub async fn configure_swarm_mode() -> Result<()> {
     info!("Configuring system for Swarm mode");
-    
+
     // NOTE: Mode is saved by the UI handler via app_state.store BEFORE calling this function
 
     // Ensure /var/lib/dragonfly exists and is owned by the current user on macOS
@@ -1752,20 +1967,20 @@ pub async fn configure_swarm_mode() -> Result<()> {
         warn!("Failed to ensure /var/lib/dragonfly ownership: {}", e);
         // Non-critical, continue anyway
     }
-    
+
     // TODO: Implement Citadel integration for Swarm mode
 
     info!("System configured for Swarm mode.");
-    
+
     let is_macos = std::env::consts::OS == "macos" || std::env::consts::OS == "darwin";
-    
+
     if !is_macos {
         // Start the service via service manager (which will exit on non-macOS)
         start_service()?;
     } else {
         info!("Running in foreground mode on macOS");
     }
-    
+
     Ok(())
 }
 
@@ -1781,27 +1996,10 @@ fn run_shell_command(script: &str, description: &str) -> Result<()> {
         .with_context(|| format!("Failed to execute command: {}", description))?;
 
     if !output.status.success() {
-        error!("Command '{}' failed with status: {}", description, output.status);
-        error!("Stderr: {}", String::from_utf8_lossy(&output.stderr));
-        error!("Stdout: {}", String::from_utf8_lossy(&output.stdout));
-        // Use anyhow::bail here as the function returns anyhow::Result
-        bail!("Command '{}' failed", description);
-    } else {
-         debug!("Command '{}' succeeded.", description);
-    }
-    Ok(())
-}
-
-// Placeholder for run_command - Implement robustly
-fn run_command(cmd: &str, args: &[&str], description: &str) -> Result<std::process::Output> { // Specify Output type
-    debug!("Running command: {} {}", cmd, args.join(" "));
-     let output = Command::new(cmd)
-        .args(args)
-        .output()
-        .with_context(|| format!("Failed to execute command: {}", description))?;
-
-     if !output.status.success() {
-        error!("Command '{}' failed with status: {}", description, output.status);
+        error!(
+            "Command '{}' failed with status: {}",
+            description, output.status
+        );
         error!("Stderr: {}", String::from_utf8_lossy(&output.stderr));
         error!("Stdout: {}", String::from_utf8_lossy(&output.stdout));
         // Use anyhow::bail here as the function returns anyhow::Result
@@ -1809,7 +2007,31 @@ fn run_command(cmd: &str, args: &[&str], description: &str) -> Result<std::proce
     } else {
         debug!("Command '{}' succeeded.", description);
     }
-     Ok(output)
+    Ok(())
+}
+
+// Placeholder for run_command - Implement robustly
+fn run_command(cmd: &str, args: &[&str], description: &str) -> Result<std::process::Output> {
+    // Specify Output type
+    debug!("Running command: {} {}", cmd, args.join(" "));
+    let output = Command::new(cmd)
+        .args(args)
+        .output()
+        .with_context(|| format!("Failed to execute command: {}", description))?;
+
+    if !output.status.success() {
+        error!(
+            "Command '{}' failed with status: {}",
+            description, output.status
+        );
+        error!("Stderr: {}", String::from_utf8_lossy(&output.stderr));
+        error!("Stdout: {}", String::from_utf8_lossy(&output.stdout));
+        // Use anyhow::bail here as the function returns anyhow::Result
+        bail!("Command '{}' failed", description);
+    } else {
+        debug!("Command '{}' succeeded.", description);
+    }
+    Ok(output)
 }
 
 // Function to check if WebUI service is ready (based on get_webui_address)
@@ -1818,7 +2040,7 @@ async fn check_webui_service_status() -> anyhow::Result<bool> {
     match get_webui_address().await {
         Ok(Some(_)) => Ok(true), // Address available means service is ready
         Ok(None) => Ok(false),   // No address means not ready
-        Err(e) => Err(anyhow!("Error checking WebUI service: {}", e))
+        Err(e) => Err(anyhow!("Error checking WebUI service: {}", e)),
     }
 }
 
@@ -1830,10 +2052,7 @@ pub fn detect_server_ip() -> Option<String> {
     // Method 1: Use ip route to find the source IP for outbound traffic
     // This is the most reliable method as it shows which IP would be used
     // to reach external hosts
-    if let Ok(output) = Command::new("ip")
-        .args(["route", "get", "1"])
-        .output()
-    {
+    if let Ok(output) = Command::new("ip").args(["route", "get", "1"]).output() {
         if output.status.success() {
             let stdout = String::from_utf8_lossy(&output.stdout);
             // Output looks like: "1.0.0.0 via 10.7.1.1 dev eth0 src 10.7.1.125 uid 0"
@@ -1851,10 +2070,7 @@ pub fn detect_server_ip() -> Option<String> {
     }
 
     // Method 2: Parse hostname -I for the first non-localhost IP
-    if let Ok(output) = Command::new("hostname")
-        .args(["-I"])
-        .output()
-    {
+    if let Ok(output) = Command::new("hostname").args(["-I"]).output() {
         if output.status.success() {
             let stdout = String::from_utf8_lossy(&output.stdout);
             for ip in stdout.split_whitespace() {
@@ -1929,4 +2145,4 @@ async fn get_loadbalancer_ip() -> Result<String> {
     // Fallback to localhost
     debug!("Using localhost as load balancer address");
     Ok("localhost".to_string())
-} 
+}

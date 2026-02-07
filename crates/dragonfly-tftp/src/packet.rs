@@ -35,7 +35,10 @@ impl TryFrom<u16> for Opcode {
             4 => Ok(Opcode::Ack),
             5 => Ok(Opcode::Error),
             6 => Ok(Opcode::Oack),
-            _ => Err(TftpError::InvalidPacket(format!("unknown opcode: {}", value))),
+            _ => Err(TftpError::InvalidPacket(format!(
+                "unknown opcode: {}",
+                value
+            ))),
         }
     }
 }
@@ -211,7 +214,9 @@ impl TftpPacket {
 
     fn parse_data(data: &[u8]) -> Result<Self> {
         if data.len() < 2 {
-            return Err(TftpError::InvalidPacket("data packet too short".to_string()));
+            return Err(TftpError::InvalidPacket(
+                "data packet too short".to_string(),
+            ));
         }
 
         let mut buf = data;
@@ -234,7 +239,9 @@ impl TftpPacket {
 
     fn parse_error(data: &[u8]) -> Result<Self> {
         if data.len() < 2 {
-            return Err(TftpError::InvalidPacket("error packet too short".to_string()));
+            return Err(TftpError::InvalidPacket(
+                "error packet too short".to_string(),
+            ));
         }
 
         let mut buf = data;
@@ -411,8 +418,14 @@ mod tests {
 
     #[test]
     fn test_transfer_mode() {
-        assert_eq!(TransferMode::from_str("octet").unwrap(), TransferMode::Octet);
-        assert_eq!(TransferMode::from_str("OCTET").unwrap(), TransferMode::Octet);
+        assert_eq!(
+            TransferMode::from_str("octet").unwrap(),
+            TransferMode::Octet
+        );
+        assert_eq!(
+            TransferMode::from_str("OCTET").unwrap(),
+            TransferMode::Octet
+        );
         assert_eq!(
             TransferMode::from_str("netascii").unwrap(),
             TransferMode::NetAscii
@@ -431,9 +444,7 @@ mod tests {
 
         let parsed = TftpPacket::parse(&packet).unwrap();
         match parsed {
-            TftpPacket::ReadRequest {
-                filename, mode, ..
-            } => {
+            TftpPacket::ReadRequest { filename, mode, .. } => {
                 assert_eq!(filename, "ipxe.efi");
                 assert_eq!(mode, TransferMode::Octet);
             }

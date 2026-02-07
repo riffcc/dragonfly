@@ -2,7 +2,7 @@
 //!
 //! Sets up and runs Dragonfly with hot-reloading templates for development.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use tracing::debug;
@@ -24,7 +24,9 @@ fn find_project_root() -> Result<PathBuf> {
         }
 
         if !current.pop() {
-            bail!("Could not find Dragonfly project root. Run from within the dragonfly source directory.");
+            bail!(
+                "Could not find Dragonfly project root. Run from within the dragonfly source directory."
+            );
         }
     }
 }
@@ -69,7 +71,10 @@ fn setup_dev_environment(project_root: &Path) -> Result<()> {
 
     // Verify source directories exist
     if !templates_src.exists() {
-        bail!("Templates directory not found at {}", templates_src.display());
+        bail!(
+            "Templates directory not found at {}",
+            templates_src.display()
+        );
     }
     if !static_src.exists() {
         bail!("Static directory not found at {}", static_src.display());
@@ -82,7 +87,11 @@ fn setup_dev_environment(project_root: &Path) -> Result<()> {
     let opt_dragonfly = Path::new("/opt/dragonfly");
     ensure_dir(opt_dragonfly)?;
     let opt_templates = opt_dragonfly.join("templates");
-    debug!("Symlinking {} -> {}", templates_src.display(), opt_templates.display());
+    debug!(
+        "Symlinking {} -> {}",
+        templates_src.display(),
+        opt_templates.display()
+    );
     symlink(&templates_src, &opt_templates)?;
 
     // Set up relative paths for debug mode (relative to DATA_DIR working directory)
@@ -90,11 +99,19 @@ fn setup_dev_environment(project_root: &Path) -> Result<()> {
     ensure_dir(&data_crates)?;
 
     let data_templates = data_crates.join("templates");
-    debug!("Symlinking {} -> {}", templates_src.display(), data_templates.display());
+    debug!(
+        "Symlinking {} -> {}",
+        templates_src.display(),
+        data_templates.display()
+    );
     symlink(&templates_src, &data_templates)?;
 
     let data_static = data_crates.join("static");
-    debug!("Symlinking {} -> {}", static_src.display(), data_static.display());
+    debug!(
+        "Symlinking {} -> {}",
+        static_src.display(),
+        data_static.display()
+    );
     symlink(&static_src, &data_static)?;
 
     Ok(())

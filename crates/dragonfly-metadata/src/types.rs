@@ -278,7 +278,10 @@ mod tests {
             Some(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100)))
         );
         assert_eq!(meta.mac, Some("aa:bb:cc:dd:ee:ff".to_string()));
-        assert_eq!(meta.tags.get("environment"), Some(&"production".to_string()));
+        assert_eq!(
+            meta.tags.get("environment"),
+            Some(&"production".to_string())
+        );
         assert_eq!(meta.availability_zone, Some("us-west-2a".to_string()));
     }
 

@@ -5,7 +5,7 @@
 
 use super::{Result, Store, StoreError, User};
 use async_trait::async_trait;
-use dragonfly_common::{normalize_mac, Machine, MachineState, Network};
+use dragonfly_common::{Machine, MachineState, Network, normalize_mac};
 use dragonfly_crd::{Template, Workflow};
 use std::collections::{HashMap, HashSet};
 use std::sync::RwLock;
@@ -444,8 +444,9 @@ impl Store for MemoryStore {
             .map_err(|e| StoreError::InvalidData(format!("Invalid workflow UUID: {}", e)))?;
 
         // Parse machine reference as UUID
-        let machine_id = Uuid::parse_str(&workflow.spec.hardware_ref)
-            .map_err(|e| StoreError::InvalidData(format!("Invalid machine UUID in workflow: {}", e)))?;
+        let machine_id = Uuid::parse_str(&workflow.spec.hardware_ref).map_err(|e| {
+            StoreError::InvalidData(format!("Invalid machine UUID in workflow: {}", e))
+        })?;
 
         // Insert workflow
         {

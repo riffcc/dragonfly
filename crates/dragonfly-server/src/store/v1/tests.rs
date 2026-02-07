@@ -4,12 +4,11 @@
 //! against any implementation (MemoryStore, SqliteStore, EtcdStore).
 
 use super::*;
+use chrono::Utc;
 use dragonfly_common::{
     BmcConfig, BmcType, Disk, HardwareInfo, Machine, MachineConfig, MachineIdentity,
-    MachineMetadata, MachineSource, MachineState, MachineStatus, NetworkInterface,
-    WorkflowResult,
+    MachineMetadata, MachineSource, MachineState, MachineStatus, NetworkInterface, WorkflowResult,
 };
-use chrono::Utc;
 use dragonfly_crd::{ActionStep, Image2DiskConfig, Template, Workflow};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -154,8 +153,20 @@ async fn test_machine_delete() {
 
     // Verify deleted
     assert!(store.get_machine(id).await.unwrap().is_none());
-    assert!(store.get_machine_by_identity(&identity_hash).await.unwrap().is_none());
-    assert!(store.get_machine_by_mac("00:11:22:33:44:55").await.unwrap().is_none());
+    assert!(
+        store
+            .get_machine_by_identity(&identity_hash)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        store
+            .get_machine_by_mac("00:11:22:33:44:55")
+            .await
+            .unwrap()
+            .is_none()
+    );
 }
 
 #[tokio::test]
@@ -242,10 +253,16 @@ async fn test_machine_list_by_state() {
     store.put_machine(&m3).await.unwrap();
     store.put_machine(&m4).await.unwrap();
 
-    let discovered = store.list_machines_by_state(&MachineState::Discovered).await.unwrap();
+    let discovered = store
+        .list_machines_by_state(&MachineState::Discovered)
+        .await
+        .unwrap();
     assert_eq!(discovered.len(), 1);
 
-    let ready = store.list_machines_by_state(&MachineState::ReadyToInstall).await.unwrap();
+    let ready = store
+        .list_machines_by_state(&MachineState::ReadyToInstall)
+        .await
+        .unwrap();
     assert_eq!(ready.len(), 2);
 
     let failed = store
@@ -266,7 +283,10 @@ async fn test_machine_index_update_on_state_change() {
     store.put_machine(&machine).await.unwrap();
 
     // Verify in discovered state
-    let discovered = store.list_machines_by_state(&MachineState::Discovered).await.unwrap();
+    let discovered = store
+        .list_machines_by_state(&MachineState::Discovered)
+        .await
+        .unwrap();
     assert_eq!(discovered.len(), 1);
 
     // Change state
@@ -274,10 +294,16 @@ async fn test_machine_index_update_on_state_change() {
     store.put_machine(&machine).await.unwrap();
 
     // Verify moved to new state
-    let discovered = store.list_machines_by_state(&MachineState::Discovered).await.unwrap();
+    let discovered = store
+        .list_machines_by_state(&MachineState::Discovered)
+        .await
+        .unwrap();
     assert!(discovered.is_empty());
 
-    let installing = store.list_machines_by_state(&MachineState::Installing).await.unwrap();
+    let installing = store
+        .list_machines_by_state(&MachineState::Installing)
+        .await
+        .unwrap();
     assert_eq!(installing.len(), 1);
 }
 
@@ -304,7 +330,10 @@ async fn test_machine_reidentification_by_hash() {
     // Same identity sources should produce same hash
     let returning_identity = MachineIdentity::new(
         "00:11:22:33:44:55".to_string(),
-        vec!["00:11:22:33:44:55".to_string(), "aa:bb:cc:dd:ee:ff".to_string()],
+        vec![
+            "00:11:22:33:44:55".to_string(),
+            "aa:bb:cc:dd:ee:ff".to_string(),
+        ],
         Some("smbios-uuid-abc".to_string()),
         None,
         None,
@@ -313,7 +342,10 @@ async fn test_machine_reidentification_by_hash() {
     assert_eq!(returning_identity.identity_hash, identity_hash);
 
     // Should find the existing machine
-    let found = store.get_machine_by_identity(&returning_identity.identity_hash).await.unwrap();
+    let found = store
+        .get_machine_by_identity(&returning_identity.identity_hash)
+        .await
+        .unwrap();
     assert!(found.is_some());
     assert_eq!(found.unwrap().id, original_id);
 }
@@ -335,7 +367,10 @@ async fn test_machine_reidentification_primary_mac_changed() {
     // (Same MACs, just different primary)
     let new_identity = MachineIdentity::new(
         "aa:bb:cc:dd:ee:ff".to_string(), // Different primary
-        vec!["00:11:22:33:44:55".to_string(), "aa:bb:cc:dd:ee:ff".to_string()],
+        vec![
+            "00:11:22:33:44:55".to_string(),
+            "aa:bb:cc:dd:ee:ff".to_string(),
+        ],
         Some("smbios-uuid-xyz".to_string()),
         None,
         None,
@@ -345,7 +380,10 @@ async fn test_machine_reidentification_primary_mac_changed() {
     assert_eq!(new_identity.identity_hash, original_hash);
 
     // Should find by identity hash even though primary MAC changed
-    let found = store.get_machine_by_identity(&new_identity.identity_hash).await.unwrap();
+    let found = store
+        .get_machine_by_identity(&new_identity.identity_hash)
+        .await
+        .unwrap();
     assert!(found.is_some());
 }
 
@@ -357,12 +395,13 @@ async fn test_machine_reidentification_primary_mac_changed() {
 async fn test_template_crud() {
     let store = create_test_store();
 
-    let template = Template::new("debian-13").with_action(ActionStep::Image2disk(Image2DiskConfig {
-        url: "http://example.com/debian.raw".to_string(),
-        disk: "auto".to_string(),
-        checksum: None,
-        timeout: Some(1800),
-    }));
+    let template =
+        Template::new("debian-13").with_action(ActionStep::Image2disk(Image2DiskConfig {
+            url: "http://example.com/debian.raw".to_string(),
+            disk: "auto".to_string(),
+            checksum: None,
+            timeout: Some(1800),
+        }));
 
     // Put
     store.put_template(&template).await.unwrap();
@@ -418,7 +457,11 @@ async fn test_workflow_crud() {
 
     // Create workflow with UUIDv7 as name
     let workflow_id = Uuid::now_v7();
-    let mut workflow = Workflow::new(&workflow_id.to_string(), &machine_id.to_string(), "debian-13");
+    let mut workflow = Workflow::new(
+        &workflow_id.to_string(),
+        &machine_id.to_string(),
+        "debian-13",
+    );
 
     // Put
     store.put_workflow(&workflow).await.unwrap();
@@ -439,7 +482,13 @@ async fn test_workflow_crud() {
     let deleted = store.delete_workflow(workflow_id).await.unwrap();
     assert!(deleted);
     assert!(store.get_workflow(workflow_id).await.unwrap().is_none());
-    assert!(store.get_workflows_for_machine(machine_id).await.unwrap().is_empty());
+    assert!(
+        store
+            .get_workflows_for_machine(machine_id)
+            .await
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[tokio::test]
@@ -503,8 +552,7 @@ async fn test_default_os_setting_roundtrip() {
     store.put_setting("default_os", os_choice).await.unwrap();
 
     // Read it back exactly as settings_page does
-    let default_os = store.get_setting("default_os").await
-        .ok().flatten();
+    let default_os = store.get_setting("default_os").await.ok().flatten();
 
     // Verify it's Some("debian-13")
     assert_eq!(default_os, Some("debian-13".to_string()));
@@ -519,8 +567,14 @@ async fn test_default_os_setting_roundtrip() {
 async fn test_settings_list_by_prefix() {
     let store = create_test_store();
 
-    store.put_setting("proxmox.api_url", "https://pve.local:8006").await.unwrap();
-    store.put_setting("proxmox.username", "root@pam").await.unwrap();
+    store
+        .put_setting("proxmox.api_url", "https://pve.local:8006")
+        .await
+        .unwrap();
+    store
+        .put_setting("proxmox.username", "root@pam")
+        .await
+        .unwrap();
     store.put_setting("app.mode", "production").await.unwrap();
     store.put_setting("app.debug", "false").await.unwrap();
 
@@ -732,9 +786,17 @@ async fn test_machine_from_proxmox() {
 
     let retrieved = store.get_machine(machine.id).await.unwrap().unwrap();
     assert!(retrieved.hardware.is_virtual);
-    assert_eq!(retrieved.hardware.virt_platform, Some("proxmox".to_string()));
+    assert_eq!(
+        retrieved.hardware.virt_platform,
+        Some("proxmox".to_string())
+    );
 
-    if let MachineSource::Proxmox { cluster, node, vmid } = &retrieved.metadata.source {
+    if let MachineSource::Proxmox {
+        cluster,
+        node,
+        vmid,
+    } = &retrieved.metadata.source
+    {
         assert_eq!(cluster, "main-cluster");
         assert_eq!(node, "pve-node1");
         assert_eq!(*vmid, 100);
@@ -748,15 +810,27 @@ async fn test_machine_labels() {
     let store = create_test_store();
 
     let mut machine = test_machine("00:11:22:33:44:55");
-    machine.metadata.labels.insert("env".to_string(), "production".to_string());
-    machine.metadata.labels.insert("role".to_string(), "web-server".to_string());
-    machine.metadata.labels.insert("team".to_string(), "platform".to_string());
+    machine
+        .metadata
+        .labels
+        .insert("env".to_string(), "production".to_string());
+    machine
+        .metadata
+        .labels
+        .insert("role".to_string(), "web-server".to_string());
+    machine
+        .metadata
+        .labels
+        .insert("team".to_string(), "platform".to_string());
 
     store.put_machine(&machine).await.unwrap();
 
     let retrieved = store.get_machine(machine.id).await.unwrap().unwrap();
     assert_eq!(retrieved.metadata.labels.len(), 3);
-    assert_eq!(retrieved.metadata.labels.get("env"), Some(&"production".to_string()));
+    assert_eq!(
+        retrieved.metadata.labels.get("env"),
+        Some(&"production".to_string())
+    );
 }
 
 #[tokio::test]
@@ -851,7 +925,10 @@ async fn test_sqlite_machine_indices() {
     assert_eq!(production.len(), 1);
 
     // State index
-    let ready_to_install = store.list_machines_by_state(&MachineState::ReadyToInstall).await.unwrap();
+    let ready_to_install = store
+        .list_machines_by_state(&MachineState::ReadyToInstall)
+        .await
+        .unwrap();
     assert_eq!(ready_to_install.len(), 1);
     assert_eq!(ready_to_install[0].id, m1.id);
 }
@@ -860,12 +937,13 @@ async fn test_sqlite_machine_indices() {
 async fn test_sqlite_template_crud() {
     let store = create_sqlite_store().await;
 
-    let template = Template::new("debian-13").with_action(ActionStep::Image2disk(Image2DiskConfig {
-        url: "http://example.com/debian.raw".to_string(),
-        disk: "auto".to_string(),
-        checksum: None,
-        timeout: Some(1800),
-    }));
+    let template =
+        Template::new("debian-13").with_action(ActionStep::Image2disk(Image2DiskConfig {
+            url: "http://example.com/debian.raw".to_string(),
+            disk: "auto".to_string(),
+            checksum: None,
+            timeout: Some(1800),
+        }));
 
     store.put_template(&template).await.unwrap();
 
@@ -888,7 +966,11 @@ async fn test_sqlite_workflow_crud() {
     store.put_machine(&machine).await.unwrap();
 
     let workflow_id = Uuid::now_v7();
-    let workflow = Workflow::new(&workflow_id.to_string(), &machine_id.to_string(), "debian-13");
+    let workflow = Workflow::new(
+        &workflow_id.to_string(),
+        &machine_id.to_string(),
+        "debian-13",
+    );
 
     store.put_workflow(&workflow).await.unwrap();
 
@@ -906,8 +988,14 @@ async fn test_sqlite_workflow_crud() {
 async fn test_sqlite_settings_crud() {
     let store = create_sqlite_store().await;
 
-    store.put_setting("proxmox.api_url", "https://pve.local:8006").await.unwrap();
-    store.put_setting("proxmox.username", "root@pam").await.unwrap();
+    store
+        .put_setting("proxmox.api_url", "https://pve.local:8006")
+        .await
+        .unwrap();
+    store
+        .put_setting("proxmox.username", "root@pam")
+        .await
+        .unwrap();
     store.put_setting("app.mode", "production").await.unwrap();
 
     let value = store.get_setting("proxmox.api_url").await.unwrap();
@@ -930,7 +1018,10 @@ async fn test_sqlite_machine_update_preserves_indices() {
     store.put_machine(&machine).await.unwrap();
 
     // Verify initial state
-    let discovered = store.list_machines_by_state(&MachineState::Discovered).await.unwrap();
+    let discovered = store
+        .list_machines_by_state(&MachineState::Discovered)
+        .await
+        .unwrap();
     assert_eq!(discovered.len(), 1);
 
     // Update state
@@ -939,13 +1030,19 @@ async fn test_sqlite_machine_update_preserves_indices() {
     store.put_machine(&machine).await.unwrap();
 
     // Old indices should be cleaned up
-    let discovered = store.list_machines_by_state(&MachineState::Discovered).await.unwrap();
+    let discovered = store
+        .list_machines_by_state(&MachineState::Discovered)
+        .await
+        .unwrap();
     assert!(discovered.is_empty());
     let production = store.list_machines_by_tag("production").await.unwrap();
     assert!(production.is_empty());
 
     // New indices should be populated
-    let installing = store.list_machines_by_state(&MachineState::Installing).await.unwrap();
+    let installing = store
+        .list_machines_by_state(&MachineState::Installing)
+        .await
+        .unwrap();
     assert_eq!(installing.len(), 1);
     let staging = store.list_machines_by_tag("staging").await.unwrap();
     assert_eq!(staging.len(), 1);

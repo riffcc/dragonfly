@@ -1,7 +1,7 @@
-use serde::{Deserialize, Serialize};
 use chrono::{DateTime, Utc};
-use uuid::Uuid;
+use serde::{Deserialize, Serialize};
 use std::fmt;
+use uuid::Uuid;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Machine {
@@ -29,7 +29,7 @@ pub struct Machine {
     pub installation_progress: u8,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub installation_step: Option<String>,
-    pub last_deployment_duration: Option<i64>,  // Duration in seconds
+    pub last_deployment_duration: Option<i64>, // Duration in seconds
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cpu_model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -101,15 +101,15 @@ pub struct Machine {
 /// - `Offline`: Machine is offline (can be WoL'd)
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub enum MachineStatus {
-    Discovered,           // Just saw on network, no OS chosen
-    ReadyToInstall,       // OS chosen, waiting for next PXE boot
-    Initializing,         // Mage agent booted, checking in
-    Installing,           // Workflow started, executing actions
-    Writing,              // Image being written to disk
-    Installed,            // Successfully completed (was Ready)
-    ExistingOS,           // Has an OS already, not wiping
-    Failed(String),       // Something went wrong
-    Offline,              // Machine is offline (can be WoL'd)
+    Discovered,     // Just saw on network, no OS chosen
+    ReadyToInstall, // OS chosen, waiting for next PXE boot
+    Initializing,   // Mage agent booted, checking in
+    Installing,     // Workflow started, executing actions
+    Writing,        // Image being written to disk
+    Installed,      // Successfully completed (was Ready)
+    ExistingOS,     // Has an OS already, not wiping
+    Failed(String), // Something went wrong
+    Offline,        // Machine is offline (can be WoL'd)
 }
 
 impl MachineStatus {
@@ -130,10 +130,9 @@ impl MachineStatus {
 
     /// Whether this status represents an active installation
     pub fn is_installing(&self) -> bool {
-        matches!(self,
-            MachineStatus::Initializing |
-            MachineStatus::Installing |
-            MachineStatus::Writing
+        matches!(
+            self,
+            MachineStatus::Initializing | MachineStatus::Installing | MachineStatus::Writing
         )
     }
 }
@@ -288,7 +287,7 @@ pub struct BmcCredentialsUpdateResponse {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct InstallationProgressUpdateRequest {
-    pub progress: u8,  // 0-100 percentage
+    pub progress: u8, // 0-100 percentage
     pub step: Option<String>,
 }
 
@@ -296,4 +295,4 @@ pub struct InstallationProgressUpdateRequest {
 pub struct InstallationProgressUpdateResponse {
     pub success: bool,
     pub message: String,
-} 
+}

@@ -69,7 +69,9 @@ impl Action for RebootAction {
         // CRITICAL: Notify server that reboot is about to happen
         // This marks the workflow as complete and machine as installed BEFORE we reboot.
         // The async event reporter may not deliver in time — the reboot kills the process.
-        if let (Some(server_url), Some(workflow_id)) = (ctx.env("SERVER_URL"), ctx.env("WORKFLOW_ID")) {
+        if let (Some(server_url), Some(workflow_id)) =
+            (ctx.env("SERVER_URL"), ctx.env("WORKFLOW_ID"))
+        {
             let url = format!("{}/api/workflows/{}/events", server_url, workflow_id);
             info!(url = %url, "Notifying server that reboot is starting - marking installation complete");
 
@@ -98,11 +100,7 @@ impl Action for RebootAction {
         // Sync filesystems before reboot
         let _ = Command::new("sync").output().await;
 
-        reporter.report(Progress::new(
-            self.name(),
-            100,
-            "Rebooting now".to_string(),
-        ));
+        reporter.report(Progress::new(self.name(), 100, "Rebooting now".to_string()));
 
         info!("Rebooting machine NOW");
 
@@ -119,10 +117,7 @@ impl Action for RebootAction {
 /// will appear stuck at "Installing" forever. We retry aggressively because
 /// the server may be temporarily busy handling other machines' events.
 async fn notify_server_with_retry(url: &str, event_data: &serde_json::Value) {
-    let client = match reqwest::Client::builder()
-        .timeout(NOTIFY_TIMEOUT)
-        .build()
-    {
+    let client = match reqwest::Client::builder().timeout(NOTIFY_TIMEOUT).build() {
         Ok(c) => c,
         Err(e) => {
             tracing::error!(error = %e, "Failed to build HTTP client for server notification");
@@ -161,7 +156,10 @@ async fn notify_server_with_retry(url: &str, event_data: &serde_json::Value) {
         // Exponential backoff: 500ms, 1s, 2s, 4s
         if attempt < MAX_NOTIFY_RETRIES {
             let backoff = Duration::from_millis(500 * 2u64.pow(attempt - 1));
-            tracing::info!(backoff_ms = backoff.as_millis() as u64, "Backing off before retry");
+            tracing::info!(
+                backoff_ms = backoff.as_millis() as u64,
+                "Backing off before retry"
+            );
             tokio::time::sleep(backoff).await;
         }
     }

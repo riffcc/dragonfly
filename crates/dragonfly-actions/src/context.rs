@@ -372,10 +372,7 @@ mod tests {
             .with_output("bytes_written", 1024u64)
             .with_output("checksum", "abc123");
 
-        assert_eq!(
-            result.get_output_as::<u64>("bytes_written"),
-            Some(1024)
-        );
+        assert_eq!(result.get_output_as::<u64>("bytes_written"), Some(1024));
         assert_eq!(
             result.get_output_as::<String>("checksum"),
             Some("abc123".to_string())
@@ -384,8 +381,7 @@ mod tests {
 
     #[test]
     fn test_result_with_duration() {
-        let result =
-            ActionResult::success("Done").with_duration(Duration::from_secs(45));
+        let result = ActionResult::success("Done").with_duration(Duration::from_secs(45));
 
         assert_eq!(result.duration, Some(Duration::from_secs(45)));
     }

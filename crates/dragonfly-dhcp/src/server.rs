@@ -137,10 +137,12 @@ impl DhcpServer {
             })?;
 
         // Set non-blocking for tokio
-        socket.set_nonblocking(true).map_err(|e| DhcpError::BindFailed {
-            addr: bind_addr.into(),
-            source: e,
-        })?;
+        socket
+            .set_nonblocking(true)
+            .map_err(|e| DhcpError::BindFailed {
+                addr: bind_addr.into(),
+                source: e,
+            })?;
 
         // Convert to tokio socket
         let std_socket: std::net::UdpSocket = socket.into();
@@ -151,12 +153,7 @@ impl DhcpServer {
     }
 
     /// Handle an incoming DHCP packet
-    async fn handle_packet(
-        &self,
-        socket: &UdpSocket,
-        data: &[u8],
-        _src: SocketAddr,
-    ) -> Result<()> {
+    async fn handle_packet(&self, socket: &UdpSocket, data: &[u8], _src: SocketAddr) -> Result<()> {
         // Parse the request
         let request = match DhcpRequest::parse(data) {
             Ok(req) => req,
@@ -189,13 +186,13 @@ impl DhcpServer {
         // Handle based on mode and message type
         let response = match self.config.mode {
             DhcpMode::Reservation => {
-                self.handle_reservation_mode(&request, machine.as_ref()).await?
+                self.handle_reservation_mode(&request, machine.as_ref())
+                    .await?
             }
-            DhcpMode::Proxy => {
-                self.handle_proxy_mode(&request, machine.as_ref()).await?
-            }
+            DhcpMode::Proxy => self.handle_proxy_mode(&request, machine.as_ref()).await?,
             DhcpMode::AutoProxy => {
-                self.handle_auto_proxy_mode(&request, machine.as_ref()).await?
+                self.handle_auto_proxy_mode(&request, machine.as_ref())
+                    .await?
             }
         };
 
@@ -248,9 +245,7 @@ impl DhcpServer {
         };
 
         // Get configured IP for this machine
-        let offered_ip = machine
-            .dhcp_ip()
-            .and_then(|dhcp| dhcp.address.parse().ok());
+        let offered_ip = machine.dhcp_ip().and_then(|dhcp| dhcp.address.parse().ok());
 
         let offered_ip = match offered_ip {
             Some(ip) => ip,
@@ -356,14 +351,11 @@ impl DhcpServer {
         let is_uefi = request.client_arch.map(|a| a.is_uefi()).unwrap_or(false);
         let arch = request.client_arch.and_then(|a| a.arch_string());
 
-        let mut builder = DhcpResponseBuilder::new(
-            request.clone(),
-            MessageType::Offer,
-            self.config.server_ip,
-        )
-        .with_offered_ip(offered_ip)
-        .with_subnet_mask(self.config.subnet_mask)
-        .with_lease_time(self.config.lease_time);
+        let mut builder =
+            DhcpResponseBuilder::new(request.clone(), MessageType::Offer, self.config.server_ip)
+                .with_offered_ip(offered_ip)
+                .with_subnet_mask(self.config.subnet_mask)
+                .with_lease_time(self.config.lease_time);
 
         // Add gateway
         if let Some(gateway) = self.config.gateway {
@@ -384,8 +376,7 @@ impl DhcpServer {
                 let script_url = self.config.ipxe_script_url.clone().unwrap_or_else(|| {
                     format!(
                         "http://{}:{}/boot/${{mac}}",
-                        self.config.server_ip,
-                        self.config.http_port
+                        self.config.server_ip, self.config.http_port
                     )
                 });
                 PxeOptions {
@@ -414,14 +405,11 @@ impl DhcpServer {
         let is_uefi = request.client_arch.map(|a| a.is_uefi()).unwrap_or(false);
         let arch = request.client_arch.and_then(|a| a.arch_string());
 
-        let mut builder = DhcpResponseBuilder::new(
-            request.clone(),
-            MessageType::Ack,
-            self.config.server_ip,
-        )
-        .with_offered_ip(offered_ip)
-        .with_subnet_mask(self.config.subnet_mask)
-        .with_lease_time(self.config.lease_time);
+        let mut builder =
+            DhcpResponseBuilder::new(request.clone(), MessageType::Ack, self.config.server_ip)
+                .with_offered_ip(offered_ip)
+                .with_subnet_mask(self.config.subnet_mask)
+                .with_lease_time(self.config.lease_time);
 
         if let Some(gateway) = self.config.gateway {
             builder = builder.with_gateway(gateway);
@@ -440,8 +428,7 @@ impl DhcpServer {
                 let script_url = self.config.ipxe_script_url.clone().unwrap_or_else(|| {
                     format!(
                         "http://{}:{}/boot/${{mac}}",
-                        self.config.server_ip,
-                        self.config.http_port
+                        self.config.server_ip, self.config.http_port
                     )
                 });
                 PxeOptions {
@@ -501,9 +488,7 @@ impl DhcpServer {
                 // No script URL configured, use default based on server URL
                 let script_url = format!(
                     "http://{}:{}/boot/{}",
-                    self.config.server_ip,
-                    self.config.http_port,
-                    request.mac_address
+                    self.config.server_ip, self.config.http_port, request.mac_address
                 );
                 info!(
                     mac = %request.mac_address,
@@ -554,7 +539,7 @@ impl std::fmt::Debug for DhcpServer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dragonfly_common::{MachineIdentity, NetbootConfig, DhcpReservation};
+    use dragonfly_common::{DhcpReservation, MachineIdentity, NetbootConfig};
     use std::collections::HashMap;
     use std::sync::RwLock;
 
@@ -580,7 +565,11 @@ mod tests {
     #[async_trait]
     impl MachineLookup for MockMachineLookup {
         async fn get_machine_by_mac(&self, mac: &str) -> Option<Machine> {
-            self.machines.read().unwrap().get(&mac.to_lowercase()).cloned()
+            self.machines
+                .read()
+                .unwrap()
+                .get(&mac.to_lowercase())
+                .cloned()
         }
     }
 
@@ -627,7 +616,10 @@ mod tests {
         let found = lookup.get_machine_by_mac("00:11:22:33:44:55").await;
         assert!(found.is_some());
 
-        let found = lookup.get_machine_by_mac("00:11:22:33:44:55").await.unwrap();
+        let found = lookup
+            .get_machine_by_mac("00:11:22:33:44:55")
+            .await
+            .unwrap();
         assert_eq!(found.primary_mac(), "00:11:22:33:44:55");
 
         // Case insensitive
@@ -641,12 +633,10 @@ mod tests {
 
     #[test]
     fn test_dhcp_modes() {
-        let config = DhcpConfig::new(Ipv4Addr::new(192, 168, 1, 1))
-            .with_mode(DhcpMode::Proxy);
+        let config = DhcpConfig::new(Ipv4Addr::new(192, 168, 1, 1)).with_mode(DhcpMode::Proxy);
         assert_eq!(config.mode, DhcpMode::Proxy);
 
-        let config = DhcpConfig::new(Ipv4Addr::new(192, 168, 1, 1))
-            .with_mode(DhcpMode::AutoProxy);
+        let config = DhcpConfig::new(Ipv4Addr::new(192, 168, 1, 1)).with_mode(DhcpMode::AutoProxy);
         assert_eq!(config.mode, DhcpMode::AutoProxy);
     }
 }

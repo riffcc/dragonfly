@@ -28,14 +28,14 @@ impl EventManager {
     // Publish an event, returning Result to handle errors
     pub fn send(&self, message: String) -> Result<usize, broadcast::error::SendError<String>> {
         let receivers = self.tx.receiver_count();
-        
+
         // Only attempt to send if we have receivers to avoid log spam
         if receivers > 0 {
             match self.tx.send(message.clone()) {
                 Ok(n) => {
                     info!("Event sent to {} receivers: {}", n, message);
                     Ok(n)
-                },
+                }
                 Err(e) => {
                     warn!("Failed to send event: {}", e);
                     Err(e)
@@ -47,7 +47,7 @@ impl EventManager {
             Err(broadcast::error::SendError(message))
         }
     }
-    
+
     // Get the current receiver count
     pub fn receiver_count(&self) -> usize {
         self.tx.receiver_count()
@@ -159,4 +159,4 @@ mod tests {
         assert!(matches!(updated, Event::MachineUpdated(id) if id == "id2"));
         assert!(matches!(deleted, Event::MachineDeleted(id) if id == "id3"));
     }
-} 
+}

@@ -5,7 +5,7 @@
 //!
 //! Dragonfly uses native Rust crates as actions for better performance.
 
-use crate::{ObjectMeta, TypeMeta, CrdError, Result};
+use crate::{CrdError, ObjectMeta, Result, TypeMeta};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::time::Duration;
@@ -192,17 +192,14 @@ impl ActionStep {
                 if !valid_layouts.contains(&cfg.layout.as_str()) {
                     return Err(CrdError::InvalidFieldValue {
                         field: "partition.layout".to_string(),
-                        message: format!(
-                            "must be one of: {}",
-                            valid_layouts.join(", ")
-                        ),
+                        message: format!("must be one of: {}", valid_layouts.join(", ")),
                     });
                 }
                 Ok(())
             }
             ActionStep::Efibootmgr(_) => Ok(()), // No validation needed
-            ActionStep::Seabios(_) => Ok(()), // No validation needed
-            ActionStep::Reboot(_) => Ok(()), // No validation needed
+            ActionStep::Seabios(_) => Ok(()),    // No validation needed
+            ActionStep::Reboot(_) => Ok(()),     // No validation needed
         }
     }
 
@@ -212,7 +209,12 @@ impl ActionStep {
     /// - `{{ server }}` - Dragonfly server URL
     /// - `{{ instance_id }}` - UUID derived from MAC address (for cloud-init instance-id)
     /// - `{{ friendly_name }}` - BIP39-style memorable name derived from MAC (for hostname)
-    pub fn to_environment(&self, hardware_disks: &[String], server: &str, mac: &str) -> HashMap<String, String> {
+    pub fn to_environment(
+        &self,
+        hardware_disks: &[String],
+        server: &str,
+        mac: &str,
+    ) -> HashMap<String, String> {
         // Compute instance_id and friendly_name from MAC address
         let instance_id = dragonfly_common::mac_to_words::mac_to_uuid(mac).to_string();
         let friendly_name = dragonfly_common::mac_to_words::mac_to_words_safe(mac);
@@ -222,7 +224,10 @@ impl ActionStep {
             ActionStep::Image2disk(cfg) => {
                 // Resolve disk
                 let disk = if cfg.disk == "auto" {
-                    hardware_disks.first().cloned().unwrap_or_else(|| "/dev/sda".to_string())
+                    hardware_disks
+                        .first()
+                        .cloned()
+                        .unwrap_or_else(|| "/dev/sda".to_string())
                 } else {
                     cfg.disk.clone()
                 };
@@ -239,7 +244,10 @@ impl ActionStep {
             }
             ActionStep::Writefile(cfg) => {
                 // Get the target disk for partition resolution
-                let disk = hardware_disks.first().cloned().unwrap_or_else(|| "/dev/sda".to_string());
+                let disk = hardware_disks
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| "/dev/sda".to_string());
 
                 // Resolve partition to device path
                 let dest_disk = if let Some(part_num) = cfg.partition {
@@ -250,7 +258,10 @@ impl ActionStep {
 
                 env.insert("DEST_DISK".to_string(), dest_disk);
                 env.insert("DEST_PATH".to_string(), cfg.path.clone());
-                env.insert("FS_TYPE".to_string(), cfg.fs_type.clone().unwrap_or_else(|| "ext4".to_string()));
+                env.insert(
+                    "FS_TYPE".to_string(),
+                    cfg.fs_type.clone().unwrap_or_else(|| "ext4".to_string()),
+                );
 
                 if let Some(content) = &cfg.content {
                     // Substitute variables in content
@@ -275,7 +286,10 @@ impl ActionStep {
             }
             ActionStep::Kexec(cfg) => {
                 // Get the target disk for partition resolution
-                let disk = hardware_disks.first().cloned().unwrap_or_else(|| "/dev/sda".to_string());
+                let disk = hardware_disks
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| "/dev/sda".to_string());
 
                 // Resolve partition to device path (boot partition where kernel lives)
                 let block_device = if let Some(part_num) = cfg.partition {
@@ -303,7 +317,10 @@ impl ActionStep {
 
                 env.insert("BLOCK_DEVICE".to_string(), block_device);
                 env.insert("ROOT_DEVICE".to_string(), root_device.clone());
-                env.insert("FS_TYPE".to_string(), cfg.fs_type.clone().unwrap_or_else(|| "ext4".to_string()));
+                env.insert(
+                    "FS_TYPE".to_string(),
+                    cfg.fs_type.clone().unwrap_or_else(|| "ext4".to_string()),
+                );
 
                 if let Some(kernel) = &cfg.kernel {
                     env.insert("KERNEL_PATH".to_string(), kernel.clone());
@@ -320,7 +337,10 @@ impl ActionStep {
             ActionStep::Partition(cfg) => {
                 // Resolve disk
                 let disk = if cfg.disk == "auto" {
-                    hardware_disks.first().cloned().unwrap_or_else(|| "/dev/sda".to_string())
+                    hardware_disks
+                        .first()
+                        .cloned()
+                        .unwrap_or_else(|| "/dev/sda".to_string())
                 } else {
                     cfg.disk.clone()
                 };
@@ -587,6 +607,7 @@ mod tests {
             }))
             .with_action(ActionStep::Kexec(KexecConfig {
                 partition: Some(1),
+                root_partition: None,
                 fs_type: None,
                 kernel: None,
                 initrd: None,
@@ -596,13 +617,16 @@ mod tests {
 
         assert_eq!(template.spec.timeout, Some(9800));
         assert_eq!(template.spec.actions.len(), 3);
-        assert_eq!(template.action_names(), vec!["image2disk", "writefile", "kexec"]);
+        assert_eq!(
+            template.action_names(),
+            vec!["image2disk", "writefile", "kexec"]
+        );
     }
 
     #[test]
     fn test_template_validation() {
-        let template = Template::new("test")
-            .with_action(ActionStep::Image2disk(Image2DiskConfig {
+        let template =
+            Template::new("test").with_action(ActionStep::Image2disk(Image2DiskConfig {
                 url: "https://example.com/image.raw".to_string(),
                 disk: "auto".to_string(),
                 checksum: None,
@@ -612,17 +636,26 @@ mod tests {
 
         // Empty name
         let mut template = Template::new("");
-        template.spec.actions.push(ActionStep::Image2disk(Image2DiskConfig {
-            url: "https://example.com/image.raw".to_string(),
-            disk: "auto".to_string(),
-            checksum: None,
-            timeout: None,
-        }));
-        assert!(matches!(template.validate(), Err(CrdError::MissingField(_))));
+        template
+            .spec
+            .actions
+            .push(ActionStep::Image2disk(Image2DiskConfig {
+                url: "https://example.com/image.raw".to_string(),
+                disk: "auto".to_string(),
+                checksum: None,
+                timeout: None,
+            }));
+        assert!(matches!(
+            template.validate(),
+            Err(CrdError::MissingField(_))
+        ));
 
         // No actions
         let template = Template::new("test");
-        assert!(matches!(template.validate(), Err(CrdError::MissingField(_))));
+        assert!(matches!(
+            template.validate(),
+            Err(CrdError::MissingField(_))
+        ));
     }
 
     #[test]
@@ -637,7 +670,10 @@ mod tests {
         let disks = vec!["/dev/sda".to_string()];
         let env = action.to_environment(&disks, "10.1.120.120", "00:11:22:33:44:55");
 
-        assert_eq!(env.get("IMG_URL").unwrap(), "http://10.1.120.120:3000/image.raw");
+        assert_eq!(
+            env.get("IMG_URL").unwrap(),
+            "http://10.1.120.120:3000/image.raw"
+        );
         assert_eq!(env.get("DEST_DISK").unwrap(), "/dev/sda");
     }
 
@@ -704,16 +740,28 @@ mod tests {
 
         // Verify instance_id is a valid UUID
         assert!(contents.contains("instance-id: "));
-        let instance_id_line = contents.lines().find(|l| l.starts_with("instance-id:")).unwrap();
+        let instance_id_line = contents
+            .lines()
+            .find(|l| l.starts_with("instance-id:"))
+            .unwrap();
         let uuid_str = instance_id_line.strip_prefix("instance-id: ").unwrap();
-        assert!(uuid::Uuid::parse_str(uuid_str).is_ok(), "instance_id should be a valid UUID");
+        assert!(
+            uuid::Uuid::parse_str(uuid_str).is_ok(),
+            "instance_id should be a valid UUID"
+        );
 
         // Verify friendly_name is a BIP39-style name (4 capitalized words)
         assert!(contents.contains("local-hostname: "));
-        let hostname_line = contents.lines().find(|l| l.starts_with("local-hostname:")).unwrap();
+        let hostname_line = contents
+            .lines()
+            .find(|l| l.starts_with("local-hostname:"))
+            .unwrap();
         let friendly_name = hostname_line.strip_prefix("local-hostname: ").unwrap();
         let capital_count = friendly_name.chars().filter(|c| c.is_uppercase()).count();
-        assert_eq!(capital_count, 4, "friendly_name should have 4 capitalized words");
+        assert_eq!(
+            capital_count, 4,
+            "friendly_name should have 4 capitalized words"
+        );
 
         // Verify server substitution
         assert!(contents.contains("server: 10.0.0.1"));
@@ -723,6 +771,7 @@ mod tests {
     fn test_kexec_environment() {
         let action = ActionStep::Kexec(KexecConfig {
             partition: Some(1),
+            root_partition: None,
             fs_type: None,
             kernel: None,
             initrd: None,
@@ -734,7 +783,8 @@ mod tests {
         let env = action.to_environment(&disks, "server", "00:11:22:33:44:55");
 
         assert_eq!(env.get("BLOCK_DEVICE").unwrap(), "/dev/nvme0n1p1");
-        assert_eq!(env.get("CMD_LINE").unwrap(), "root=/dev/nvme0n1p1 ro quiet");
+        assert_eq!(env.get("ROOT_DEVICE").unwrap(), "/dev/nvme0n1p1");
+        assert_eq!(env.get("CMDLINE").unwrap(), "ro quiet");
     }
 
     #[test]
@@ -782,6 +832,7 @@ mod tests {
             }))
             .with_action(ActionStep::Kexec(KexecConfig {
                 partition: Some(1),
+                root_partition: None,
                 fs_type: None,
                 kernel: None,
                 initrd: None,
@@ -825,7 +876,10 @@ spec:
         assert_eq!(template.spec.actions.len(), 3);
 
         // Check action types
-        assert!(matches!(template.spec.actions[0], ActionStep::Image2disk(_)));
+        assert!(matches!(
+            template.spec.actions[0],
+            ActionStep::Image2disk(_)
+        ));
         assert!(matches!(template.spec.actions[1], ActionStep::Writefile(_)));
         assert!(matches!(template.spec.actions[2], ActionStep::Kexec(_)));
 
@@ -835,14 +889,15 @@ spec:
 
     #[test]
     fn test_template_serialization_roundtrip() {
-        let template = Template::new("ubuntu-2404")
-            .with_timeout(9800)
-            .with_action(ActionStep::Image2disk(Image2DiskConfig {
-                url: "https://example.com/ubuntu.img".to_string(),
-                disk: "auto".to_string(),
-                checksum: None,
-                timeout: Some(9600),
-            }));
+        let template =
+            Template::new("ubuntu-2404")
+                .with_timeout(9800)
+                .with_action(ActionStep::Image2disk(Image2DiskConfig {
+                    url: "https://example.com/ubuntu.img".to_string(),
+                    disk: "auto".to_string(),
+                    checksum: None,
+                    timeout: Some(9600),
+                }));
 
         // Serialize to JSON
         let json = serde_json::to_string_pretty(&template).unwrap();

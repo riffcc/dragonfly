@@ -78,8 +78,8 @@ pub fn boot_local_os(os: &DetectedOs) -> Result<()> {
     let mut kexec_load = Command::new("kexec");
     kexec_load
         .arg("-l")
-        .arg("--reset-vga")       // Reset VGA adapter before boot
-        .arg("--console-vga")     // Use VGA console
+        .arg("--reset-vga") // Reset VGA adapter before boot
+        .arg("--console-vga") // Use VGA console
         .arg(&kernel_path);
 
     if let Some(ref initrd) = initrd_path {
@@ -137,9 +137,15 @@ struct GrubBootEntry {
 fn find_and_parse_grub(root_device: &str) -> Result<GrubBootEntry> {
     // Get base disk from partition (e.g., /dev/sda1 -> /dev/sda)
     let base_disk = if root_device.contains("nvme") || root_device.contains("mmcblk") {
-        root_device.rsplitn(2, 'p').last().unwrap_or(root_device).to_string()
+        root_device
+            .rsplitn(2, 'p')
+            .last()
+            .unwrap_or(root_device)
+            .to_string()
     } else {
-        root_device.trim_end_matches(|c: char| c.is_ascii_digit()).to_string()
+        root_device
+            .trim_end_matches(|c: char| c.is_ascii_digit())
+            .to_string()
     };
 
     // Scan partitions on this disk for grub.cfg
@@ -347,7 +353,7 @@ fn fix_root_cmdline(cmdline: &str, root_device: &str) -> String {
     for part in &mut parts {
         if part.starts_with("root=") {
             // Replace any root= (LABEL=, UUID=, or device) with the known device path
-            *part = "";  // Will be filtered out
+            *part = ""; // Will be filtered out
             found_root = true;
         }
     }
@@ -478,9 +484,7 @@ fn unload_graphics_modules() {
     ];
 
     for module in &modules {
-        let output = Command::new("rmmod")
-            .arg(module)
-            .output();
+        let output = Command::new("rmmod").arg(module).output();
 
         match output {
             Ok(o) if o.status.success() => {
@@ -511,7 +515,10 @@ fn check_kexec_prerequisites() {
             warn!("kexec_load_disabled=1 - kexec is disabled by sysctl!");
             // Try to enable it
             if let Err(e) = std::fs::write("/proc/sys/kernel/kexec_load_disabled", "0") {
-                warn!("Failed to enable kexec_load: {} (this is a one-way toggle)", e);
+                warn!(
+                    "Failed to enable kexec_load: {} (this is a one-way toggle)",
+                    e
+                );
             }
         } else {
             info!("kexec_load_disabled={}", value);
@@ -539,12 +546,18 @@ fn check_kexec_prerequisites() {
 
     // Check if running as root
     if let Ok(uid) = std::env::var("EUID").or_else(|_| {
-        Command::new("id").arg("-u").output().ok().map(|o| {
-            String::from_utf8_lossy(&o.stdout).trim().to_string()
-        }).ok_or(std::env::VarError::NotPresent)
+        Command::new("id")
+            .arg("-u")
+            .output()
+            .ok()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .ok_or(std::env::VarError::NotPresent)
     }) {
         if uid != "0" {
-            warn!("Not running as root (uid={}), kexec requires CAP_SYS_BOOT", uid);
+            warn!(
+                "Not running as root (uid={}), kexec requires CAP_SYS_BOOT",
+                uid
+            );
         }
     }
 }

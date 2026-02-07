@@ -102,7 +102,12 @@ impl Machine {
     }
 
     /// Create from Proxmox VM
-    pub fn from_proxmox(identity: MachineIdentity, cluster: String, node: String, vmid: u32) -> Self {
+    pub fn from_proxmox(
+        identity: MachineIdentity,
+        cluster: String,
+        node: String,
+        vmid: u32,
+    ) -> Self {
         let now = Utc::now();
         Self {
             id: new_machine_id(),
@@ -118,7 +123,11 @@ impl Machine {
                 created_at: now,
                 updated_at: now,
                 labels: HashMap::new(),
-                source: MachineSource::Proxmox { cluster, node, vmid },
+                source: MachineSource::Proxmox {
+                    cluster,
+                    node,
+                    vmid,
+                },
             },
         }
     }
@@ -267,19 +276,30 @@ impl MachineState {
 
     /// Whether this state represents an active installation in progress
     pub fn is_installing(&self) -> bool {
-        matches!(self, MachineState::Initializing | MachineState::Installing | MachineState::Writing)
+        matches!(
+            self,
+            MachineState::Initializing | MachineState::Installing | MachineState::Writing
+        )
     }
 
     /// Whether the machine has a confirmed OS (installed or detected)
     pub fn has_os(&self) -> bool {
-        matches!(self, MachineState::Installed | MachineState::ExistingOs { .. })
+        matches!(
+            self,
+            MachineState::Installed | MachineState::ExistingOs { .. }
+        )
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum WorkflowResult {
-    Success { completed_at: DateTime<Utc> },
-    Failed { error: String, failed_at: DateTime<Utc> },
+    Success {
+        completed_at: DateTime<Utc>,
+    },
+    Failed {
+        error: String,
+        failed_at: DateTime<Utc>,
+    },
 }
 
 // ============================================================================
@@ -341,7 +361,9 @@ pub enum InterfaceType {
 }
 
 impl Default for InterfaceType {
-    fn default() -> Self { Self::Ether }
+    fn default() -> Self {
+        Self::Ether
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -575,9 +597,20 @@ pub struct MachineMetadata {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum MachineSource {
     Agent,
-    Proxmox { cluster: String, node: String, vmid: u32 },
-    ProxmoxLxc { cluster: String, node: String, ctid: u32 },
-    ProxmoxNode { cluster: String, node: String },
+    Proxmox {
+        cluster: String,
+        node: String,
+        vmid: u32,
+    },
+    ProxmoxLxc {
+        cluster: String,
+        node: String,
+        ctid: u32,
+    },
+    ProxmoxNode {
+        cluster: String,
+        node: String,
+    },
     Manual,
 }
 
@@ -604,8 +637,17 @@ mod tests {
 
     #[test]
     fn test_identity_hash_includes_fs_uuid() {
-        let hash_without = compute_identity_hash(&["00:11:22:33:44:55".to_string()], None, None, None);
-        let hash_with = compute_identity_hash(&["00:11:22:33:44:55".to_string()], None, None, Some("uuid-123"));
-        assert_ne!(hash_without, hash_with, "fs_uuid should affect identity hash");
+        let hash_without =
+            compute_identity_hash(&["00:11:22:33:44:55".to_string()], None, None, None);
+        let hash_with = compute_identity_hash(
+            &["00:11:22:33:44:55".to_string()],
+            None,
+            None,
+            Some("uuid-123"),
+        );
+        assert_ne!(
+            hash_without, hash_with,
+            "fs_uuid should affect identity hash"
+        );
     }
 }

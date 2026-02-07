@@ -59,7 +59,7 @@ impl Action for PartitionAction {
                     return Err(ActionError::ValidationFailed(format!(
                         "Unknown partition layout: {}. Valid options: gpt-efi, gpt-bios, single",
                         layout
-                    )))
+                    )));
                 }
             }
         }
@@ -96,13 +96,19 @@ impl Action for PartitionAction {
 
         // Wipe existing partition table if requested
         if wipe {
-            reporter.report(Progress::new(self.name(), 10, "Wiping existing partition table"));
+            reporter.report(Progress::new(
+                self.name(),
+                10,
+                "Wiping existing partition table",
+            ));
 
             let output = Command::new("sgdisk")
                 .args(["--zap-all", disk])
                 .output()
                 .await
-                .map_err(|e| ActionError::ExecutionFailed(format!("Failed to run sgdisk: {}", e)))?;
+                .map_err(|e| {
+                    ActionError::ExecutionFailed(format!("Failed to run sgdisk: {}", e))
+                })?;
 
             if !output.status.success() {
                 let stderr = String::from_utf8_lossy(&output.stderr);
@@ -122,7 +128,7 @@ impl Action for PartitionAction {
                 return Err(ActionError::ExecutionFailed(format!(
                     "Unknown layout: {}",
                     layout
-                )))
+                )));
             }
         };
 
@@ -167,7 +173,9 @@ async fn create_gpt_efi_layout(
         ])
         .output()
         .await
-        .map_err(|e| ActionError::ExecutionFailed(format!("Failed to create EFI partition: {}", e)))?;
+        .map_err(|e| {
+            ActionError::ExecutionFailed(format!("Failed to create EFI partition: {}", e))
+        })?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -231,7 +239,9 @@ async fn create_gpt_efi_layout(
         ])
         .output()
         .await
-        .map_err(|e| ActionError::ExecutionFailed(format!("Failed to create root partition: {}", e)))?;
+        .map_err(|e| {
+            ActionError::ExecutionFailed(format!("Failed to create root partition: {}", e))
+        })?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -293,7 +303,9 @@ async fn create_gpt_bios_layout(
         .args(["-n", "2:0:0", "-t", "2:8300", "-c", "2:root", disk])
         .output()
         .await
-        .map_err(|e| ActionError::ExecutionFailed(format!("Failed to create root partition: {}", e)))?;
+        .map_err(|e| {
+            ActionError::ExecutionFailed(format!("Failed to create root partition: {}", e))
+        })?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -314,11 +326,7 @@ async fn create_single_partition(
     reporter: &dyn crate::progress::ProgressReporter,
     action_name: &str,
 ) -> Result<Vec<String>> {
-    reporter.report(Progress::new(
-        action_name,
-        50,
-        "Creating single partition",
-    ));
+    reporter.report(Progress::new(action_name, 50, "Creating single partition"));
 
     let output = Command::new("sgdisk")
         .args(["-n", "1:0:0", "-t", "1:8300", "-c", "1:root", disk])
@@ -382,7 +390,12 @@ mod tests {
 
         let result = action.validate(&ctx);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Unknown partition layout"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Unknown partition layout")
+        );
     }
 
     #[test]

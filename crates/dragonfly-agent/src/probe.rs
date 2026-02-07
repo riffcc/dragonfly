@@ -86,8 +86,7 @@ fn list_partitions() -> Result<Vec<PartitionInfo>> {
         anyhow::bail!("/sys/block not found - is /sys mounted?");
     }
 
-    let entries = std::fs::read_dir(sys_block)
-        .context("Failed to read /sys/block")?;
+    let entries = std::fs::read_dir(sys_block).context("Failed to read /sys/block")?;
 
     for entry in entries.flatten() {
         let device_name = entry.file_name().to_string_lossy().to_string();
@@ -96,7 +95,8 @@ fn list_partitions() -> Result<Vec<PartitionInfo>> {
         if device_name.starts_with("loop")
             || device_name.starts_with("ram")
             || device_name.starts_with("zram")
-            || device_name.starts_with("dm-")  // We'll handle LVM separately if needed
+            || device_name.starts_with("dm-")
+        // We'll handle LVM separately if needed
         {
             continue;
         }
@@ -130,10 +130,7 @@ fn list_partitions() -> Result<Vec<PartitionInfo>> {
 /// Get filesystem type and UUID using blkid (available in busybox)
 fn get_blkid_info(device: &str) -> Option<PartitionInfo> {
     // Run blkid on the device
-    let output = Command::new("blkid")
-        .arg(device)
-        .output()
-        .ok()?;
+    let output = Command::new("blkid").arg(device).output().ok()?;
 
     if !output.status.success() {
         return None;
@@ -146,9 +143,15 @@ fn get_blkid_info(device: &str) -> Option<PartitionInfo> {
     let mut uuid = None;
 
     for part in stdout.split_whitespace() {
-        if let Some(val) = part.strip_prefix("TYPE=\"").and_then(|s| s.strip_suffix('"')) {
+        if let Some(val) = part
+            .strip_prefix("TYPE=\"")
+            .and_then(|s| s.strip_suffix('"'))
+        {
             fstype = Some(val.to_string());
-        } else if let Some(val) = part.strip_prefix("UUID=\"").and_then(|s| s.strip_suffix('"')) {
+        } else if let Some(val) = part
+            .strip_prefix("UUID=\"")
+            .and_then(|s| s.strip_suffix('"'))
+        {
             uuid = Some(val.to_string());
         }
     }
@@ -573,7 +576,10 @@ PRETTY_NAME="Debian GNU/Linux 13 (trixie)"
 
         // Subversion comparison
         assert_eq!(compare_versions("6.1.10", "6.1.2"), Ordering::Greater);
-        assert_eq!(compare_versions("5.10.0-28", "5.10.0-27"), Ordering::Greater);
+        assert_eq!(
+            compare_versions("5.10.0-28", "5.10.0-27"),
+            Ordering::Greater
+        );
 
         // Different length versions
         assert_eq!(compare_versions("6.1.0.1", "6.1.0"), Ordering::Greater);

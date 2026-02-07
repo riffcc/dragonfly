@@ -3,7 +3,7 @@
 //! Workflows represent a provisioning job for a machine, linking
 //! a Hardware resource to a Template.
 
-use crate::{ObjectMeta, TypeMeta, CrdError, Result};
+use crate::{CrdError, ObjectMeta, Result, TypeMeta};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -451,8 +451,14 @@ mod tests {
         let status = wf.status.as_ref().unwrap();
         assert_eq!(status.current_action, Some("image2disk".to_string()));
         assert_eq!(status.actions.len(), 3);
-        assert!(matches!(status.actions[0].status, ActionState::StateRunning));
-        assert!(matches!(status.actions[1].status, ActionState::StatePending));
+        assert!(matches!(
+            status.actions[0].status,
+            ActionState::StateRunning
+        ));
+        assert!(matches!(
+            status.actions[1].status,
+            ActionState::StatePending
+        ));
     }
 
     #[test]

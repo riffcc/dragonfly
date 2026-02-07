@@ -4,13 +4,13 @@
 static ALLOC: dhat::Alloc = dhat::Alloc;
 
 // Main binary that starts the server
+use clap::CommandFactory;
 use clap::{Parser, Subcommand};
 use color_eyre::eyre::Result;
-use tracing::{error, info};
-use tracing_subscriber::{fmt, prelude::*, registry, EnvFilter};
-use tokio::sync::watch;
-use clap::CommandFactory;
 use std::path::Path;
+use tokio::sync::watch;
+use tracing::{error, info};
+use tracing_subscriber::{EnvFilter, fmt, prelude::*, registry};
 
 // Reference the cmd module where subcommands live
 mod cmd;
@@ -101,12 +101,14 @@ async fn async_main(cli: Cli) -> Result<()> {
                 "dragonfly={level},dragonfly_server={level},tower=warn,hyper=warn,sqlx=warn,rustls=warn,h2=warn,reqwest=warn,tokio_reactor=warn,mio=warn,want=warn",
                 level = default_level
             );
-             EnvFilter::try_from_default_env()
-                 .unwrap_or_else(|_| EnvFilter::new(default_directives))
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_directives))
         }
     };
 
-    registry().with(filter).with(fmt::layer().with_writer(stderr)).init();
+    registry()
+        .with(filter)
+        .with(fmt::layer().with_writer(stderr))
+        .init();
 
     if !matches!(cli.command, Some(Commands::Install(_))) {
         info!("Global logger initialized.");
@@ -115,7 +117,9 @@ async fn async_main(cli: Cli) -> Result<()> {
     // Set up Ctrl+C handler
     let shutdown_tx_clone = shutdown_tx.clone();
     tokio::spawn(async move {
-        tokio::signal::ctrl_c().await.expect("Failed to install Ctrl+C handler");
+        tokio::signal::ctrl_c()
+            .await
+            .expect("Failed to install Ctrl+C handler");
         info!("Ctrl+C received, sending shutdown signal...");
         let _ = shutdown_tx_clone.send(());
     });
@@ -130,7 +134,9 @@ async fn async_main(cli: Cli) -> Result<()> {
             println!("Press Ctrl+C to stop the server.\n");
 
             // SAFETY: Single-threaded at this point, before server starts
-            unsafe { std::env::set_var("DRAGONFLY_DEMO_MODE", "true"); }
+            unsafe {
+                std::env::set_var("DRAGONFLY_DEMO_MODE", "true");
+            }
 
             if let Err(e) = run_server().await {
                 error!("Demo server failed: {:#}", e);
@@ -269,7 +275,8 @@ fn get_local_ip_for_display() -> String {
     if socket.connect("8.8.8.8:80").is_err() {
         return "localhost".to_string();
     }
-    socket.local_addr()
+    socket
+        .local_addr()
         .map(|a| a.ip().to_string())
         .unwrap_or_else(|_| "localhost".to_string())
 }
@@ -286,7 +293,14 @@ fn print_status() {
         println!("🐉 Dragonfly Status");
         println!();
         println!("  Installation: ✓ Installed");
-        println!("  Service:      {}", if running { "✓ Running" } else { "✗ Stopped" });
+        println!(
+            "  Service:      {}",
+            if running {
+                "✓ Running"
+            } else {
+                "✗ Stopped"
+            }
+        );
         println!("  Config:       {}", DRAGONFLY_CONFIG);
         println!("  Web UI:       http://{}:{}", ip, port);
 

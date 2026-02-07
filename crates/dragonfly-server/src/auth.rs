@@ -1,28 +1,32 @@
 use axum::{
-    extract::{State, Query},
+    Form, Json, Router,
+    extract::{Query, State},
     http::StatusCode,
-    response::{IntoResponse, Redirect, Html},
+    response::{Html, IntoResponse, Redirect},
     routing::{get, post},
-    Router,
-    Form,
-    Json,
 };
 // use openidconnect::core::{CoreAuthenticationFlow, CoreClient, CoreProviderMetadata, CoreResponseType};
 // use openidconnect::{AuthenticationFlow, AuthorizationCode, CsrfToken, Nonce, PkceCodeChallenge, PkceCodeVerifier, Scope, TokenResponse, reqwest::async_http_client};
 // use openidconnect::url::Url;
-use tracing::{error, info, warn};
-use serde::{Deserialize, Serialize};
 use crate::AppState;
-use argon2::{password_hash::{Error as PasswordHashError, PasswordHash, PasswordVerifier as ArgonPasswordVerifier, SaltString}, Argon2, PasswordHasher};
-use rand::rngs::OsRng;
-use axum_login::{AuthUser, AuthnBackend, UserId};
-use std::{io, path::Path as StdPath, fs, collections::HashMap};
-use rand::{Rng, distributions::Alphanumeric};
 use crate::ui::AddAlert;
-use thiserror::Error;
-use minijinja::{Error as MiniJinjaError, ErrorKind as MiniJinjaErrorKind};
 use crate::ui::AlertMessage;
+use argon2::{
+    Argon2, PasswordHasher,
+    password_hash::{
+        Error as PasswordHashError, PasswordHash, PasswordVerifier as ArgonPasswordVerifier,
+        SaltString,
+    },
+};
 use axum::response::Response;
+use axum_login::{AuthUser, AuthnBackend, UserId};
+use minijinja::{Error as MiniJinjaError, ErrorKind as MiniJinjaErrorKind};
+use rand::rngs::OsRng;
+use rand::{Rng, distributions::Alphanumeric};
+use serde::{Deserialize, Serialize};
+use std::{collections::HashMap, fs, io, path::Path as StdPath};
+use thiserror::Error;
+use tracing::{error, info, warn};
 // use oauth2::basic::BasicClient; // Assuming BasicClient is also related to openidconnect for now
 // use oauth2;
 use urlencoding;
@@ -52,14 +56,17 @@ impl Default for Credentials {
 impl Credentials {
     pub fn create(username: String, password: String) -> io::Result<Self> {
         let salt = SaltString::generate(&mut OsRng);
-        
+
         let password_hash = match Argon2::default().hash_password(password.as_bytes(), &salt) {
             Ok(hash) => hash.to_string(),
             Err(e) => {
-                return Err(io::Error::new(io::ErrorKind::Other, format!("Failed to hash password: {}", e)));
+                return Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    format!("Failed to hash password: {}", e),
+                ));
             }
         };
-        
+
         Ok(Self {
             username,
             password: None, // Don't store plaintext password
@@ -76,7 +83,7 @@ pub struct LoginForm {
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub struct AdminUser {
-    pub id: String,  // UUID as string
+    pub id: String, // UUID as string
     pub username: String,
 }
 
@@ -133,14 +140,19 @@ impl IntoResponse for AuthError {
 
         // Determine the HTTP status code and potentially a user-facing message
         let (status, user_message) = match self {
-            AuthError::InvalidCredentials | AuthError::UserNotFound(_) => {
-                (StatusCode::UNAUTHORIZED, "Invalid username or password.".to_string())
-            }
-            AuthError::StoreError(_) | AuthError::HashingError(_) | AuthError::JoinError(_) => {
-                (StatusCode::INTERNAL_SERVER_ERROR, "An internal server error occurred during login.".to_string())
-            }
+            AuthError::InvalidCredentials | AuthError::UserNotFound(_) => (
+                StatusCode::UNAUTHORIZED,
+                "Invalid username or password.".to_string(),
+            ),
+            AuthError::StoreError(_) | AuthError::HashingError(_) | AuthError::JoinError(_) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "An internal server error occurred during login.".to_string(),
+            ),
             AuthError::ConfigError(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg),
-            AuthError::TemplateError(_) => (StatusCode::INTERNAL_SERVER_ERROR, "An internal error occurred.".to_string()),
+            AuthError::TemplateError(_) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "An internal error occurred.".to_string(),
+            ),
         };
 
         // Redirect back to login page with an error message
@@ -161,7 +173,7 @@ pub struct Settings {
     pub oauth_provider: Option<String>,
     pub oauth_client_id: Option<String>,
     pub oauth_client_secret: Option<String>,
-    
+
     // Add the missing Proxmox fields
     pub proxmox_host: Option<String>,
     pub proxmox_username: Option<String>,
@@ -173,7 +185,7 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            require_login: true,  // Internal tool - require login by default
+            require_login: true, // Internal tool - require login by default
             default_os: None,
             setup_completed: false,
             admin_username: "admin".to_string(),
@@ -208,7 +220,11 @@ impl AdminBackend {
         Self { store }
     }
 
-    pub async fn update_credentials(&self, username: String, password: String) -> anyhow::Result<Credentials> {
+    pub async fn update_credentials(
+        &self,
+        username: String,
+        password: String,
+    ) -> anyhow::Result<Credentials> {
         // Create new credentials with hashed password
         let new_credentials = Credentials::create(username.clone(), password)?;
 
@@ -232,7 +248,9 @@ impl AdminBackend {
             }
         };
 
-        self.store.put_user(&user).await
+        self.store
+            .put_user(&user)
+            .await
             .map_err(|e| anyhow::anyhow!("Failed to save user: {}", e))?;
 
         Ok(new_credentials)
@@ -252,7 +270,10 @@ impl AuthnBackend for AdminBackend {
         let password_bytes = match creds.password {
             Some(p) => p.into_bytes(),
             None => {
-                info!("Authentication attempt for user '{}' failed: No password provided", username);
+                info!(
+                    "Authentication attempt for user '{}' failed: No password provided",
+                    username
+                );
                 return Ok(None);
             }
         };
@@ -275,17 +296,20 @@ impl AuthnBackend for AdminBackend {
         let username_for_log = username.clone();
 
         // Verify the password using Argon2 within a blocking task
-        let verification_result = tokio::task::spawn_blocking(move || {
-            match PasswordHash::new(&stored_hash) {
-                Ok(parsed_hash) => {
-                    Ok(Argon2::default().verify_password(&password_bytes, &parsed_hash).is_ok())
-                }
+        let verification_result =
+            tokio::task::spawn_blocking(move || match PasswordHash::new(&stored_hash) {
+                Ok(parsed_hash) => Ok(Argon2::default()
+                    .verify_password(&password_bytes, &parsed_hash)
+                    .is_ok()),
                 Err(e) => {
-                    error!("Error parsing stored password hash for user '{}': {}", username, e);
+                    error!(
+                        "Error parsing stored password hash for user '{}': {}",
+                        username, e
+                    );
                     Err(e)
                 }
-            }
-        }).await?;
+            })
+            .await?;
 
         let is_valid = match verification_result {
             Ok(valid) => valid,
@@ -296,9 +320,15 @@ impl AuthnBackend for AdminBackend {
 
         if is_valid {
             info!("Authentication successful for user '{}'", username_for_log);
-            Ok(Some(AdminUser { id: user_id, username: username_for_log }))
+            Ok(Some(AdminUser {
+                id: user_id,
+                username: username_for_log,
+            }))
         } else {
-            info!("Authentication failed: Invalid password for user '{}'", username_for_log);
+            info!(
+                "Authentication failed: Invalid password for user '{}'",
+                username_for_log
+            );
             Err(AuthError::InvalidCredentials)
         }
     }
@@ -349,36 +379,36 @@ async fn login_page(
 ) -> impl IntoResponse {
     // Check if we're in demo mode
     let is_demo_mode = std::env::var("DRAGONFLY_DEMO_MODE").is_ok();
-    
+
     // Check for error parameter
     let error = params.get("error").cloned();
     if let Some(err) = &error {
         info!("Login page loaded with error: {}", err);
     }
-    
+
     let template = LoginTemplate {
         is_demo_mode,
         error,
     };
-    
+
     // Get the environment based on the mode (static or reloading)
     let render_result = match &app_state.template_env {
-        crate::TemplateEnv::Static(env) => {
-            env.get_template("login.html")
-               .and_then(|tmpl| tmpl.render(&template))
-        }
+        crate::TemplateEnv::Static(env) => env
+            .get_template("login.html")
+            .and_then(|tmpl| tmpl.render(&template)),
         #[cfg(debug_assertions)]
         crate::TemplateEnv::Reloading(reloader) => {
             // Acquire the environment from the reloader
             match reloader.acquire_env() {
-                Ok(env) => {
-                    env.get_template("login.html")
-                       .and_then(|tmpl| tmpl.render(&template))
-                }
+                Ok(env) => env
+                    .get_template("login.html")
+                    .and_then(|tmpl| tmpl.render(&template)),
                 Err(e) => {
                     error!("Failed to acquire MiniJinja env from reloader: {}", e);
-                    Err(MiniJinjaError::new(MiniJinjaErrorKind::InvalidOperation, 
-                        format!("Failed to acquire env from reloader: {}", e)))
+                    Err(MiniJinjaError::new(
+                        MiniJinjaErrorKind::InvalidOperation,
+                        format!("Failed to acquire env from reloader: {}", e),
+                    ))
                 }
             }
         }
@@ -389,7 +419,11 @@ async fn login_page(
         Ok(html) => Html(html).into_response(),
         Err(e) => {
             error!("MiniJinja render/load error for login.html: {}", e);
-            (StatusCode::INTERNAL_SERVER_ERROR, format!("Template error: {}", e)).into_response()
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Template error: {}", e),
+            )
+                .into_response()
         }
     }
 }
@@ -407,7 +441,11 @@ async fn login_handler(
         info!("Demo mode: accepting any credentials for login");
 
         // Create a simple admin user
-        let username = if form.username.trim().is_empty() { "demo_user".to_string() } else { form.username.clone() };
+        let username = if form.username.trim().is_empty() {
+            "demo_user".to_string()
+        } else {
+            form.username.clone()
+        };
 
         // Create a demo admin user - use a deterministic UUID for demo mode
         let demo_user = AdminUser {
@@ -416,21 +454,37 @@ async fn login_handler(
         };
 
         // Hard-set the user session
-        info!("Demo mode: Setting session for user '{}'", demo_user.username);
+        info!(
+            "Demo mode: Setting session for user '{}'",
+            demo_user.username
+        );
         match auth_session.login(&demo_user).await {
             Ok(_) => {
-                info!("Demo mode: Login successful for user '{}'", demo_user.username);
+                info!(
+                    "Demo mode: Login successful for user '{}'",
+                    demo_user.username
+                );
                 // Check if mode is set - if not, redirect to welcome
-                let current_mode = app_state.store.get_setting("deployment_mode").await.ok().flatten();
-                let redirect_to = if current_mode.is_some() { "/" } else { "/welcome" };
+                let current_mode = app_state
+                    .store
+                    .get_setting("deployment_mode")
+                    .await
+                    .ok()
+                    .flatten();
+                let redirect_to = if current_mode.is_some() {
+                    "/"
+                } else {
+                    "/welcome"
+                };
                 return Redirect::to(redirect_to).into_response();
-            },
+            }
             Err(e) => {
                 error!("Demo mode: Failed to set user session: {}", e);
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    "Internal error setting demo session"
-                ).into_response();
+                    "Internal error setting demo session",
+                )
+                    .into_response();
             }
         }
     }
@@ -453,40 +507,57 @@ async fn login_handler(
                 return Json(serde_json::json!({
                     "success": false,
                     "error": "Failed to create session. Please try again."
-                })).into_response();
+                }))
+                .into_response();
             }
 
             info!("Login successful for user '{}'", user.username);
             // Check if mode is set - if not, redirect to welcome for setup
-            let current_mode = app_state.store.get_setting("deployment_mode").await.ok().flatten();
-            let redirect_to = if current_mode.is_some() { "/" } else { "/welcome" };
+            let current_mode = app_state
+                .store
+                .get_setting("deployment_mode")
+                .await
+                .ok()
+                .flatten();
+            let redirect_to = if current_mode.is_some() {
+                "/"
+            } else {
+                "/welcome"
+            };
             Json(serde_json::json!({
                 "success": true,
                 "redirect": redirect_to
-            })).into_response()
+            }))
+            .into_response()
         }
         Ok(None) => {
             info!("Authentication failed for user '{}'", form.username);
             Json(serde_json::json!({
                 "success": false,
                 "error": "Invalid username or password."
-            })).into_response()
+            }))
+            .into_response()
         }
         Err(e) => {
             // Check if this is an InvalidCredentials error (wrapped by axum_login)
             let err_str = format!("{}", e);
             if err_str.contains("Invalid credentials") {
-                info!("Authentication failed for user '{}': invalid credentials", form.username);
+                info!(
+                    "Authentication failed for user '{}': invalid credentials",
+                    form.username
+                );
                 Json(serde_json::json!({
                     "success": false,
                     "error": "Invalid username or password."
-                })).into_response()
+                }))
+                .into_response()
             } else {
                 error!("Error during authentication: {}", e);
                 Json(serde_json::json!({
                     "success": false,
                     "error": "Internal server error. Please try again."
-                })).into_response()
+                }))
+                .into_response()
             }
         }
     }
@@ -503,7 +574,9 @@ async fn logout(mut auth_session: AuthSession) -> Response {
     }
 }
 
-pub async fn generate_default_credentials(store: &std::sync::Arc<dyn crate::store::v1::Store>) -> anyhow::Result<Credentials> {
+pub async fn generate_default_credentials(
+    store: &std::sync::Arc<dyn crate::store::v1::Store>,
+) -> anyhow::Result<Credentials> {
     // Check if an initial password file already exists
     if StdPath::new(INITIAL_PASSWORD_FILE).exists() {
         info!("Initial password file exists - attempting to load existing credentials from store");
@@ -518,7 +591,9 @@ pub async fn generate_default_credentials(store: &std::sync::Arc<dyn crate::stor
         } else {
             // If we can't load from store but file exists, we should delete the file
             // as it's probably stale/outdated
-            info!("Failed to load admin credentials from store but initial password file exists - file may be stale");
+            info!(
+                "Failed to load admin credentials from store but initial password file exists - file may be stale"
+            );
             if let Err(e) = fs::remove_file(INITIAL_PASSWORD_FILE) {
                 error!("Failed to remove stale initial password file: {}", e);
             }
@@ -549,7 +624,10 @@ pub async fn generate_default_credentials(store: &std::sync::Arc<dyn crate::stor
 
     if let Err(e) = store.put_user(&user).await {
         error!("Failed to save admin credentials to store: {}", e);
-        return Err(anyhow::anyhow!("Failed to save admin credentials to store: {}", e));
+        return Err(anyhow::anyhow!(
+            "Failed to save admin credentials to store: {}",
+            e
+        ));
     }
 
     // Save password to file for user convenience
@@ -560,11 +638,16 @@ pub async fn generate_default_credentials(store: &std::sync::Arc<dyn crate::stor
         info!("Initial admin password saved to {}", INITIAL_PASSWORD_FILE);
     }
 
-    info!("Generated default admin credentials. Username: admin, Password: {}", password);
+    info!(
+        "Generated default admin credentials. Username: admin, Password: {}",
+        password
+    );
     Ok(credentials)
 }
 
-pub async fn load_credentials(store: &std::sync::Arc<dyn crate::store::v1::Store>) -> io::Result<Credentials> {
+pub async fn load_credentials(
+    store: &std::sync::Arc<dyn crate::store::v1::Store>,
+) -> io::Result<Credentials> {
     // Load from Store - get the admin user
     match store.get_user_by_username("admin").await {
         Ok(Some(user)) => {
@@ -574,14 +657,14 @@ pub async fn load_credentials(store: &std::sync::Arc<dyn crate::store::v1::Store
                 password: None,
                 password_hash: user.password_hash,
             })
-        },
+        }
         Ok(None) => {
             info!("No admin credentials found in store");
             Err(io::Error::new(
                 io::ErrorKind::NotFound,
                 "No admin credentials found in store",
             ))
-        },
+        }
         Err(e) => {
             error!("Error loading admin credentials from store: {}", e);
             Err(io::Error::new(
@@ -592,7 +675,10 @@ pub async fn load_credentials(store: &std::sync::Arc<dyn crate::store::v1::Store
     }
 }
 
-pub async fn save_credentials(store: &std::sync::Arc<dyn crate::store::v1::Store>, credentials: &Credentials) -> io::Result<()> {
+pub async fn save_credentials(
+    store: &std::sync::Arc<dyn crate::store::v1::Store>,
+    credentials: &Credentials,
+) -> io::Result<()> {
     // Get or create user
     let now = chrono::Utc::now().to_rfc3339();
     let user = if let Ok(Some(existing)) = store.get_user_by_username(&credentials.username).await {
@@ -615,7 +701,10 @@ pub async fn save_credentials(store: &std::sync::Arc<dyn crate::store::v1::Store
 
     if let Err(e) = store.put_user(&user).await {
         error!("Failed to save admin credentials to store: {}", e);
-        return Err(io::Error::new(io::ErrorKind::Other, format!("Store error: {}", e)));
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            format!("Store error: {}", e),
+        ));
     }
 
     info!("Saved admin credentials to store");
@@ -632,12 +721,13 @@ pub fn require_admin(auth_session: &AuthSession) -> Result<(), Response> {
 async fn login_test_handler(auth_session: AuthSession) -> impl IntoResponse {
     let is_demo_mode = std::env::var("DRAGONFLY_DEMO_MODE").is_ok();
     let is_authenticated = auth_session.user.is_some();
-    
-    let username = auth_session.user
+
+    let username = auth_session
+        .user
         .as_ref()
         .map(|user| user.username.clone())
         .unwrap_or_else(|| "Not logged in".to_string());
-    
+
     let html = format!(
         r#"<!DOCTYPE html>
         <html>
@@ -676,11 +766,15 @@ async fn login_test_handler(auth_session: AuthSession) -> impl IntoResponse {
         "#,
         demo_class = if is_demo_mode { "demo" } else { "" },
         is_demo = if is_demo_mode { "Enabled" } else { "Disabled" },
-        is_auth = if is_authenticated { "Authenticated" } else { "Not Authenticated" },
+        is_auth = if is_authenticated {
+            "Authenticated"
+        } else {
+            "Not Authenticated"
+        },
         auth_class = if is_authenticated { "success" } else { "error" },
         username = username
     );
-    
+
     Html(html)
 }
 
@@ -690,8 +784,12 @@ mod tests {
     use std::sync::Arc;
 
     /// Create a test store with a user
-    async fn create_test_store_with_user(username: &str, password: &str) -> (Arc<dyn crate::store::v1::Store>, String) {
-        let store: Arc<dyn crate::store::v1::Store> = Arc::new(crate::store::v1::MemoryStore::new());
+    async fn create_test_store_with_user(
+        username: &str,
+        password: &str,
+    ) -> (Arc<dyn crate::store::v1::Store>, String) {
+        let store: Arc<dyn crate::store::v1::Store> =
+            Arc::new(crate::store::v1::MemoryStore::new());
 
         let salt = SaltString::generate(&mut OsRng);
         let password_hash = Argon2::default()
@@ -709,7 +807,10 @@ mod tests {
             updated_at: now,
         };
 
-        store.put_user(&user).await.expect("Failed to create test user");
+        store
+            .put_user(&user)
+            .await
+            .expect("Failed to create test user");
         (store, user_id.to_string())
     }
 
@@ -773,7 +874,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_admin_backend_authenticate_user_not_found() {
-        let store: Arc<dyn crate::store::v1::Store> = Arc::new(crate::store::v1::MemoryStore::new());
+        let store: Arc<dyn crate::store::v1::Store> =
+            Arc::new(crate::store::v1::MemoryStore::new());
         let backend = AdminBackend::new(store);
 
         let credentials = Credentials {
@@ -824,7 +926,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_admin_backend_get_user_not_found() {
-        let store: Arc<dyn crate::store::v1::Store> = Arc::new(crate::store::v1::MemoryStore::new());
+        let store: Arc<dyn crate::store::v1::Store> =
+            Arc::new(crate::store::v1::MemoryStore::new());
         let backend = AdminBackend::new(store);
 
         let nonexistent_id = uuid::Uuid::now_v7().to_string();

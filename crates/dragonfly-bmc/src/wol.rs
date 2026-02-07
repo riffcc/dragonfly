@@ -27,9 +27,8 @@ impl WolController {
 
     /// Create from MAC address string
     pub fn from_mac(mac: &str) -> Result<Self> {
-        let config = WolConfig::from_mac_string(mac).ok_or_else(|| {
-            BmcError::InvalidConfig(format!("invalid MAC address: {}", mac))
-        })?;
+        let config = WolConfig::from_mac_string(mac)
+            .ok_or_else(|| BmcError::InvalidConfig(format!("invalid MAC address: {}", mac)))?;
         Ok(Self::new(config))
     }
 

@@ -10,27 +10,27 @@
 //! Power users get a full toolkit without needing USB sticks or physical access.
 
 use crate::probe::DetectedOs;
-use crate::workflow::{CheckInResponse, AgentAction};
+use crate::workflow::{AgentAction, CheckInResponse};
 use anyhow::Result;
 use crossterm::{
     event::{self, Event, KeyCode, KeyEvent, KeyEventKind},
-    terminal::{self, EnterAlternateScreen, LeaveAlternateScreen},
     execute,
+    terminal::{self, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use ratatui::{
+    Frame, Terminal,
     backend::CrosstermBackend,
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
-    Frame, Terminal,
 };
 use reqwest::Client;
 use serde::Deserialize;
-use std::io::{stdout, Stdout};
+use std::io::{Stdout, stdout};
 use std::time::Duration;
 use tokio::sync::mpsc;
-use tracing::{info, warn, debug};
+use tracing::{debug, info, warn};
 
 /// Timeout when we have an existing OS to boot
 /// 3 seconds gives the user time to react and press ENTER/SPACEBAR for the menu
@@ -78,10 +78,7 @@ pub async fn fetch_boot_options(server_url: Option<&str>) -> BootOptions {
         return BootOptions::default();
     };
 
-    let client = match Client::builder()
-        .timeout(Duration::from_secs(5))
-        .build()
-    {
+    let client = match Client::builder().timeout(Duration::from_secs(5)).build() {
         Ok(c) => c,
         Err(_) => return BootOptions::default(),
     };
@@ -238,14 +235,20 @@ impl MenuState {
                 0 => Some(MenuSelection::Wipe),
                 1 => {
                     // Return first template or empty string (will show OS picker if templates available)
-                    let template = self.boot_options.templates.first()
+                    let template = self
+                        .boot_options
+                        .templates
+                        .first()
                         .map(|t| t.name.clone())
                         .unwrap_or_default();
                     Some(MenuSelection::InstallOs(template))
                 }
                 2 => {
                     // Return first ISO or empty string
-                    let iso = self.boot_options.isos.first()
+                    let iso = self
+                        .boot_options
+                        .isos
+                        .first()
                         .map(|i| i.url.clone())
                         .unwrap_or_default();
                     Some(MenuSelection::BootIso(iso))
@@ -282,11 +285,7 @@ pub async fn show_boot_menu(
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let result = run_menu_loop(
-        &mut terminal,
-        existing_os.cloned(),
-        boot_options,
-    );
+    let result = run_menu_loop(&mut terminal, existing_os.cloned(), boot_options);
 
     // Restore terminal
     terminal::disable_raw_mode()?;
@@ -311,7 +310,13 @@ fn run_menu_loop(
 
         // Poll for events
         if event::poll(Duration::from_millis(100))? {
-            if let Event::Key(KeyEvent { code, modifiers, kind: KeyEventKind::Press, .. }) = event::read()? {
+            if let Event::Key(KeyEvent {
+                code,
+                modifiers,
+                kind: KeyEventKind::Press,
+                ..
+            }) = event::read()?
+            {
                 // Handle Ctrl-C (double-tap to exit)
                 if code == KeyCode::Char('c') && modifiers.contains(KeyModifiers::CONTROL) {
                     if state.handle_ctrl_c() {
@@ -383,11 +388,11 @@ fn draw_menu(frame: &mut Frame, state: &mut MenuState) {
 
     // Split content area vertically: logo, slogan, info, menu, footer
     let chunks = Layout::vertical([
-        Constraint::Length(8),  // Logo (block text is ~7 lines)
-        Constraint::Length(2),  // Slogan
-        Constraint::Length(3),  // Info/status
-        Constraint::Min(10),    // Menu
-        Constraint::Length(3),  // Footer/help
+        Constraint::Length(8), // Logo (block text is ~7 lines)
+        Constraint::Length(2), // Slogan
+        Constraint::Length(3), // Info/status
+        Constraint::Min(10),   // Menu
+        Constraint::Length(3), // Footer/help
     ])
     .split(content_area);
 
@@ -433,7 +438,11 @@ fn draw_logo(frame: &mut Frame, area: Rect) {
 /// Draw the slogan
 fn draw_slogan(frame: &mut Frame, area: Rect) {
     let slogan = Paragraph::new(SLOGAN)
-        .style(Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC))
+        .style(
+            Style::default()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::ITALIC),
+        )
         .centered();
     frame.render_widget(slogan, area);
 }
@@ -444,18 +453,23 @@ fn draw_info(frame: &mut Frame, area: Rect, existing_os: &Option<DetectedOs>) {
         vec![
             Line::from(vec![
                 Span::raw("Detected OS: "),
-                Span::styled(&os.name, Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    &os.name,
+                    Style::default()
+                        .fg(Color::Green)
+                        .add_modifier(Modifier::BOLD),
+                ),
             ]),
-            Line::from(vec![
-                Span::styled(&os.device, Style::default().fg(Color::DarkGray)),
-            ]),
+            Line::from(vec![Span::styled(
+                &os.device,
+                Style::default().fg(Color::DarkGray),
+            )]),
         ]
     } else {
-        vec![
-            Line::from(vec![
-                Span::styled("No existing OS detected", Style::default().fg(Color::Yellow)),
-            ]),
-        ]
+        vec![Line::from(vec![Span::styled(
+            "No existing OS detected",
+            Style::default().fg(Color::Yellow),
+        )])]
     };
 
     let info = Paragraph::new(info_text).centered();
@@ -468,13 +482,14 @@ fn draw_main_menu(frame: &mut Frame, area: Rect, state: &mut MenuState) {
 
     let items: Vec<ListItem> = vec![
         if has_os {
-            ListItem::new(Line::from(vec![
-                Span::raw("  Continue booting existing OS"),
-            ]))
+            ListItem::new(Line::from(vec![Span::raw(
+                "  Continue booting existing OS",
+            )]))
         } else {
-            ListItem::new(Line::from(vec![
-                Span::styled("  No OS to boot", Style::default().fg(Color::DarkGray)),
-            ]))
+            ListItem::new(Line::from(vec![Span::styled(
+                "  No OS to boot",
+                Style::default().fg(Color::DarkGray),
+            )]))
         },
         ListItem::new("  Perform memory test"),
         ListItem::new(Line::from(vec![
@@ -487,15 +502,19 @@ fn draw_main_menu(frame: &mut Frame, area: Rect, state: &mut MenuState) {
         .block(
             Block::default()
                 .title(" Boot Menu ")
-                .title_style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+                .title_style(
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                )
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Cyan))
+                .border_style(Style::default().fg(Color::Cyan)),
         )
         .highlight_style(
             Style::default()
                 .bg(Color::Cyan)
                 .fg(Color::Black)
-                .add_modifier(Modifier::BOLD)
+                .add_modifier(Modifier::BOLD),
         )
         .highlight_symbol("▸ ");
 
@@ -521,43 +540,51 @@ fn draw_advanced_menu(frame: &mut Frame, area: Rect, state: &mut MenuState) {
     let items: Vec<ListItem> = vec![
         ListItem::new(Line::from(vec![
             Span::raw("  Wipe disk"),
-            Span::styled("  Securely erase all data", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                "  Securely erase all data",
+                Style::default().fg(Color::DarkGray),
+            ),
         ])),
         ListItem::new(Line::from(vec![
             Span::raw("  Install OS"),
-            Span::styled(format!("  {}", os_desc), Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                format!("  {}", os_desc),
+                Style::default().fg(Color::DarkGray),
+            ),
         ])),
         ListItem::new(Line::from(vec![
             Span::raw("  Boot ISO"),
-            Span::styled(format!("  {}", iso_desc), Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                format!("  {}", iso_desc),
+                Style::default().fg(Color::DarkGray),
+            ),
         ])),
-        ListItem::new(Line::from(vec![
-            Span::raw("  Boot rescue environment"),
-        ])),
-        ListItem::new(Line::from(vec![
-            Span::raw("  Vendor diagnostics"),
-        ])),
-        ListItem::new(Line::from(vec![
-            Span::raw("  Remove from Dragonfly"),
-        ])),
-        ListItem::new(Line::from(vec![
-            Span::styled("  ← Back", Style::default().fg(Color::DarkGray)),
-        ])),
+        ListItem::new(Line::from(vec![Span::raw("  Boot rescue environment")])),
+        ListItem::new(Line::from(vec![Span::raw("  Vendor diagnostics")])),
+        ListItem::new(Line::from(vec![Span::raw("  Remove from Dragonfly")])),
+        ListItem::new(Line::from(vec![Span::styled(
+            "  ← Back",
+            Style::default().fg(Color::DarkGray),
+        )])),
     ];
 
     let list = List::new(items)
         .block(
             Block::default()
                 .title(" Advanced Options ")
-                .title_style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))
+                .title_style(
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                )
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Yellow))
+                .border_style(Style::default().fg(Color::Yellow)),
         )
         .highlight_style(
             Style::default()
                 .bg(Color::Yellow)
                 .fg(Color::Black)
-                .add_modifier(Modifier::BOLD)
+                .add_modifier(Modifier::BOLD),
         )
         .highlight_symbol("▸ ");
 
@@ -567,9 +594,12 @@ fn draw_advanced_menu(frame: &mut Frame, area: Rect, state: &mut MenuState) {
 /// Draw the footer with help text
 fn draw_footer(frame: &mut Frame, area: Rect, state: &MenuState) {
     let help_text = if state.show_ctrl_c_prompt() {
-        Line::from(vec![
-            Span::styled("Press Ctrl-C again to exit to shell", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-        ])
+        Line::from(vec![Span::styled(
+            "Press Ctrl-C again to exit to shell",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )])
     } else if state.in_advanced {
         Line::from(vec![
             Span::styled("↑↓", Style::default().fg(Color::Cyan)),
@@ -624,7 +654,12 @@ where
         let _ = terminal::enable_raw_mode();
         loop {
             if event::poll(Duration::from_millis(50)).unwrap_or(false) {
-                if let Ok(Event::Key(KeyEvent { code, kind: KeyEventKind::Press, .. })) = event::read() {
+                if let Ok(Event::Key(KeyEvent {
+                    code,
+                    kind: KeyEventKind::Press,
+                    ..
+                })) = event::read()
+                {
                     if matches!(code, KeyCode::Enter | KeyCode::Char(' ')) {
                         let _ = key_tx.blocking_send(());
                         break;
@@ -754,10 +789,10 @@ fn draw_splash(frame: &mut Frame, existing_os: Option<&DetectedOs>) {
     let content_area = center_rect(area, 90, 70);
 
     let chunks = Layout::vertical([
-        Constraint::Length(8),  // Logo
-        Constraint::Length(2),  // Slogan
-        Constraint::Length(4),  // Status
-        Constraint::Length(3),  // Prompt
+        Constraint::Length(8), // Logo
+        Constraint::Length(2), // Slogan
+        Constraint::Length(4), // Status
+        Constraint::Length(3), // Prompt
     ])
     .split(content_area);
 
@@ -769,7 +804,11 @@ fn draw_splash(frame: &mut Frame, existing_os: Option<&DetectedOs>) {
 
     // Slogan
     let slogan = Paragraph::new(SLOGAN)
-        .style(Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC))
+        .style(
+            Style::default()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::ITALIC),
+        )
         .centered();
     frame.render_widget(slogan, chunks[1]);
 
@@ -782,14 +821,23 @@ fn draw_splash(frame: &mut Frame, existing_os: Option<&DetectedOs>) {
                 Span::styled(&os.name, Style::default().fg(Color::Green)),
             ]),
             Line::from(""),
-            Line::from(Span::styled("Contacting Dragonfly...", Style::default().fg(Color::DarkGray))),
+            Line::from(Span::styled(
+                "Contacting Dragonfly...",
+                Style::default().fg(Color::DarkGray),
+            )),
         ]
     } else {
         vec![
             Line::from(""),
-            Line::from(Span::styled("No existing OS detected", Style::default().fg(Color::Yellow))),
+            Line::from(Span::styled(
+                "No existing OS detected",
+                Style::default().fg(Color::Yellow),
+            )),
             Line::from(""),
-            Line::from(Span::styled("Contacting Dragonfly...", Style::default().fg(Color::DarkGray))),
+            Line::from(Span::styled(
+                "Contacting Dragonfly...",
+                Style::default().fg(Color::DarkGray),
+            )),
         ]
     };
     let status = Paragraph::new(status_lines).centered();
@@ -798,9 +846,19 @@ fn draw_splash(frame: &mut Frame, existing_os: Option<&DetectedOs>) {
     // Prompt
     let prompt = Paragraph::new(Line::from(vec![
         Span::raw("Press "),
-        Span::styled("ENTER", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            "ENTER",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::raw(" or "),
-        Span::styled("SPACE", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            "SPACE",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::raw(" for boot menu"),
     ]))
     .centered();
@@ -822,10 +880,7 @@ pub enum RecoveryAction {
 ///
 /// Shows the error, template name, and a recovery menu. Default selection is
 /// Rescue Shell so an unattended failure doesn't auto-retry into a loop.
-pub fn show_install_failure(
-    template_name: &str,
-    error_message: &str,
-) -> Result<RecoveryAction> {
+pub fn show_install_failure(template_name: &str, error_message: &str) -> Result<RecoveryAction> {
     // Setup terminal
     terminal::enable_raw_mode()?;
     let mut stdout = stdout();
@@ -858,7 +913,12 @@ fn run_recovery_loop(
         })?;
 
         if event::poll(Duration::from_millis(100))? {
-            if let Event::Key(KeyEvent { code, kind: KeyEventKind::Press, .. }) = event::read()? {
+            if let Event::Key(KeyEvent {
+                code,
+                kind: KeyEventKind::Press,
+                ..
+            }) = event::read()?
+            {
                 match code {
                     KeyCode::Up | KeyCode::Char('k') => {
                         let i = list_state.selected().unwrap_or(1);
@@ -898,12 +958,12 @@ fn draw_recovery_screen(
     let content_area = center_rect(area, 90, 85);
 
     let chunks = Layout::vertical([
-        Constraint::Length(8),  // Logo
-        Constraint::Length(2),  // Slogan
-        Constraint::Length(3),  // Failure title
-        Constraint::Min(6),     // Error details
-        Constraint::Length(8),  // Recovery menu
-        Constraint::Length(3),  // Footer
+        Constraint::Length(8), // Logo
+        Constraint::Length(2), // Slogan
+        Constraint::Length(3), // Failure title
+        Constraint::Min(6),    // Error details
+        Constraint::Length(8), // Recovery menu
+        Constraint::Length(3), // Footer
     ])
     .split(content_area);
 
@@ -913,15 +973,21 @@ fn draw_recovery_screen(
 
     // Failure title
     let title = Paragraph::new(vec![
-        Line::from(vec![
-            Span::styled(
-                " INSTALL FAILED ",
-                Style::default().fg(Color::White).bg(Color::Red).add_modifier(Modifier::BOLD),
-            ),
-        ]),
+        Line::from(vec![Span::styled(
+            " INSTALL FAILED ",
+            Style::default()
+                .fg(Color::White)
+                .bg(Color::Red)
+                .add_modifier(Modifier::BOLD),
+        )]),
         Line::from(vec![
             Span::raw("Template: "),
-            Span::styled(template_name, Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                template_name,
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
         ]),
     ])
     .centered();
@@ -934,7 +1000,7 @@ fn draw_recovery_screen(
                 .title(" Error ")
                 .title_style(Style::default().fg(Color::Red).add_modifier(Modifier::BOLD))
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Red))
+                .border_style(Style::default().fg(Color::Red)),
         )
         .wrap(ratatui::widgets::Wrap { trim: false });
     frame.render_widget(error_block, chunks[3]);
@@ -953,15 +1019,19 @@ fn draw_recovery_screen(
         .block(
             Block::default()
                 .title(" Recovery Options ")
-                .title_style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))
+                .title_style(
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                )
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Yellow))
+                .border_style(Style::default().fg(Color::Yellow)),
         )
         .highlight_style(
             Style::default()
                 .bg(Color::Yellow)
                 .fg(Color::Black)
-                .add_modifier(Modifier::BOLD)
+                .add_modifier(Modifier::BOLD),
         )
         .highlight_symbol("▸ ");
 
@@ -969,11 +1039,26 @@ fn draw_recovery_screen(
 
     // Footer
     let footer = Paragraph::new(Line::from(vec![
-        Span::styled("↑↓", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            "↑↓",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::raw(" Navigate  "),
-        Span::styled("Enter", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            "Enter",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::raw(" Select  "),
-        Span::styled("1-3", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            "1-3",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::raw(" Quick select"),
     ]))
     .centered();

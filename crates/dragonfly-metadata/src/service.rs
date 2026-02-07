@@ -103,7 +103,9 @@ impl MetadataService {
                 .metadata
                 .public_ipv4
                 .map(|ip| ip.to_string())
-                .ok_or_else(|| MetadataError::InvalidPath("public-ipv4 not configured".to_string())),
+                .ok_or_else(|| {
+                    MetadataError::InvalidPath("public-ipv4 not configured".to_string())
+                }),
 
             // MAC address
             "meta-data/mac" | "latest/meta-data/mac" => self
@@ -119,13 +121,11 @@ impl MetadataService {
 
             // Availability zone
             "meta-data/placement/availability-zone"
-            | "latest/meta-data/placement/availability-zone" => self
-                .metadata
-                .availability_zone
-                .clone()
-                .ok_or_else(|| {
+            | "latest/meta-data/placement/availability-zone" => {
+                self.metadata.availability_zone.clone().ok_or_else(|| {
                     MetadataError::InvalidPath("availability-zone not configured".to_string())
-                }),
+                })
+            }
 
             // Region
             "meta-data/placement/region" | "latest/meta-data/placement/region" => self
@@ -135,14 +135,16 @@ impl MetadataService {
                 .ok_or_else(|| MetadataError::InvalidPath("region not configured".to_string())),
 
             // Placement listing
-            "meta-data/placement" | "meta-data/placement/" | "latest/meta-data/placement" | "latest/meta-data/placement/" => {
-                Ok(self.placement_listing())
-            }
+            "meta-data/placement"
+            | "meta-data/placement/"
+            | "latest/meta-data/placement"
+            | "latest/meta-data/placement/" => Ok(self.placement_listing()),
 
             // Public keys listing
-            "meta-data/public-keys" | "meta-data/public-keys/" | "latest/meta-data/public-keys" | "latest/meta-data/public-keys/" => {
-                Ok(self.public_keys_listing())
-            }
+            "meta-data/public-keys"
+            | "meta-data/public-keys/"
+            | "latest/meta-data/public-keys"
+            | "latest/meta-data/public-keys/" => Ok(self.public_keys_listing()),
 
             // Network interfaces listing
             "meta-data/network/interfaces/macs"
@@ -178,12 +180,7 @@ impl MetadataService {
 
     /// Generate meta-data root listing
     fn meta_data_listing(&self) -> String {
-        let mut items = vec![
-            "instance-id",
-            "hostname",
-            "local-hostname",
-            "instance-type",
-        ];
+        let mut items = vec!["instance-id", "hostname", "local-hostname", "instance-type"];
 
         if self.metadata.local_ipv4.is_some() {
             items.push("local-ipv4");
@@ -266,11 +263,10 @@ impl MetadataService {
         .parse()
         .map_err(|_| MetadataError::InvalidPath(path.to_string()))?;
 
-        let key = self
-            .metadata
-            .public_keys
-            .get(index)
-            .ok_or_else(|| MetadataError::InvalidPath(format!("key index {} not found", index)))?;
+        let key =
+            self.metadata.public_keys.get(index).ok_or_else(|| {
+                MetadataError::InvalidPath(format!("key index {} not found", index))
+            })?;
 
         match parts.get(1) {
             None | Some(&"") => Ok("openssh-key".to_string()),
@@ -366,7 +362,10 @@ mod tests {
         let svc = MetadataService::new(test_metadata());
 
         assert_eq!(svc.resolve("meta-data/hostname").unwrap(), "server-01");
-        assert_eq!(svc.resolve("meta-data/local-hostname").unwrap(), "server-01");
+        assert_eq!(
+            svc.resolve("meta-data/local-hostname").unwrap(),
+            "server-01"
+        );
     }
 
     #[test]
@@ -383,10 +382,7 @@ mod tests {
     fn test_resolve_mac() {
         let svc = MetadataService::new(test_metadata());
 
-        assert_eq!(
-            svc.resolve("meta-data/mac").unwrap(),
-            "aa:bb:cc:dd:ee:ff"
-        );
+        assert_eq!(svc.resolve("meta-data/mac").unwrap(), "aa:bb:cc:dd:ee:ff");
     }
 
     #[test]
@@ -394,7 +390,8 @@ mod tests {
         let svc = MetadataService::new(test_metadata());
 
         assert_eq!(
-            svc.resolve("meta-data/placement/availability-zone").unwrap(),
+            svc.resolve("meta-data/placement/availability-zone")
+                .unwrap(),
             "us-west-2a"
         );
         assert_eq!(
@@ -407,7 +404,10 @@ mod tests {
     fn test_resolve_instance_type() {
         let svc = MetadataService::new(test_metadata());
 
-        assert_eq!(svc.resolve("meta-data/instance-type").unwrap(), "bare-metal");
+        assert_eq!(
+            svc.resolve("meta-data/instance-type").unwrap(),
+            "bare-metal"
+        );
     }
 
     #[test]
@@ -436,8 +436,9 @@ mod tests {
 
     #[test]
     fn test_resolve_user_data() {
-        let svc = MetadataService::new(test_metadata())
-            .with_user_data(UserData::cloud_config("#cloud-config\nruncmd:\n  - echo hello"));
+        let svc = MetadataService::new(test_metadata()).with_user_data(UserData::cloud_config(
+            "#cloud-config\nruncmd:\n  - echo hello",
+        ));
 
         let data = svc.resolve("user-data").unwrap();
         assert!(data.starts_with("#cloud-config"));

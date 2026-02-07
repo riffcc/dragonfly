@@ -8,12 +8,12 @@
 //! Uses v0.1.0 Store trait for machines (UUIDv7 + identity hashing).
 
 use crate::mode::DeploymentMode;
-use dragonfly_common::{
-    Disk, HardwareInfo, Machine, MachineIdentity, MachineState, MachineStatus,
-    NetworkInterface, WorkflowResult, normalize_mac,
-};
 use crate::store::v1::{Result as StoreResult, Store, StoreError};
 use chrono::Utc;
+use dragonfly_common::{
+    Disk, HardwareInfo, Machine, MachineIdentity, MachineState, MachineStatus, NetworkInterface,
+    WorkflowResult, normalize_mac,
+};
 use dragonfly_crd::{Workflow, WorkflowState};
 use dragonfly_ipxe::{IpxeConfig, IpxeScriptGenerator};
 use serde::{Deserialize, Serialize};
@@ -143,11 +143,7 @@ pub struct ProvisioningService {
 
 impl ProvisioningService {
     /// Create a new provisioning service
-    pub fn new(
-        store: Arc<dyn Store>,
-        config: IpxeConfig,
-        mode: DeploymentMode,
-    ) -> Self {
+    pub fn new(store: Arc<dyn Store>, config: IpxeConfig, mode: DeploymentMode) -> Self {
         Self {
             store,
             ipxe_generator: IpxeScriptGenerator::new(config),
@@ -166,7 +162,10 @@ impl ProvisioningService {
         debug!("Boot request for MAC: {}", normalized_mac);
 
         // Look up machine by MAC
-        let machine = self.store.get_machine_by_mac(&normalized_mac).await
+        let machine = self
+            .store
+            .get_machine_by_mac(&normalized_mac)
+            .await
             .map_err(ProvisioningError::Store)?;
 
         match machine {
@@ -185,47 +184,78 @@ impl ProvisioningService {
     ///
     /// EXCEPTION: Machines with active imaging workflows boot directly into Mage
     /// to continue the imaging process.
-    async fn boot_script_for_known_machine(&self, machine: &Machine) -> Result<String, ProvisioningError> {
+    async fn boot_script_for_known_machine(
+        &self,
+        machine: &Machine,
+    ) -> Result<String, ProvisioningError> {
         // Check for boot-mode override tags (one-shot: cleared after script generation)
-        let boot_mode = machine.config.tags.iter()
+        let boot_mode = machine
+            .config
+            .tags
+            .iter()
             .find(|t| t.starts_with("boot-mode:"))
             .map(|t| t.trim_start_matches("boot-mode:").to_string());
 
         if let Some(ref mode) = boot_mode {
             let script = match mode.as_str() {
                 "memtest" => {
-                    info!("Machine {} has boot-mode:memtest, booting memtest86+", machine.id);
+                    info!(
+                        "Machine {} has boot-mode:memtest, booting memtest86+",
+                        machine.id
+                    );
                     self.ipxe_generator.memtest_script()
                 }
                 "rescue" => {
-                    info!("Machine {} has boot-mode:rescue, booting Mage (discovery mode)", machine.id);
-                    self.ipxe_generator.discovery_script(None)
+                    info!(
+                        "Machine {} has boot-mode:rescue, booting Mage (discovery mode)",
+                        machine.id
+                    );
+                    self.ipxe_generator
+                        .discovery_script(None)
                         .map_err(|e| ProvisioningError::IpxeGeneration(e.to_string()))?
                 }
                 "iso" => {
-                    let iso_name = machine.config.tags.iter()
+                    let iso_name = machine
+                        .config
+                        .tags
+                        .iter()
                         .find(|t| t.starts_with("boot-iso:"))
                         .map(|t| t.trim_start_matches("boot-iso:").to_string());
                     if let Some(name) = iso_name {
                         let iso_url = format!("{}/isos/{}", self.ipxe_generator.base_url(), name);
-                        info!("Machine {} has boot-mode:iso, sanbooting {}", machine.id, iso_url);
+                        info!(
+                            "Machine {} has boot-mode:iso, sanbooting {}",
+                            machine.id, iso_url
+                        );
                         self.ipxe_generator.sanboot_iso_script(&iso_url)
                     } else {
-                        warn!("Machine {} has boot-mode:iso but no boot-iso tag, falling back to Spark", machine.id);
+                        warn!(
+                            "Machine {} has boot-mode:iso but no boot-iso tag, falling back to Spark",
+                            machine.id
+                        );
                         self.ipxe_generator.spark_script()
                     }
                 }
                 _ => {
-                    warn!("Machine {} has unknown boot-mode:{}, falling back to Spark", machine.id, mode);
+                    warn!(
+                        "Machine {} has unknown boot-mode:{}, falling back to Spark",
+                        machine.id, mode
+                    );
                     self.ipxe_generator.spark_script()
                 }
             };
 
             // Clear boot-mode/boot-iso tags (one-shot)
             let mut updated_machine = machine.clone();
-            updated_machine.config.tags.retain(|t| !t.starts_with("boot-mode:") && !t.starts_with("boot-iso:"));
+            updated_machine
+                .config
+                .tags
+                .retain(|t| !t.starts_with("boot-mode:") && !t.starts_with("boot-iso:"));
             if let Err(e) = self.store.put_machine(&updated_machine).await {
-                warn!("Failed to clear boot-mode tags for machine {}: {}", machine.id, e);
+                warn!(
+                    "Failed to clear boot-mode tags for machine {}: {}",
+                    machine.id, e
+                );
             }
 
             return Ok(script);
@@ -243,8 +273,13 @@ impl ProvisioningService {
 
         if let Some(wf) = active_workflow {
             // Active imaging workflow - boot directly into Mage
-            info!("Machine {} has active workflow {}, booting Mage", machine.id, wf.metadata.name);
-            let script = self.ipxe_generator.imaging_script(None, &wf.metadata.name)
+            info!(
+                "Machine {} has active workflow {}, booting Mage",
+                machine.id, wf.metadata.name
+            );
+            let script = self
+                .ipxe_generator
+                .imaging_script(None, &wf.metadata.name)
                 .map_err(|e| ProvisioningError::IpxeGeneration(e.to_string()))?;
             return Ok(script);
         }
@@ -262,7 +297,10 @@ impl ProvisioningService {
     }
 
     /// Get boot script for unknown machine
-    async fn boot_script_for_unknown_machine(&self, mac: &str) -> Result<String, ProvisioningError> {
+    async fn boot_script_for_unknown_machine(
+        &self,
+        mac: &str,
+    ) -> Result<String, ProvisioningError> {
         info!("Unknown MAC address: {}", mac);
 
         // Boot into Spark for discovery - it will detect hardware and report back
@@ -276,7 +314,10 @@ impl ProvisioningService {
     /// 2. Look up by identity hash first (handles NIC replacements)
     /// 3. Fall back to primary MAC lookup
     /// 4. Create new machine if not found
-    pub async fn handle_checkin(&self, info: &HardwareCheckIn) -> Result<CheckInResponse, ProvisioningError> {
+    pub async fn handle_checkin(
+        &self,
+        info: &HardwareCheckIn,
+    ) -> Result<CheckInResponse, ProvisioningError> {
         let normalized_mac = normalize_mac(&info.mac);
         debug!("Agent check-in from MAC: {}", normalized_mac);
 
@@ -308,12 +349,18 @@ impl ProvisioningService {
         );
 
         // Try re-identification by identity hash first
-        let mut existing = self.store.get_machine_by_identity(&identity.identity_hash).await
+        let mut existing = self
+            .store
+            .get_machine_by_identity(&identity.identity_hash)
+            .await
             .map_err(ProvisioningError::Store)?;
 
         // Fall back to MAC lookup (for machines registered before identity hashing)
         if existing.is_none() {
-            existing = self.store.get_machine_by_mac(&normalized_mac).await
+            existing = self
+                .store
+                .get_machine_by_mac(&normalized_mac)
+                .await
                 .map_err(ProvisioningError::Store)?;
         }
 
@@ -321,17 +368,27 @@ impl ProvisioningService {
             Some(mut m) => {
                 // Update existing machine
                 self.update_machine_from_checkin(&mut m, info, &identity);
-                self.store.put_machine(&m).await
+                self.store
+                    .put_machine(&m)
+                    .await
                     .map_err(ProvisioningError::Store)?;
-                info!("Updated machine {} ({}) from check-in", m.id, m.config.memorable_name);
+                info!(
+                    "Updated machine {} ({}) from check-in",
+                    m.id, m.config.memorable_name
+                );
                 (m, false)
             }
             None => {
                 // Create new machine
                 let m = self.create_machine_from_checkin(info, identity);
-                self.store.put_machine(&m).await
+                self.store
+                    .put_machine(&m)
+                    .await
                     .map_err(ProvisioningError::Store)?;
-                info!("Created new machine {} ({}) from check-in", m.id, m.config.memorable_name);
+                info!(
+                    "Created new machine {} ({}) from check-in",
+                    m.id, m.config.memorable_name
+                );
                 (m, true)
             }
         };
@@ -359,23 +416,40 @@ impl ProvisioningService {
                 // The workflow is idempotent: image2disk overwrites the disk, writefile
                 // overwrites files, reboot is harmless to repeat. So re-executing after
                 // an interrupted attempt is safe.
-                let state_desc = wf.status.as_ref()
+                let state_desc = wf
+                    .status
+                    .as_ref()
                     .map(|s| format!("{:?}", s.state))
                     .unwrap_or_else(|| "no status".to_string());
                 info!(
                     "Machine {} has active workflow {} ({}) - proceeding with imaging{}",
-                    machine.id, wf.metadata.name, state_desc,
-                    if info.existing_os.is_some() { " (will replace existing OS)" } else { "" }
+                    machine.id,
+                    wf.metadata.name,
+                    state_desc,
+                    if info.existing_os.is_some() {
+                        " (will replace existing OS)"
+                    } else {
+                        ""
+                    }
                 );
 
                 let mut machine = machine;
-                if matches!(machine.status.state, MachineState::Discovered | MachineState::ReadyToInstall) {
+                if matches!(
+                    machine.status.state,
+                    MachineState::Discovered | MachineState::ReadyToInstall
+                ) {
                     machine.status.state = MachineState::Initializing;
                 }
                 machine.config.reimage_requested = false;
-                self.store.put_machine(&machine).await
+                self.store
+                    .put_machine(&machine)
+                    .await
                     .map_err(ProvisioningError::Store)?;
-                (Some(wf.metadata.name.clone()), AgentAction::Execute, machine)
+                (
+                    Some(wf.metadata.name.clone()),
+                    AgentAction::Execute,
+                    machine,
+                )
             }
             None => {
                 // Determine if we should install an OS
@@ -395,7 +469,10 @@ impl ProvisioningService {
                         // New machine - check global default_os
                         match self.store.get_setting("default_os").await {
                             Ok(Some(default_os)) if !default_os.is_empty() => {
-                                info!("Using global default_os '{}' for new machine {} (no existing OS)", default_os, machine.id);
+                                info!(
+                                    "Using global default_os '{}' for new machine {} (no existing OS)",
+                                    default_os, machine.id
+                                );
                                 Some(default_os)
                             }
                             _ => None,
@@ -427,13 +504,22 @@ impl ProvisioningService {
                     machine.status.state = MachineState::Initializing;
                     // Clear reimage_requested - the reimage has now begun, abort is no longer safe
                     machine.config.reimage_requested = false;
-                    self.store.put_machine(&machine).await
+                    self.store
+                        .put_machine(&machine)
+                        .await
                         .map_err(ProvisioningError::Store)?;
-                    info!("Machine {} transitioning to Initializing, will install OS {}", machine.id, os_choice);
+                    info!(
+                        "Machine {} transitioning to Initializing, will install OS {}",
+                        machine.id, os_choice
+                    );
 
                     // Create workflow and execute
                     let workflow = self.create_imaging_workflow(&machine, os_choice).await?;
-                    (Some(workflow.metadata.name.clone()), AgentAction::Execute, machine)
+                    (
+                        Some(workflow.metadata.name.clone()),
+                        AgentAction::Execute,
+                        machine,
+                    )
                 } else if let Some(ref existing_os) = info.existing_os {
                     // Existing OS detected and no workflow to run - boot it
                     let mut machine = machine;
@@ -457,7 +543,9 @@ impl ProvisioningService {
                         );
                     }
 
-                    self.store.put_machine(&machine).await
+                    self.store
+                        .put_machine(&machine)
+                        .await
                         .map_err(ProvisioningError::Store)?;
                     (None, AgentAction::LocalBoot, machine)
                 } else {
@@ -476,13 +564,20 @@ impl ProvisioningService {
     }
 
     /// Create machine from check-in info
-    fn create_machine_from_checkin(&self, info: &HardwareCheckIn, identity: MachineIdentity) -> Machine {
+    fn create_machine_from_checkin(
+        &self,
+        info: &HardwareCheckIn,
+        identity: MachineIdentity,
+    ) -> Machine {
         let mut machine = Machine::new(identity);
 
         // Always store what the agent reports
         machine.config.reported_hostname = info.hostname.clone();
         // Only set user hostname if agent reports something meaningful (not "localhost")
-        machine.config.hostname = info.hostname.clone().filter(|h| !h.is_empty() && h != "localhost");
+        machine.config.hostname = info
+            .hostname
+            .clone()
+            .filter(|h| !h.is_empty() && h != "localhost");
 
         // Populate hardware info
         machine.hardware = HardwareInfo {
@@ -490,17 +585,23 @@ impl ProvisioningService {
             cpu_cores: info.cpu_cores,
             cpu_threads: info.cpu_threads,
             memory_bytes: info.memory_bytes,
-            disks: info.disks.iter().map(|d| Disk {
-                device: format!("/dev/{}", d.name),
-                size_bytes: d.size_bytes,
-                model: d.model.clone(),
-                serial: d.serial.clone(),
-                disk_type: None,
-                wearout: None,
-                health: None,
-            }).collect(),
+            disks: info
+                .disks
+                .iter()
+                .map(|d| Disk {
+                    device: format!("/dev/{}", d.name),
+                    size_bytes: d.size_bytes,
+                    model: d.model.clone(),
+                    serial: d.serial.clone(),
+                    disk_type: None,
+                    wearout: None,
+                    health: None,
+                })
+                .collect(),
             gpus: info.gpus.clone(),
-            network_interfaces: info.interfaces.iter()
+            network_interfaces: info
+                .interfaces
+                .iter()
                 .filter(|i| i.mac != info.mac)
                 .map(|i| NetworkInterface {
                     name: i.name.clone(),
@@ -512,7 +613,8 @@ impl ProvisioningService {
                     active: None,
                     bond_mode: None,
                     mtu: None,
-                }).collect(),
+                })
+                .collect(),
             is_virtual: info.is_virtual,
             virt_platform: info.virt_platform.clone(),
         };
@@ -537,7 +639,12 @@ impl ProvisioningService {
     }
 
     /// Update existing machine from check-in
-    fn update_machine_from_checkin(&self, machine: &mut Machine, info: &HardwareCheckIn, identity: &MachineIdentity) {
+    fn update_machine_from_checkin(
+        &self,
+        machine: &mut Machine,
+        info: &HardwareCheckIn,
+        identity: &MachineIdentity,
+    ) {
         // Update identity (may have more info now)
         machine.identity = identity.clone();
 
@@ -554,12 +661,18 @@ impl ProvisioningService {
         }
 
         // Update hardware info
-        machine.hardware.cpu_model = info.cpu_model.clone().or(machine.hardware.cpu_model.clone());
+        machine.hardware.cpu_model = info
+            .cpu_model
+            .clone()
+            .or(machine.hardware.cpu_model.clone());
         machine.hardware.cpu_cores = info.cpu_cores.or(machine.hardware.cpu_cores);
         machine.hardware.cpu_threads = info.cpu_threads.or(machine.hardware.cpu_threads);
         machine.hardware.memory_bytes = info.memory_bytes.or(machine.hardware.memory_bytes);
         machine.hardware.is_virtual = info.is_virtual;
-        machine.hardware.virt_platform = info.virt_platform.clone().or(machine.hardware.virt_platform.clone());
+        machine.hardware.virt_platform = info
+            .virt_platform
+            .clone()
+            .or(machine.hardware.virt_platform.clone());
 
         // Update GPUs if reported
         if !info.gpus.is_empty() {
@@ -568,22 +681,29 @@ impl ProvisioningService {
 
         // Update disks if we have new info
         if !info.disks.is_empty() {
-            machine.hardware.disks = info.disks.iter().map(|d| Disk {
-                device: format!("/dev/{}", d.name),
-                size_bytes: d.size_bytes,
-                model: d.model.clone(),
-                serial: d.serial.clone(),
-                disk_type: None,
-                wearout: None,
-                health: None,
-            }).collect();
+            machine.hardware.disks = info
+                .disks
+                .iter()
+                .map(|d| Disk {
+                    device: format!("/dev/{}", d.name),
+                    size_bytes: d.size_bytes,
+                    model: d.model.clone(),
+                    serial: d.serial.clone(),
+                    disk_type: None,
+                    wearout: None,
+                    health: None,
+                })
+                .collect();
         }
 
         // Always update DHCP-reported nameservers
         if !info.nameservers.is_empty() {
             machine.config.reported_nameservers = info.nameservers.clone();
             // Only overwrite user-facing nameservers if mode is plain DHCP (not user-customized)
-            if matches!(machine.config.network_mode, dragonfly_common::NetworkMode::Dhcp) {
+            if matches!(
+                machine.config.network_mode,
+                dragonfly_common::NetworkMode::Dhcp
+            ) {
                 machine.config.nameservers = info.nameservers.clone();
             }
         }
@@ -595,15 +715,23 @@ impl ProvisioningService {
     }
 
     /// Get workflows for a machine
-    async fn get_workflows_for_machine(&self, machine: &Machine) -> Result<Vec<Workflow>, ProvisioningError> {
-        self.store.get_workflows_for_machine(machine.id).await
+    async fn get_workflows_for_machine(
+        &self,
+        machine: &Machine,
+    ) -> Result<Vec<Workflow>, ProvisioningError> {
+        self.store
+            .get_workflows_for_machine(machine.id)
+            .await
             .map_err(ProvisioningError::Store)
     }
 
     /// Cancel any active (pending/running) workflows for a machine.
     /// Enforces the invariant: one active workflow per machine at a time.
     async fn cancel_active_workflows(&self, machine_id: Uuid) -> Result<(), ProvisioningError> {
-        let workflows = self.store.get_workflows_for_machine(machine_id).await
+        let workflows = self
+            .store
+            .get_workflows_for_machine(machine_id)
+            .await
             .map_err(ProvisioningError::Store)?;
 
         for wf in &workflows {
@@ -632,12 +760,18 @@ impl ProvisioningService {
         template_name: &str,
     ) -> Result<Workflow, ProvisioningError> {
         // Verify machine exists
-        let machine = self.store.get_machine(machine_id).await
+        let machine = self
+            .store
+            .get_machine(machine_id)
+            .await
             .map_err(ProvisioningError::Store)?
             .ok_or_else(|| ProvisioningError::NotFound(format!("machine: {}", machine_id)))?;
 
         // Verify template exists
-        let _template = self.store.get_template(template_name).await
+        let _template = self
+            .store
+            .get_template(template_name)
+            .await
             .map_err(ProvisioningError::Store)?
             .ok_or_else(|| ProvisioningError::NotFound(format!("template: {}", template_name)))?;
 
@@ -655,32 +789,47 @@ impl ProvisioningService {
 
         // Create workflow with UUIDv7 ID
         let workflow_id = Uuid::now_v7();
-        let workflow = Workflow::new(&workflow_id.to_string(), &machine_id.to_string(), template_name);
+        let workflow = Workflow::new(
+            &workflow_id.to_string(),
+            &machine_id.to_string(),
+            template_name,
+        );
 
         // Store workflow
-        self.store.put_workflow(&workflow).await
+        self.store
+            .put_workflow(&workflow)
+            .await
             .map_err(ProvisioningError::Store)?;
 
         // Update machine state to ReadyToInstall
         let mut machine = machine;
         machine.status.state = MachineState::ReadyToInstall;
         machine.status.current_workflow = Some(workflow_id);
-        self.store.put_machine(&machine).await
+        self.store
+            .put_machine(&machine)
+            .await
             .map_err(ProvisioningError::Store)?;
 
-        info!("Assigned workflow {} to machine {} using template {}",
-              workflow_id, machine_id, template_name);
+        info!(
+            "Assigned workflow {} to machine {} using template {}",
+            workflow_id, machine_id, template_name
+        );
 
         Ok(workflow)
     }
 
     /// Create imaging workflow for machine
-    async fn create_imaging_workflow(&self, machine: &Machine, os_choice: &str) -> Result<Workflow, ProvisioningError> {
+    async fn create_imaging_workflow(
+        &self,
+        machine: &Machine,
+        os_choice: &str,
+    ) -> Result<Workflow, ProvisioningError> {
         // Cancel any existing active workflows — one active workflow per machine
         self.cancel_active_workflows(machine.id).await?;
 
         let workflow_id = Uuid::now_v7();
-        let mut workflow = Workflow::new(&workflow_id.to_string(), &machine.id.to_string(), os_choice);
+        let mut workflow =
+            Workflow::new(&workflow_id.to_string(), &machine.id.to_string(), os_choice);
 
         workflow.status = Some(dragonfly_crd::WorkflowStatus {
             state: WorkflowState::StatePending,
@@ -693,11 +842,15 @@ impl ProvisioningService {
             actions: Vec::new(),
         });
 
-        self.store.put_workflow(&workflow).await
+        self.store
+            .put_workflow(&workflow)
+            .await
             .map_err(ProvisioningError::Store)?;
 
-        info!("Created imaging workflow {} for machine {} with OS {}",
-              workflow_id, machine.id, os_choice);
+        info!(
+            "Created imaging workflow {} for machine {} with OS {}",
+            workflow_id, machine.id, os_choice
+        );
 
         Ok(workflow)
     }
@@ -747,21 +900,17 @@ mod tests {
             cpu_threads: Some(16),
             memory_bytes: Some(32 * 1024 * 1024 * 1024),
             gpus: vec![],
-            disks: vec![
-                DiskInfo {
-                    name: "sda".to_string(),
-                    size_bytes: 500 * 1024 * 1024 * 1024,
-                    model: Some("Samsung SSD".to_string()),
-                    serial: None,
-                },
-            ],
-            interfaces: vec![
-                InterfaceInfo {
-                    name: "eth0".to_string(),
-                    mac: "00:11:22:33:44:55".to_string(),
-                    speed_mbps: Some(10000),
-                },
-            ],
+            disks: vec![DiskInfo {
+                name: "sda".to_string(),
+                size_bytes: 500 * 1024 * 1024 * 1024,
+                model: Some("Samsung SSD".to_string()),
+                serial: None,
+            }],
+            interfaces: vec![InterfaceInfo {
+                name: "eth0".to_string(),
+                mac: "00:11:22:33:44:55".to_string(),
+                speed_mbps: Some(10000),
+            }],
             bmc_address: Some("192.168.1.200".to_string()),
             is_virtual: false,
             virt_platform: None,
@@ -774,27 +923,26 @@ mod tests {
     async fn test_unknown_mac_boots_spark() {
         let store: Arc<dyn Store> = Arc::new(MemoryStore::new());
 
-        let service = ProvisioningService::new(
-            store,
-            test_ipxe_config(),
-            DeploymentMode::Simple,
-        );
+        let service = ProvisioningService::new(store, test_ipxe_config(), DeploymentMode::Simple);
 
         let script = service.get_boot_script("aa:bb:cc:dd:ee:ff").await.unwrap();
         assert!(script.contains("#!ipxe"));
-        assert!(script.contains("Spark"), "Should boot Spark for unknown machines");
-        assert!(script.contains("kernel"), "iPXE uses kernel command for multiboot");
+        assert!(
+            script.contains("Spark"),
+            "Should boot Spark for unknown machines"
+        );
+        assert!(
+            script.contains("kernel"),
+            "iPXE uses kernel command for multiboot"
+        );
     }
 
     #[tokio::test]
     async fn test_checkin_new_machine() {
         let store: Arc<dyn Store> = Arc::new(MemoryStore::new());
 
-        let service = ProvisioningService::new(
-            store.clone(),
-            test_ipxe_config(),
-            DeploymentMode::Simple,
-        );
+        let service =
+            ProvisioningService::new(store.clone(), test_ipxe_config(), DeploymentMode::Simple);
 
         let checkin = test_checkin();
         let response = service.handle_checkin(&checkin).await.unwrap();
@@ -827,11 +975,8 @@ mod tests {
         let original_id = machine.id;
         store.put_machine(&machine).await.unwrap();
 
-        let service = ProvisioningService::new(
-            store.clone(),
-            test_ipxe_config(),
-            DeploymentMode::Simple,
-        );
+        let service =
+            ProvisioningService::new(store.clone(), test_ipxe_config(), DeploymentMode::Simple);
 
         // Check-in with same identity
         let checkin = test_checkin();
@@ -849,7 +994,10 @@ mod tests {
         // Create machine with two NICs
         let identity = MachineIdentity::new(
             "00:11:22:33:44:55".to_string(),
-            vec!["00:11:22:33:44:55".to_string(), "aa:bb:cc:dd:ee:ff".to_string()],
+            vec![
+                "00:11:22:33:44:55".to_string(),
+                "aa:bb:cc:dd:ee:ff".to_string(),
+            ],
             Some("smbios-uuid-xyz".to_string()),
             None,
             None,
@@ -858,16 +1006,16 @@ mod tests {
         let original_id = machine.id;
         store.put_machine(&machine).await.unwrap();
 
-        let service = ProvisioningService::new(
-            store.clone(),
-            test_ipxe_config(),
-            DeploymentMode::Simple,
-        );
+        let service =
+            ProvisioningService::new(store.clone(), test_ipxe_config(), DeploymentMode::Simple);
 
         // Check-in with different primary MAC but same identity sources
         let mut checkin = HardwareCheckIn {
             mac: "aa:bb:cc:dd:ee:ff".to_string(), // Different primary MAC!
-            all_macs: vec!["00:11:22:33:44:55".to_string(), "aa:bb:cc:dd:ee:ff".to_string()],
+            all_macs: vec![
+                "00:11:22:33:44:55".to_string(),
+                "aa:bb:cc:dd:ee:ff".to_string(),
+            ],
             smbios_uuid: Some("smbios-uuid-xyz".to_string()),
             machine_id: None,
             hostname: None,
@@ -907,13 +1055,13 @@ mod tests {
         let template = Template::new("debian-13");
         store.put_template(&template).await.unwrap();
 
-        let service = ProvisioningService::new(
-            store.clone(),
-            test_ipxe_config(),
-            DeploymentMode::Simple,
-        );
+        let service =
+            ProvisioningService::new(store.clone(), test_ipxe_config(), DeploymentMode::Simple);
 
-        let workflow = service.assign_workflow(machine_id, "debian-13").await.unwrap();
+        let workflow = service
+            .assign_workflow(machine_id, "debian-13")
+            .await
+            .unwrap();
 
         assert_eq!(workflow.spec.hardware_ref, machine_id.to_string());
         assert_eq!(workflow.spec.template_ref, "debian-13");
@@ -934,16 +1082,16 @@ mod tests {
         machine.config.os_choice = Some("debian-13".to_string());
         store.put_machine(&machine).await.unwrap();
 
-        let service = ProvisioningService::new(
-            store.clone(),
-            test_ipxe_config(),
-            DeploymentMode::Simple,
-        );
+        let service =
+            ProvisioningService::new(store.clone(), test_ipxe_config(), DeploymentMode::Simple);
 
         // Known machine without active workflow boots Spark
         // Spark checks in, server creates workflow, tells Spark to chainload Mage
         let script = service.get_boot_script("00:11:22:33:44:55").await.unwrap();
-        assert!(script.contains("Spark"), "Should boot Spark for known machine without workflow");
+        assert!(
+            script.contains("Spark"),
+            "Should boot Spark for known machine without workflow"
+        );
     }
 
     #[tokio::test]
@@ -957,11 +1105,8 @@ mod tests {
         let template = Template::new("debian-13");
         store.put_template(&template).await.unwrap();
 
-        let service = ProvisioningService::new(
-            store.clone(),
-            test_ipxe_config(),
-            DeploymentMode::Simple,
-        );
+        let service =
+            ProvisioningService::new(store.clone(), test_ipxe_config(), DeploymentMode::Simple);
 
         // Check in a new machine
         let checkin = test_checkin();
@@ -969,12 +1114,27 @@ mod tests {
 
         // Should be new and auto-assigned a workflow
         assert!(response.is_new, "Machine should be new");
-        assert_eq!(response.action, AgentAction::Execute, "Action should be Execute");
-        assert!(response.workflow_id.is_some(), "Should have workflow_id assigned");
+        assert_eq!(
+            response.action,
+            AgentAction::Execute,
+            "Action should be Execute"
+        );
+        assert!(
+            response.workflow_id.is_some(),
+            "Should have workflow_id assigned"
+        );
 
         // Verify machine's os_choice was updated
-        let machine = store.get_machine_by_mac("00:11:22:33:44:55").await.unwrap().unwrap();
-        assert_eq!(machine.config.os_choice, Some("debian-13".to_string()), "Machine os_choice should be set");
+        let machine = store
+            .get_machine_by_mac("00:11:22:33:44:55")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            machine.config.os_choice,
+            Some("debian-13".to_string()),
+            "Machine os_choice should be set"
+        );
     }
 
     #[tokio::test]
@@ -999,11 +1159,8 @@ mod tests {
         let machine = Machine::new(identity);
         store.put_machine(&machine).await.unwrap();
 
-        let service = ProvisioningService::new(
-            store.clone(),
-            test_ipxe_config(),
-            DeploymentMode::Simple,
-        );
+        let service =
+            ProvisioningService::new(store.clone(), test_ipxe_config(), DeploymentMode::Simple);
 
         // Check in the existing machine
         let checkin = test_checkin();
@@ -1011,8 +1168,15 @@ mod tests {
 
         // Should NOT auto-assign because it's not new
         assert!(!response.is_new, "Machine should not be new");
-        assert_eq!(response.action, AgentAction::Wait, "Action should be Wait for existing machine without os_choice");
-        assert!(response.workflow_id.is_none(), "Should not have workflow_id");
+        assert_eq!(
+            response.action,
+            AgentAction::Wait,
+            "Action should be Wait for existing machine without os_choice"
+        );
+        assert!(
+            response.workflow_id.is_none(),
+            "Should not have workflow_id"
+        );
     }
 
     #[tokio::test]
@@ -1021,11 +1185,8 @@ mod tests {
 
         // No default_os set
 
-        let service = ProvisioningService::new(
-            store.clone(),
-            test_ipxe_config(),
-            DeploymentMode::Simple,
-        );
+        let service =
+            ProvisioningService::new(store.clone(), test_ipxe_config(), DeploymentMode::Simple);
 
         // Check in a new machine
         let checkin = test_checkin();
@@ -1033,19 +1194,23 @@ mod tests {
 
         // Should be new but wait (no default_os)
         assert!(response.is_new, "Machine should be new");
-        assert_eq!(response.action, AgentAction::Wait, "Action should be Wait without default_os");
-        assert!(response.workflow_id.is_none(), "Should not have workflow_id");
+        assert_eq!(
+            response.action,
+            AgentAction::Wait,
+            "Action should be Wait without default_os"
+        );
+        assert!(
+            response.workflow_id.is_none(),
+            "Should not have workflow_id"
+        );
     }
 
     #[tokio::test]
     async fn test_checkin_updates_ip_address() {
         let store: Arc<dyn Store> = Arc::new(MemoryStore::new());
 
-        let service = ProvisioningService::new(
-            store.clone(),
-            test_ipxe_config(),
-            DeploymentMode::Simple,
-        );
+        let service =
+            ProvisioningService::new(store.clone(), test_ipxe_config(), DeploymentMode::Simple);
 
         // First check-in with initial IP
         let mut checkin = test_checkin();
@@ -1072,11 +1237,8 @@ mod tests {
     async fn test_checkin_with_existing_os_returns_localboot() {
         let store: Arc<dyn Store> = Arc::new(MemoryStore::new());
 
-        let service = ProvisioningService::new(
-            store.clone(),
-            test_ipxe_config(),
-            DeploymentMode::Simple,
-        );
+        let service =
+            ProvisioningService::new(store.clone(), test_ipxe_config(), DeploymentMode::Simple);
 
         // Check in a machine with an existing OS detected
         let mut checkin = test_checkin();
@@ -1092,12 +1254,26 @@ mod tests {
 
         // Should be new with LocalBoot action (no default_os, no workflow)
         assert!(response.is_new, "Machine should be new");
-        assert_eq!(response.action, AgentAction::LocalBoot, "Action should be LocalBoot for machine with existing OS");
-        assert!(response.workflow_id.is_none(), "Should not have workflow_id");
+        assert_eq!(
+            response.action,
+            AgentAction::LocalBoot,
+            "Action should be LocalBoot for machine with existing OS"
+        );
+        assert!(
+            response.workflow_id.is_none(),
+            "Should not have workflow_id"
+        );
 
         // Verify machine state is ExistingOs
-        let machine = store.get_machine_by_mac("00:11:22:33:44:55").await.unwrap().unwrap();
-        assert!(matches!(machine.status.state, MachineState::ExistingOs { .. }), "State should be ExistingOs");
+        let machine = store
+            .get_machine_by_mac("00:11:22:33:44:55")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(machine.status.state, MachineState::ExistingOs { .. }),
+            "State should be ExistingOs"
+        );
         if let MachineState::ExistingOs { os_name } = &machine.status.state {
             assert_eq!(os_name, "Debian GNU/Linux 13 (trixie)");
         }
@@ -1114,11 +1290,8 @@ mod tests {
         let template = Template::new("debian-13");
         store.put_template(&template).await.unwrap();
 
-        let service = ProvisioningService::new(
-            store.clone(),
-            test_ipxe_config(),
-            DeploymentMode::Simple,
-        );
+        let service =
+            ProvisioningService::new(store.clone(), test_ipxe_config(), DeploymentMode::Simple);
 
         // Check in a new machine with existing OS
         // Even with default_os set, we should NOT auto-pave (molly guard)
@@ -1135,12 +1308,26 @@ mod tests {
 
         // Should LocalBoot (not auto-pave) because molly guard requires explicit reimage_requested
         assert!(response.is_new, "Machine should be new");
-        assert_eq!(response.action, AgentAction::LocalBoot, "Action should be LocalBoot - molly guard prevents auto-pave");
-        assert!(response.workflow_id.is_none(), "Should not have workflow_id");
+        assert_eq!(
+            response.action,
+            AgentAction::LocalBoot,
+            "Action should be LocalBoot - molly guard prevents auto-pave"
+        );
+        assert!(
+            response.workflow_id.is_none(),
+            "Should not have workflow_id"
+        );
 
         // Verify machine state is ExistingOs
-        let machine = store.get_machine_by_mac("00:11:22:33:44:55").await.unwrap().unwrap();
-        assert!(matches!(machine.status.state, MachineState::ExistingOs { .. }), "State should be ExistingOs");
+        let machine = store
+            .get_machine_by_mac("00:11:22:33:44:55")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(machine.status.state, MachineState::ExistingOs { .. }),
+            "State should be ExistingOs"
+        );
     }
 
     #[tokio::test]
@@ -1161,14 +1348,11 @@ mod tests {
         );
         let mut machine = Machine::new(identity);
         machine.config.os_choice = Some("debian-13".to_string());
-        machine.config.reimage_requested = true;  // Molly guard passed
+        machine.config.reimage_requested = true; // Molly guard passed
         store.put_machine(&machine).await.unwrap();
 
-        let service = ProvisioningService::new(
-            store.clone(),
-            test_ipxe_config(),
-            DeploymentMode::Simple,
-        );
+        let service =
+            ProvisioningService::new(store.clone(), test_ipxe_config(), DeploymentMode::Simple);
 
         // Check in the machine with existing OS - should proceed with imaging because molly guard passed
         let mut checkin = test_checkin();
@@ -1184,8 +1368,15 @@ mod tests {
 
         // Should Execute because both os_choice AND reimage_requested are set
         assert!(!response.is_new, "Machine should not be new");
-        assert_eq!(response.action, AgentAction::Execute, "Action should be Execute when molly guard passed");
-        assert!(response.workflow_id.is_some(), "Should have workflow_id for reimaging");
+        assert_eq!(
+            response.action,
+            AgentAction::Execute,
+            "Action should be Execute when molly guard passed"
+        );
+        assert!(
+            response.workflow_id.is_some(),
+            "Should have workflow_id for reimaging"
+        );
     }
 
     #[tokio::test]
@@ -1212,11 +1403,8 @@ mod tests {
         machine.config.reimage_requested = true;
         store.put_machine(&machine).await.unwrap();
 
-        let service = ProvisioningService::new(
-            store.clone(),
-            test_ipxe_config(),
-            DeploymentMode::Simple,
-        );
+        let service =
+            ProvisioningService::new(store.clone(), test_ipxe_config(), DeploymentMode::Simple);
 
         // First check-in: creates workflow
         let checkin = test_checkin();
@@ -1243,7 +1431,11 @@ mod tests {
             store.put_workflow(&wf_to_complete).await.unwrap();
 
             // Mark machine as Installed with the template name
-            let mut m = store.get_machine_by_mac("00:11:22:33:44:55").await.unwrap().unwrap();
+            let mut m = store
+                .get_machine_by_mac("00:11:22:33:44:55")
+                .await
+                .unwrap()
+                .unwrap();
             m.status.state = MachineState::Installed;
             m.config.os_installed = Some("debian-13".to_string());
             m.config.os_choice = None;
@@ -1269,21 +1461,27 @@ mod tests {
         assert_eq!(response2.action, AgentAction::LocalBoot);
 
         // CRITICAL: Verify os_installed is set to TEMPLATE NAME, not detected OS name
-        let machine = store.get_machine_by_mac("00:11:22:33:44:55").await.unwrap().unwrap();
-        assert_eq!(machine.status.state, MachineState::Installed, "State should be Installed");
+        let machine = store
+            .get_machine_by_mac("00:11:22:33:44:55")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            machine.status.state,
+            MachineState::Installed,
+            "State should be Installed"
+        );
         assert_eq!(
             machine.config.os_installed,
             Some("debian-13".to_string()),
             "os_installed should be template name 'debian-13', not detected name"
         );
         assert_eq!(
-            machine.config.os_choice,
-            None,
+            machine.config.os_choice, None,
             "os_choice should be cleared after installation"
         );
         assert_eq!(
-            machine.config.installation_progress,
-            100,
+            machine.config.installation_progress, 100,
             "Progress should be 100%"
         );
     }
@@ -1322,7 +1520,11 @@ mod tests {
         // 5. Change state to ReadyToInstall
 
         // Verify the machine state before reimage simulation
-        let machine = store.get_machine_by_mac("00:11:22:33:44:55").await.unwrap().unwrap();
+        let machine = store
+            .get_machine_by_mac("00:11:22:33:44:55")
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(machine.config.os_installed, Some("debian-13".to_string()));
         assert_eq!(machine.config.os_choice, None);
 
@@ -1378,8 +1580,15 @@ mod tests {
         store.put_machine(&machine).await.unwrap();
 
         // Verify the machine state
-        let machine = store.get_machine_by_mac("00:11:22:33:44:66").await.unwrap().unwrap();
-        assert_eq!(machine.config.os_installed, None, "os_installed should be None");
+        let machine = store
+            .get_machine_by_mac("00:11:22:33:44:66")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            machine.config.os_installed, None,
+            "os_installed should be None"
+        );
         assert_eq!(machine.config.os_choice, None, "os_choice should be None");
         assert!(
             matches!(machine.status.state, MachineState::ExistingOs { ref os_name } if os_name == "Debian 13"),
@@ -1390,9 +1599,18 @@ mod tests {
         // 1. os_choice = None -> skip
         // 2. os_installed = None -> skip
         // 3. ExistingOs { os_name } -> use os_name
-        let os_to_use = machine.config.os_choice.clone()
+        let os_to_use = machine
+            .config
+            .os_choice
+            .clone()
             .filter(|s| !s.is_empty())
-            .or_else(|| machine.config.os_installed.clone().filter(|s| !s.is_empty()))
+            .or_else(|| {
+                machine
+                    .config
+                    .os_installed
+                    .clone()
+                    .filter(|s| !s.is_empty())
+            })
             .or_else(|| {
                 if let MachineState::ExistingOs { ref os_name } = machine.status.state {
                     Some(os_name.clone())

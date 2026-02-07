@@ -1,7 +1,7 @@
-use std::process::Command;
-use std::path::Path;
 use std::env;
 use std::fs;
+use std::path::Path;
+use std::process::Command;
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
@@ -39,9 +39,12 @@ fn main() {
     eprintln!("Building Tailwind CSS");
     let output = Command::new(&tailwind_bin)
         .current_dir(workspace_root)
-        .arg("-i").arg(input_css_path.to_str().unwrap())
-        .arg("-o").arg(output_css_path.to_str().unwrap())
-        .arg("-c").arg(config_path.to_str().unwrap())
+        .arg("-i")
+        .arg(input_css_path.to_str().unwrap())
+        .arg("-o")
+        .arg(output_css_path.to_str().unwrap())
+        .arg("-c")
+        .arg(config_path.to_str().unwrap())
         .output();
 
     match output {
@@ -59,4 +62,4 @@ fn main() {
         }
         Err(e) => panic!("Failed to execute Tailwind CLI: {e}"),
     }
-} 
+}

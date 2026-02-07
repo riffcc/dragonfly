@@ -1,52 +1,53 @@
-use axum::{
-    routing::{get, post, delete, put},
-    Router,
-    extract::{
-        State, Path, Json, Form, FromRequest,
-        ConnectInfo, Query,
-    },
-    http::{StatusCode, header::HeaderValue, HeaderMap},
-    response::{IntoResponse, Html, Response, sse::{Event, Sse, KeepAlive}},
-};
-use std::convert::Infallible;
-use serde_json::json;
-use uuid::Uuid;
-use dragonfly_common::models::{MachineStatus, HostnameUpdateRequest, HostnameUpdateResponse, OsInstalledUpdateRequest, OsInstalledUpdateResponse, StatusUpdateRequest, BmcCredentialsUpdateRequest, InstallationProgressUpdateRequest, RegisterRequest, Machine};
-use dragonfly_common::models::{ErrorResponse, OsAssignmentRequest};
-use crate::provisioning::HardwareCheckIn;
-use crate::store::conversions::{machine_to_common, revert_pending_changes};
 use crate::AppState;
 use crate::auth::AuthSession;
-use std::collections::HashMap;
-use tracing::{info, error, warn, debug};
-use std::env;
-use std::time::Duration;
-use tokio_stream::Stream;
-use futures::stream;
-use crate::{
-    INSTALL_STATE_REF, 
-    InstallationState
+use crate::provisioning::HardwareCheckIn;
+use crate::store::conversions::{machine_to_common, revert_pending_changes};
+use crate::ui; // Import the ui module
+use crate::{INSTALL_STATE_REF, InstallationState};
+use axum::body::{Body, Bytes};
+use axum::extract::DefaultBodyLimit;
+use axum::{
+    Router,
+    extract::{ConnectInfo, Form, FromRequest, Json, Path, Query, State},
+    http::{HeaderMap, StatusCode, header::HeaderValue},
+    response::{
+        Html, IntoResponse, Response,
+        sse::{Event, KeepAlive, Sse},
+    },
+    routing::{delete, get, post, put},
 };
-use std::sync::Arc;
+use dragonfly_common::Error;
+use dragonfly_common::models::{
+    BmcCredentialsUpdateRequest, HostnameUpdateRequest, HostnameUpdateResponse,
+    InstallationProgressUpdateRequest, Machine, MachineStatus, OsInstalledUpdateRequest,
+    OsInstalledUpdateResponse, RegisterRequest, StatusUpdateRequest,
+};
+use dragonfly_common::models::{ErrorResponse, OsAssignmentRequest};
+use futures::StreamExt; // For .next() on stream
+use futures::stream;
+use http_body::Frame;
+use http_body_util::{Empty, StreamBody};
+use serde::Deserialize;
+use serde_json::json;
+use std::collections::HashMap;
+use std::convert::Infallible;
+use std::env;
+use std::net::SocketAddr;
 use std::path::Path as FilePath;
-use tempfile::tempdir;
-use tokio::process::Command;
-use tokio::fs;
 use std::path::Path as StdPath;
 use std::path::PathBuf;
-use url::Url;
+use std::sync::Arc;
+use std::time::Duration;
+use tempfile::tempdir;
+use tokio::fs;
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
+use tokio::process::Command;
 use tokio::sync::mpsc;
+use tokio_stream::Stream;
 use tokio_stream::wrappers::ReceiverStream;
-use axum::body::{Body, Bytes};
-use http_body::Frame;
-use http_body_util::{StreamBody, Empty};
-use dragonfly_common::Error;
-use tokio::io::{AsyncSeekExt, AsyncReadExt, AsyncWriteExt};
-use futures::StreamExt; // For .next() on stream
-use crate::ui; // Import the ui module
-use std::net::SocketAddr;
-use axum::extract::DefaultBodyLimit;
-use serde::Deserialize;
+use tracing::{debug, error, info, warn};
+use url::Url;
+use uuid::Uuid;
 
 pub fn api_router() -> Router<crate::AppState> {
     // Core API routes
@@ -56,46 +57,87 @@ pub fn api_router() -> Router<crate::AppState> {
         .route("/machines/{id}/os", get(get_machine_os).post(assign_os))
         .route("/machines/{id}/reimage", post(reimage_machine)) // Add new reimage endpoint
         .route("/machines/{id}/abort-reimage", post(abort_reimage)) // Cancel pending reimage
-        .route("/machines/{id}/hostname", get(get_hostname_form).put(update_hostname))
+        .route(
+            "/machines/{id}/hostname",
+            get(get_hostname_form).put(update_hostname),
+        )
         .route("/machines/{id}/status", put(update_status))
-        .route("/machines/{id}/status-and-progress", get(get_machine_status_and_progress_partial))
+        .route(
+            "/machines/{id}/status-and-progress",
+            get(get_machine_status_and_progress_partial),
+        )
         .route("/machines/{id}/os-installed", put(update_os_installed))
         .route("/machines/{id}/bmc", post(update_bmc))
         // Add route for BMC power actions
-        .route("/machines/{id}/bmc/power-action", post(crate::handlers::machines::bmc_power_action_handler))
-        .route("/machines/{id}/workflow-progress", get(get_workflow_progress))
-        .route("/machines/{id}/tags", get(api_get_machine_tags).put(api_update_machine_tags))
+        .route(
+            "/machines/{id}/bmc/power-action",
+            post(crate::handlers::machines::bmc_power_action_handler),
+        )
+        .route(
+            "/machines/{id}/workflow-progress",
+            get(get_workflow_progress),
+        )
+        .route(
+            "/machines/{id}/tags",
+            get(api_get_machine_tags).put(api_update_machine_tags),
+        )
         .route("/machines/{id}/tags/{tag}", delete(api_delete_machine_tag))
-        .route("/machines/{id}", get(get_machine).put(update_machine).patch(patch_machine).delete(delete_machine))
+        .route(
+            "/machines/{id}",
+            get(get_machine)
+                .put(update_machine)
+                .patch(patch_machine)
+                .delete(delete_machine),
+        )
         .route("/installation/progress", put(update_installation_progress))
         .route("/events", get(machine_events))
         .route("/heartbeat", get(heartbeat))
         // --- Proxmox Routes ---
         .route("/proxmox/status", get(proxmox_status))
-        .route("/proxmox/connect", post(crate::handlers::proxmox::connect_proxmox_handler))
-        .route("/proxmox/discover", get(crate::handlers::proxmox::discover_proxmox_handler))
+        .route(
+            "/proxmox/connect",
+            post(crate::handlers::proxmox::connect_proxmox_handler),
+        )
+        .route(
+            "/proxmox/discover",
+            get(crate::handlers::proxmox::discover_proxmox_handler),
+        )
         .route("/proxmox/token", post(update_proxmox_token))
-        .route("/proxmox/create-tokens", post(crate::handlers::proxmox::create_proxmox_tokens_handler))
+        .route(
+            "/proxmox/create-tokens",
+            post(crate::handlers::proxmox::create_proxmox_tokens_handler),
+        )
         // Add new tag management routes
         .route("/tags", get(api_get_tags).post(api_create_tag))
         .route("/tags/{tag_name}", delete(api_delete_tag))
         .route("/tags/{tag_name}/machines", get(api_get_machines_by_tag))
         // --- Agent Routes ---
         .route("/agent/checkin", post(agent_checkin_handler))
-        .route("/agent/request-install", post(agent_request_install_handler))
+        .route(
+            "/agent/request-install",
+            post(agent_request_install_handler),
+        )
         .route("/agent/remove", post(agent_remove_handler))
         .route("/agent/boot-mode", post(agent_boot_mode_handler))
         .route("/agent/isos", get(agent_list_isos_handler))
         // --- ISO Management Routes ---
         .route("/isos", get(list_isos_handler))
-        .route("/isos/upload", post(upload_iso_handler).layer(DefaultBodyLimit::disable())) // No body limit for ISO uploads (streamed to disk)
+        .route(
+            "/isos/upload",
+            post(upload_iso_handler).layer(DefaultBodyLimit::disable()),
+        ) // No body limit for ISO uploads (streamed to disk)
         .route("/isos/{filename}", delete(delete_iso_handler))
         // --- Settings Routes ---
         .route("/settings", get(api_get_settings).put(api_update_settings))
         .route("/settings/mode", get(api_get_mode).put(api_set_mode))
         // --- User Management Routes ---
         .route("/users", get(api_get_users).post(api_create_user))
-        .route("/users/{id}", get(api_get_user).put(api_update_user).delete(api_delete_user))
+        .route(
+            "/users/{id}",
+            get(api_get_user)
+                .put(api_update_user)
+                .delete(api_delete_user),
+        )
         // --- SSH Key Import ---
         .route("/fetch-keys", get(api_fetch_keys))
         // --- Workflow Routes (for agent) ---
@@ -105,14 +147,31 @@ pub fn api_router() -> Router<crate::AppState> {
         // --- Template Management Routes ---
         .route("/templates", get(list_templates_handler))
         .route("/templates/{name}/toggle", post(toggle_template_handler))
-        .route("/templates/{name}/content", get(get_template_content_handler).put(update_template_content_handler))
+        .route(
+            "/templates/{name}/content",
+            get(get_template_content_handler).put(update_template_content_handler),
+        )
         // --- Network Routes ---
-        .route("/networks", get(list_networks_handler).post(create_network_handler))
-        .route("/networks/{id}", get(get_network_handler).put(update_network_handler).delete(delete_network_handler))
+        .route(
+            "/networks",
+            get(list_networks_handler).post(create_network_handler),
+        )
+        .route(
+            "/networks/{id}",
+            get(get_network_handler)
+                .put(update_network_handler)
+                .delete(delete_network_handler),
+        )
         // --- Machine Apply Route ---
         .route("/machines/{id}/apply", post(apply_machine_config_handler))
-        .route("/machines/{id}/proxmox/apply-config", post(apply_proxmox_config))
-        .route("/machines/{id}/revert-pending", post(revert_pending_handler))
+        .route(
+            "/machines/{id}/proxmox/apply-config",
+            post(apply_proxmox_config),
+        )
+        .route(
+            "/machines/{id}/revert-pending",
+            post(revert_pending_handler),
+        )
         .layer(DefaultBodyLimit::max(1024 * 1024 * 50)) // 50 MB
 }
 
@@ -159,50 +218,105 @@ pub async fn generate_agent_apkovl(
     agent_source: AgentSource<'_>,
 ) -> Result<(), dragonfly_common::Error> {
     info!("Generating agent APK overlay at: {:?}", target_apkovl_path);
-    
+
     // 1. Create a temporary directory
-    let temp_dir = tempdir()
-        .map_err(|e| dragonfly_common::Error::Internal(format!("Failed to create temp directory for apkovl: {}", e)))?;
+    let temp_dir = tempdir().map_err(|e| {
+        dragonfly_common::Error::Internal(format!(
+            "Failed to create temp directory for apkovl: {}",
+            e
+        ))
+    })?;
     let temp_path = temp_dir.path();
     info!("Building apkovl structure in: {:?}", temp_path);
-    
+
     // 2. Create directory structure
-    fs::create_dir_all(temp_path.join("etc/local.d")).await
-        .map_err(|e| dragonfly_common::Error::Internal(format!("Failed to create dir etc/local.d: {}", e)))?;
-    fs::create_dir_all(temp_path.join("etc/apk/protected_paths.d")).await
-        .map_err(|e| dragonfly_common::Error::Internal(format!("Failed to create dir etc/apk/protected_paths.d: {}", e)))?;
-    fs::create_dir_all(temp_path.join("etc/runlevels/default")).await
-        .map_err(|e| dragonfly_common::Error::Internal(format!("Failed to create dir etc/runlevels/default: {}", e)))?;
-    fs::create_dir_all(temp_path.join("usr/local/bin")).await
-        .map_err(|e| dragonfly_common::Error::Internal(format!("Failed to create dir usr/local/bin: {}", e)))?;
-    fs::create_dir_all(temp_path.join("var/log/dragonfly")).await
-        .map_err(|e| dragonfly_common::Error::Internal(format!("Failed to create dir var/log/dragonfly: {}", e)))?;
-    
+    fs::create_dir_all(temp_path.join("etc/local.d"))
+        .await
+        .map_err(|e| {
+            dragonfly_common::Error::Internal(format!("Failed to create dir etc/local.d: {}", e))
+        })?;
+    fs::create_dir_all(temp_path.join("etc/apk/protected_paths.d"))
+        .await
+        .map_err(|e| {
+            dragonfly_common::Error::Internal(format!(
+                "Failed to create dir etc/apk/protected_paths.d: {}",
+                e
+            ))
+        })?;
+    fs::create_dir_all(temp_path.join("etc/runlevels/default"))
+        .await
+        .map_err(|e| {
+            dragonfly_common::Error::Internal(format!(
+                "Failed to create dir etc/runlevels/default: {}",
+                e
+            ))
+        })?;
+    fs::create_dir_all(temp_path.join("usr/local/bin"))
+        .await
+        .map_err(|e| {
+            dragonfly_common::Error::Internal(format!("Failed to create dir usr/local/bin: {}", e))
+        })?;
+    fs::create_dir_all(temp_path.join("var/log/dragonfly"))
+        .await
+        .map_err(|e| {
+            dragonfly_common::Error::Internal(format!(
+                "Failed to create dir var/log/dragonfly: {}",
+                e
+            ))
+        })?;
+
     // 3. Write static files
-    fs::write(temp_path.join("etc/hosts"), HOSTS_CONTENT).await
-        .map_err(|e| dragonfly_common::Error::Internal(format!("Failed to write etc/hosts: {}", e)))?;
-    fs::write(temp_path.join("etc/hostname"), HOSTNAME_CONTENT).await
-        .map_err(|e| dragonfly_common::Error::Internal(format!("Failed to write etc/hostname: {}", e)))?;
-    fs::write(temp_path.join("etc/apk/arch"), APK_ARCH_CONTENT).await
-        .map_err(|e| dragonfly_common::Error::Internal(format!("Failed to write etc/apk/arch: {}", e)))?;
-    fs::write(temp_path.join("etc/apk/protected_paths.d/lbu.list"), LBU_LIST_CONTENT).await
-        .map_err(|e| dragonfly_common::Error::Internal(format!("Failed to write lbu.list: {}", e)))?;
-    fs::write(temp_path.join("etc/apk/repositories"), REPOSITORIES_CONTENT).await
-        .map_err(|e| dragonfly_common::Error::Internal(format!("Failed to write repositories: {}", e)))?;
-    fs::write(temp_path.join("etc/apk/world"), WORLD_CONTENT).await
+    fs::write(temp_path.join("etc/hosts"), HOSTS_CONTENT)
+        .await
+        .map_err(|e| {
+            dragonfly_common::Error::Internal(format!("Failed to write etc/hosts: {}", e))
+        })?;
+    fs::write(temp_path.join("etc/hostname"), HOSTNAME_CONTENT)
+        .await
+        .map_err(|e| {
+            dragonfly_common::Error::Internal(format!("Failed to write etc/hostname: {}", e))
+        })?;
+    fs::write(temp_path.join("etc/apk/arch"), APK_ARCH_CONTENT)
+        .await
+        .map_err(|e| {
+            dragonfly_common::Error::Internal(format!("Failed to write etc/apk/arch: {}", e))
+        })?;
+    fs::write(
+        temp_path.join("etc/apk/protected_paths.d/lbu.list"),
+        LBU_LIST_CONTENT,
+    )
+    .await
+    .map_err(|e| dragonfly_common::Error::Internal(format!("Failed to write lbu.list: {}", e)))?;
+    fs::write(temp_path.join("etc/apk/repositories"), REPOSITORIES_CONTENT)
+        .await
+        .map_err(|e| {
+            dragonfly_common::Error::Internal(format!("Failed to write repositories: {}", e))
+        })?;
+    fs::write(temp_path.join("etc/apk/world"), WORLD_CONTENT)
+        .await
         .map_err(|e| dragonfly_common::Error::Internal(format!("Failed to write world: {}", e)))?;
-    
+
     // Create empty mtab needed by Alpine init
-    fs::write(temp_path.join("etc/mtab"), "").await
-        .map_err(|e| dragonfly_common::Error::Internal(format!("Failed to write etc/mtab: {}", e)))?;
-    
+    fs::write(temp_path.join("etc/mtab"), "")
+        .await
+        .map_err(|e| {
+            dragonfly_common::Error::Internal(format!("Failed to write etc/mtab: {}", e))
+        })?;
+
     // Create empty .default_boot_services
-    fs::write(temp_path.join("etc/.default_boot_services"), "").await
-        .map_err(|e| dragonfly_common::Error::Internal(format!("Failed to write .default_boot_services: {}", e)))?;
-    
+    fs::write(temp_path.join("etc/.default_boot_services"), "")
+        .await
+        .map_err(|e| {
+            dragonfly_common::Error::Internal(format!(
+                "Failed to write .default_boot_services: {}",
+                e
+            ))
+        })?;
+
     // 4. Write agent wrapper script (called by inittab on tty1)
     let wrapper_path = temp_path.join("usr/local/bin/dragonfly-wrapper");
-    let wrapper_content = format!(r#"#!/bin/sh
+    let wrapper_content = format!(
+        r#"#!/bin/sh
 # Wrapper for dragonfly-agent - runs on tty1 via inittab for proper terminal access
 
 # Clear screen and show banner
@@ -216,8 +330,11 @@ exec /usr/local/bin/dragonfly-agent --server "{}"
 "#,
         base_url, base_url
     );
-    fs::write(&wrapper_path, wrapper_content).await
-        .map_err(|e| dragonfly_common::Error::Internal(format!("Failed to write wrapper script: {}", e)))?;
+    fs::write(&wrapper_path, wrapper_content)
+        .await
+        .map_err(|e| {
+            dragonfly_common::Error::Internal(format!("Failed to write wrapper script: {}", e))
+        })?;
     set_executable_permission(&wrapper_path).await?;
 
     // 5. Write custom inittab - runs agent on tty1 instead of getty
@@ -236,9 +353,12 @@ tty3::respawn:/sbin/getty 38400 tty3
 ::ctrlaltdel:/sbin/reboot
 ::shutdown:/sbin/openrc shutdown
 "#;
-    fs::write(temp_path.join("etc/inittab"), inittab_content).await
-        .map_err(|e| dragonfly_common::Error::Internal(format!("Failed to write inittab: {}", e)))?;
-    
+    fs::write(temp_path.join("etc/inittab"), inittab_content)
+        .await
+        .map_err(|e| {
+            dragonfly_common::Error::Internal(format!("Failed to write inittab: {}", e))
+        })?;
+
     // 6. Get the agent binary (download or copy based on source)
     let dest_agent_path = temp_path.join("usr/local/bin/dragonfly-agent");
     match agent_source {
@@ -246,14 +366,16 @@ tty3::respawn:/sbin/getty 38400 tty3
             download_file(url, &dest_agent_path).await?;
         }
         AgentSource::LocalPath(path) => {
-            fs::copy(path, &dest_agent_path).await
-                .map_err(|e| dragonfly_common::Error::Internal(
-                    format!("Failed to copy agent binary from {:?}: {}", path, e)
-                ))?;
+            fs::copy(path, &dest_agent_path).await.map_err(|e| {
+                dragonfly_common::Error::Internal(format!(
+                    "Failed to copy agent binary from {:?}: {}",
+                    path, e
+                ))
+            })?;
         }
     }
     set_executable_permission(&dest_agent_path).await?;
-    
+
     // 7. Create the tar.gz archive
     info!("Creating tarball: {:?}", target_apkovl_path);
     let output = Command::new("tar")
@@ -264,13 +386,18 @@ tty3::respawn:/sbin/getty 38400 tty3
         .arg(".")
         .output()
         .await
-        .map_err(|e| dragonfly_common::Error::Internal(format!("Failed to execute tar command: {}", e)))?;
-    
+        .map_err(|e| {
+            dragonfly_common::Error::Internal(format!("Failed to execute tar command: {}", e))
+        })?;
+
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(dragonfly_common::Error::Internal(format!("Tar command failed: {}", stderr)));
+        return Err(dragonfly_common::Error::Internal(format!(
+            "Tar command failed: {}",
+            stderr
+        )));
     }
-    
+
     info!("Successfully generated apkovl: {:?}", target_apkovl_path);
     Ok(())
 }
@@ -278,55 +405,59 @@ tty3::respawn:/sbin/getty 38400 tty3
 // Helper function to set executable permission (Unix specific)
 async fn set_executable_permission(path: &StdPath) -> Result<(), dragonfly_common::Error> {
     use std::os::unix::fs::PermissionsExt;
-    
-    let metadata = fs::metadata(path).await
-        .map_err(|e| dragonfly_common::Error::Internal(
-            format!("Failed to get metadata for {:?}: {}", path, e)
-        ))?;
-    
+
+    let metadata = fs::metadata(path).await.map_err(|e| {
+        dragonfly_common::Error::Internal(format!("Failed to get metadata for {:?}: {}", path, e))
+    })?;
+
     let mut perms = metadata.permissions();
     perms.set_mode(0o755); // rwxr-xr-x
-    
-    fs::set_permissions(path, perms).await
-        .map_err(|e| dragonfly_common::Error::Internal(
-            format!("Failed to set executable permission on {:?}: {}", path, e)
+
+    fs::set_permissions(path, perms).await.map_err(|e| {
+        dragonfly_common::Error::Internal(format!(
+            "Failed to set executable permission on {:?}: {}",
+            path, e
         ))
+    })
 }
 
 // Helper function to download a file from a URL
 async fn download_file(url: &str, target_path: &StdPath) -> Result<(), dragonfly_common::Error> {
     info!("Downloading {} to {:?}", url, target_path);
-    
+
     // Create a reqwest client
     let client = reqwest::Client::new();
-    
+
     // Send GET request to download the file
-    let response = client.get(url)
-        .send()
-        .await
-        .map_err(|e| dragonfly_common::Error::Internal(
-            format!("Failed to download file from {}: {}", url, e)
-        ))?;
-    
+    let response = client.get(url).send().await.map_err(|e| {
+        dragonfly_common::Error::Internal(format!("Failed to download file from {}: {}", url, e))
+    })?;
+
     // Check if the request was successful
     if !response.status().is_success() {
-        return Err(dragonfly_common::Error::Internal(
-            format!("Failed to download file from {}: HTTP status {}", url, response.status())
-        ));
+        return Err(dragonfly_common::Error::Internal(format!(
+            "Failed to download file from {}: HTTP status {}",
+            url,
+            response.status()
+        )));
     }
-    
+
     // Get the file content as bytes
-    let bytes = response.bytes().await
-        .map_err(|e| dragonfly_common::Error::Internal(
-            format!("Failed to read response body from {}: {}", url, e)
-        ))?;
-    
+    let bytes = response.bytes().await.map_err(|e| {
+        dragonfly_common::Error::Internal(format!(
+            "Failed to read response body from {}: {}",
+            url, e
+        ))
+    })?;
+
     // Create the file and write the content
-    fs::write(target_path, bytes).await
-        .map_err(|e| dragonfly_common::Error::Internal(
-            format!("Failed to write downloaded file to {:?}: {}", target_path, e)
-        ))?;
-    
+    fs::write(target_path, bytes).await.map_err(|e| {
+        dragonfly_common::Error::Internal(format!(
+            "Failed to write downloaded file to {:?}: {}",
+            target_path, e
+        ))
+    })?;
+
     info!("Successfully downloaded {} to {:?}", url, target_path);
     Ok(())
 }
@@ -339,8 +470,10 @@ async fn register_machine(
     use crate::store::conversions::machine_from_register_request;
     use dragonfly_common::models::RegisterResponse;
 
-    info!("Registering machine with MAC: {}, CPU: {:?}, Cores: {:?}, RAM: {:?}",
-          payload.mac_address, payload.cpu_model, payload.cpu_cores, payload.total_ram_bytes);
+    info!(
+        "Registering machine with MAC: {}, CPU: {:?}, Cores: {:?}, RAM: {:?}",
+        payload.mac_address, payload.cpu_model, payload.cpu_cores, payload.total_ram_bytes
+    );
 
     // Check if machine already exists by MAC
     let normalized_mac = dragonfly_common::normalize_mac(&payload.mac_address);
@@ -362,17 +495,27 @@ async fn register_machine(
 
         if let Err(e) = state.store.put_machine(&machine).await {
             error!("Failed to update existing machine: {}", e);
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse {
-                error: "Update Failed".to_string(),
-                message: e.to_string(),
-            })).into_response();
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "Update Failed".to_string(),
+                    message: e.to_string(),
+                }),
+            )
+                .into_response();
         }
 
-        let _ = state.event_manager.send(format!("machine_updated:{}", machine.id));
-        return (StatusCode::OK, Json(RegisterResponse {
-            machine_id: machine.id,
-            next_step: "awaiting_os_assignment".to_string(),
-        })).into_response();
+        let _ = state
+            .event_manager
+            .send(format!("machine_updated:{}", machine.id));
+        return (
+            StatusCode::OK,
+            Json(RegisterResponse {
+                machine_id: machine.id,
+                next_step: "awaiting_os_assignment".to_string(),
+            }),
+        )
+            .into_response();
     }
 
     // Create new machine from registration request
@@ -382,14 +525,16 @@ async fn register_machine(
     match state.store.put_machine(&machine).await {
         Ok(()) => {
             // Emit machine discovered event
-            let _ = state.event_manager.send(format!("machine_discovered:{}", machine_id));
+            let _ = state
+                .event_manager
+                .send(format!("machine_discovered:{}", machine_id));
 
             let response = RegisterResponse {
                 machine_id,
                 next_step: "awaiting_os_assignment".to_string(),
             };
             (StatusCode::CREATED, Json(response)).into_response()
-        },
+        }
         Err(e) => {
             error!("Failed to register machine: {}", e);
             let error_response = ErrorResponse {
@@ -405,12 +550,10 @@ async fn register_machine(
 async fn get_all_machines(
     State(state): State<crate::AppState>,
     auth_session: AuthSession,
-    req: axum::http::Request<axum::body::Body>
+    req: axum::http::Request<axum::body::Body>,
 ) -> Response {
     // Check if this is an HTMX request
-    let is_htmx = req.headers()
-        .get("HX-Request")
-        .is_some();
+    let is_htmx = req.headers().get("HX-Request").is_some();
 
     // Check if user is authenticated as admin
     let is_admin = auth_session.user.is_some();
@@ -428,49 +571,60 @@ async fn get_all_machines(
     let workflow_infos: HashMap<uuid::Uuid, crate::ui::WorkflowInfo> = HashMap::new();
 
     if is_htmx {
-                // For HTMX requests, return HTML table rows
-                if machines.is_empty() {
-                    Html(r#"<tr>
+        // For HTMX requests, return HTML table rows
+        if machines.is_empty() {
+            Html(
+                r#"<tr>
                         <td colspan="6" class="px-6 py-8 text-center text-gray-500 italic">
                             No machines added or discovered yet.
                         </td>
-                    </tr>"#).into_response()
-                } else {
-                    // Return HTML rows for each machine
-                    let mut html = String::new();
-                    for machine in machines {
-                        let id_string = machine.id.to_string();
-                        let display_name = machine.hostname.as_ref()
-                            .or(machine.memorable_name.as_ref())
-                            .map(|s| s.as_str())
-                            .unwrap_or(&id_string);
-                        
-                        let secondary_name = if machine.hostname.is_some() && machine.memorable_name.is_some() {
-                            machine.memorable_name.as_ref().map(|s| s.as_str()).unwrap_or("")
-                        } else {
-                            ""
-                        };
+                    </tr>"#,
+            )
+            .into_response()
+        } else {
+            // Return HTML rows for each machine
+            let mut html = String::new();
+            for machine in machines {
+                let id_string = machine.id.to_string();
+                let display_name = machine
+                    .hostname
+                    .as_ref()
+                    .or(machine.memorable_name.as_ref())
+                    .map(|s| s.as_str())
+                    .unwrap_or(&id_string);
 
-                        let os_display = match &machine.os_installed {
-                            Some(os) => os.clone(),
-                            None => {
-                                if machine.status.is_installing() {
-                                    if let Some(os) = &machine.os_choice {
-                                        format!("🚧 {}", format_os_name(os))
-                                    } else {
-                                        "🚀 Installing OS".to_string()
-                                    }
-                                } else if let Some(os) = &machine.os_choice {
-                                    os.clone()
-                                } else {
-                                    "None".to_string()
-                                }
+                let secondary_name =
+                    if machine.hostname.is_some() && machine.memorable_name.is_some() {
+                        machine
+                            .memorable_name
+                            .as_ref()
+                            .map(|s| s.as_str())
+                            .unwrap_or("")
+                    } else {
+                        ""
+                    };
+
+                let os_display = match &machine.os_installed {
+                    Some(os) => os.clone(),
+                    None => {
+                        if machine.status.is_installing() {
+                            if let Some(os) = &machine.os_choice {
+                                format!("🚧 {}", format_os_name(os))
+                            } else {
+                                "🚀 Installing OS".to_string()
                             }
-                        };
-                        
-                        // Admin-only buttons (Assign OS, Update Status, Delete)
-                        let admin_buttons = if is_admin {
-                            format!(r#"
+                        } else if let Some(os) = &machine.os_choice {
+                            os.clone()
+                        } else {
+                            "None".to_string()
+                        }
+                    }
+                };
+
+                // Admin-only buttons (Assign OS, Update Status, Delete)
+                let admin_buttons = if is_admin {
+                    format!(
+                        r#"
                                 {}
                                 <button
                                     @click="showStatusModal('{}')"
@@ -487,28 +641,31 @@ async fn get_all_machines(
                                     </svg>
                                 </button>
                             "#,
-                            // Conditionally include the Assign OS button
-                            if machine.status == MachineStatus::Discovered {
-                                format!(r#"
+                        // Conditionally include the Assign OS button
+                        if machine.status == MachineStatus::Discovered {
+                            format!(
+                                r#"
                                     <button
                                         @click="showOsModal('{}')"
                                         class="px-3 py-1 inline-flex text-sm leading-5 font-semibold rounded-full bg-indigo-600 text-white hover:bg-indigo-700 cursor-pointer"
                                     >
                                         Assign OS
                                     </button>
-                                "#, machine.id)
-                            } else {
-                                String::new()
-                            },
-                            machine.id,
-                            machine.id
+                                "#,
+                                machine.id
                             )
                         } else {
-                            // Empty string when not admin
                             String::new()
-                        };
-                        
-                        html.push_str(&format!(r#"
+                        },
+                        machine.id,
+                        machine.id
+                    )
+                } else {
+                    // Empty string when not admin
+                    String::new()
+                };
+
+                html.push_str(&format!(r#"
                             <tr class="hover:bg-gray-50 dark:hover:bg-gradient-to-r dark:hover:from-gray-800 dark:hover:to-gray-900 dark:hover:bg-opacity-50 dark:hover:backdrop-blur-sm transition-colors duration-150 cursor-pointer" @click="window.location='/machines/{}'">
                                 <td class="px-6 py-4 whitespace-nowrap">
                                     <div class="text-sm font-medium text-gray-900">
@@ -562,9 +719,9 @@ async fn get_all_machines(
                         os_display,
                         admin_buttons
                         ));
-                    }
-                    Html(html).into_response()
-                }
+            }
+            Html(html).into_response()
+        }
     } else {
         // For non-HTMX requests, return JSON
         (StatusCode::OK, Json(machines)).into_response()
@@ -572,10 +729,7 @@ async fn get_all_machines(
 }
 
 #[axum::debug_handler]
-async fn get_machine(
-    State(state): State<AppState>,
-    Path(id): Path<Uuid>,
-) -> Response {
+async fn get_machine(State(state): State<AppState>, Path(id): Path<Uuid>) -> Response {
     match state.store.get_machine(id).await {
         Ok(Some(v1_machine)) => {
             // Convert v1 Machine to common Machine for API response
@@ -591,14 +745,14 @@ async fn get_machine(
             });
 
             (StatusCode::OK, Json(response_data)).into_response()
-        },
+        }
         Ok(None) => {
             let error_response = ErrorResponse {
                 error: "Not Found".to_string(),
                 message: format!("Machine with ID {} not found", id),
             };
             (StatusCode::NOT_FOUND, Json(error_response)).into_response()
-        },
+        }
         Err(e) => {
             error!("Failed to retrieve machine {}: {}", id, e);
             let error_response = ErrorResponse {
@@ -620,14 +774,19 @@ async fn assign_os(
 ) -> Response {
     // Check if user is authenticated as admin
     if auth_session.user.is_none() {
-        return (StatusCode::UNAUTHORIZED, Json(json!({
-            "error": "Unauthorized",
-            "message": "Admin authentication required for this operation"
-        }))).into_response();
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({
+                "error": "Unauthorized",
+                "message": "Admin authentication required for this operation"
+            })),
+        )
+            .into_response();
     }
 
     // Check content type to determine how to extract the OS choice
-    let content_type = req.headers()
+    let content_type = req
+        .headers()
         .get(axum::http::header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
@@ -677,21 +836,37 @@ async fn assign_os_internal(app_state: &AppState, id: Uuid, os_choice: String) -
     let mut machine = match app_state.store.get_machine(id).await {
         Ok(Some(m)) => m,
         Ok(None) => {
-            let error_html = format!(r###"
+            let error_html = format!(
+                r###"
                 <div class="p-4 mb-4 text-sm text-red-700 bg-red-100 rounded-lg" role="alert">
                     <span class="font-medium">Error!</span> Machine with ID {} not found.
                 </div>
-            "###, id);
-            return (StatusCode::NOT_FOUND, [(axum::http::header::CONTENT_TYPE, "text/html")], error_html).into_response();
+            "###,
+                id
+            );
+            return (
+                StatusCode::NOT_FOUND,
+                [(axum::http::header::CONTENT_TYPE, "text/html")],
+                error_html,
+            )
+                .into_response();
         }
         Err(e) => {
             error!("Failed to get machine: {}", e);
-            let error_html = format!(r###"
+            let error_html = format!(
+                r###"
                 <div class="p-4 mb-4 text-sm text-red-700 bg-red-100 rounded-lg" role="alert">
                     <span class="font-medium">Error!</span> Database error: {}.
                 </div>
-            "###, e);
-            return (StatusCode::INTERNAL_SERVER_ERROR, [(axum::http::header::CONTENT_TYPE, "text/html")], error_html).into_response();
+            "###,
+                e
+            );
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                [(axum::http::header::CONTENT_TYPE, "text/html")],
+                error_html,
+            )
+                .into_response();
         }
     };
 
@@ -707,30 +882,49 @@ async fn assign_os_internal(app_state: &AppState, id: Uuid, os_choice: String) -
     match app_state.store.put_machine(&machine).await {
         Ok(()) => {
             let html = if os_choice.is_empty() {
-                format!(r###"
+                format!(
+                    r###"
                 <div class="p-4 mb-4 text-sm text-green-700 bg-green-100 rounded-lg" role="alert">
                     <span class="font-medium">Success!</span> OS choice cleared for machine {}. Keeping current OS.
                 </div>
-                "###, id)
+                "###,
+                    id
+                )
             } else {
-                format!(r###"
+                format!(
+                    r###"
                 <div class="p-4 mb-4 text-sm text-green-700 bg-green-100 rounded-lg" role="alert">
                     <span class="font-medium">Success!</span> OS choice set to {} for machine {}.
                     <p>To apply this change, click the "Reimage" button.</p>
                 </div>
-                "###, os_choice, id)
+                "###,
+                    os_choice, id
+                )
             };
 
-            (StatusCode::OK, [(axum::http::header::CONTENT_TYPE, "text/html")], html).into_response()
-        },
+            (
+                StatusCode::OK,
+                [(axum::http::header::CONTENT_TYPE, "text/html")],
+                html,
+            )
+                .into_response()
+        }
         Err(e) => {
             error!("Failed to save machine: {}", e);
-            let error_html = format!(r###"
+            let error_html = format!(
+                r###"
                 <div class="p-4 mb-4 text-sm text-red-700 bg-red-100 rounded-lg" role="alert">
                     <span class="font-medium">Error!</span> Database error: {}.
                 </div>
-            "###, e);
-            (StatusCode::INTERNAL_SERVER_ERROR, [(axum::http::header::CONTENT_TYPE, "text/html")], error_html).into_response()
+            "###,
+                e
+            );
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                [(axum::http::header::CONTENT_TYPE, "text/html")],
+                error_html,
+            )
+                .into_response()
         }
     }
 }
@@ -743,13 +937,14 @@ async fn update_status(
     req: axum::http::Request<axum::body::Body>,
 ) -> Response {
     // Check content type to determine how to extract the status
-    let content_type = req.headers()
+    let content_type = req
+        .headers()
         .get(axum::http::header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
-    
+
     info!("Content-Type received: {}", content_type);
-    
+
     let status = if content_type.starts_with("application/json") {
         // Extract JSON
         match axum::Json::<StatusUpdateRequest>::from_request(req, &()).await {
@@ -761,21 +956,18 @@ async fn update_status(
         }
     } else {
         // Extract form data
-        match axum::Form::<std::collections::HashMap<String, String>>::from_request(req, &()).await {
-            Ok(form) => {
-                match form.0.get("status") {
-                    Some(status_str) => {
-                        match status_str.as_str() {
-                            "Discovered" => Some(MachineStatus::Discovered),
-                            "ReadyToInstall" => Some(MachineStatus::ReadyToInstall),
-                            "Installed" => Some(MachineStatus::Installed),
-                            "Failed" => Some(MachineStatus::Failed("Manual error state".to_string())),
-                            "Offline" => Some(MachineStatus::Offline),
-                            _ => None
-                        }
-                    },
-                    None => None
-                }
+        match axum::Form::<std::collections::HashMap<String, String>>::from_request(req, &()).await
+        {
+            Ok(form) => match form.0.get("status") {
+                Some(status_str) => match status_str.as_str() {
+                    "Discovered" => Some(MachineStatus::Discovered),
+                    "ReadyToInstall" => Some(MachineStatus::ReadyToInstall),
+                    "Installed" => Some(MachineStatus::Installed),
+                    "Failed" => Some(MachineStatus::Failed("Manual error state".to_string())),
+                    "Offline" => Some(MachineStatus::Offline),
+                    _ => None,
+                },
+                None => None,
             },
             Err(e) => {
                 error!("Failed to parse form data: {}", e);
@@ -787,11 +979,14 @@ async fn update_status(
     let status = match status {
         Some(s) => s,
         None => {
-            return Html(format!(r#"
+            return Html(format!(
+                r#"
                 <div class="p-4 mb-4 text-sm text-red-700 bg-red-100 rounded-lg" role="alert">
                     <span class="font-medium">Error!</span> Invalid or missing status field.
                 </div>
-            "#)).into_response();
+            "#
+            ))
+            .into_response();
         }
     };
 
@@ -801,19 +996,27 @@ async fn update_status(
     let mut machine = match state.store.get_machine(id).await {
         Ok(Some(m)) => m,
         Ok(None) => {
-            return Html(format!(r#"
+            return Html(format!(
+                r#"
                 <div class="p-4 mb-4 text-sm text-red-700 bg-red-100 rounded-lg" role="alert">
                     <span class="font-medium">Error!</span> Machine with ID {} not found.
                 </div>
-            "#, id)).into_response();
-        },
+            "#,
+                id
+            ))
+            .into_response();
+        }
         Err(e) => {
             error!("Failed to get machine {}: {}", id, e);
-            return Html(format!(r#"
+            return Html(format!(
+                r#"
                 <div class="p-4 mb-4 text-sm text-red-700 bg-red-100 rounded-lg" role="alert">
                     <span class="font-medium">Error!</span> Database error: {}.
                 </div>
-            "#, e)).into_response();
+            "#,
+                e
+            ))
+            .into_response();
         }
     };
 
@@ -826,8 +1029,12 @@ async fn update_status(
         MachineStatus::Installing => MachineState::Installing,
         MachineStatus::Writing => MachineState::Writing,
         MachineStatus::Installed => MachineState::Installed,
-        MachineStatus::Failed(msg) => MachineState::Failed { message: msg.clone() },
-        MachineStatus::ExistingOS => MachineState::ExistingOs { os_name: "Unknown".to_string() },
+        MachineStatus::Failed(msg) => MachineState::Failed {
+            message: msg.clone(),
+        },
+        MachineStatus::ExistingOS => MachineState::ExistingOs {
+            os_name: "Unknown".to_string(),
+        },
         MachineStatus::Offline => MachineState::Offline,
     };
     machine.metadata.updated_at = chrono::Utc::now();
@@ -836,7 +1043,10 @@ async fn update_status(
     if status == MachineStatus::Discovered {
         if let Ok(Some(default_os)) = state.store.get_setting("default_os").await {
             if !default_os.is_empty() {
-                info!("Applying default OS '{}' to newly registered machine {}", default_os, id);
+                info!(
+                    "Applying default OS '{}' to newly registered machine {}",
+                    default_os, id
+                );
                 machine.config.os_choice = Some(default_os);
             }
         }
@@ -849,7 +1059,8 @@ async fn update_status(
             let _ = state.event_manager.send(format!("machine_updated:{}", id));
 
             // Return HTML success message
-            Html(format!(r#"
+            Html(format!(
+                r#"
                 <div class="p-4 mb-4 text-sm text-green-700 bg-green-100 rounded-lg" role="alert">
                     <span class="font-medium">Success!</span> Machine status has been updated.
                 </div>
@@ -859,15 +1070,21 @@ async fn update_status(
                     // Refresh the machine list
                     htmx.trigger(document.querySelector('tbody'), 'refreshMachines');
                 </script>
-            "#)).into_response()
-        },
+            "#
+            ))
+            .into_response()
+        }
         Err(e) => {
             error!("Failed to update status for machine {}: {}", id, e);
-            Html(format!(r#"
+            Html(format!(
+                r#"
                 <div class="p-4 mb-4 text-sm text-red-700 bg-red-100 rounded-lg" role="alert">
                     <span class="font-medium">Error!</span> Database error: {}.
                 </div>
-            "#, e)).into_response()
+            "#,
+                e
+            ))
+            .into_response()
         }
     }
 }
@@ -881,13 +1098,20 @@ async fn update_hostname(
 ) -> Response {
     // Check if user is authenticated as admin
     if auth_session.user.is_none() {
-        return (StatusCode::UNAUTHORIZED, Json(json!({
-            "error": "Unauthorized",
-            "message": "Admin authentication required for this operation"
-        }))).into_response();
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({
+                "error": "Unauthorized",
+                "message": "Admin authentication required for this operation"
+            })),
+        )
+            .into_response();
     }
 
-    info!("Updating hostname for machine {} to {}", id, payload.hostname);
+    info!(
+        "Updating hostname for machine {} to {}",
+        id, payload.hostname
+    );
 
     // Get machine from v1 Store
     let mut machine = match state.store.get_machine(id).await {
@@ -898,7 +1122,7 @@ async fn update_hostname(
                 message: format!("Machine with ID {} not found", id),
             };
             return (StatusCode::NOT_FOUND, Json(error_response)).into_response();
-        },
+        }
         Err(e) => {
             error!("Failed to get machine {}: {}", id, e);
             let error_response = ErrorResponse {
@@ -928,7 +1152,7 @@ async fn update_hostname(
                 message: format!("Hostname updated for machine {}", id),
             };
             (StatusCode::OK, Json(response)).into_response()
-        },
+        }
         Err(e) => {
             error!("Failed to update hostname for machine {}: {}", id, e);
             let error_response = ErrorResponse {
@@ -946,19 +1170,25 @@ async fn update_os_installed(
     Path(id): Path<Uuid>,
     Json(payload): Json<OsInstalledUpdateRequest>,
 ) -> Response {
-    info!("Updating OS installed for machine {} to {}", id, payload.os_installed);
+    info!(
+        "Updating OS installed for machine {} to {}",
+        id, payload.os_installed
+    );
 
     // Get machine from v1 store
     let mut machine = match state.store.get_machine(id).await {
         Ok(Some(m)) => m,
         Ok(None) => {
-            warn!("Machine with ID {} not found when attempting to update OS installed.", id);
+            warn!(
+                "Machine with ID {} not found when attempting to update OS installed.",
+                id
+            );
             let error_response = ErrorResponse {
                 error: "Not Found".to_string(),
                 message: format!("Machine with ID {} not found", id),
             };
             return (StatusCode::NOT_FOUND, Json(error_response)).into_response();
-        },
+        }
         Err(e) => {
             error!("Failed to get machine {}: {}", id, e);
             let error_response = ErrorResponse {
@@ -984,7 +1214,7 @@ async fn update_os_installed(
                 message: format!("OS installed updated for machine {}", id),
             };
             (StatusCode::OK, Json(response)).into_response()
-        },
+        }
         Err(e) => {
             error!("Failed to update OS installed for machine {}: {}", id, e);
             let error_response = ErrorResponse {
@@ -1007,10 +1237,14 @@ async fn update_bmc(
 
     // Check if user is authenticated as admin
     if auth_session.user.is_none() {
-        return (StatusCode::UNAUTHORIZED, Json(json!({
-            "error": "Unauthorized",
-            "message": "Admin authentication required for this operation"
-        }))).into_response();
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({
+                "error": "Unauthorized",
+                "message": "Admin authentication required for this operation"
+            })),
+        )
+            .into_response();
     }
 
     info!("Updating BMC credentials for machine {}", id);
@@ -1020,20 +1254,34 @@ async fn update_bmc(
         Ok(Some(m)) => m,
         Ok(None) => {
             let error_message = format!("Machine with ID {} not found", id);
-            return (StatusCode::NOT_FOUND, Html(format!(r#"
+            return (
+                StatusCode::NOT_FOUND,
+                Html(format!(
+                    r#"
                 <div class="p-4 mb-4 text-sm text-red-700 bg-red-100 rounded-lg" role="alert">
                     <span class="font-medium">Error!</span> {}.
                 </div>
-            "#, error_message))).into_response();
-        },
+            "#,
+                    error_message
+                )),
+            )
+                .into_response();
+        }
         Err(e) => {
             error!("Failed to get machine {}: {}", id, e);
             let error_message = format!("Store error: {}", e);
-            return (StatusCode::INTERNAL_SERVER_ERROR, Html(format!(r#"
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Html(format!(
+                    r#"
                 <div class="p-4 mb-4 text-sm text-red-700 bg-red-100 rounded-lg" role="alert">
                     <span class="font-medium">Error!</span> {}.
                 </div>
-            "#, error_message))).into_response();
+            "#,
+                    error_message
+                )),
+            )
+                .into_response();
         }
     };
 
@@ -1050,11 +1298,18 @@ async fn update_bmc(
         Err(e) => {
             error!("Failed to encrypt BMC password: {}", e);
             let error_message = format!("Encryption error: {}", e);
-            return (StatusCode::INTERNAL_SERVER_ERROR, Html(format!(r#"
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Html(format!(
+                    r#"
                 <div class="p-4 mb-4 text-sm text-red-700 bg-red-100 rounded-lg" role="alert">
                     <span class="font-medium">Error!</span> {}.
                 </div>
-            "#, error_message))).into_response();
+            "#,
+                    error_message
+                )),
+            )
+                .into_response();
         }
     };
 
@@ -1072,7 +1327,10 @@ async fn update_bmc(
             // Emit machine updated event
             let _ = state.event_manager.send(format!("machine_updated:{}", id));
 
-            (StatusCode::OK, Html(format!(r#"
+            (
+                StatusCode::OK,
+                Html(format!(
+                    r#"
                 <div class="p-4 mb-4 text-sm text-green-700 bg-green-100 rounded-lg" role="alert">
                     <span class="font-medium">Success!</span> BMC credentials updated.
                 </div>
@@ -1081,16 +1339,26 @@ async fn update_bmc(
                         window.location.reload();
                     }}, 1500);
                 </script>
-            "#))).into_response()
-        },
+            "#
+                )),
+            )
+                .into_response()
+        }
         Err(e) => {
             error!("Failed to update BMC credentials for machine {}: {}", id, e);
             let error_message = format!("Store error: {}", e);
-            (StatusCode::INTERNAL_SERVER_ERROR, Html(format!(r#"
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Html(format!(
+                    r#"
                 <div class="p-4 mb-4 text-sm text-red-700 bg-red-100 rounded-lg" role="alert">
                     <span class="font-medium">Error!</span> {}.
                 </div>
-            "#, error_message))).into_response()
+            "#,
+                    error_message
+                )),
+            )
+                .into_response()
         }
     }
 }
@@ -1131,22 +1399,31 @@ async fn get_hostname_form(
                 "###,
                 id, current_hostname
             );
-            
-            (StatusCode::OK, [(axum::http::header::CONTENT_TYPE, "text/html")], html)
-        },
+
+            (
+                StatusCode::OK,
+                [(axum::http::header::CONTENT_TYPE, "text/html")],
+                html,
+            )
+        }
         Ok(None) => {
             let error_html = format!(
                 r###"<div class="p-4 text-red-500">Machine with ID {} not found</div>"###,
                 id
             );
-            (StatusCode::NOT_FOUND, [(axum::http::header::CONTENT_TYPE, "text/html")], error_html)
-        },
+            (
+                StatusCode::NOT_FOUND,
+                [(axum::http::header::CONTENT_TYPE, "text/html")],
+                error_html,
+            )
+        }
         Err(e) => {
-            let error_html = format!(
-                r###"<div class="p-4 text-red-500">Error: {}</div>"###,
-                e
-            );
-            (StatusCode::INTERNAL_SERVER_ERROR, [(axum::http::header::CONTENT_TYPE, "text/html")], error_html)
+            let error_html = format!(r###"<div class="p-4 text-red-500">Error: {}</div>"###, e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                [(axum::http::header::CONTENT_TYPE, "text/html")],
+                error_html,
+            )
         }
     }
 }
@@ -1156,10 +1433,7 @@ async fn get_hostname_form(
 //
 // When native provisioning is enabled, uses ProvisioningService for boot decisions.
 // Otherwise, falls back to legacy db-based approach.
-pub async fn ipxe_script(
-    State(state): State<AppState>,
-    Path(mac): Path<String>,
-) -> Response {
+pub async fn ipxe_script(State(state): State<AppState>, Path(mac): Path<String>) -> Response {
     // URL-decode the MAC address (iPXE URL-encodes colons as %3A)
     let mac = urlencoding::decode(&mac)
         .map(|s| s.into_owned())
@@ -1183,7 +1457,8 @@ pub async fn ipxe_script(
                     StatusCode::OK,
                     [(axum::http::header::CONTENT_TYPE, "text/plain")],
                     script,
-                ).into_response();
+                )
+                    .into_response();
             }
             Err(e) => {
                 error!("Provisioning error for MAC {}: {}", mac, e);
@@ -1200,7 +1475,9 @@ pub async fn ipxe_script(
     let base_url = match env::var("DRAGONFLY_BASE_URL") {
         Ok(url) => url,
         Err(_) => {
-            error!("CRITICAL: DRAGONFLY_BASE_URL environment variable is not set. iPXE booting requires this configuration.");
+            error!(
+                "CRITICAL: DRAGONFLY_BASE_URL environment variable is not set. iPXE booting requires this configuration."
+            );
             let error_response = ErrorResponse {
                 error: "Configuration Error".to_string(),
                 message: "Server is missing required DRAGONFLY_BASE_URL configuration.".to_string(),
@@ -1212,19 +1489,32 @@ pub async fn ipxe_script(
     // Look up machine by MAC using v1 Store
     match state.store.list_machines().await {
         Ok(machines) => {
-            let found = machines.iter().find(|m| {
-                m.identity.primary_mac == mac || m.identity.all_macs.contains(&mac)
-            });
+            let found = machines
+                .iter()
+                .find(|m| m.identity.primary_mac == mac || m.identity.all_macs.contains(&mac));
             if found.is_some() {
                 // Known machine: Chain to Dragonfly's OS installation hook script (hookos.ipxe)
                 info!("Known MAC {}, chaining to HookOS script", mac);
                 let script = format!("#!ipxe\nchain {}/ipxe/hookos.ipxe", base_url);
-                (StatusCode::OK, [(axum::http::header::CONTENT_TYPE, "text/plain")], script).into_response()
+                (
+                    StatusCode::OK,
+                    [(axum::http::header::CONTENT_TYPE, "text/plain")],
+                    script,
+                )
+                    .into_response()
             } else {
                 // Unknown machine: Chain to the Dragonfly agent script
-                info!("Unknown MAC {}, chaining to Dragonfly Agent iPXE script", mac);
+                info!(
+                    "Unknown MAC {}, chaining to Dragonfly Agent iPXE script",
+                    mac
+                );
                 let script = format!("#!ipxe\nchain {}/ipxe/dragonfly-agent.ipxe", base_url);
-                (StatusCode::OK, [(axum::http::header::CONTENT_TYPE, "text/plain")], script).into_response()
+                (
+                    StatusCode::OK,
+                    [(axum::http::header::CONTENT_TYPE, "text/plain")],
+                    script,
+                )
+                    .into_response()
             }
         }
         Err(e) => {
@@ -1249,15 +1539,22 @@ async fn delete_machine(
 
     // Check if user is authenticated as admin
     if auth_session.user.is_none() {
-        return (StatusCode::UNAUTHORIZED, Json(json!({
-            "error": "Unauthorized",
-            "message": "Admin authentication required for this operation"
-        }))).into_response();
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({
+                "error": "Unauthorized",
+                "message": "Admin authentication required for this operation"
+            })),
+        )
+            .into_response();
     }
 
     info!("Request to delete machine: {}", id);
 
-    let delete_in_proxmox = params.get("delete_in_proxmox").map(|v| v == "true").unwrap_or(false);
+    let delete_in_proxmox = params
+        .get("delete_in_proxmox")
+        .map(|v| v == "true")
+        .unwrap_or(false);
 
     // If requested, also delete the VM/LXC in Proxmox before removing from DB
     if delete_in_proxmox {
@@ -1268,33 +1565,53 @@ async fn delete_machine(
                     MachineSource::ProxmoxLxc { node, ctid, .. } => ("lxc", node.clone(), *ctid),
                     _ => {
                         // Not a Proxmox VM/LXC — nothing to delete in Proxmox
-                        info!("Machine {} is not a Proxmox VM/LXC, skipping Proxmox deletion", id);
+                        info!(
+                            "Machine {} is not a Proxmox VM/LXC, skipping Proxmox deletion",
+                            id
+                        );
                         ("", String::new(), 0)
                     }
                 };
                 if !api_type.is_empty() {
                     use proxmox_client::HttpApiClient;
                     // Try "power" token (needs VM.Allocate), fall back to "config"
-                    let client_result = crate::handlers::proxmox::connect_to_proxmox(&state, "power").await
-                        .or(crate::handlers::proxmox::connect_to_proxmox(&state, "config").await);
+                    let client_result =
+                        crate::handlers::proxmox::connect_to_proxmox(&state, "power")
+                            .await
+                            .or(
+                                crate::handlers::proxmox::connect_to_proxmox(&state, "config")
+                                    .await,
+                            );
                     let client = match client_result {
                         Ok(c) => Some(c),
                         Err(e) => {
-                            warn!("Cannot connect to Proxmox to delete {} {}: {}", api_type, vmid, e);
+                            warn!(
+                                "Cannot connect to Proxmox to delete {} {}: {}",
+                                api_type, vmid, e
+                            );
                             None
                         }
                     };
                     if let Some(client) = client {
                         let path = format!("/api2/json/nodes/{}/{}/{}", node, api_type, vmid);
                         match client.delete(&path).await {
-                            Ok(_) => info!("Deleted {} {} on node '{}' in Proxmox", api_type, vmid, node),
-                            Err(e) => warn!("Failed to delete {} {} in Proxmox: {} — removing from Dragonfly anyway", api_type, vmid, e),
+                            Ok(_) => info!(
+                                "Deleted {} {} on node '{}' in Proxmox",
+                                api_type, vmid, node
+                            ),
+                            Err(e) => warn!(
+                                "Failed to delete {} {} in Proxmox: {} — removing from Dragonfly anyway",
+                                api_type, vmid, e
+                            ),
                         }
                     }
                 }
             }
-            Ok(None) => {},
-            Err(e) => warn!("Failed to read machine {} before Proxmox deletion: {}", id, e),
+            Ok(None) => {}
+            Err(e) => warn!(
+                "Failed to read machine {} before Proxmox deletion: {}",
+                id, e
+            ),
         }
     }
 
@@ -1306,14 +1623,24 @@ async fn delete_machine(
             // Emit machine deleted event
             let _ = state.event_manager.send(format!("machine_deleted:{}", id));
 
-            (StatusCode::OK, Json(json!({ "success": true, "message": "Machine successfully deleted." }))).into_response()
-        },
-        Ok(false) => {
-            (StatusCode::NOT_FOUND, Json(json!({ "error": "Machine not found in database" }))).into_response()
-        },
+            (
+                StatusCode::OK,
+                Json(json!({ "success": true, "message": "Machine successfully deleted." })),
+            )
+                .into_response()
+        }
+        Ok(false) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "Machine not found in database" })),
+        )
+            .into_response(),
         Err(e) => {
             error!("Failed to delete machine from database: {}", e);
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": format!("Database error: {}", e) }))).into_response()
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": format!("Database error: {}", e) })),
+            )
+                .into_response()
         }
     }
 }
@@ -1337,27 +1664,39 @@ async fn update_machine(
     let mut machine = match state.store.get_machine(id).await {
         Ok(Some(m)) => m,
         Ok(None) => {
-            return (StatusCode::NOT_FOUND, Json(json!({
-                "error": "Not Found",
-                "message": format!("Machine with ID {} not found", id)
-            }))).into_response();
-        },
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({
+                    "error": "Not Found",
+                    "message": format!("Machine with ID {} not found", id)
+                })),
+            )
+                .into_response();
+        }
         Err(e) => {
             error!("Database error during machine lookup: {}", e);
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
-                "error": "Database Error",
-                "message": e.to_string()
-            }))).into_response();
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "error": "Database Error",
+                    "message": e.to_string()
+                })),
+            )
+                .into_response();
         }
     };
 
     // Authorization: admin is always authorized, otherwise we'd need IP check
     // For now, since we don't store IP in v1 Machine, just require admin
     if !is_admin {
-        return (StatusCode::FORBIDDEN, Json(json!({
-            "error": "Forbidden",
-            "message": "Admin authentication required for machine updates"
-        }))).into_response();
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({
+                "error": "Forbidden",
+                "message": "Admin authentication required for machine updates"
+            })),
+        )
+            .into_response();
     }
 
     // Ensure the ID from the path matches the payload ID
@@ -1394,8 +1733,12 @@ async fn update_machine(
         MachineStatus::Installing => MachineState::Installing,
         MachineStatus::Writing => MachineState::Writing,
         MachineStatus::Installed => MachineState::Installed,
-        MachineStatus::ExistingOS => MachineState::ExistingOs { os_name: "Unknown".to_string() },
-        MachineStatus::Failed(msg) => MachineState::Failed { message: msg.clone() },
+        MachineStatus::ExistingOS => MachineState::ExistingOs {
+            os_name: "Unknown".to_string(),
+        },
+        MachineStatus::Failed(msg) => MachineState::Failed {
+            message: msg.clone(),
+        },
         MachineStatus::Offline => MachineState::Offline,
     };
 
@@ -1410,13 +1753,17 @@ async fn update_machine(
             // Return the updated machine as common Machine
             let response_machine = machine_to_common(&machine);
             (StatusCode::OK, Json(response_machine)).into_response()
-        },
+        }
         Err(e) => {
             error!("Failed to update machine {}: {}", id, e);
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
-                "error": "Database Error",
-                "message": e.to_string()
-            }))).into_response()
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "error": "Database Error",
+                    "message": e.to_string()
+                })),
+            )
+                .into_response()
         }
     }
 }
@@ -1429,26 +1776,38 @@ async fn patch_machine(
     Json(req): Json<crate::store::conversions::UpdateMachineRequest>,
 ) -> Response {
     if auth_session.user.is_none() {
-        return (StatusCode::FORBIDDEN, Json(json!({
-            "error": "Forbidden",
-            "message": "Admin authentication required"
-        }))).into_response();
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({
+                "error": "Forbidden",
+                "message": "Admin authentication required"
+            })),
+        )
+            .into_response();
     }
 
     let mut machine = match state.store.get_machine(id).await {
         Ok(Some(m)) => m,
         Ok(None) => {
-            return (StatusCode::NOT_FOUND, Json(json!({
-                "error": "Not Found",
-                "message": format!("Machine {} not found", id)
-            }))).into_response();
-        },
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({
+                    "error": "Not Found",
+                    "message": format!("Machine {} not found", id)
+                })),
+            )
+                .into_response();
+        }
         Err(e) => {
             error!("Store error: {}", e);
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
-                "error": "Database Error",
-                "message": e.to_string()
-            }))).into_response();
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "error": "Database Error",
+                    "message": e.to_string()
+                })),
+            )
+                .into_response();
         }
     };
 
@@ -1459,13 +1818,17 @@ async fn patch_machine(
             let _ = state.event_manager.send(format!("machine_updated:{}", id));
             let response_machine = machine_to_common(&machine);
             (StatusCode::OK, Json(response_machine)).into_response()
-        },
+        }
         Err(e) => {
             error!("Failed to update machine {}: {}", id, e);
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
-                "error": "Database Error",
-                "message": e.to_string()
-            }))).into_response()
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "error": "Database Error",
+                    "message": e.to_string()
+                })),
+            )
+                .into_response()
         }
     }
 }
@@ -1520,13 +1883,14 @@ async fn machine_events(
     State(state): State<AppState>,
 ) -> Sse<impl Stream<Item = std::result::Result<Event, Infallible>>> {
     let rx = state.event_manager.subscribe(); // Remove mut
-    
+
     let stream = stream::unfold(rx, |mut rx| async move {
         match rx.recv().await {
             Ok(event_string) => {
                 // FIX: Correct parsing and variable naming
                 let parts: Vec<&str> = event_string.splitn(2, ':').collect();
-                let (event_type, event_payload_str) = if parts.len() == 2 { // Renamed event_id_str to event_payload_str for clarity
+                let (event_type, event_payload_str) = if parts.len() == 2 {
+                    // Renamed event_id_str to event_payload_str for clarity
                     (parts[0], Some(parts[1]))
                 } else {
                     (event_string.as_str(), None)
@@ -1536,19 +1900,24 @@ async fn machine_events(
                 if event_type == "ip_download_progress" || event_type == "workflow_progress" {
                     if let Some(payload_str) = event_payload_str {
                         // Directly use the JSON string as data for this specific event type
-                let sse_event = Event::default()
-                    .event(event_type)
-                            .data(payload_str); // Use the payload string directly
+                        let sse_event = Event::default().event(event_type).data(payload_str); // Use the payload string directly
                         Some((Ok(sse_event), rx))
                     } else {
-                         warn!("Received {} event without payload: {}", event_type, event_string);
-                         // Optionally send a comment or skip
-                         let comment_event = Event::default().comment(format!("Warning: {} event received without payload.", event_type));
-                         Some((Ok(comment_event), rx))
+                        warn!(
+                            "Received {} event without payload: {}",
+                            event_type, event_string
+                        );
+                        // Optionally send a comment or skip
+                        let comment_event = Event::default().comment(format!(
+                            "Warning: {} event received without payload.",
+                            event_type
+                        ));
+                        Some((Ok(comment_event), rx))
                     }
                 } else {
                     // Existing logic for other events (like machine_updated, machine_discovered, etc.)
-                    let data_payload = if let Some(id_str) = event_payload_str { // Use the renamed variable
+                    let data_payload = if let Some(id_str) = event_payload_str {
+                        // Use the renamed variable
                         json!({ "type": event_type, "id": id_str })
                     } else {
                         // Ensure there's always a payload, even without ID
@@ -1558,19 +1927,18 @@ async fn machine_events(
                     // Serialize JSON to string for SSE data field
                     match serde_json::to_string(&data_payload) {
                         Ok(json_string) => {
-                            let sse_event = Event::default()
-                                .event(event_type)
-                                .data(json_string);
-                Some((Ok(sse_event), rx))
-                        },
+                            let sse_event = Event::default().event(event_type).data(json_string);
+                            Some((Ok(sse_event), rx))
+                        }
                         Err(e) => {
                             error!("Failed to serialize SSE event data to JSON: {}", e);
-                            let comment_event = Event::default().comment("Internal error: failed to serialize event.");
+                            let comment_event = Event::default()
+                                .comment("Internal error: failed to serialize event.");
                             Some((Ok(comment_event), rx))
                         }
                     }
                 }
-            },
+            }
             Err(_) => None,
         }
     });
@@ -1584,7 +1952,7 @@ async fn machine_events(
 
 async fn generate_ipxe_script(script_name: &str) -> Result<String, dragonfly_common::Error> {
     info!("Generating IPXE script: {}", script_name);
- 
+
     match script_name {
         "hookos.ipxe" => {
             // Get Dragonfly base URL (required)
@@ -1602,29 +1970,35 @@ async fn generate_ipxe_script(script_name: &str) -> Result<String, dragonfly_com
                     warn!("Could not parse DRAGONFLY_BASE_URL host, using fallback '127.0.0.1' for Tinkerbell defaults.");
                     "127.0.0.1".to_string()
                 });
-            
+
             const DEFAULT_GRPC_PORT: u16 = 42113;
-            let default_grpc_authority = format!("{}:{}", default_tinkerbell_host, DEFAULT_GRPC_PORT);
+            let default_grpc_authority =
+                format!("{}:{}", default_tinkerbell_host, DEFAULT_GRPC_PORT);
             let default_syslog_host = default_tinkerbell_host.clone(); // Default syslog host is just the host part
             // -----------------------------------------------------------
 
             // Get Tinkerbell config, using derived values as defaults
-            let grpc_authority = env::var("TINKERBELL_GRPC_AUTHORITY")
-                .unwrap_or_else(|_| {
-                    info!("TINKERBELL_GRPC_AUTHORITY not set, deriving default: {}", default_grpc_authority);
+            let grpc_authority = env::var("TINKERBELL_GRPC_AUTHORITY").unwrap_or_else(|_| {
+                info!(
+                    "TINKERBELL_GRPC_AUTHORITY not set, deriving default: {}",
                     default_grpc_authority
-                });
-            let syslog_host = env::var("TINKERBELL_SYSLOG_HOST")
-                .unwrap_or_else(|_| {
-                     info!("TINKERBELL_SYSLOG_HOST not set, deriving default: {}", default_syslog_host);
-                     default_syslog_host
-                 });
+                );
+                default_grpc_authority
+            });
+            let syslog_host = env::var("TINKERBELL_SYSLOG_HOST").unwrap_or_else(|_| {
+                info!(
+                    "TINKERBELL_SYSLOG_HOST not set, deriving default: {}",
+                    default_syslog_host
+                );
+                default_syslog_host
+            });
             let tinkerbell_tls = env::var("TINKERBELL_TLS")
                 .map(|s| s.parse().unwrap_or(false))
                 .unwrap_or(false);
 
             // Format the HookOS iPXE script using Dragonfly URL for artifacts and Tinkerbell details for params
-            Ok(format!(r#"#!ipxe
+            Ok(format!(
+                r#"#!ipxe
 
 echo Loading HookOS via Dragonfly...
 
@@ -1681,16 +2055,16 @@ exit
 echo Failed to boot
 imgfree
 exit
-"#, 
-            base_url_str, // Use Dragonfly base URL for artifacts
-            grpc_authority, // Use determined gRPC authority (env var or derived default)
-            syslog_host,    // Use determined syslog host (env var or derived default)
-            tinkerbell_tls, // Use determined TLS setting
-            grpc_authority, // for echo
-            syslog_host,    // for echo
-            tinkerbell_tls  // for echo
+"#,
+                base_url_str,   // Use Dragonfly base URL for artifacts
+                grpc_authority, // Use determined gRPC authority (env var or derived default)
+                syslog_host,    // Use determined syslog host (env var or derived default)
+                tinkerbell_tls, // Use determined TLS setting
+                grpc_authority, // for echo
+                syslog_host,    // for echo
+                tinkerbell_tls  // for echo
             ))
-        },
+        }
         "dragonfly-agent.ipxe" => {
             // Get Dragonfly base URL for agent artifacts
             let base_url = env::var("DRAGONFLY_BASE_URL")
@@ -1701,7 +2075,8 @@ exit
 
             // Detect architecture from iPXE buildarch variable
             // Default to x86_64, script will detect at runtime
-            Ok(format!(r#"#!ipxe
+            Ok(format!(
+                r#"#!ipxe
 # Detect architecture
 iseq ${{buildarch}} arm64 && set arch aarch64 || set arch x86_64
 
@@ -1719,12 +2094,13 @@ kernel {base_url}/boot/${{arch}}/kernel \
   rw
 initrd {base_url}/boot/${{arch}}/initramfs
 boot
-"#))
-        },
+"#
+            ))
+        }
         _ => {
             warn!("Cannot generate unknown IPXE script: {}", script_name); // Log the specific script name
             Err(Error::NotFound) // Use the unit variant correctly
-        },
+        }
     }
 }
 
@@ -1732,7 +2108,7 @@ fn create_streaming_response(
     stream: ReceiverStream<Result<Bytes, Error>>,
     content_type: &str,
     content_length: Option<u64>,
-    content_range: Option<String>
+    content_range: Option<String>,
 ) -> Response {
     // Map the stream from Result<Bytes> to Result<Frame<Bytes>, BoxError>
     let mapped_stream = stream.map(|result| {
@@ -1741,21 +2117,21 @@ fn create_streaming_response(
                 // Removed check for empty EOF marker
                 // Simply map non-empty bytes to a data frame
                 Ok(Frame::data(bytes))
-            },
+            }
             Err(e) => Err(Box::new(e) as Box<dyn std::error::Error + Send + Sync>),
         }
     });
-    
+
     // Create a stream body with explicit end signal
     let body = StreamBody::new(mapped_stream);
-    
+
     // Determine status code based on whether it's a partial response
     let status_code = if content_range.is_some() {
         StatusCode::PARTIAL_CONTENT
     } else {
         StatusCode::OK
     };
-    
+
     // Start building the response
     let mut builder = Response::builder()
         .status(status_code)
@@ -1772,7 +2148,7 @@ fn create_streaming_response(
     } else {
         // Only use chunked encoding if length is truly unknown (should typically only be for 200 OK).
         // It's an error to have a 206 response without Content-Length.
-        if status_code == StatusCode::OK { 
+        if status_code == StatusCode::OK {
             builder = builder.header(axum::http::header::TRANSFER_ENCODING, "chunked");
         } else {
             // This case (206 without Content-Length) ideally shouldn't happen with our logic.
@@ -1780,45 +2156,60 @@ fn create_streaming_response(
             warn!("Attempting to create 206 response without Content-Length!");
         }
     }
-    
+
     // Include Content-Range if it's a partial response
     if let Some(range_header_value) = content_range {
         builder = builder.header(axum::http::header::CONTENT_RANGE, range_header_value);
     }
-    
-    // Build the final response
-    builder.body(Body::new(body))
-        .unwrap_or_else(|_| {
-            Response::builder()
-                .status(StatusCode::INTERNAL_SERVER_ERROR)
-                .body(Body::new(Empty::new()))
-                .unwrap()
-        })
-}
 
+    // Build the final response
+    builder.body(Body::new(body)).unwrap_or_else(|_| {
+        Response::builder()
+            .status(StatusCode::INTERNAL_SERVER_ERROR)
+            .body(Body::new(Empty::new()))
+            .unwrap()
+    })
+}
 
 async fn read_file_as_stream(
     path: &StdPath,
     range_header: Option<&HeaderValue>, // Add parameter for Range header
-    state: Option<&AppState>, // Add optional state for event emission
-    machine_id: Option<Uuid> // Add optional machine ID for tracking
-) -> Result<(ReceiverStream<Result<Bytes, Error>>, Option<u64>, Option<String>), Error> { // Return size and Content-Range
-    info!("[STREAM_READ] Beginning read_file_as_stream for path: {}, range: {:?}, machine_id: {:?}", 
-          path.display(), range_header.map(|h| h.to_str().unwrap_or("invalid")), machine_id);
+    state: Option<&AppState>,           // Add optional state for event emission
+    machine_id: Option<Uuid>,           // Add optional machine ID for tracking
+) -> Result<
+    (
+        ReceiverStream<Result<Bytes, Error>>,
+        Option<u64>,
+        Option<String>,
+    ),
+    Error,
+> {
+    // Return size and Content-Range
+    info!(
+        "[STREAM_READ] Beginning read_file_as_stream for path: {}, range: {:?}, machine_id: {:?}",
+        path.display(),
+        range_header.map(|h| h.to_str().unwrap_or("invalid")),
+        machine_id
+    );
 
-    let mut file = fs::File::open(path).await.map_err(|e| Error::Internal(format!("Failed to open file {}: {}", path.display(), e)))?; // Added mut back
+    let mut file = fs::File::open(path)
+        .await
+        .map_err(|e| Error::Internal(format!("Failed to open file {}: {}", path.display(), e)))?; // Added mut back
     let (tx, rx) = mpsc::channel::<Result<Bytes, Error>>(32);
     let path_buf = path.to_path_buf();
-    
+
     // Get total file size
-    let metadata = fs::metadata(path).await.map_err(|e| Error::Internal(format!("Failed to get metadata {}: {}", path.display(), e)))?;
+    let metadata = fs::metadata(path).await.map_err(|e| {
+        Error::Internal(format!("Failed to get metadata {}: {}", path.display(), e))
+    })?;
     let total_size = metadata.len();
-    
+
     // Get file name for progress tracking
-    let file_name = path.file_name()
-                        .and_then(|name| name.to_str())
-                        .map(String::from);
-    
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(String::from);
+
     let (start, _end, response_length, content_range_header) = // Marked end as unused
         if let Some(range_val) = range_header {
             if let Ok(range_str) = range_val.to_str() {
@@ -1851,54 +2242,79 @@ async fn read_file_as_stream(
 
     tokio::spawn(async move {
         // Handle Range requests differently: read the whole range at once
-        if content_range_header_clone.is_some() { // Use the clone
+        if content_range_header_clone.is_some() {
+            // Use the clone
             if start > 0 {
                 if let Err(e) = file.seek(std::io::SeekFrom::Start(start)).await {
                     error!("Failed to seek file {}: {}", path_buf.display(), e);
-                    let _ = tx.send(Err(Error::Internal(format!("File seek error: {}", e)))).await;
+                    let _ = tx
+                        .send(Err(Error::Internal(format!("File seek error: {}", e))))
+                        .await;
                     return;
                 }
             }
-            
+
             // Allocate buffer for the exact range size
             let mut buffer = Vec::with_capacity(response_length as usize); // Use with_capacity
-            
+
             // Create a reader limited to the exact range size
             let mut limited_reader = file.take(response_length);
-            
+
             // Read the exact range using the limited reader
             match limited_reader.read_to_end(&mut buffer).await {
                 Ok(_) => {
                     // Track progress for range requests too
                     // For range requests, we use the start offset as an indicator of download progress
-                    if let (Some(state_ref), Some(machine_id_captured)) = (&task_state_owned, task_machine_id_copied) {
+                    if let (Some(state_ref), Some(machine_id_captured)) =
+                        (&task_state_owned, task_machine_id_copied)
+                    {
                         if total_size > 0 {
                             // Use start position + current range size as effective progress indicator
                             let bytes_read = buffer.len() as u64;
                             let effective_progress = start + bytes_read;
-                            
-                            info!("[RANGE_READ] Range request: start={}, bytes_read={}, total_size={}, effective_progress={}",
-                                  start, bytes_read, total_size, effective_progress);
-                                  
+
+                            info!(
+                                "[RANGE_READ] Range request: start={}, bytes_read={}, total_size={}, effective_progress={}",
+                                start, bytes_read, total_size, effective_progress
+                            );
+
                             // Clone state for progress tracking
                             let owned_state = state_ref.clone();
-                            
+
                             // Spawn progress tracking in a separate task
                             tokio::spawn(async move {
-                                track_download_progress(Some(machine_id_captured), effective_progress, total_size, owned_state).await;
+                                track_download_progress(
+                                    Some(machine_id_captured),
+                                    effective_progress,
+                                    total_size,
+                                    owned_state,
+                                )
+                                .await;
                             });
                         }
                     }
-                
+
                     // Send the complete range as a single chunk
                     if tx.send(Ok(Bytes::from(buffer))).await.is_err() {
-                        warn!("Client stream receiver dropped for file {} while sending range", path_buf.display());
+                        warn!(
+                            "Client stream receiver dropped for file {} while sending range",
+                            path_buf.display()
+                        );
                     }
                     // Task finishes, tx is dropped, stream closes.
-                },
+                }
                 Err(e) => {
-                    error!("Failed to read exact range for file {}: {}", path_buf.display(), e);
-                    let _ = tx.send(Err(Error::Internal(format!("File read_exact error: {}", e)))).await;
+                    error!(
+                        "Failed to read exact range for file {}: {}",
+                        path_buf.display(),
+                        e
+                    );
+                    let _ = tx
+                        .send(Err(Error::Internal(format!(
+                            "File read_exact error: {}",
+                            e
+                        ))))
+                        .await;
                 }
             }
         } else {
@@ -1913,8 +2329,9 @@ async fn read_file_as_stream(
                     Ok(0) => {
                         //info!("Reached EOF while serving file {} (remaining: {} bytes)", path_buf.display(), remaining);
                         break; // EOF reached
-                    },
-                    Ok(n) => { // Handles n > 0
+                    }
+                    Ok(n) => {
+                        // Handles n > 0
                         let chunk = Bytes::copy_from_slice(&buffer[0..n]);
                         remaining -= n as u64;
                         total_bytes_sent += n as u64; // Add this line to update total bytes sent!
@@ -1924,41 +2341,67 @@ async fn read_file_as_stream(
 
                         // Use the owned/copied state and machine_id captured by the 'move' closure
                         // Match against the Option<&AppState> and Option<Uuid> directly
-                        if let (Some(state_ref), Some(machine_id_captured)) = (&task_state_owned, task_machine_id_copied) {
-                            if total_size > 0 { // Avoid division by zero
-                                debug!("[PROGRESS_DEBUG][CACHE_READ] Calling track_download_progress (machine_id: {}, sent: {}, total: {})", machine_id_captured, total_bytes_sent, total_size);
+                        if let (Some(state_ref), Some(machine_id_captured)) =
+                            (&task_state_owned, task_machine_id_copied)
+                        {
+                            if total_size > 0 {
+                                // Avoid division by zero
+                                debug!(
+                                    "[PROGRESS_DEBUG][CACHE_READ] Calling track_download_progress (machine_id: {}, sent: {}, total: {})",
+                                    machine_id_captured, total_bytes_sent, total_size
+                                );
                                 // Clone the AppState here to get an owned value for the inner task.
                                 let owned_state = state_ref.clone(); // <-- Add this line
                                 // Spawn progress tracking in a separate task to avoid blocking the stream
                                 tokio::spawn(async move {
                                     // Pass the already owned AppState.
-                                    track_download_progress(Some(machine_id_captured), total_bytes_sent, total_size, owned_state).await; // <-- Use owned_state here
+                                    track_download_progress(
+                                        Some(machine_id_captured),
+                                        total_bytes_sent,
+                                        total_size,
+                                        owned_state,
+                                    )
+                                    .await; // <-- Use owned_state here
                                 });
                             } // else: Skipping progress track because total_size is 0 (logged elsewhere if needed)
                         } // else: Skipping progress track because machine_id or state is missing
 
                         if tx.send(Ok(chunk)).await.is_err() {
-                            warn!("Client stream receiver dropped for file {}", path_buf.display());
+                            warn!(
+                                "Client stream receiver dropped for file {}",
+                                path_buf.display()
+                            );
                             break; // Exit loop if receiver is gone
                         }
-                    },
+                    }
                     Err(e) => {
-                        let err = Error::Internal(format!("File read error for {}: {}", path_buf.display(), e));
+                        let err = Error::Internal(format!(
+                            "File read error for {}: {}",
+                            path_buf.display(),
+                            e
+                        ));
                         if tx.send(Err(err)).await.is_err() {
-                            warn!("Client stream receiver dropped while sending error for {}", path_buf.display());
+                            warn!(
+                                "Client stream receiver dropped while sending error for {}",
+                                path_buf.display()
+                            );
                         }
                         break; // Exit loop on read error
                     }
                 }
             }
         }
-        
+
         // Task finishes, tx is dropped, stream closes.
         debug!("Finished streaming task for: {}", path_buf.display());
     });
-    
+
     // Return the stream, the length of the *content being sent*, and the *original* Content-Range header string
-    Ok((tokio_stream::wrappers::ReceiverStream::new(rx), response_content_length, content_range_header))
+    Ok((
+        tokio_stream::wrappers::ReceiverStream::new(rx),
+        response_content_length,
+        content_range_header,
+    ))
 }
 
 // Serve iPXE artifacts (scripts and binaries)
@@ -1972,52 +2415,74 @@ pub async fn serve_ipxe_artifact(
     const DEFAULT_ARTIFACT_DIR: &str = "/var/lib/dragonfly/ipxe-artifacts";
     const ARTIFACT_DIR_ENV_VAR: &str = "DRAGONFLY_IPXE_ARTIFACT_DIR";
     const ALLOWED_IPXE_SCRIPTS: &[&str] = &["hookos", "dragonfly-agent"]; // Define allowlist
-    const AGENT_APKOVL_PATH: &str = "/var/lib/dragonfly/ipxe-artifacts/dragonfly-agent/localhost.apkovl.tar.gz";
-    const AGENT_BINARY_URL: &str = "https://github.com/riffcc/dragonfly/releases/download/latest/dragonfly-agent-x86_64"; // TODO: Make configurable
-    
+    const AGENT_APKOVL_PATH: &str =
+        "/var/lib/dragonfly/ipxe-artifacts/dragonfly-agent/localhost.apkovl.tar.gz";
+    const AGENT_BINARY_URL: &str =
+        "https://github.com/riffcc/dragonfly/releases/download/latest/dragonfly-agent-x86_64"; // TODO: Make configurable
+
     // --- Get Machine ID from Client IP ---
     let client_ip = state.client_ip.lock().await.clone();
     let machine_id: Option<Uuid> = if let Some(ip) = &client_ip {
         info!("[PROGRESS_DEBUG] Looking up machine by IP: {}", ip);
         match state.store.get_machine_by_ip(ip).await {
             Ok(Some(machine)) => {
-                info!("[PROGRESS_DEBUG] Found machine ID {} for IP {}", machine.id, ip);
+                info!(
+                    "[PROGRESS_DEBUG] Found machine ID {} for IP {}",
+                    machine.id, ip
+                );
                 Some(machine.id)
             }
             Ok(None) => {
-                info!("[PROGRESS_DEBUG] No machine found for IP {} requesting artifact {}", ip, requested_path);
+                info!(
+                    "[PROGRESS_DEBUG] No machine found for IP {} requesting artifact {}",
+                    ip, requested_path
+                );
                 None
             }
             Err(e) => {
-                info!("[PROGRESS_DEBUG] Store error looking up machine by IP {}: {}", ip, e);
+                info!(
+                    "[PROGRESS_DEBUG] Store error looking up machine by IP {}: {}",
+                    ip, e
+                );
                 None
             }
         }
     } else {
-        info!("[PROGRESS_DEBUG] Client IP not found in state for artifact request {}", requested_path);
+        info!(
+            "[PROGRESS_DEBUG] Client IP not found in state for artifact request {}",
+            requested_path
+        );
         None
     };
     // ----------------------------------
 
     // Get the base directory from env var or use default
-    let base_dir = env::var(ARTIFACT_DIR_ENV_VAR)
-        .unwrap_or_else(|_| {
-            debug!("{} not set, using default: {}", ARTIFACT_DIR_ENV_VAR, DEFAULT_ARTIFACT_DIR);
-            DEFAULT_ARTIFACT_DIR.to_string()
-        });
+    let base_dir = env::var(ARTIFACT_DIR_ENV_VAR).unwrap_or_else(|_| {
+        debug!(
+            "{} not set, using default: {}",
+            ARTIFACT_DIR_ENV_VAR, DEFAULT_ARTIFACT_DIR
+        );
+        DEFAULT_ARTIFACT_DIR.to_string()
+    });
     let base_path = PathBuf::from(base_dir);
-    
+
     // Path sanitization - Allow '/' but prevent '..'
     if requested_path.contains("..") || requested_path.contains('\\') {
-        warn!("Attempted iPXE artifact path traversal using '..' or '\': {}", requested_path);
+        warn!(
+            "Attempted iPXE artifact path traversal using '..' or '\': {}",
+            requested_path
+        );
         return (StatusCode::BAD_REQUEST, "Invalid artifact path").into_response();
     }
-    
+
     let artifact_path = base_path.join(&requested_path);
 
     // --- Serve from Cache First ---
     if artifact_path.exists() {
-        info!("[SERVE_ARTIFACT] Cached artifact exists at {}, will use read_file_as_stream", artifact_path.display());
+        info!(
+            "[SERVE_ARTIFACT] Cached artifact exists at {}, will use read_file_as_stream",
+            artifact_path.display()
+        );
         // Determine content type AND if it's an IPXE script
         let (content_type, is_ipxe) = if requested_path.ends_with(".ipxe") {
             ("text/plain", true)
@@ -2028,42 +2493,68 @@ pub async fn serve_ipxe_artifact(
         };
 
         // Allowlist check for IPXE scripts from cache
-        if is_ipxe { // Check the boolean flag
-            let stem = StdPath::new(&requested_path).file_stem().and_then(|s| s.to_str());
+        if is_ipxe {
+            // Check the boolean flag
+            let stem = StdPath::new(&requested_path)
+                .file_stem()
+                .and_then(|s| s.to_str());
             if let Some(stem_str) = stem {
                 if !ALLOWED_IPXE_SCRIPTS.contains(&stem_str) {
-                    warn!("Attempt to serve non-allowlisted IPXE script stem from cache: {}", stem_str);
+                    warn!(
+                        "Attempt to serve non-allowlisted IPXE script stem from cache: {}",
+                        stem_str
+                    );
                     return (StatusCode::NOT_FOUND, "iPXE Script Not Found").into_response();
                 }
             } else {
-                 warn!("Could not extract stem from IPXE script path: {}", requested_path);
-                 return (StatusCode::BAD_REQUEST, "Invalid IPXE Script Path").into_response();
+                warn!(
+                    "Could not extract stem from IPXE script path: {}",
+                    requested_path
+                );
+                return (StatusCode::BAD_REQUEST, "Invalid IPXE Script Path").into_response();
             }
         }
-        
+
         // Serve allowed script or binary artifact from cache using streaming
         // Pass the potentially found machine_id for progress tracking
-        match read_file_as_stream(&artifact_path, headers.get(axum::http::header::RANGE), Some(&state), machine_id).await {
+        match read_file_as_stream(
+            &artifact_path,
+            headers.get(axum::http::header::RANGE),
+            Some(&state),
+            machine_id,
+        )
+        .await
+        {
             Ok((stream, file_size, content_range)) => {
                 info!("Streaming cached artifact from disk: {}", requested_path);
                 return create_streaming_response(stream, content_type, file_size, content_range); // Pass content_range
-            },
+            }
             Err(e) => {
                 error!("Failed to stream cached iPXE artifact: {}", e);
-                return (StatusCode::INTERNAL_SERVER_ERROR, "Error reading iPXE artifact").into_response();
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Error reading iPXE artifact",
+                )
+                    .into_response();
             }
         }
     } else {
-        // --- File Not Found: Generate or Download --- 
-        info!("[SERVE_ARTIFACT] Artifact {} not found locally, will need to generate or download", requested_path);
-        
+        // --- File Not Found: Generate or Download ---
+        info!(
+            "[SERVE_ARTIFACT] Artifact {} not found locally, will need to generate or download",
+            requested_path
+        );
+
         // FIRST check if it is the specific apkovl path that needs generation
         // Compare against the RELATIVE path expected from the URL
         if requested_path == "dragonfly-agent/localhost.apkovl.tar.gz" {
             // --- Special Case: Generate apkovl on demand ---
             // Use the full absolute path for generation logic
             let generation_target_path = PathBuf::from(AGENT_APKOVL_PATH);
-            info!("Generating {} on demand...", generation_target_path.display());
+            info!(
+                "Generating {} on demand...",
+                generation_target_path.display()
+            );
 
             // Get base URL with auto-detection fallback
             let base_url = crate::mode::get_base_url(Some(state.store.as_ref())).await;
@@ -2084,8 +2575,13 @@ pub async fn serve_ipxe_artifact(
                 info!("Serving cached apkovl (base_url unchanged: {})", base_url);
                 match read_file_as_stream(&generation_target_path, None, None, None).await {
                     Ok((stream, file_size, _)) => {
-                        return create_streaming_response(stream, "application/gzip", file_size, None);
-                    },
+                        return create_streaming_response(
+                            stream,
+                            "application/gzip",
+                            file_size,
+                            None,
+                        );
+                    }
                     Err(e) => {
                         warn!("Failed to read cached apkovl, will regenerate: {}", e);
                     }
@@ -2094,9 +2590,18 @@ pub async fn serve_ipxe_artifact(
 
             info!("Generating apkovl with base_url: {}", base_url);
 
-            match generate_agent_apkovl(&generation_target_path, &base_url, AgentSource::Url(AGENT_BINARY_URL)).await {
+            match generate_agent_apkovl(
+                &generation_target_path,
+                &base_url,
+                AgentSource::Url(AGENT_BINARY_URL),
+            )
+            .await
+            {
                 Ok(()) => {
-                    info!("Successfully generated {}, now serving...", generation_target_path.display());
+                    info!(
+                        "Successfully generated {}, now serving...",
+                        generation_target_path.display()
+                    );
                     // Save the base_url marker for cache invalidation
                     if let Err(e) = tokio::fs::write(&url_marker_path, &base_url).await {
                         warn!("Failed to write URL marker file: {}", e);
@@ -2104,20 +2609,45 @@ pub async fn serve_ipxe_artifact(
                     // Serve the newly generated file (no range needed here as it was just created)
                     match read_file_as_stream(&generation_target_path, None, None, None).await {
                         Ok((stream, file_size, _)) => {
-                            return create_streaming_response(stream, "application/gzip", file_size, None);
-                        },
+                            return create_streaming_response(
+                                stream,
+                                "application/gzip",
+                                file_size,
+                                None,
+                            );
+                        }
                         Err(e) => {
-                            error!("Failed to stream newly generated apkovl {}: {}", generation_target_path.display(), e);
-                            return (StatusCode::INTERNAL_SERVER_ERROR, "Error reading newly generated apkovl").into_response();
+                            error!(
+                                "Failed to stream newly generated apkovl {}: {}",
+                                generation_target_path.display(),
+                                e
+                            );
+                            return (
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                "Error reading newly generated apkovl",
+                            )
+                                .into_response();
                         }
                     }
-                },
+                }
                 Err(e) => {
-                    error!("Failed to generate {}: {}", generation_target_path.display(), e);
-                    return (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to generate {}: {}", generation_target_path.display(), e)).into_response();
+                    error!(
+                        "Failed to generate {}: {}",
+                        generation_target_path.display(),
+                        e
+                    );
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!(
+                            "Failed to generate {}: {}",
+                            generation_target_path.display(),
+                            e
+                        ),
+                    )
+                        .into_response();
                 }
             }
-        } 
+        }
         // NEXT check if it's a generic .ipxe script that needs generation
         else if requested_path.ends_with(".ipxe") {
             // --- Generate iPXE scripts on the fly ---
@@ -2126,44 +2656,64 @@ pub async fn serve_ipxe_artifact(
                 Ok(script) => {
                     info!("Generated {} script dynamically.", requested_path);
                     // Cache in background using the full artifact_path
-                    let path_clone = artifact_path.clone(); 
+                    let path_clone = artifact_path.clone();
                     let script_clone = script.clone();
                     let requested_path_clone = requested_path.clone(); // Clone for the task
                     tokio::spawn(async move {
                         // Ensure parent directory exists before writing
                         if let Some(parent) = path_clone.parent() {
-                             if let Err(e) = fs::create_dir_all(parent).await {
-                                 warn!("Failed to create directory for caching {}: {}", requested_path_clone, e);
-                                 return; 
-                             }
-                         }
+                            if let Err(e) = fs::create_dir_all(parent).await {
+                                warn!(
+                                    "Failed to create directory for caching {}: {}",
+                                    requested_path_clone, e
+                                );
+                                return;
+                            }
+                        }
                         if let Err(e) = fs::write(&path_clone, &script_clone).await {
-                             warn!("Failed to cache generated {} script: {}", requested_path_clone, e);
+                            warn!(
+                                "Failed to cache generated {} script: {}",
+                                requested_path_clone, e
+                            );
                         }
                     });
-                    
+
                     // For iPXE scripts, let's build our own response
                     let content_length = script.len() as u64;
-                    
+
                     // Create a response that's optimized for iPXE
                     return Response::builder()
                         .status(StatusCode::OK)
                         .header(axum::http::header::CONTENT_TYPE, "text/plain")
-                        .header(axum::http::header::CONTENT_LENGTH, content_length.to_string())
+                        .header(
+                            axum::http::header::CONTENT_LENGTH,
+                            content_length.to_string(),
+                        )
                         .header(axum::http::header::CONTENT_ENCODING, "identity") // No compression
                         .body(Body::from(script))
                         .unwrap_or_else(|_| {
-                            (StatusCode::INTERNAL_SERVER_ERROR, "Failed to build response").into_response()
+                            (
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                "Failed to build response",
+                            )
+                                .into_response()
                         });
-                },
+                }
                 Err(Error::NotFound { .. }) => {
-                    warn!("IPXE script {} not found or could not be generated.", requested_path);
+                    warn!(
+                        "IPXE script {} not found or could not be generated.",
+                        requested_path
+                    );
                     // Fall through to final 404
-                },
+                }
                 Err(e) => {
                     // Other error during generation (e.g., missing env var)
                     error!("Failed to generate {} script: {}", requested_path, e);
-                    return (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to generate script: {}", e)).into_response();
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("Failed to generate script: {}", e),
+                    )
+                        .into_response();
                 }
             }
             // If we fall through here, it means generate_ipxe_script returned NotFound
@@ -2173,66 +2723,91 @@ pub async fn serve_ipxe_artifact(
             // --- Download/Stream Other Binary Artifacts ---
             let remote_url = match requested_path.as_str() {
                 // Alpine Linux netboot artifacts for Dragonfly Agent
-                "dragonfly-agent/vmlinuz" => "https://dl-cdn.alpinelinux.org/alpine/latest-stable/releases/x86_64/netboot/vmlinuz-lts",
-                "dragonfly-agent/initramfs-lts" => "https://dl-cdn.alpinelinux.org/alpine/latest-stable/releases/x86_64/netboot/initramfs-lts",
-                "dragonfly-agent/modloop" => "https://dl-cdn.alpinelinux.org/alpine/latest-stable/releases/x86_64/netboot/modloop-lts",
+                "dragonfly-agent/vmlinuz" => {
+                    "https://dl-cdn.alpinelinux.org/alpine/latest-stable/releases/x86_64/netboot/vmlinuz-lts"
+                }
+                "dragonfly-agent/initramfs-lts" => {
+                    "https://dl-cdn.alpinelinux.org/alpine/latest-stable/releases/x86_64/netboot/initramfs-lts"
+                }
+                "dragonfly-agent/modloop" => {
+                    "https://dl-cdn.alpinelinux.org/alpine/latest-stable/releases/x86_64/netboot/modloop-lts"
+                }
                 // Ubuntu 22.04
-                "ubuntu/jammy-server-cloudimg-amd64.img" => "https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64.img",
+                "ubuntu/jammy-server-cloudimg-amd64.img" => {
+                    "https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64.img"
+                }
                 // Ubuntu 24.04
-                "ubuntu/noble-server-cloudimg-amd64.img" => "https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img",
+                "ubuntu/noble-server-cloudimg-amd64.img" => {
+                    "https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img"
+                }
                 _ => {
                     // If it wasn't an .ipxe script and not a known binary, it's unknown.
                     warn!("Unknown artifact requested: {}", requested_path);
                     return (StatusCode::NOT_FOUND, "Unknown iPXE artifact").into_response();
                 }
             };
-            
+
             // Use the efficient streaming download with caching for known artifacts
             // Use artifact_path (full path) for caching
             match stream_download_with_caching(
-                remote_url, 
-                &artifact_path, 
+                remote_url,
+                &artifact_path,
                 headers.get(axum::http::header::RANGE),
                 machine_id, // Pass the machine_id found via IP lookup
-                Some(&state)
-            ).await {
+                Some(&state),
+            )
+            .await
+            {
                 Ok((stream, content_length, content_range)) => {
                     info!("Streaming artifact {} from remote source", requested_path);
-                    return create_streaming_response(stream, "application/octet-stream", content_length, content_range);
-                },
+                    return create_streaming_response(
+                        stream,
+                        "application/octet-stream",
+                        content_length,
+                        content_range,
+                    );
+                }
                 Err(e) => {
                     error!("Failed to stream artifact {}: {}", requested_path, e);
-                    return (StatusCode::INTERNAL_SERVER_ERROR, format!("Error streaming artifact: {}", e)).into_response();
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("Error streaming artifact: {}", e),
+                    )
+                        .into_response();
                 }
             }
         }
 
-        // If code reaches here, it means an IPXE script was requested but generate_ipxe_script 
+        // If code reaches here, it means an IPXE script was requested but generate_ipxe_script
         // returned NotFound, so return 404.
-        (StatusCode::NOT_FOUND, "Unknown or Ungeneratable IPXE Script").into_response()
+        (
+            StatusCode::NOT_FOUND,
+            "Unknown or Ungeneratable IPXE Script",
+        )
+            .into_response()
     }
 }
 
 // Add this function after parse_range_header
 // Helper function to track and report image download progress
 async fn track_download_progress(
-    machine_id: Option<Uuid>, 
-    bytes_downloaded: u64, 
+    machine_id: Option<Uuid>,
+    bytes_downloaded: u64,
     total_size: u64,
-    state: AppState // Changed from Option<&AppState> to AppState
+    state: AppState, // Changed from Option<&AppState> to AppState
 ) {
     info!(
-        machine_id = ?machine_id, 
-        bytes_downloaded = bytes_downloaded, 
-        total_size = total_size, 
+        machine_id = ?machine_id,
+        bytes_downloaded = bytes_downloaded,
+        total_size = total_size,
         "[PROGRESS_TRACK] CALLED track_download_progress with values: bytes_downloaded={}, total_size={}, machine_id={:?}",
         bytes_downloaded, total_size, machine_id
     );
 
     debug!(
-        machine_id = ?machine_id, 
-        bytes_downloaded = bytes_downloaded, 
-        total_size = total_size, 
+        machine_id = ?machine_id,
+        bytes_downloaded = bytes_downloaded,
+        total_size = total_size,
         "[PROGRESS_DEBUG] Entering track_download_progress"
     );
 
@@ -2241,10 +2816,10 @@ async fn track_download_progress(
         info!("[PROGRESS_DEBUG] Exiting track_download_progress early: total_size is 0");
         return; // Skip progress for zero-sized files
     }
-    
+
     let progress_float = (bytes_downloaded as f64 / total_size as f64) * 100.0;
     let task_name = "stream image"; // TODO: Can we get the actual filename here?
-    
+
     // If we have a machine ID, send task-specific event
     if let Some(id) = machine_id {
         debug!(machine_id = %id, progress = progress_float, task_name = task_name, "Updating store progress");
@@ -2265,28 +2840,29 @@ async fn track_download_progress(
                 warn!(machine_id = %id, error = %e, "Failed to get machine for progress update");
             }
         }
-        
+
         // For real-time UI updates, emit a more detailed event with floating point precision
         let task_progress_event = format!(
             "task_progress:{}:{}:{:.3}:{}:{}",
-            id,                   // Machine ID
-            task_name,            // Task name 
-            progress_float,       // Floating point percentage (with 3 decimal precision)
-            bytes_downloaded,     // Current bytes
-            total_size            // Total bytes
+            id,               // Machine ID
+            task_name,        // Task name
+            progress_float,   // Floating point percentage (with 3 decimal precision)
+            bytes_downloaded, // Current bytes
+            total_size        // Total bytes
         );
-        
+
         debug!(machine_id = %id, event = %task_progress_event, "Attempting to send task_progress event");
         // Emit the detailed task progress event
-        if let Err(e) = state.event_manager.send(task_progress_event.clone()) { // Clone for logging
+        if let Err(e) = state.event_manager.send(task_progress_event.clone()) {
+            // Clone for logging
             warn!(machine_id = %id, error = %e, "Failed to emit task_progress event: {}", task_progress_event);
         }
-        
+
         // Also emit standard machine updated event for compatibility
         // debug!(machine_id = %id, "Sending generic machine_updated event");
         // let _ = state.event_manager.send(format!("machine_updated:{}", id));
     }
-    
+
     // Also send IP-based progress event for any HTTP requests
     let client_ip_guard = state.client_ip.lock().await;
     if let Some(client_ip) = client_ip_guard.as_ref() {
@@ -2299,9 +2875,9 @@ async fn track_download_progress(
         } else {
             machine_id
         };
-        
+
         // Emit IP-based progress event
-        let ip_progress_event_payload = serde_json::json!({ 
+        let ip_progress_event_payload = serde_json::json!({
             "ip": client_ip,
             "progress": progress_float, // Send float
             "bytes_downloaded": bytes_downloaded,
@@ -2311,18 +2887,21 @@ async fn track_download_progress(
         });
 
         // Construct the event string
-        let ip_progress_event_string = format!("ip_download_progress:{}", ip_progress_event_payload.to_string());
+        let ip_progress_event_string = format!(
+            "ip_download_progress:{}",
+            ip_progress_event_payload.to_string()
+        );
 
         info!(client_ip = %client_ip, event_payload = %ip_progress_event_payload, "[PROGRESS_SEND] Attempting to send ip_download_progress event NOW"); // ADDED LOUD LOG
         let send_result = state.event_manager.send(ip_progress_event_string.clone()); // Clone for logging
-        
+
         if let Err(e) = send_result {
             warn!(client_ip = %client_ip, error = %e, "[PROGRESS_SEND] Failed to emit IP-based progress event: {}", ip_progress_event_string);
         } else {
             info!(client_ip = %client_ip, event_payload = %ip_progress_event_payload, "[PROGRESS_SEND] Successfully sent ip_download_progress event"); // ADDED SUCCESS LOG
         }
     } // End of: if let Some(client_ip) = client_ip_guard.as_ref()
-    
+
     debug!("Exiting track_download_progress");
 }
 
@@ -2331,90 +2910,125 @@ async fn stream_download_with_caching(
     url: &str,
     cache_path: &StdPath,
     range_header: Option<&HeaderValue>, // Add parameter for Range header
-    machine_id: Option<Uuid>, // Add optional machine ID for tracking
-    state: Option<&AppState>, // Add optional state for event emission
-) -> Result<(ReceiverStream<Result<Bytes, Error>>, Option<u64>, Option<String>), Error> { // Return Content-Range
-    info!("[STREAM_DOWNLOAD] Beginning stream_download_with_caching for URL: {}, cache_path: {}, range: {:?}, machine_id: {:?}",
-          url, cache_path.display(), range_header.map(|h| h.to_str().unwrap_or("invalid")), machine_id);
+    machine_id: Option<Uuid>,           // Add optional machine ID for tracking
+    state: Option<&AppState>,           // Add optional state for event emission
+) -> Result<
+    (
+        ReceiverStream<Result<Bytes, Error>>,
+        Option<u64>,
+        Option<String>,
+    ),
+    Error,
+> {
+    // Return Content-Range
+    info!(
+        "[STREAM_DOWNLOAD] Beginning stream_download_with_caching for URL: {}, cache_path: {}, range: {:?}, machine_id: {:?}",
+        url,
+        cache_path.display(),
+        range_header.map(|h| h.to_str().unwrap_or("invalid")),
+        machine_id
+    );
 
     // Create parent directory if needed
     if let Some(parent) = cache_path.parent() {
-        fs::create_dir_all(parent).await.map_err(|e| Error::Internal(format!("Failed to create directory: {}", e)))?;
+        fs::create_dir_all(parent)
+            .await
+            .map_err(|e| Error::Internal(format!("Failed to create directory: {}", e)))?;
     }
 
     // Check if file is already cached
     if cache_path.exists() {
         // Even when serving from cache, track progress for range requests
-        if let (Some(machine_id), Some(state), Some(range_val)) = (machine_id, state, range_header) {
+        if let (Some(machine_id), Some(state), Some(range_val)) = (machine_id, state, range_header)
+        {
             if let Ok(range_str) = range_val.to_str() {
-                let file_size = fs::metadata(cache_path).await
-                    .map(|m| m.len())
-                    .unwrap_or(0);
-                    
-                if let Some((start, end)) = parse_range_header(range_str, file_size, None, Some(state)).await {
+                let file_size = fs::metadata(cache_path).await.map(|m| m.len()).unwrap_or(0);
+
+                if let Some((start, end)) =
+                    parse_range_header(range_str, file_size, None, Some(state)).await
+                {
                     let bytes_downloaded = end - start + 1;
-                    
+
                     // Use the start position as a progress indicator for range requests
                     // This gives a rough approximation of download progress across multiple range requests
                     let effective_progress = start + bytes_downloaded;
-                    
-                    info!("[RANGE_PROGRESS] Cached file with range: start={}, end={}, bytes={}, total={}, effective_progress={}",
-                          start, end, bytes_downloaded, file_size, effective_progress);
-                          
+
+                    info!(
+                        "[RANGE_PROGRESS] Cached file with range: start={}, end={}, bytes={}, total={}, effective_progress={}",
+                        start, end, bytes_downloaded, file_size, effective_progress
+                    );
+
                     // Track download progress with the effective bytes downloaded
-                    tokio::spawn(track_download_progress(Some(machine_id), effective_progress, file_size, state.clone()));
+                    tokio::spawn(track_download_progress(
+                        Some(machine_id),
+                        effective_progress,
+                        file_size,
+                        state.clone(),
+                    ));
                 }
             }
         }
-        
+
         // info!("Serving cached artifact from: {:?}", cache_path); // Commented out log
         return read_file_as_stream(cache_path, range_header, state, machine_id).await; // Pass Range header
     }
-    
+
     info!("Downloading and caching artifact from: {}", url);
-    
+
     // Start HTTP request with reqwest feature for streaming
     let client = reqwest::Client::new();
-    let response = client.get(url).send().await.map_err(|e| Error::Internal(format!("HTTP request failed: {}", e)))?;
-    
+    let response = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| Error::Internal(format!("HTTP request failed: {}", e)))?;
+
     if !response.status().is_success() {
-        return Err(Error::Internal(format!("HTTP error: {}", response.status())));
+        return Err(Error::Internal(format!(
+            "HTTP error: {}",
+            response.status()
+        )));
     }
-    
+
     // Get content length if available
     let content_length = response.content_length();
     if let Some(length) = content_length {
-        info!("[PROGRESS_DEBUG] Download size from Content-Length: {} bytes", length);
+        info!(
+            "[PROGRESS_DEBUG] Download size from Content-Length: {} bytes",
+            length
+        );
     } else {
         info!("[PROGRESS_DEBUG] No Content-Length header received from remote server.");
     }
-    
-    let file = fs::File::create(cache_path).await.map_err(|e| Error::Internal(format!("Failed to create cache file: {}", e)))?;
+
+    let file = fs::File::create(cache_path)
+        .await
+        .map_err(|e| Error::Internal(format!("Failed to create cache file: {}", e)))?;
     let file = Arc::new(tokio::sync::Mutex::new(file));
     let (tx, rx) = mpsc::channel::<Result<Bytes, Error>>(32);
-    
+
     let url_clone = url.to_string();
     let cache_path_clone = cache_path.to_path_buf();
-    
+
     // For tracking download progress
     let total_size = content_length.unwrap_or(0);
     let mut total_bytes_downloaded: u64 = 0;
     let tracking_machine_id = machine_id;
     let app_state_clone = state.cloned();
-    
+
     tokio::spawn(async move {
         let mut client_disconnected = false;
         let mut download_error = false;
 
         // Get the stream. `bytes_stream` consumes the response object.
-        let mut stream = response.bytes_stream(); 
+        let mut stream = response.bytes_stream();
 
         while let Some(chunk_result) = stream.next().await {
             match chunk_result {
                 Ok(chunk) => {
                     let chunk_clone = chunk.clone();
                     let chunk_size = chunk.len() as u64;
-                    
+
                     // Write chunk to cache file concurrently
                     let file_clone = Arc::clone(&file);
                     let write_handle = tokio::spawn(async move {
@@ -2424,59 +3038,85 @@ async fn stream_download_with_caching(
 
                     // Update progress tracking
                     total_bytes_downloaded += chunk_size;
-                    
+
                     // ADDED LOG: Log chunk size and total downloaded
                     debug!(url = %url_clone, chunk_size = chunk_size, total_bytes_downloaded = total_bytes_downloaded, total_size = total_size, "[STREAM_DOWNLOAD_LOOP] Downloaded chunk");
 
-                    if let (Some(machine_id), Some(state)) = (tracking_machine_id, &app_state_clone) {
+                    if let (Some(machine_id), Some(state)) = (tracking_machine_id, &app_state_clone)
+                    {
                         if total_size > 0 {
                             // ADDED LOG: Confirm call to track_download_progress
-                            debug!("[PROGRESS_DEBUG] Calling track_download_progress (machine_id: {}, downloaded: {}, total: {})", machine_id, total_bytes_downloaded, total_size);
-                            
+                            debug!(
+                                "[PROGRESS_DEBUG] Calling track_download_progress (machine_id: {}, downloaded: {}, total: {})",
+                                machine_id, total_bytes_downloaded, total_size
+                            );
+
                             // ADDED LOG: Log before calling track_download_progress function
                             debug!(url = %url_clone, machine_id = %machine_id, bytes_downloaded = total_bytes_downloaded, total_size = total_size, "[STREAM_DOWNLOAD_LOOP] PRE-PROGRESS CALL");
-                            
-                            track_download_progress(Some(machine_id), total_bytes_downloaded, total_size, state.clone()).await;
+
+                            track_download_progress(
+                                Some(machine_id),
+                                total_bytes_downloaded,
+                                total_size,
+                                state.clone(),
+                            )
+                            .await;
                         }
                     }
-                    
+
                     // Attempt to send to client only if not already disconnected
                     if !client_disconnected {
                         if tx.send(Ok(chunk)).await.is_err() {
-                            warn!("Client stream receiver dropped for {}. Continuing download in background.", url_clone);
+                            warn!(
+                                "Client stream receiver dropped for {}. Continuing download in background.",
+                                url_clone
+                            );
                             client_disconnected = true;
                             // DO NOT break here - let download continue for caching
                         }
                     }
 
                     // Await the write operation regardless of client connection status
-                    match write_handle.await { // Await the JoinHandle itself
+                    match write_handle.await {
+                        // Await the JoinHandle itself
                         Ok(Ok(())) => {
                             // Write successful, continue loop
-                        },
+                        }
                         Ok(Err(e)) => {
                             // Write operation failed
-                            warn!("Failed to write chunk to cache file {}: {}", cache_path_clone.display(), e);
+                            warn!(
+                                "Failed to write chunk to cache file {}: {}",
+                                cache_path_clone.display(),
+                                e
+                            );
                             download_error = true;
                             break; // Abort download if we can't write to cache
-                        },
+                        }
                         Err(e) => {
                             // Task failed (e.g., panicked)
-                            warn!("Cache write task failed (join error) for {}: {}", cache_path_clone.display(), e);
+                            warn!(
+                                "Cache write task failed (join error) for {}: {}",
+                                cache_path_clone.display(),
+                                e
+                            );
                             download_error = true;
                             break; // Abort download if write task fails
                         }
                     }
-                },
-                Err(e) => { // e is reqwest::Error here
+                }
+                Err(e) => {
+                    // e is reqwest::Error here
                     error!("Download stream error for {}: {}", url_clone, e);
                     // Send error to client if still connected
                     if !client_disconnected {
                         let err = Error::Internal(format!("Download stream error: {}", e));
                         if tx.send(Err(err)).await.is_err() {
-                             warn!("Client stream receiver dropped while sending download error for {}", url_clone);
-                             // Client disconnected while we were trying to send an error
-                             client_disconnected = true;
+                            warn!(
+                                "Client stream receiver dropped while sending download error for {}",
+                                url_clone
+                            );
+                            // Client disconnected while we were trying to send an error
+                            client_disconnected = true;
                         }
                     }
                     download_error = true;
@@ -2485,50 +3125,73 @@ async fn stream_download_with_caching(
             }
             // If download_error is true, the inner match already broke, so we'll exit.
         }
-        
+
         // Explicitly drop the response stream to release network resources potentially sooner
         drop(stream);
 
         // Report final progress on successful download
         if !download_error && total_size > 0 {
             if let (Some(machine_id), Some(state)) = (tracking_machine_id, &app_state_clone) {
-                track_download_progress(Some(machine_id), total_size, total_size, state.clone()).await;
+                track_download_progress(Some(machine_id), total_size, total_size, state.clone())
+                    .await;
             }
         }
 
         // Ensure file is flushed and closed first
-        if let Ok(mut file) = Arc::try_unwrap(file).map_err(|_| "Failed to unwrap Arc").and_then(|mutex| Ok(mutex.into_inner())) {
+        if let Ok(mut file) = Arc::try_unwrap(file)
+            .map_err(|_| "Failed to unwrap Arc")
+            .and_then(|mutex| Ok(mutex.into_inner()))
+        {
             if let Err(e) = file.flush().await {
-                warn!("Failed to flush cache file {}: {}", cache_path_clone.display(), e);
+                warn!(
+                    "Failed to flush cache file {}: {}",
+                    cache_path_clone.display(),
+                    e
+                );
             }
             // File is closed when it goes out of scope here
         }
-        
+
         // Only send EOF signal if the download completed without error AND the client is still connected
         if !download_error && !client_disconnected {
-            info!("Download complete for {}, client still connected.", url_clone);
+            info!(
+                "Download complete for {}, client still connected.",
+                url_clone
+            );
             // Removed explicit EOF signal
             // debug!("Sending EOF signal for {}", url_clone);
             // let _ = tx.send(Ok(Bytes::new())).await;
         } else if !download_error && client_disconnected {
-            info!("Download complete and cached for {} after client disconnected.", url_clone);
+            info!(
+                "Download complete and cached for {} after client disconnected.",
+                url_clone
+            );
         } else {
             // An error occurred during download or caching
-            warn!("Download for {} did not complete successfully due to errors.", url_clone);
+            warn!(
+                "Download for {} did not complete successfully due to errors.",
+                url_clone
+            );
             // Optionally remove the potentially incomplete cache file
             // if let Err(e) = fs::remove_file(&cache_path_clone).await {
             //     warn!("Failed to remove incomplete cache file {}: {}", cache_path_clone.display(), e);
             // }
         }
     });
-    
+
     // After download completes or if error, handle the stream
-    let (stream, content_length) = (tokio_stream::wrappers::ReceiverStream::new(rx), content_length);
+    let (stream, content_length) = (
+        tokio_stream::wrappers::ReceiverStream::new(rx),
+        content_length,
+    );
 
     // We cached the full file, but the *initial* request might have been a range request.
     // If so, we need to read the *cached* file with range support now.
     if range_header.is_some() {
-        info!("Download complete, now serving range request from cached file: {:?}", cache_path);
+        info!(
+            "Download complete, now serving range request from cached file: {:?}",
+            cache_path
+        );
         // Re-call read_file_as_stream with the range header on the now-cached file
         read_file_as_stream(cache_path, range_header, state, machine_id).await // Pass machine_id here too
     } else {
@@ -2541,7 +3204,7 @@ async fn stream_download_with_caching(
 async fn parse_range_header(
     range_str: &str,
     total_size: u64,
-    _file_name: Option<&str>, // Marked unused, event logic removed
+    _file_name: Option<&str>,  // Marked unused, event logic removed
     _state: Option<&AppState>, // Marked unused, event logic removed
 ) -> Option<(u64, u64)> {
     if !range_str.starts_with("bytes=") {
@@ -2558,9 +3221,15 @@ async fn parse_range_header(
 
     let start = if start_str.is_empty() {
         // Suffix range: "-<length>"
-        if end_str.is_empty() { return None; } // Invalid: "-"
+        if end_str.is_empty() {
+            return None;
+        } // Invalid: "-"
         let suffix_len = end_str.parse::<u64>().ok()?;
-        if suffix_len >= total_size { 0 } else { total_size - suffix_len }
+        if suffix_len >= total_size {
+            0
+        } else {
+            total_size - suffix_len
+        }
     } else {
         // Normal range: "start-" or "start-end"
         start_str.parse::<u64>().ok()?
@@ -2576,7 +3245,10 @@ async fn parse_range_header(
 
     // Validate range: start <= end < total_size
     if start > end || end >= total_size {
-        warn!("Invalid range request: start={}, end={}, total_size={}", start, end, total_size);
+        warn!(
+            "Invalid range request: start={}, end={}, total_size={}",
+            start, end, total_size
+        );
         return None;
     }
 
@@ -2609,19 +3281,26 @@ async fn parse_range_header(
 // Restore original function name and intended purpose (returning HTML partial)
 pub async fn get_workflow_progress(
     State(app_state): State<AppState>, // Add AppState
-    Path(id): Path<Uuid>
-) -> Response { 
-    info!("Request for workflow progress HTML partial for machine {}", id);
+    Path(id): Path<Uuid>,
+) -> Response {
+    info!(
+        "Request for workflow progress HTML partial for machine {}",
+        id
+    );
 
     let machine: Machine = match app_state.store.get_machine(id).await {
         Ok(Some(m)) => crate::store::conversions::machine_to_common(&m),
         Ok(None) => {
             error!("Machine not found: {}", id);
             return (StatusCode::NOT_FOUND, Html("<div>Machine not found</div>")).into_response();
-        },
+        }
         Err(e) => {
             error!("Error fetching machine {}: {}", id, e);
-            return (StatusCode::INTERNAL_SERVER_ERROR, Html("<div>Store error</div>")).into_response();
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Html("<div>Store error</div>"),
+            )
+                .into_response();
         }
     };
 
@@ -2654,7 +3333,8 @@ pub async fn agent_checkin_handler(
             return (
                 StatusCode::SERVICE_UNAVAILABLE,
                 Json(serde_json::json!({ "error": "Provisioning service not available" })),
-            ).into_response();
+            )
+                .into_response();
         }
     };
 
@@ -2670,7 +3350,9 @@ pub async fn agent_checkin_handler(
             // Emit machine_updated event to trigger UI refresh
             // This is critical for auto-updating the UI when machines transition
             // from Installing to Installed (or any other state change from agent check-in)
-            let _ = state.event_manager.send(format!("machine_updated:{}", response.machine_id));
+            let _ = state
+                .event_manager
+                .send(format!("machine_updated:{}", response.machine_id));
 
             Json(response).into_response()
         }
@@ -2679,7 +3361,8 @@ pub async fn agent_checkin_handler(
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({ "error": e.to_string() })),
-            ).into_response()
+            )
+                .into_response()
         }
     }
 }
@@ -2699,7 +3382,8 @@ pub async fn get_workflow_handler(
             return (
                 StatusCode::BAD_REQUEST,
                 Json(serde_json::json!({ "error": "Invalid workflow ID format" })),
-            ).into_response();
+            )
+                .into_response();
         }
     };
 
@@ -2714,14 +3398,16 @@ pub async fn get_workflow_handler(
             (
                 StatusCode::NOT_FOUND,
                 Json(serde_json::json!({ "error": "Workflow not found" })),
-            ).into_response()
+            )
+                .into_response()
         }
         Err(e) => {
             error!(error = %e, workflow_id = %workflow_id, "Failed to fetch workflow");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({ "error": e.to_string() })),
-            ).into_response()
+            )
+                .into_response()
         }
     }
 }
@@ -2752,10 +3438,13 @@ fn generate_network_config(machine: &dragonfly_common::Machine) -> String {
 
     match mode {
         NetworkMode::Dhcp => {
-            "version: 2\nethernets:\n  id0:\n    match:\n      name: e*\n    dhcp4: true".to_string()
+            "version: 2\nethernets:\n  id0:\n    match:\n      name: e*\n    dhcp4: true"
+                .to_string()
         }
         NetworkMode::DhcpStaticDns => {
-            let mut cfg = "version: 2\nethernets:\n  id0:\n    match:\n      name: e*\n    dhcp4: true".to_string();
+            let mut cfg =
+                "version: 2\nethernets:\n  id0:\n    match:\n      name: e*\n    dhcp4: true"
+                    .to_string();
             if !nameservers.is_empty() {
                 cfg.push_str("\n    nameservers:\n      addresses:");
                 for ns in nameservers {
@@ -2771,7 +3460,9 @@ fn generate_network_config(machine: &dragonfly_common::Machine) -> String {
             let c = machine.config.static_ipv4.as_ref();
             let addr = c.map(|c| c.address.as_str()).unwrap_or("192.168.1.100");
             let prefix = c.map(|c| c.prefix_len).unwrap_or(24);
-            let gw = c.and_then(|c| c.gateway.as_deref()).unwrap_or("192.168.1.1");
+            let gw = c
+                .and_then(|c| c.gateway.as_deref())
+                .unwrap_or("192.168.1.1");
 
             let mut cfg = format!(
                 "version: 2\nethernets:\n  id0:\n    match:\n      name: e*\n    addresses:\n      - {}/{}\n    routes:\n      - to: default\n        via: {}",
@@ -2791,7 +3482,10 @@ fn generate_network_config(machine: &dragonfly_common::Machine) -> String {
                 addr, prefix
             );
             if let Some(gw) = gw {
-                cfg.push_str(&format!("\n    routes:\n      - to: default\n        via: {}", gw));
+                cfg.push_str(&format!(
+                    "\n    routes:\n      - to: default\n        via: {}",
+                    gw
+                ));
             }
             append_nameservers(&mut cfg, nameservers, domain);
             cfg
@@ -2801,7 +3495,9 @@ fn generate_network_config(machine: &dragonfly_common::Machine) -> String {
             let v6 = machine.config.static_ipv6.as_ref();
             let v4_addr = v4.map(|c| c.address.as_str()).unwrap_or("192.168.1.100");
             let v4_prefix = v4.map(|c| c.prefix_len).unwrap_or(24);
-            let v4_gw = v4.and_then(|c| c.gateway.as_deref()).unwrap_or("192.168.1.1");
+            let v4_gw = v4
+                .and_then(|c| c.gateway.as_deref())
+                .unwrap_or("192.168.1.1");
             let v6_addr = v6.map(|c| c.address.as_str()).unwrap_or("::1");
             let v6_prefix = v6.map(|c| c.prefix_len).unwrap_or(64);
             let v6_gw = v6.and_then(|c| c.gateway.as_deref());
@@ -2810,7 +3506,10 @@ fn generate_network_config(machine: &dragonfly_common::Machine) -> String {
                 "version: 2\nethernets:\n  id0:\n    match:\n      name: e*\n    addresses:\n      - {}/{}\n      - {}/{}",
                 v4_addr, v4_prefix, v6_addr, v6_prefix
             );
-            cfg.push_str(&format!("\n    routes:\n      - to: default\n        via: {}", v4_gw));
+            cfg.push_str(&format!(
+                "\n    routes:\n      - to: default\n        via: {}",
+                v4_gw
+            ));
             if let Some(gw) = v6_gw {
                 cfg.push_str(&format!("\n      - to: default\n        via: {}", gw));
             }
@@ -2845,20 +3544,40 @@ pub async fn get_template_handler(
     debug!(template_name = %template_name, machine_id = ?query.machine_id, "Fetching template for agent");
 
     // Fetch settings for template variable substitution
-    let ssh_keys = state.store.get_setting("ssh_keys").await
-        .ok().flatten().unwrap_or_default();
-    let ssh_key_subscriptions = state.store.get_setting("ssh_key_subscriptions").await
-        .ok().flatten().unwrap_or_else(|| "[]".to_string());
-    let default_user = state.store.get_setting("default_user").await
-        .ok().flatten().unwrap_or_else(|| "root".to_string());
-    let default_password_raw = state.store.get_setting("default_password").await
-        .ok().flatten().unwrap_or_default();
+    let ssh_keys = state
+        .store
+        .get_setting("ssh_keys")
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    let ssh_key_subscriptions = state
+        .store
+        .get_setting("ssh_key_subscriptions")
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| "[]".to_string());
+    let default_user = state
+        .store
+        .get_setting("default_user")
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| "root".to_string());
+    let default_password_raw = state
+        .store
+        .get_setting("default_password")
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_default();
 
     // Determine ssh_pwauth based on whether password is set
     // If password is empty, use locked password ("!") to prevent passwordless login
     let ssh_pwauth = !default_password_raw.is_empty();
     let default_password = if default_password_raw.is_empty() {
-        "!".to_string()  // Locked password - no login possible
+        "!".to_string() // Locked password - no login possible
     } else {
         default_password_raw
     };
@@ -2868,7 +3587,10 @@ pub async fn get_template_handler(
     let mut url_subscription_keys: Vec<String> = Vec::new();
     if let Ok(subs) = serde_json::from_str::<Vec<serde_json::Value>>(&ssh_key_subscriptions) {
         for sub in subs {
-            if let (Some(sub_type), Some(value)) = (sub.get("type").and_then(|t| t.as_str()), sub.get("value").and_then(|v| v.as_str())) {
+            if let (Some(sub_type), Some(value)) = (
+                sub.get("type").and_then(|t| t.as_str()),
+                sub.get("value").and_then(|v| v.as_str()),
+            ) {
                 match sub_type {
                     "github" => import_ids.push(format!("gh:{}", value)),
                     "gitlab" => import_ids.push(format!("gl:{}", value)),
@@ -2917,7 +3639,11 @@ pub async fn get_template_handler(
     let ssh_import_id_yaml = if import_ids.is_empty() {
         "[]".to_string()
     } else {
-        let ids: String = import_ids.iter().map(|id| format!("\n      - {}", id)).collect::<Vec<_>>().join("");
+        let ids: String = import_ids
+            .iter()
+            .map(|id| format!("\n      - {}", id))
+            .collect::<Vec<_>>()
+            .join("");
         ids
     };
 
@@ -2927,7 +3653,9 @@ pub async fn get_template_handler(
     let mut direct_keys: Vec<&str> = Vec::new();
     for line in ssh_keys.lines() {
         let key = line.trim();
-        if key.is_empty() || key.starts_with('#') { continue; }
+        if key.is_empty() || key.starts_with('#') {
+            continue;
+        }
         let identity: String = key.splitn(3, ' ').take(2).collect::<Vec<_>>().join(" ");
         if seen_identities.insert(identity) {
             direct_keys.push(key);
@@ -2945,21 +3673,30 @@ pub async fn get_template_handler(
     } else {
         // Multiline array format: ssh_authorized_keys is at 4-space indent (inside users list entry),
         // so list items go at 6-space indent
-        let keys: String = direct_keys.iter().map(|k| format!("\n      - \"{}\"", k)).collect::<Vec<_>>().join("");
+        let keys: String = direct_keys
+            .iter()
+            .map(|k| format!("\n      - \"{}\"", k))
+            .collect::<Vec<_>>()
+            .join("");
         keys
     };
 
     // Default cloud-init v2 network config (DHCP)
-    let default_network_config = "version: 2\nethernets:\n  id0:\n    match:\n      name: e*\n    dhcp4: true".to_string();
+    let default_network_config =
+        "version: 2\nethernets:\n  id0:\n    match:\n      name: e*\n    dhcp4: true".to_string();
 
     // Fetch machine-specific variables if machine_id is provided
-    let (friendly_name, instance_id, network_config_cloudinit) = if let Some(ref machine_id_str) = query.machine_id {
+    let (friendly_name, instance_id, network_config_cloudinit) = if let Some(ref machine_id_str) =
+        query.machine_id
+    {
         match Uuid::parse_str(machine_id_str) {
             Ok(machine_uuid) => {
                 match state.store.get_machine(machine_uuid).await {
                     Ok(Some(machine)) => {
                         // Priority: hostname (user-set) > memorable_name (auto-generated) > "localhost"
-                        let name = machine.config.hostname
+                        let name = machine
+                            .config
+                            .hostname
                             .clone()
                             .unwrap_or_else(|| machine.config.memorable_name.clone());
                         let name = if name.is_empty() || name == "localhost" {
@@ -2979,22 +3716,38 @@ pub async fn get_template_handler(
                     }
                     Ok(None) => {
                         warn!(machine_id = %machine_id_str, "Machine not found, using defaults");
-                        ("localhost".to_string(), machine_id_str.clone(), default_network_config.clone())
+                        (
+                            "localhost".to_string(),
+                            machine_id_str.clone(),
+                            default_network_config.clone(),
+                        )
                     }
                     Err(e) => {
                         warn!(machine_id = %machine_id_str, error = %e, "Failed to fetch machine, using defaults");
-                        ("localhost".to_string(), machine_id_str.clone(), default_network_config.clone())
+                        (
+                            "localhost".to_string(),
+                            machine_id_str.clone(),
+                            default_network_config.clone(),
+                        )
                     }
                 }
             }
             Err(e) => {
                 warn!(machine_id = %machine_id_str, error = %e, "Invalid machine UUID, using defaults");
-                ("localhost".to_string(), machine_id_str.clone(), default_network_config.clone())
+                (
+                    "localhost".to_string(),
+                    machine_id_str.clone(),
+                    default_network_config.clone(),
+                )
             }
         }
     } else {
         // No machine_id provided - use placeholder values
-        ("localhost".to_string(), "00000000-0000-0000-0000-000000000000".to_string(), default_network_config)
+        (
+            "localhost".to_string(),
+            "00000000-0000-0000-0000-000000000000".to_string(),
+            default_network_config,
+        )
     };
 
     // Fetch template from store
@@ -3019,17 +3772,23 @@ pub async fn get_template_handler(
 
             // JIT conversion: convert QCOW2 images to raw and rewrite URLs
             // This blocks until conversion is complete (or returns cached URL immediately)
-            if let Err(e) = crate::image_cache::rewrite_template_urls(&mut template, &state.image_cache).await {
+            if let Err(e) =
+                crate::image_cache::rewrite_template_urls(&mut template, &state.image_cache).await
+            {
                 error!(template_name = %template_name, error = %e, "Failed to rewrite image URLs");
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Json(serde_json::json!({ "error": format!("Image conversion failed: {}", e) })),
-                ).into_response();
+                )
+                    .into_response();
             }
 
             // Check if auto-enroll with Spark is enabled
             // If so, append efibootmgr action to set PXE as first boot option
-            let auto_enroll = state.store.get_setting("auto_enroll_with_spark").await
+            let auto_enroll = state
+                .store
+                .get_setting("auto_enroll_with_spark")
+                .await
                 .ok()
                 .flatten()
                 .map(|s| s == "true")
@@ -3039,19 +3798,26 @@ pub async fn get_template_handler(
                 info!(template_name = %template_name, "Auto-enroll enabled: inserting boot order actions before final boot action");
                 // Find the position of the last kexec/reboot action and insert before it
                 let boot_action_idx = template.spec.actions.iter().rposition(|a| {
-                    matches!(a, dragonfly_crd::ActionStep::Kexec(_) | dragonfly_crd::ActionStep::Reboot(_))
+                    matches!(
+                        a,
+                        dragonfly_crd::ActionStep::Kexec(_) | dragonfly_crd::ActionStep::Reboot(_)
+                    )
                 });
 
                 let insert_pos = boot_action_idx.unwrap_or(template.spec.actions.len());
 
                 // Insert seabios first (it will end up after efibootmgr)
-                template.spec.actions.insert(insert_pos, dragonfly_crd::ActionStep::Seabios(
-                    dragonfly_crd::SeabiosConfig::default()
-                ));
+                template.spec.actions.insert(
+                    insert_pos,
+                    dragonfly_crd::ActionStep::Seabios(dragonfly_crd::SeabiosConfig::default()),
+                );
                 // Insert efibootmgr before seabios
-                template.spec.actions.insert(insert_pos, dragonfly_crd::ActionStep::Efibootmgr(
-                    dragonfly_crd::EfibootmgrConfig::default()
-                ));
+                template.spec.actions.insert(
+                    insert_pos,
+                    dragonfly_crd::ActionStep::Efibootmgr(
+                        dragonfly_crd::EfibootmgrConfig::default(),
+                    ),
+                );
             }
 
             info!(
@@ -3081,14 +3847,15 @@ pub async fn get_template_handler(
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({ "error": "Failed to fetch template" })),
-            ).into_response()
+            )
+                .into_response()
         }
     }
 }
 
 /// Workflow event data from agent
 #[derive(Debug, serde::Deserialize)]
-#[allow(dead_code)]  // Fields are populated by deserialization but not all are read
+#[allow(dead_code)] // Fields are populated by deserialization but not all are read
 pub struct WorkflowEventPayload {
     #[serde(rename = "type")]
     pub event_type: String,
@@ -3099,7 +3866,7 @@ pub struct WorkflowEventPayload {
 }
 
 #[derive(Debug, serde::Deserialize)]
-#[allow(dead_code)]  // Fields are populated by deserialization but not all are read
+#[allow(dead_code)] // Fields are populated by deserialization but not all are read
 pub struct WorkflowProgress {
     pub percent: u8,
     pub message: String,
@@ -3153,13 +3920,17 @@ pub async fn workflow_events_handler(
             if let Ok(machine_uuid) = uuid::Uuid::parse_str(mid) {
                 if let Ok(Some(mut machine)) = state.store.get_machine(machine_uuid).await {
                     // Don't update progress if machine is already Installed or at 100% (prevents race with kexec)
-                    if matches!(machine.status.state, dragonfly_common::MachineState::Installed)
-                        || machine.config.installation_progress >= 100 {
+                    if matches!(
+                        machine.status.state,
+                        dragonfly_common::MachineState::Installed
+                    ) || machine.config.installation_progress >= 100
+                    {
                         // Machine already marked as installed or at 100%, skip progress update
                     } else {
                         // Normalize per-action progress to overall workflow progress
                         let action_name = event.action.as_deref().unwrap_or("unknown");
-                        let normalized_progress = normalize_workflow_progress(action_name, progress.percent);
+                        let normalized_progress =
+                            normalize_workflow_progress(action_name, progress.percent);
 
                         // Only update if progress moved forward (strict - never overwrite same value)
                         if normalized_progress > machine.config.installation_progress {
@@ -3168,7 +3939,10 @@ pub async fn workflow_events_handler(
                             machine.metadata.updated_at = chrono::Utc::now();
 
                             // Transition from Initializing to Installing when we start receiving progress
-                            if matches!(machine.status.state, dragonfly_common::MachineState::Initializing) {
+                            if matches!(
+                                machine.status.state,
+                                dragonfly_common::MachineState::Initializing
+                            ) {
                                 machine.status.state = dragonfly_common::MachineState::Installing;
                             }
 
@@ -3179,24 +3953,29 @@ pub async fn workflow_events_handler(
                             // time we get here, put_workflow has committed even if put_machine
                             // hasn't yet. This prevents stale writefile progress events from
                             // overwriting machine state back to Installing.
-                            let workflow_done = if let Ok(wf_uuid) = uuid::Uuid::parse_str(&workflow_id) {
-                                if let Ok(Some(wf)) = state.store.get_workflow(wf_uuid).await {
-                                    matches!(
-                                        wf.status.as_ref().map(|s| &s.state),
-                                        Some(dragonfly_crd::WorkflowState::StateSuccess)
-                                            | Some(dragonfly_crd::WorkflowState::StateFailed)
-                                    )
+                            let workflow_done =
+                                if let Ok(wf_uuid) = uuid::Uuid::parse_str(&workflow_id) {
+                                    if let Ok(Some(wf)) = state.store.get_workflow(wf_uuid).await {
+                                        matches!(
+                                            wf.status.as_ref().map(|s| &s.state),
+                                            Some(dragonfly_crd::WorkflowState::StateSuccess)
+                                                | Some(dragonfly_crd::WorkflowState::StateFailed)
+                                        )
+                                    } else {
+                                        false
+                                    }
                                 } else {
                                     false
-                                }
-                            } else {
-                                false
-                            };
+                                };
 
                             // Also re-check machine state as a secondary guard
-                            let machine_done = if let Ok(Some(current)) = state.store.get_machine(machine_uuid).await {
-                                matches!(current.status.state, dragonfly_common::MachineState::Installed)
-                                    || current.config.installation_progress > normalized_progress
+                            let machine_done = if let Ok(Some(current)) =
+                                state.store.get_machine(machine_uuid).await
+                            {
+                                matches!(
+                                    current.status.state,
+                                    dragonfly_common::MachineState::Installed
+                                ) || current.config.installation_progress > normalized_progress
                             } else {
                                 false
                             };
@@ -3242,7 +4021,10 @@ pub async fn workflow_events_handler(
                 });
                 format!("workflow_progress:{}", json_payload)
             } else {
-                format!("workflow_progress:{{\"workflow_id\":\"{}\",\"machine_id\":\"{}\",\"action\":\"unknown\",\"percent\":0,\"message\":\"No progress data\",\"bytes_transferred\":0,\"bytes_total\":0}}", workflow_id, mid_str)
+                format!(
+                    "workflow_progress:{{\"workflow_id\":\"{}\",\"machine_id\":\"{}\",\"action\":\"unknown\",\"percent\":0,\"message\":\"No progress data\",\"bytes_transferred\":0,\"bytes_total\":0}}",
+                    workflow_id, mid_str
+                )
             }
         }
         "started" => {
@@ -3293,7 +4075,10 @@ pub async fn workflow_events_handler(
                 if let Some(mid) = &machine_id {
                     if let Ok(machine_uuid) = uuid::Uuid::parse_str(mid) {
                         if let Ok(Some(mut machine)) = state.store.get_machine(machine_uuid).await {
-                            if matches!(machine.status.state, dragonfly_common::MachineState::Installed) {
+                            if matches!(
+                                machine.status.state,
+                                dragonfly_common::MachineState::Installed
+                            ) {
                                 debug!(
                                     machine_id = %mid,
                                     action = %action_name,
@@ -3307,25 +4092,22 @@ pub async fn workflow_events_handler(
                                 );
                                 machine.status.state = dragonfly_common::MachineState::Installed;
                                 machine.config.installation_progress = 100;
-                                machine.config.installation_step = Some("Installation complete".to_string());
+                                machine.config.installation_step =
+                                    Some("Installation complete".to_string());
                                 machine.config.reimage_requested = false;
                                 machine.config.os_installed = machine.config.os_choice.clone();
                                 machine.config.os_choice = None;
                                 machine.metadata.updated_at = chrono::Utc::now();
                                 let _ = state.store.put_machine(&machine).await;
-                                let _ = state.event_manager.send(format!("machine_updated:{}", mid));
+                                let _ =
+                                    state.event_manager.send(format!("machine_updated:{}", mid));
                             }
                         }
                     }
                 }
             }
 
-            format!(
-                "action_started:{}:{}:{}",
-                workflow_id,
-                mid_str,
-                action_name
-            )
+            format!("action_started:{}:{}:{}", workflow_id, mid_str, action_name)
         }
         "action_completed" => {
             let action_name = event.action.as_deref().unwrap_or("unknown");
@@ -3339,7 +4121,10 @@ pub async fn workflow_events_handler(
                     if let Ok(machine_uuid) = uuid::Uuid::parse_str(mid) {
                         match state.store.get_machine(machine_uuid).await {
                             Ok(Some(mut machine)) => {
-                                if matches!(machine.status.state, dragonfly_common::MachineState::Installed) {
+                                if matches!(
+                                    machine.status.state,
+                                    dragonfly_common::MachineState::Installed
+                                ) {
                                     debug!(
                                         machine_id = %mid,
                                         action = %action_name,
@@ -3351,15 +4136,19 @@ pub async fn workflow_events_handler(
                                         current_state = ?machine.status.state,
                                         "Final boot action completed - marking machine as Installed"
                                     );
-                                    machine.status.state = dragonfly_common::MachineState::Installed;
+                                    machine.status.state =
+                                        dragonfly_common::MachineState::Installed;
                                     machine.config.installation_progress = 100;
-                                    machine.config.installation_step = Some("Installation complete".to_string());
+                                    machine.config.installation_step =
+                                        Some("Installation complete".to_string());
                                     machine.config.reimage_requested = false;
                                     machine.config.os_installed = machine.config.os_choice.clone();
                                     machine.config.os_choice = None;
                                     machine.metadata.updated_at = chrono::Utc::now();
                                     let _ = state.store.put_machine(&machine).await;
-                                    let _ = state.event_manager.send(format!("machine_updated:{}", mid));
+                                    let _ = state
+                                        .event_manager
+                                        .send(format!("machine_updated:{}", mid));
                                 }
                             }
                             Ok(None) => {
@@ -3375,10 +4164,7 @@ pub async fn workflow_events_handler(
 
             format!(
                 "action_completed:{}:{}:{}:{}",
-                workflow_id,
-                mid_str,
-                action_name,
-                success
+                workflow_id, mid_str, action_name, success
             )
         }
         "completed" => {
@@ -3414,7 +4200,10 @@ pub async fn workflow_events_handler(
                 if let Some(mid) = &machine_id {
                     if let Ok(machine_uuid) = uuid::Uuid::parse_str(mid) {
                         if let Ok(Some(mut machine)) = state.store.get_machine(machine_uuid).await {
-                            if matches!(machine.status.state, dragonfly_common::MachineState::Installed) {
+                            if matches!(
+                                machine.status.state,
+                                dragonfly_common::MachineState::Installed
+                            ) {
                                 debug!(
                                     machine_id = %mid,
                                     "Machine already Installed - skipping duplicate completed event"
@@ -3426,7 +4215,8 @@ pub async fn workflow_events_handler(
                                 );
                                 machine.status.state = dragonfly_common::MachineState::Installed;
                                 machine.config.installation_progress = 100;
-                                machine.config.installation_step = Some("Installation complete".to_string());
+                                machine.config.installation_step =
+                                    Some("Installation complete".to_string());
                                 machine.config.reimage_requested = false;
                                 machine.config.os_installed = machine.config.os_choice.clone();
                                 machine.config.os_choice = None;
@@ -3448,10 +4238,15 @@ pub async fn workflow_events_handler(
             }
 
             // Emit machine_updated so UI refreshes the machine row
-            let _ = state.event_manager.send(format!("machine_updated:{}", mid_str));
+            let _ = state
+                .event_manager
+                .send(format!("machine_updated:{}", mid_str));
             format!("workflow_completed:{}:{}:{}", workflow_id, mid_str, success)
         }
-        _ => format!("workflow_event:{}:{}:{}", workflow_id, mid_str, event.event_type),
+        _ => format!(
+            "workflow_event:{}:{}:{}",
+            workflow_id, mid_str, event.event_type
+        ),
     };
 
     // Broadcast to SSE subscribers
@@ -3489,7 +4284,8 @@ pub async fn serve_spark_elf() -> Response {
         return (
             StatusCode::NOT_FOUND,
             "Spark ELF not found. Copy spark.elf to /var/lib/dragonfly/spark.elf",
-        ).into_response();
+        )
+            .into_response();
     }
 
     match tokio::fs::read(spark_path).await {
@@ -3499,14 +4295,16 @@ pub async fn serve_spark_elf() -> Response {
                 StatusCode::OK,
                 [(axum::http::header::CONTENT_TYPE, "application/octet-stream")],
                 content,
-            ).into_response()
+            )
+                .into_response()
         }
         Err(e) => {
             error!("500 /boot/spark.elf: Failed to read: {}", e);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("Failed to read Spark ELF: {}", e),
-            ).into_response()
+            )
+                .into_response()
         }
     }
 }
@@ -3525,19 +4323,24 @@ pub async fn serve_memtest() -> Response {
 
     match tokio::fs::read(path).await {
         Ok(content) => {
-            info!("200 /boot/memtest86plus.bin: Serving {} bytes", content.len());
+            info!(
+                "200 /boot/memtest86plus.bin: Serving {} bytes",
+                content.len()
+            );
             (
                 StatusCode::OK,
                 [(axum::http::header::CONTENT_TYPE, "application/octet-stream")],
                 content,
-            ).into_response()
+            )
+                .into_response()
         }
         Err(e) => {
             error!("500 /boot/memtest86plus.bin: Failed to read: {}", e);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("Failed to read memtest86plus.bin: {}", e),
-            ).into_response()
+            )
+                .into_response()
         }
     }
 }
@@ -3577,7 +4380,8 @@ async fn serve_static_file(file_path: &str, name: &str) -> Response {
                 StatusCode::OK,
                 [(axum::http::header::CONTENT_TYPE, "application/octet-stream")],
                 content,
-            ).into_response()
+            )
+                .into_response()
         }
         Err(e) => {
             error!("500 {}: Failed to read: {}", name, e);
@@ -3603,7 +4407,8 @@ pub async fn serve_pxelinux_config() -> Response {
                 StatusCode::OK,
                 [(axum::http::header::CONTENT_TYPE, "text/plain")],
                 content,
-            ).into_response()
+            )
+                .into_response()
         }
         Err(e) => {
             error!("500 pxelinux.cfg/default: {}", e);
@@ -3643,7 +4448,10 @@ pub async fn download_mage_artifacts(alpine_version: &str, arch: &str) -> anyhow
     }
 
     // Construct base URL for Alpine netboot
-    let netboot_base = format!("{}/v{}/releases/{}/netboot", ALPINE_MIRROR, alpine_version, arch);
+    let netboot_base = format!(
+        "{}/v{}/releases/{}/netboot",
+        ALPINE_MIRROR, alpine_version, arch
+    );
 
     // Alpine netboot files (use -lts variants for LTS kernel)
     let files = vec![
@@ -3652,66 +4460,83 @@ pub async fn download_mage_artifacts(alpine_version: &str, arch: &str) -> anyhow
         ("modloop", "modloop-lts"),
     ];
 
-    info!("Downloading Mage (Alpine {}) artifacts from {}", alpine_version, netboot_base);
+    info!(
+        "Downloading Mage (Alpine {}) artifacts from {}",
+        alpine_version, netboot_base
+    );
 
     // Create download futures for parallel execution
-    let download_futures = files.iter().map(|(local_name, remote_name)| {
-        let local_name = local_name.to_string();
-        let remote_name = remote_name.to_string();
-        let netboot_base = netboot_base.clone();
-        let mage_dir = mage_dir.to_path_buf();
+    let download_futures = files
+        .iter()
+        .map(|(local_name, remote_name)| {
+            let local_name = local_name.to_string();
+            let remote_name = remote_name.to_string();
+            let netboot_base = netboot_base.clone();
+            let mage_dir = mage_dir.to_path_buf();
 
-        async move {
-            let dest_path = mage_dir.join(&local_name);
+            async move {
+                let dest_path = mage_dir.join(&local_name);
 
-            // Skip if file already exists and has content
-            if dest_path.exists() {
-                if let Ok(metadata) = std::fs::metadata(&dest_path) {
-                    if metadata.len() > 0 {
-                        info!("Mage artifact {} already exists, skipping download", local_name);
-                        return Ok::<_, anyhow::Error>(());
+                // Skip if file already exists and has content
+                if dest_path.exists() {
+                    if let Ok(metadata) = std::fs::metadata(&dest_path) {
+                        if metadata.len() > 0 {
+                            info!(
+                                "Mage artifact {} already exists, skipping download",
+                                local_name
+                            );
+                            return Ok::<_, anyhow::Error>(());
+                        }
                     }
                 }
+
+                // Try primary name first
+                let url = format!("{}/{}", netboot_base, remote_name);
+                info!("Downloading Mage artifact: {} -> {}", url, local_name);
+
+                let response = reqwest::get(&url).await;
+
+                match response {
+                    Ok(resp) if resp.status().is_success() => {
+                        let content = resp.bytes().await?;
+                        if content.is_empty() {
+                            anyhow::bail!("Downloaded {} is empty", local_name);
+                        }
+                        std::fs::write(&dest_path, &content)?;
+                        info!("Downloaded {} ({} bytes)", local_name, content.len());
+                    }
+                    _ => {
+                        // Try fallback name (vmlinuz-virt instead of vmlinuz-lts)
+                        let fallback_name = remote_name.replace("-lts", "-virt");
+                        let fallback_url = format!("{}/{}", netboot_base, fallback_name);
+                        info!("Primary download failed, trying fallback: {}", fallback_url);
+
+                        let fallback_resp = reqwest::get(&fallback_url).await?;
+                        if !fallback_resp.status().is_success() {
+                            anyhow::bail!(
+                                "Failed to download {}: HTTP {}",
+                                local_name,
+                                fallback_resp.status()
+                            );
+                        }
+
+                        let content = fallback_resp.bytes().await?;
+                        if content.is_empty() {
+                            anyhow::bail!("Downloaded {} is empty", local_name);
+                        }
+                        std::fs::write(&dest_path, &content)?;
+                        info!(
+                            "Downloaded {} from fallback ({} bytes)",
+                            local_name,
+                            content.len()
+                        );
+                    }
+                }
+
+                Ok(())
             }
-
-            // Try primary name first
-            let url = format!("{}/{}", netboot_base, remote_name);
-            info!("Downloading Mage artifact: {} -> {}", url, local_name);
-
-            let response = reqwest::get(&url).await;
-
-            match response {
-                Ok(resp) if resp.status().is_success() => {
-                    let content = resp.bytes().await?;
-                    if content.is_empty() {
-                        anyhow::bail!("Downloaded {} is empty", local_name);
-                    }
-                    std::fs::write(&dest_path, &content)?;
-                    info!("Downloaded {} ({} bytes)", local_name, content.len());
-                }
-                _ => {
-                    // Try fallback name (vmlinuz-virt instead of vmlinuz-lts)
-                    let fallback_name = remote_name.replace("-lts", "-virt");
-                    let fallback_url = format!("{}/{}", netboot_base, fallback_name);
-                    info!("Primary download failed, trying fallback: {}", fallback_url);
-
-                    let fallback_resp = reqwest::get(&fallback_url).await?;
-                    if !fallback_resp.status().is_success() {
-                        anyhow::bail!("Failed to download {}: HTTP {}", local_name, fallback_resp.status());
-                    }
-
-                    let content = fallback_resp.bytes().await?;
-                    if content.is_empty() {
-                        anyhow::bail!("Downloaded {} is empty", local_name);
-                    }
-                    std::fs::write(&dest_path, &content)?;
-                    info!("Downloaded {} from fallback ({} bytes)", local_name, content.len());
-                }
-            }
-
-            Ok(())
-        }
-    }).collect::<Vec<_>>();
+        })
+        .collect::<Vec<_>>();
 
     // Execute all downloads in parallel
     futures::future::try_join_all(download_futures).await?;
@@ -3759,7 +4584,10 @@ pub fn verify_mage_artifacts(architectures: &[&str]) -> anyhow::Result<()> {
         anyhow::bail!("{}", errors.join("; "));
     }
 
-    info!("Verified all Mage artifacts exist for: {}", architectures.join(", "));
+    info!(
+        "Verified all Mage artifacts exist for: {}",
+        architectures.join(", ")
+    );
     Ok(())
 }
 
@@ -3773,26 +4601,36 @@ pub fn verify_mage_artifacts(architectures: &[&str]) -> anyhow::Result<()> {
 /// * `arch` - Architecture: "x86_64" or "aarch64"
 ///
 /// Uses the locally-built agent binary (no network download - supports airgapped environments)
-pub async fn generate_mage_apkovl_arch(base_url: &str, arch: &str) -> Result<(), dragonfly_common::Error> {
+pub async fn generate_mage_apkovl_arch(
+    base_url: &str,
+    arch: &str,
+) -> Result<(), dragonfly_common::Error> {
     let mage_dir = FilePath::new(MAGE_DIR).join(arch);
     let target_path = mage_dir.join("localhost.apkovl.tar.gz");
     let agent_binary_path = mage_dir.join("dragonfly-agent");
 
     // Ensure Mage directory exists
     if !mage_dir.exists() {
-        std::fs::create_dir_all(&mage_dir)
-            .map_err(|e| dragonfly_common::Error::Internal(format!("Failed to create Mage directory: {}", e)))?;
+        std::fs::create_dir_all(&mage_dir).map_err(|e| {
+            dragonfly_common::Error::Internal(format!("Failed to create Mage directory: {}", e))
+        })?;
     }
 
     // Check that agent binary exists (should be built by agent_build_fut)
     if !agent_binary_path.exists() {
-        return Err(dragonfly_common::Error::Internal(
-            format!("Agent binary not found at {:?} - build failed?", agent_binary_path)
-        ));
+        return Err(dragonfly_common::Error::Internal(format!(
+            "Agent binary not found at {:?} - build failed?",
+            agent_binary_path
+        )));
     }
 
     // Generate APK overlay using local agent binary
-    generate_agent_apkovl(&target_path, base_url, AgentSource::LocalPath(&agent_binary_path)).await
+    generate_agent_apkovl(
+        &target_path,
+        base_url,
+        AgentSource::LocalPath(&agent_binary_path),
+    )
+    .await
 }
 
 /// Handler for /boot/{arch}/{asset} routes - extracts path parameters
@@ -3816,14 +4654,18 @@ pub async fn serve_boot_asset(arch: &str, asset: &str, state: &AppState) -> Resp
     // - iPXE EFI uses x86_64
     // - iPXE ARM uses arm64, we use aarch64 internally
     let normalized_arch = match arch {
-        "x86_64" | "i386" => "x86_64",  // BIOS iPXE reports i386, but boots x86_64 fine
+        "x86_64" | "i386" => "x86_64", // BIOS iPXE reports i386, but boots x86_64 fine
         "aarch64" | "arm64" => "aarch64",
         _ => {
             warn!("404 /boot/{}/{}: Unknown architecture", arch, asset);
             return (
                 StatusCode::NOT_FOUND,
-                format!("Unknown architecture: {} (supported: x86_64, i386, aarch64, arm64)", arch),
-            ).into_response();
+                format!(
+                    "Unknown architecture: {} (supported: x86_64, i386, aarch64, arm64)",
+                    arch
+                ),
+            )
+                .into_response();
         }
     };
 
@@ -3838,7 +4680,8 @@ pub async fn serve_boot_asset(arch: &str, asset: &str, state: &AppState) -> Resp
             return (
                 StatusCode::NOT_FOUND,
                 format!("Unknown boot asset: {}", asset),
-            ).into_response();
+            )
+                .into_response();
         }
     };
 
@@ -3860,7 +4703,10 @@ pub async fn serve_boot_asset(arch: &str, asset: &str, state: &AppState) -> Resp
         };
 
         if needs_regeneration {
-            info!("Generating apkovl for {} with base_url: {}", normalized_arch, base_url);
+            info!(
+                "Generating apkovl for {} with base_url: {}",
+                normalized_arch, base_url
+            );
             match generate_mage_apkovl_arch(&base_url, normalized_arch).await {
                 Ok(()) => {
                     // Save URL marker
@@ -3873,24 +4719,38 @@ pub async fn serve_boot_asset(arch: &str, asset: &str, state: &AppState) -> Resp
                     return (
                         StatusCode::INTERNAL_SERVER_ERROR,
                         format!("Failed to generate apkovl: {}", e),
-                    ).into_response();
+                    )
+                        .into_response();
                 }
             }
         }
     }
 
     if !file_path.exists() {
-        warn!("404 /boot/{}/{}: File not found at {:?}", arch, asset, file_path);
+        warn!(
+            "404 /boot/{}/{}: File not found at {:?}",
+            arch, asset, file_path
+        );
         return (
             StatusCode::NOT_FOUND,
-            format!("Boot asset not found: {}/{} (run Flight mode setup first)", normalized_arch, asset),
-        ).into_response();
+            format!(
+                "Boot asset not found: {}/{} (run Flight mode setup first)",
+                normalized_arch, asset
+            ),
+        )
+            .into_response();
     }
 
     // Read file and serve
     match tokio::fs::read(&file_path).await {
         Ok(content) => {
-            info!("200 /boot/{}/{}: Serving {} bytes from {:?}", arch, asset, content.len(), file_path);
+            info!(
+                "200 /boot/{}/{}: Serving {} bytes from {:?}",
+                arch,
+                asset,
+                content.len(),
+                file_path
+            );
             let content_type = match asset {
                 "apkovl.tar.gz" => "application/gzip",
                 _ => "application/octet-stream",
@@ -3899,14 +4759,19 @@ pub async fn serve_boot_asset(arch: &str, asset: &str, state: &AppState) -> Resp
                 StatusCode::OK,
                 [(axum::http::header::CONTENT_TYPE, content_type)],
                 content,
-            ).into_response()
+            )
+                .into_response()
         }
         Err(e) => {
-            error!("500 /boot/{}/{}: Failed to read {:?}: {}", arch, asset, file_path, e);
+            error!(
+                "500 /boot/{}/{}: Failed to read {:?}: {}",
+                arch, asset, file_path, e
+            );
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("Failed to read boot asset: {}", e),
-            ).into_response()
+            )
+                .into_response()
         }
     }
 }
@@ -3934,47 +4799,55 @@ pub async fn download_ipxe_binaries() -> anyhow::Result<()> {
     ];
 
     // Create download futures for parallel execution
-    let download_futures = binaries.iter().map(|(filename, url)| {
-        let filename = filename.to_string();
-        let url = url.to_string();
-        let tftp_dir = tftp_dir.to_path_buf();
+    let download_futures = binaries
+        .iter()
+        .map(|(filename, url)| {
+            let filename = filename.to_string();
+            let url = url.to_string();
+            let tftp_dir = tftp_dir.to_path_buf();
 
-        async move {
-            let dest_path = tftp_dir.join(&filename);
+            async move {
+                let dest_path = tftp_dir.join(&filename);
 
-            // Skip if file already exists and has content
-            if dest_path.exists() {
-                if let Ok(metadata) = std::fs::metadata(&dest_path) {
-                    if metadata.len() > 0 {
-                        info!("iPXE binary {} already exists, skipping download", filename);
-                        return Ok::<_, anyhow::Error>(());
+                // Skip if file already exists and has content
+                if dest_path.exists() {
+                    if let Ok(metadata) = std::fs::metadata(&dest_path) {
+                        if metadata.len() > 0 {
+                            info!("iPXE binary {} already exists, skipping download", filename);
+                            return Ok::<_, anyhow::Error>(());
+                        }
                     }
                 }
-            }
 
-            info!("Downloading {} from {}", filename, url);
-            let response = reqwest::get(&url).await?;
+                info!("Downloading {} from {}", filename, url);
+                let response = reqwest::get(&url).await?;
 
-            if !response.status().is_success() {
-                anyhow::bail!(
-                    "Failed to download {}: HTTP {}",
+                if !response.status().is_success() {
+                    anyhow::bail!(
+                        "Failed to download {}: HTTP {}",
+                        filename,
+                        response.status()
+                    );
+                }
+
+                let content = response.bytes().await?;
+
+                if content.is_empty() {
+                    anyhow::bail!("Downloaded {} is empty", filename);
+                }
+
+                std::fs::write(&dest_path, &content)?;
+                info!(
+                    "Downloaded {} ({} bytes) to {:?}",
                     filename,
-                    response.status()
+                    content.len(),
+                    dest_path
                 );
+
+                Ok(())
             }
-
-            let content = response.bytes().await?;
-
-            if content.is_empty() {
-                anyhow::bail!("Downloaded {} is empty", filename);
-            }
-
-            std::fs::write(&dest_path, &content)?;
-            info!("Downloaded {} ({} bytes) to {:?}", filename, content.len(), dest_path);
-
-            Ok(())
-        }
-    }).collect::<Vec<_>>();
+        })
+        .collect::<Vec<_>>();
 
     // Execute all downloads in parallel
     futures::future::try_join_all(download_futures).await?;
@@ -4006,20 +4879,22 @@ pub async fn serve_os_image(os: &str, arch: &str) -> Response {
         return (
             StatusCode::NOT_FOUND,
             format!("OS image not downloaded. Use API to download first."),
-        ).into_response();
+        )
+            .into_response();
     }
 
     match tokio::fs::read(&path).await {
-        Ok(content) => {
-            (
-                StatusCode::OK,
-                [(axum::http::header::CONTENT_TYPE, "application/x-xz")],
-                content,
-            ).into_response()
-        }
-        Err(e) => {
-            (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to read: {}", e)).into_response()
-        }
+        Ok(content) => (
+            StatusCode::OK,
+            [(axum::http::header::CONTENT_TYPE, "application/x-xz")],
+            content,
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to read: {}", e),
+        )
+            .into_response(),
     }
 }
 
@@ -4047,14 +4922,21 @@ pub async fn serve_cached_image(
                         StatusCode::OK,
                         [(axum::http::header::CONTENT_TYPE, content_type)],
                         content,
-                    ).into_response()
+                    )
+                        .into_response()
                 }
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                    (StatusCode::NOT_FOUND, format!("Cached image not found: {}", name)).into_response()
-                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => (
+                    StatusCode::NOT_FOUND,
+                    format!("Cached image not found: {}", name),
+                )
+                    .into_response(),
                 Err(e) => {
                     error!(name = %name, error = %e, "Failed to read cached image");
-                    (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to read: {}", e)).into_response()
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("Failed to read: {}", e),
+                    )
+                        .into_response()
                 }
             }
         }
@@ -4062,12 +4944,18 @@ pub async fn serve_cached_image(
             warn!(name = %name, "Path traversal attempt detected");
             (StatusCode::BAD_REQUEST, "Invalid path").into_response()
         }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            (StatusCode::NOT_FOUND, format!("Cached image not found: {}", name)).into_response()
-        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => (
+            StatusCode::NOT_FOUND,
+            format!("Cached image not found: {}", name),
+        )
+            .into_response(),
         Err(e) => {
             error!(name = %name, error = %e, "Failed to resolve cached image path");
-            (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to resolve path: {}", e)).into_response()
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to resolve path: {}", e),
+            )
+                .into_response()
         }
     }
 }
@@ -4083,7 +4971,9 @@ pub struct OsInfo {
 pub fn get_os_icon(os: &str) -> String {
     let os_lower = os.to_lowercase();
     match os_lower.as_str() {
-        os if os.contains("ubuntu") => "<i class=\"fab fa-ubuntu text-orange-500 dark:text-orange-500 no-invert\"></i>",
+        os if os.contains("ubuntu") => {
+            "<i class=\"fab fa-ubuntu text-orange-500 dark:text-orange-500 no-invert\"></i>"
+        }
         os if os.contains("debian") => "<i class=\"fab fa-debian text-red-500\"></i>",
         "proxmox" => "<i class=\"fas fa-server text-blue-500\"></i>",
         os if os.contains("windows") => "<i class=\"fab fa-windows text-blue-400\"></i>",
@@ -4091,39 +4981,44 @@ pub fn get_os_icon(os: &str) -> String {
         os if os.contains("fedora") => "<i class=\"fab fa-fedora text-blue-600\"></i>",
         os if os.contains("alma") => "<i class=\"fas fa-hat-cowboy text-amber-600\"></i>",
         _ => "<i class=\"fas fa-square-question text-gray-500\"></i>", // Unknown OS
-    }.to_string()
+    }
+    .to_string()
 }
 
 // Make format_os_name public
 pub fn format_os_name(os: &str) -> String {
     let os_lower = os.to_lowercase();
-    
+
     // Handle Ubuntu formats
     if os_lower.contains("ubuntu") {
         if os_lower.contains("22.04") || os_lower.contains("2204") {
             return "Ubuntu 22.04".to_string();
         } else if os_lower.contains("24.04") || os_lower.contains("2404") {
             return "Ubuntu 24.04".to_string();
-        } else if let Some(version) = os_lower.split(&['(', ')', ' ', '-', '_'][..])
-                                              .find(|s| s.contains(".") && s.len() <= 6) {
+        } else if let Some(version) = os_lower
+            .split(&['(', ')', ' ', '-', '_'][..])
+            .find(|s| s.contains(".") && s.len() <= 6)
+        {
             return format!("Ubuntu {}", version);
         } else {
             return "Ubuntu".to_string();
         }
     }
-    
+
     // Handle Debian formats
     if os_lower.contains("debian") {
         if os_lower.contains("12") || os_lower.contains("bookworm") {
             return "Debian 12".to_string();
-        } else if let Some(version) = os_lower.split(&[' ', '(', ')', '-', '_'][..])
-                                              .find(|s| s.parse::<u32>().is_ok()) {
+        } else if let Some(version) = os_lower
+            .split(&[' ', '(', ')', '-', '_'][..])
+            .find(|s| s.parse::<u32>().is_ok())
+        {
             return format!("Debian {}", version);
         } else {
             return "Debian".to_string();
         }
     }
-    
+
     // Handle specific formats
     match os_lower.as_str() {
         "ubuntu-2204" => "Ubuntu 22.04",
@@ -4131,7 +5026,8 @@ pub fn format_os_name(os: &str) -> String {
         "debian-12" => "Debian 12",
         "proxmox" => "Proxmox VE",
         _ => os, // Return original string if no match
-    }.to_string()
+    }
+    .to_string()
 }
 
 // Get both OS name and icon
@@ -4171,12 +5067,14 @@ pub fn normalize_workflow_progress(action_name: &str, action_progress: u8) -> u8
 
 async fn update_installation_progress(
     State(state): State<AppState>, // State is used for event manager
-    _auth_session: AuthSession, // Mark as unused - updates come from agent/tinkerbell
+    _auth_session: AuthSession,    // Mark as unused - updates come from agent/tinkerbell
     Path(id): Path<Uuid>,
     Json(payload): Json<InstallationProgressUpdateRequest>,
 ) -> Response {
-    info!("Updating installation progress for machine {} to {}% (step: {:?})",
-          id, payload.progress, payload.step);
+    info!(
+        "Updating installation progress for machine {} to {}% (step: {:?})",
+        id, payload.progress, payload.step
+    );
 
     // Get machine from v1 store
     let mut machine = match state.store.get_machine(id).await {
@@ -4187,7 +5085,7 @@ async fn update_installation_progress(
                 message: format!("Machine with ID {} not found", id),
             };
             return (StatusCode::NOT_FOUND, Json(error_response)).into_response();
-        },
+        }
         Err(e) => {
             error!("Failed to get machine {}: {}", id, e);
             let error_response = ErrorResponse {
@@ -4208,10 +5106,17 @@ async fn update_installation_progress(
         Ok(()) => {
             // Emit machine updated event so the UI fetches new progress HTML
             let _ = state.event_manager.send(format!("machine_updated:{}", id));
-            (StatusCode::OK, Json(json!({ "status": "progress_updated", "machine_id": id }))).into_response()
-        },
+            (
+                StatusCode::OK,
+                Json(json!({ "status": "progress_updated", "machine_id": id })),
+            )
+                .into_response()
+        }
         Err(e) => {
-            error!("Failed to update installation progress for machine {}: {}", id, e);
+            error!(
+                "Failed to update installation progress for machine {}: {}",
+                id, e
+            );
             let error_response = ErrorResponse {
                 error: "Store Error".to_string(),
                 message: e.to_string(),
@@ -4223,10 +5128,7 @@ async fn update_installation_progress(
 
 // Add new handler for getting machine tags
 #[axum::debug_handler]
-async fn api_get_machine_tags(
-    State(state): State<AppState>,
-    Path(id): Path<Uuid>,
-) -> Response {
+async fn api_get_machine_tags(State(state): State<AppState>, Path(id): Path<Uuid>) -> Response {
     match state.store.get_machine(id).await {
         Ok(Some(machine)) => (StatusCode::OK, Json(machine.config.tags)).into_response(),
         Ok(None) => {
@@ -4295,7 +5197,11 @@ async fn api_update_machine_tags(
             tokio::spawn(async move {
                 crate::handlers::proxmox::sync_tags_to_proxmox(&state_clone, &machine_clone).await;
             });
-            (StatusCode::OK, Json(json!({ "success": true, "message": "Tags updated" }))).into_response()
+            (
+                StatusCode::OK,
+                Json(json!({ "success": true, "message": "Tags updated" })),
+            )
+                .into_response()
         }
         Err(e) => {
             error!("Failed to update tags for machine {}: {}", id, e);
@@ -4316,13 +5222,13 @@ async fn get_install_status() -> Response {
         // Acquire read lock, clone the Arc if it exists, then drop the lock immediately
         INSTALL_STATE_REF.read().unwrap().as_ref().cloned()
     };
-    
+
     match install_state_arc_mutex {
         Some(state_ref) => {
             // Clone the state inside the read guard
             let current_state = state_ref.lock().await.clone();
             // Serialize the state to JSON
-             let payload = json!({
+            let payload = json!({
                 "status": current_state,
                 "message": current_state.get_message(),
                 "animation": current_state.get_animation_class(),
@@ -4331,7 +5237,7 @@ async fn get_install_status() -> Response {
         }
         None => {
             // Not in install mode
-             let payload = json!({
+            let payload = json!({
                 "status": "NotInstalling",
                 "message": "Dragonfly is not currently installing.",
                 "animation": "",
@@ -4350,10 +5256,14 @@ async fn api_delete_machine_tag(
 ) -> Response {
     // Check if user is authenticated as admin
     if auth_session.user.is_none() {
-        return (StatusCode::UNAUTHORIZED, Json(json!({
-            "error": "Unauthorized",
-            "message": "Admin authentication required for this operation"
-        }))).into_response();
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({
+                "error": "Unauthorized",
+                "message": "Admin authentication required for this operation"
+            })),
+        )
+            .into_response();
     }
 
     // Get machine from v1 Store and update tags
@@ -4372,28 +5282,45 @@ async fn api_delete_machine_tag(
                     let state_clone = state.clone();
                     let machine_clone = machine.clone();
                     tokio::spawn(async move {
-                        crate::handlers::proxmox::sync_tags_to_proxmox(&state_clone, &machine_clone).await;
+                        crate::handlers::proxmox::sync_tags_to_proxmox(
+                            &state_clone,
+                            &machine_clone,
+                        )
+                        .await;
                     });
-                    (StatusCode::OK, Json(json!({"success": true, "message": "Tag deleted"})))
-                },
+                    (
+                        StatusCode::OK,
+                        Json(json!({"success": true, "message": "Tag deleted"})),
+                    )
+                }
                 Err(e) => {
-                    error!("Failed to update tags after deletion for machine {}: {}", id, e);
-                    (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
-                        "error": "Store error",
-                        "message": format!("Failed to update tags: {}", e)
-                    })))
+                    error!(
+                        "Failed to update tags after deletion for machine {}: {}",
+                        id, e
+                    );
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({
+                            "error": "Store error",
+                            "message": format!("Failed to update tags: {}", e)
+                        })),
+                    )
                 }
             }
-        },
-        Ok(None) => {
-            (StatusCode::NOT_FOUND, Json(json!({"error": "Machine not found"})))
-        },
+        }
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "Machine not found"})),
+        ),
         Err(e) => {
             error!("Failed to get machine {} for tag deletion: {}", id, e);
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
-                "error": "Store error",
-                "message": format!("Failed to retrieve machine: {}", e)
-            })))
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "error": "Store error",
+                    "message": format!("Failed to retrieve machine: {}", e)
+                })),
+            )
         }
     };
 
@@ -4405,15 +5332,22 @@ async fn api_delete_machine_tag(
 async fn get_machine_status_and_progress_partial(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
-) -> Response { // Explicitly return Response
+) -> Response {
+    // Explicitly return Response
     info!("Request for status-and-progress partial for machine {}", id);
 
     let machine: Machine = match state.store.get_machine(id).await {
         Ok(Some(m)) => crate::store::conversions::machine_to_common(&m),
-        Ok(None) => return (StatusCode::NOT_FOUND, Html("<!-- Machine not found -->")).into_response(),
+        Ok(None) => {
+            return (StatusCode::NOT_FOUND, Html("<!-- Machine not found -->")).into_response();
+        }
         Err(e) => {
             error!("Store error fetching machine {} for partial: {}", id, e);
-            return (StatusCode::INTERNAL_SERVER_ERROR, Html("<!-- Store Error -->")).into_response();
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Html("<!-- Store Error -->"),
+            )
+                .into_response();
         }
     };
 
@@ -4447,10 +5381,7 @@ async fn get_machine_status_and_progress_partial(
 // --- Tag Management API ---
 /// Get all tags in the system
 #[axum::debug_handler]
-async fn api_get_tags(
-    State(state): State<AppState>,
-    auth_session: AuthSession,
-) -> Response {
+async fn api_get_tags(State(state): State<AppState>, auth_session: AuthSession) -> Response {
     // Check if user is authenticated as admin
     if let Err(response) = crate::auth::require_admin(&auth_session) {
         return response;
@@ -4486,9 +5417,10 @@ async fn api_create_tag(
         Some(name) => name.to_string(),
         None => {
             return (
-                StatusCode::BAD_REQUEST, 
-                Json(json!({"error": "Missing tag name", "message": "Tag name is required"}))
-            ).into_response();
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "Missing tag name", "message": "Tag name is required"})),
+            )
+                .into_response();
         }
     };
 
@@ -4496,21 +5428,25 @@ async fn api_create_tag(
     if tag_name.trim().is_empty() {
         return (
             StatusCode::BAD_REQUEST,
-            Json(json!({"error": "Invalid tag name", "message": "Tag name cannot be empty"}))
-        ).into_response();
+            Json(json!({"error": "Invalid tag name", "message": "Tag name cannot be empty"})),
+        )
+            .into_response();
     }
 
     match state.store.create_tag(&tag_name).await {
         Ok(true) => {
             let _ = state.event_manager.send("tags_updated".to_string());
-            (StatusCode::CREATED, Json(json!({"success": true, "message": "Tag created"}))).into_response()
-        },
-        Ok(false) => {
             (
-                StatusCode::CONFLICT,
-                Json(json!({"error": "Tag exists", "message": "A tag with this name already exists"}))
-            ).into_response()
-        },
+                StatusCode::CREATED,
+                Json(json!({"success": true, "message": "Tag created"})),
+            )
+                .into_response()
+        }
+        Ok(false) => (
+            StatusCode::CONFLICT,
+            Json(json!({"error": "Tag exists", "message": "A tag with this name already exists"})),
+        )
+            .into_response(),
         Err(e) => {
             error!("Failed to create tag '{}': {}", tag_name, e);
             (
@@ -4537,14 +5473,17 @@ async fn api_delete_tag(
         Ok(true) => {
             // Emit tag deleted event
             let _ = state.event_manager.send("tags_updated".to_string());
-            (StatusCode::OK, Json(json!({"success": true, "message": "Tag deleted"}))).into_response()
-        },
-        Ok(false) => {
             (
-                StatusCode::NOT_FOUND,
-                Json(json!({"error": "Not found", "message": "Tag not found"}))
-            ).into_response()
-        },
+                StatusCode::OK,
+                Json(json!({"success": true, "message": "Tag deleted"})),
+            )
+                .into_response()
+        }
+        Ok(false) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "Not found", "message": "Tag not found"})),
+        )
+            .into_response(),
         Err(e) => {
             error!("Failed to delete tag '{}': {}", tag_name, e);
             (
@@ -4569,7 +5508,10 @@ async fn api_get_machines_by_tag(
 
     match state.store.list_machines_by_tag(&tag_name).await {
         Ok(v1_machines) => {
-            let machines: Vec<Machine> = v1_machines.iter().map(|m| crate::store::conversions::machine_to_common(m)).collect();
+            let machines: Vec<Machine> = v1_machines
+                .iter()
+                .map(|m| crate::store::conversions::machine_to_common(m))
+                .collect();
             (StatusCode::OK, Json(machines)).into_response()
         }
         Err(e) => {
@@ -4594,10 +5536,14 @@ async fn reimage_machine(
 
     // Check if user is authenticated as admin
     if auth_session.user.is_none() {
-        return (StatusCode::UNAUTHORIZED, Json(json!({
-            "error": "Unauthorized",
-            "message": "Admin authentication required for this operation"
-        }))).into_response();
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({
+                "error": "Unauthorized",
+                "message": "Admin authentication required for this operation"
+            })),
+        )
+            .into_response();
     }
 
     info!("Initiating reimage for machine {}", id);
@@ -4606,28 +5552,47 @@ async fn reimage_machine(
     let mut v1_machine = match state.store.get_machine(id).await {
         Ok(Some(m)) => m,
         Ok(None) => {
-            return (StatusCode::NOT_FOUND, Json(json!({
-                "error": "Not Found",
-                "message": format!("Machine with ID {} not found", id)
-            }))).into_response();
-        },
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({
+                    "error": "Not Found",
+                    "message": format!("Machine with ID {} not found", id)
+                })),
+            )
+                .into_response();
+        }
         Err(e) => {
             error!("Failed to get machine {}: {}", id, e);
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
-                "error": "Store Error",
-                "message": e.to_string()
-            }))).into_response();
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "error": "Store Error",
+                    "message": e.to_string()
+                })),
+            )
+                .into_response();
         }
     };
 
     // Determine OS to install: prefer os_choice, fall back to os_installed, then ExistingOs state
     // This matches the display logic in machine_to_common() so what the user sees is what reimages
-    let os_choice = v1_machine.config.os_choice.clone()
+    let os_choice = v1_machine
+        .config
+        .os_choice
+        .clone()
         .filter(|s| !s.is_empty())
-        .or_else(|| v1_machine.config.os_installed.clone().filter(|s| !s.is_empty()))
+        .or_else(|| {
+            v1_machine
+                .config
+                .os_installed
+                .clone()
+                .filter(|s| !s.is_empty())
+        })
         .or_else(|| {
             // Fall back to ExistingOs state (same as display logic)
-            if let dragonfly_common::MachineState::ExistingOs { ref os_name } = v1_machine.status.state {
+            if let dragonfly_common::MachineState::ExistingOs { ref os_name } =
+                v1_machine.status.state
+            {
                 Some(os_name.clone())
             } else {
                 None
@@ -4643,35 +5608,43 @@ async fn reimage_machine(
             os
         }
         None => {
-            return (StatusCode::BAD_REQUEST, Json(json!({
-                "error": "Bad Request",
-                "message": "No OS choice set for this machine. Please assign an OS first."
-            }))).into_response();
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": "Bad Request",
+                    "message": "No OS choice set for this machine. Please assign an OS first."
+                })),
+            )
+                .into_response();
         }
     };
 
     // Verify the template exists
     match state.store.get_template(&os_choice).await {
-        Ok(Some(_)) => {}, // Template exists, proceed
+        Ok(Some(_)) => {} // Template exists, proceed
         Ok(None) => {
             return (StatusCode::BAD_REQUEST, Json(json!({
                 "error": "Bad Request",
                 "message": format!("Template '{}' not found. Cannot reimage with unknown OS.", os_choice)
             }))).into_response();
-        },
+        }
         Err(e) => {
             error!("Failed to check template {}: {}", os_choice, e);
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
-                "error": "Store Error",
-                "message": e.to_string()
-            }))).into_response();
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "error": "Store Error",
+                    "message": e.to_string()
+                })),
+            )
+                .into_response();
         }
     }
 
     // Set the machine status to ReadyToInstall and mark reimage requested
     v1_machine.status.state = MachineState::ReadyToInstall;
-    v1_machine.config.os_choice = Some(os_choice.clone());  // Ensure os_choice is set for check-in
-    v1_machine.config.reimage_requested = true;  // Molly guard: allows imaging even with existing OS
+    v1_machine.config.os_choice = Some(os_choice.clone()); // Ensure os_choice is set for check-in
+    v1_machine.config.reimage_requested = true; // Molly guard: allows imaging even with existing OS
     v1_machine.config.installation_progress = 0;
     v1_machine.config.installation_step = None;
     v1_machine.metadata.updated_at = chrono::Utc::now();
@@ -4679,10 +5652,14 @@ async fn reimage_machine(
     // Save the updated machine state
     if let Err(e) = state.store.put_machine(&v1_machine).await {
         error!("Failed to set machine {} status to Installing: {}", id, e);
-        return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
-            "error": "Store Error",
-            "message": e.to_string()
-        }))).into_response();
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({
+                "error": "Store Error",
+                "message": e.to_string()
+            })),
+        )
+            .into_response();
     }
 
     // Create workflow immediately so iPXE boot script returns Mage directly
@@ -4691,7 +5668,10 @@ async fn reimage_machine(
     let existing_workflows = match state.store.get_workflows_for_machine(id).await {
         Ok(wfs) => wfs,
         Err(e) => {
-            error!("Failed to check existing workflows for machine {}: {}", id, e);
+            error!(
+                "Failed to check existing workflows for machine {}: {}",
+                id, e
+            );
             Vec::new()
         }
     };
@@ -4699,7 +5679,8 @@ async fn reimage_machine(
     for wf in &existing_workflows {
         let is_active = matches!(
             wf.status.as_ref().map(|s| &s.state),
-            Some(dragonfly_crd::WorkflowState::StatePending) | Some(dragonfly_crd::WorkflowState::StateRunning)
+            Some(dragonfly_crd::WorkflowState::StatePending)
+                | Some(dragonfly_crd::WorkflowState::StateRunning)
         );
         if is_active {
             if let Ok(wf_uuid) = uuid::Uuid::parse_str(&wf.metadata.name) {
@@ -4714,11 +5695,8 @@ async fn reimage_machine(
 
     // Create fresh workflow with the correct OS
     let workflow_id = uuid::Uuid::now_v7();
-    let mut workflow = dragonfly_crd::Workflow::new(
-        workflow_id.to_string(),
-        id.to_string(),
-        &os_choice,
-    );
+    let mut workflow =
+        dragonfly_crd::Workflow::new(workflow_id.to_string(), id.to_string(), &os_choice);
     workflow.status = Some(dragonfly_crd::WorkflowStatus {
         state: dragonfly_crd::WorkflowState::StatePending,
         current_action: None,
@@ -4732,12 +5710,19 @@ async fn reimage_machine(
 
     if let Err(e) = state.store.put_workflow(&workflow).await {
         error!("Failed to create workflow for machine {}: {}", id, e);
-        return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
-            "error": "Store Error",
-            "message": format!("Failed to create workflow: {}", e)
-        }))).into_response();
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({
+                "error": "Store Error",
+                "message": format!("Failed to create workflow: {}", e)
+            })),
+        )
+            .into_response();
     }
-    info!("Created imaging workflow {} for machine {} with OS {}", workflow_id, id, os_choice);
+    info!(
+        "Created imaging workflow {} for machine {} with OS {}",
+        workflow_id, id, os_choice
+    );
 
     // Convert to common Machine for Proxmox reboot
     let machine: Machine = crate::store::conversions::machine_to_common(&v1_machine);
@@ -4758,10 +5743,12 @@ async fn reimage_machine(
             State(state.clone()),
             Path(id),
             Json(power_action),
-        ).await {
+        )
+        .await
+        {
             Ok(_) => {
                 info!("Successfully initiated PXE reboot for Proxmox VM {}", id);
-            },
+            }
             Err(e) => {
                 // Log the error but continue - machine state is updated, just reboot failed
                 error!("Failed to reboot Proxmox VM {}: {:?}", id, e);
@@ -4772,14 +5759,22 @@ async fn reimage_machine(
     }
 
     // Return success response
-    let response_html = format!(r###"
+    let response_html = format!(
+        r###"
         <div class="p-4 mb-4 text-sm text-green-700 bg-green-100 rounded-lg" role="alert">
             <span class="font-medium">Success!</span> Reimaging machine {} with {}.
             <p>Installation has started and may take several minutes to complete.</p>
         </div>
-    "###, id, os_choice);
+    "###,
+        id, os_choice
+    );
 
-    (StatusCode::OK, [(axum::http::header::CONTENT_TYPE, "text/html")], response_html).into_response()
+    (
+        StatusCode::OK,
+        [(axum::http::header::CONTENT_TYPE, "text/html")],
+        response_html,
+    )
+        .into_response()
 }
 
 /// Abort a pending reimage - cancels before the machine actually starts installing
@@ -4793,10 +5788,14 @@ async fn abort_reimage(
 
     // Check if user is authenticated as admin
     if auth_session.user.is_none() {
-        return (StatusCode::UNAUTHORIZED, Json(json!({
-            "error": "Unauthorized",
-            "message": "Admin authentication required for this operation"
-        }))).into_response();
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({
+                "error": "Unauthorized",
+                "message": "Admin authentication required for this operation"
+            })),
+        )
+            .into_response();
     }
 
     info!("Aborting pending reimage for machine {}", id);
@@ -4805,17 +5804,25 @@ async fn abort_reimage(
     let mut v1_machine = match state.store.get_machine(id).await {
         Ok(Some(m)) => m,
         Ok(None) => {
-            return (StatusCode::NOT_FOUND, Json(json!({
-                "error": "Not Found",
-                "message": format!("Machine with ID {} not found", id)
-            }))).into_response();
-        },
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({
+                    "error": "Not Found",
+                    "message": format!("Machine with ID {} not found", id)
+                })),
+            )
+                .into_response();
+        }
         Err(e) => {
             error!("Failed to get machine {}: {}", id, e);
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
-                "error": "Store Error",
-                "message": e.to_string()
-            }))).into_response();
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "error": "Store Error",
+                    "message": e.to_string()
+                })),
+            )
+                .into_response();
         }
     };
 
@@ -4845,10 +5852,14 @@ async fn abort_reimage(
     // Save the updated machine state
     if let Err(e) = state.store.put_machine(&v1_machine).await {
         error!("Failed to abort reimage for machine {}: {}", id, e);
-        return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
-            "error": "Store Error",
-            "message": e.to_string()
-        }))).into_response();
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({
+                "error": "Store Error",
+                "message": e.to_string()
+            })),
+        )
+            .into_response();
     }
 
     // Emit machine updated event
@@ -4856,45 +5867,48 @@ async fn abort_reimage(
 
     info!("Successfully aborted pending reimage for machine {}", id);
 
-    (StatusCode::OK, Json(json!({
-        "success": true,
-        "message": "Pending reimage cancelled",
-        "new_state": v1_machine.status.state.as_str()
-    }))).into_response()
+    (
+        StatusCode::OK,
+        Json(json!({
+            "success": true,
+            "message": "Pending reimage cancelled",
+            "new_state": v1_machine.status.state.as_str()
+        })),
+    )
+        .into_response()
 }
 
 // Add new endpoint to configure Proxmox API tokens
 /// GET /api/proxmox/status — return current Proxmox connection status
 #[axum::debug_handler]
-pub async fn proxmox_status(
-    State(state): State<AppState>,
-) -> impl IntoResponse {
-    let settings = crate::handlers::proxmox::get_proxmox_settings_from_store_pub(state.store.as_ref()).await;
+pub async fn proxmox_status(State(state): State<AppState>) -> impl IntoResponse {
+    let settings =
+        crate::handlers::proxmox::get_proxmox_settings_from_store_pub(state.store.as_ref()).await;
 
     match settings {
-        Ok(Some(s)) => {
+        Ok(Some(s)) => Json(serde_json::json!({
+            "configured": true,
+            "host": s.host,
+            "port": s.port,
+            "username": s.username,
+            "skip_tls_verify": s.skip_tls_verify,
+            "has_power_token": s.vm_power_token.is_some(),
+            "has_create_token": s.vm_create_token.is_some(),
+            "has_config_token": s.vm_config_token.is_some(),
+            "has_sync_token": s.vm_sync_token.is_some(),
+        }))
+        .into_response(),
+        Ok(None) => Json(serde_json::json!({
+            "configured": false,
+        }))
+        .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({
-                "configured": true,
-                "host": s.host,
-                "port": s.port,
-                "username": s.username,
-                "skip_tls_verify": s.skip_tls_verify,
-                "has_power_token": s.vm_power_token.is_some(),
-                "has_create_token": s.vm_create_token.is_some(),
-                "has_config_token": s.vm_config_token.is_some(),
-                "has_sync_token": s.vm_sync_token.is_some(),
-            })).into_response()
-        }
-        Ok(None) => {
-            Json(serde_json::json!({
-                "configured": false,
-            })).into_response()
-        }
-        Err(e) => {
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({
                 "error": e.to_string()
-            }))).into_response()
-        }
+            })),
+        )
+            .into_response(),
     }
 }
 
@@ -4910,27 +5924,38 @@ pub async fn update_proxmox_token(
     State(state): State<AppState>,
     Json(request): Json<ProxmoxTokenRequest>,
 ) -> impl IntoResponse {
-    use dragonfly_common::models::ErrorResponse;
     use crate::encryption::encrypt_string;
+    use dragonfly_common::models::ErrorResponse;
 
-    info!("Updating Proxmox API token for type: {}", request.token_type);
+    info!(
+        "Updating Proxmox API token for type: {}",
+        request.token_type
+    );
 
     // Validate token type
     if !["create", "power", "config", "sync"].contains(&request.token_type.as_str()) {
-        return (StatusCode::BAD_REQUEST, Json(ErrorResponse {
-            error: "INVALID_TOKEN_TYPE".to_string(),
-            message: "Token type must be one of: create, power, config, sync".to_string(),
-        })).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "INVALID_TOKEN_TYPE".to_string(),
+                message: "Token type must be one of: create, power, config, sync".to_string(),
+            }),
+        )
+            .into_response();
     }
 
     // Encrypt the token before storing
     let encrypted = match encrypt_string(&request.token_value) {
         Ok(v) => v,
         Err(e) => {
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse {
-                error: "ENCRYPTION_FAILED".to_string(),
-                message: format!("Failed to encrypt token: {}", e),
-            })).into_response();
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "ENCRYPTION_FAILED".to_string(),
+                    message: format!("Failed to encrypt token: {}", e),
+                }),
+            )
+                .into_response();
         }
     };
 
@@ -4950,22 +5975,34 @@ pub async fn update_proxmox_token(
         }
         settings.updated_at = chrono::Utc::now();
         crate::handlers::proxmox::put_proxmox_settings_to_store_pub(store, &settings).await
-    }.await;
+    }
+    .await;
 
     match result {
         Ok(_) => {
-            info!("Successfully updated Proxmox API token for {} operations", request.token_type);
-            (StatusCode::OK, Json(json!({
-                "success": true,
-                "message": format!("Successfully updated {} token", request.token_type)
-            }))).into_response()
-        },
+            info!(
+                "Successfully updated Proxmox API token for {} operations",
+                request.token_type
+            );
+            (
+                StatusCode::OK,
+                Json(json!({
+                    "success": true,
+                    "message": format!("Successfully updated {} token", request.token_type)
+                })),
+            )
+                .into_response()
+        }
         Err(e) => {
             error!("Failed to update Proxmox API token: {}", e);
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse {
-                error: "TOKEN_UPDATE_FAILED".to_string(),
-                message: format!("Failed to update token: {}", e),
-            })).into_response()
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "TOKEN_UPDATE_FAILED".to_string(),
+                    message: format!("Failed to update token: {}", e),
+                }),
+            )
+                .into_response()
         }
     }
 }
@@ -5003,18 +6040,28 @@ pub async fn api_fetch_keys(
 ) -> impl IntoResponse {
     let url = match params.get("url") {
         Some(url) => url,
-        None => return (StatusCode::BAD_REQUEST, Json(json!({
-            "error": "MISSING_URL",
-            "message": "url parameter is required"
-        }))).into_response(),
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": "MISSING_URL",
+                    "message": "url parameter is required"
+                })),
+            )
+                .into_response();
+        }
     };
 
     // Validate URL
     if !url.starts_with("https://") {
-        return (StatusCode::BAD_REQUEST, Json(json!({
-            "error": "INVALID_URL",
-            "message": "URL must use HTTPS"
-        }))).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": "INVALID_URL",
+                "message": "URL must use HTTPS"
+            })),
+        )
+            .into_response();
     }
 
     // Fetch keys from URL
@@ -5022,48 +6069,64 @@ pub async fn api_fetch_keys(
     match client.get(url).send().await {
         Ok(response) => {
             if !response.status().is_success() {
-                return (StatusCode::BAD_GATEWAY, Json(json!({
-                    "error": "FETCH_FAILED",
-                    "message": format!("Failed to fetch keys: HTTP {}", response.status())
-                }))).into_response();
+                return (
+                    StatusCode::BAD_GATEWAY,
+                    Json(json!({
+                        "error": "FETCH_FAILED",
+                        "message": format!("Failed to fetch keys: HTTP {}", response.status())
+                    })),
+                )
+                    .into_response();
             }
 
             match response.text().await {
-                Ok(keys) => {
+                Ok(keys) => Json(json!({
+                    "keys": keys
+                }))
+                .into_response(),
+                Err(e) => (
+                    StatusCode::BAD_GATEWAY,
                     Json(json!({
-                        "keys": keys
-                    })).into_response()
-                }
-                Err(e) => {
-                    (StatusCode::BAD_GATEWAY, Json(json!({
                         "error": "READ_FAILED",
                         "message": format!("Failed to read response: {}", e)
-                    }))).into_response()
-                }
+                    })),
+                )
+                    .into_response(),
             }
         }
-        Err(e) => {
-            (StatusCode::BAD_GATEWAY, Json(json!({
+        Err(e) => (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({
                 "error": "FETCH_FAILED",
                 "message": format!("Failed to fetch keys: {}", e)
-            }))).into_response()
-        }
+            })),
+        )
+            .into_response(),
     }
 }
 
 /// Get current settings
 #[axum::debug_handler]
-pub async fn api_get_settings(
-    State(state): State<AppState>,
-) -> impl IntoResponse {
-    let deployment_mode = state.store.get_setting("deployment_mode").await.ok().flatten();
+pub async fn api_get_settings(State(state): State<AppState>) -> impl IntoResponse {
+    let deployment_mode = state
+        .store
+        .get_setting("deployment_mode")
+        .await
+        .ok()
+        .flatten();
     let default_os = state.store.get_setting("default_os").await.ok().flatten();
-    let setup_completed = state.store.get_setting("setup_completed").await
+    let setup_completed = state
+        .store
+        .get_setting("setup_completed")
+        .await
         .ok()
         .flatten()
         .map(|s| s == "true")
         .unwrap_or(false);
-    let auto_enroll_with_spark = state.store.get_setting("auto_enroll_with_spark").await
+    let auto_enroll_with_spark = state
+        .store
+        .get_setting("auto_enroll_with_spark")
+        .await
         .ok()
         .flatten()
         .map(|s| s == "true")
@@ -5089,18 +6152,26 @@ pub async fn api_update_settings(
     if let Some(ref mode) = request.deployment_mode {
         // Validate mode
         if !["simple", "flight", "swarm"].contains(&mode.as_str()) {
-            return (StatusCode::BAD_REQUEST, Json(json!({
-                "error": "INVALID_MODE",
-                "message": "deployment_mode must be one of: simple, flight, swarm"
-            }))).into_response();
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": "INVALID_MODE",
+                    "message": "deployment_mode must be one of: simple, flight, swarm"
+                })),
+            )
+                .into_response();
         }
 
         if let Err(e) = state.store.put_setting("deployment_mode", mode).await {
             error!("Failed to update deployment_mode: {}", e);
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
-                "error": "SETTINGS_UPDATE_FAILED",
-                "message": format!("Failed to update deployment_mode: {}", e)
-            }))).into_response();
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "error": "SETTINGS_UPDATE_FAILED",
+                    "message": format!("Failed to update deployment_mode: {}", e)
+                })),
+            )
+                .into_response();
         }
         updated.push("deployment_mode");
         info!("Updated deployment_mode to: {}", mode);
@@ -5114,12 +6185,17 @@ pub async fn api_update_settings(
                 match crate::mode::configure_flight_mode(store_clone).await {
                     Ok(_) => {
                         info!("Flight mode configuration completed");
-                        crate::start_network_services(&app_state_clone, app_state_clone.shutdown_rx.clone()).await;
+                        crate::start_network_services(
+                            &app_state_clone,
+                            app_state_clone.shutdown_rx.clone(),
+                        )
+                        .await;
                         let _ = event_manager.send("mode_configured:flight".to_string());
                     }
                     Err(e) => {
                         error!("Flight mode configuration failed: {}", e);
-                        let _ = event_manager.send(format!("mode_configuration_failed:flight:{}", e));
+                        let _ =
+                            event_manager.send(format!("mode_configuration_failed:flight:{}", e));
                     }
                 }
             });
@@ -5130,10 +6206,14 @@ pub async fn api_update_settings(
     if let Some(ref os) = request.default_os {
         if let Err(e) = state.store.put_setting("default_os", os).await {
             error!("Failed to update default_os: {}", e);
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
-                "error": "SETTINGS_UPDATE_FAILED",
-                "message": format!("Failed to update default_os: {}", e)
-            }))).into_response();
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "error": "SETTINGS_UPDATE_FAILED",
+                    "message": format!("Failed to update default_os: {}", e)
+                })),
+            )
+                .into_response();
         }
         updated.push("default_os");
         info!("Updated default_os to: {}", os);
@@ -5142,21 +6222,33 @@ pub async fn api_update_settings(
     // Update auto_enroll_with_spark if provided
     if let Some(enabled) = request.auto_enroll_with_spark {
         let value = if enabled { "true" } else { "false" };
-        if let Err(e) = state.store.put_setting("auto_enroll_with_spark", value).await {
+        if let Err(e) = state
+            .store
+            .put_setting("auto_enroll_with_spark", value)
+            .await
+        {
             error!("Failed to update auto_enroll_with_spark: {}", e);
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
-                "error": "SETTINGS_UPDATE_FAILED",
-                "message": format!("Failed to update auto_enroll_with_spark: {}", e)
-            }))).into_response();
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "error": "SETTINGS_UPDATE_FAILED",
+                    "message": format!("Failed to update auto_enroll_with_spark: {}", e)
+                })),
+            )
+                .into_response();
         }
         updated.push("auto_enroll_with_spark");
         info!("Updated auto_enroll_with_spark to: {}", enabled);
     }
 
-    (StatusCode::OK, Json(json!({
-        "success": true,
-        "updated": updated
-    }))).into_response()
+    (
+        StatusCode::OK,
+        Json(json!({
+            "success": true,
+            "updated": updated
+        })),
+    )
+        .into_response()
 }
 
 /// Response for GET /api/settings/mode
@@ -5173,10 +6265,13 @@ pub struct ModeUpdateRequest {
 
 /// Get current deployment mode
 #[axum::debug_handler]
-pub async fn api_get_mode(
-    State(state): State<AppState>,
-) -> impl IntoResponse {
-    let mode = state.store.get_setting("deployment_mode").await.ok().flatten();
+pub async fn api_get_mode(State(state): State<AppState>) -> impl IntoResponse {
+    let mode = state
+        .store
+        .get_setting("deployment_mode")
+        .await
+        .ok()
+        .flatten();
     Json(ModeResponse { mode })
 }
 
@@ -5188,18 +6283,30 @@ pub async fn api_set_mode(
 ) -> impl IntoResponse {
     // Validate mode
     if !["simple", "flight", "swarm"].contains(&request.mode.as_str()) {
-        return (StatusCode::BAD_REQUEST, Json(json!({
-            "error": "INVALID_MODE",
-            "message": "mode must be one of: simple, flight, swarm"
-        }))).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": "INVALID_MODE",
+                "message": "mode must be one of: simple, flight, swarm"
+            })),
+        )
+            .into_response();
     }
 
-    if let Err(e) = state.store.put_setting("deployment_mode", &request.mode).await {
+    if let Err(e) = state
+        .store
+        .put_setting("deployment_mode", &request.mode)
+        .await
+    {
         error!("Failed to set deployment mode: {}", e);
-        return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
-            "error": "MODE_UPDATE_FAILED",
-            "message": format!("Failed to set mode: {}", e)
-        }))).into_response();
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({
+                "error": "MODE_UPDATE_FAILED",
+                "message": format!("Failed to set mode: {}", e)
+            })),
+        )
+            .into_response();
     }
 
     info!("Deployment mode set to: {}", request.mode);
@@ -5213,7 +6320,11 @@ pub async fn api_set_mode(
             match crate::mode::configure_flight_mode(store_clone).await {
                 Ok(_) => {
                     info!("Flight mode configuration completed");
-                    crate::start_network_services(&app_state_clone, app_state_clone.shutdown_rx.clone()).await;
+                    crate::start_network_services(
+                        &app_state_clone,
+                        app_state_clone.shutdown_rx.clone(),
+                    )
+                    .await;
                     let _ = event_manager.send("mode_configured:flight".to_string());
                 }
                 Err(e) => {
@@ -5224,10 +6335,14 @@ pub async fn api_set_mode(
         });
     }
 
-    (StatusCode::OK, Json(json!({
-        "success": true,
-        "mode": request.mode
-    }))).into_response()
+    (
+        StatusCode::OK,
+        Json(json!({
+            "success": true,
+            "mode": request.mode
+        })),
+    )
+        .into_response()
 }
 
 // ============================================================================
@@ -5278,10 +6393,14 @@ pub async fn api_get_users(
 ) -> impl IntoResponse {
     // Require authentication
     if auth_session.user.is_none() {
-        return (StatusCode::UNAUTHORIZED, Json(json!({
-            "error": "UNAUTHORIZED",
-            "message": "Authentication required"
-        }))).into_response();
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({
+                "error": "UNAUTHORIZED",
+                "message": "Authentication required"
+            })),
+        )
+            .into_response();
     }
 
     match state.store.list_users().await {
@@ -5291,10 +6410,14 @@ pub async fn api_get_users(
         }
         Err(e) => {
             error!("Failed to fetch users: {}", e);
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
-                "error": "DATABASE_ERROR",
-                "message": "Failed to fetch users"
-            }))).into_response()
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "error": "DATABASE_ERROR",
+                    "message": "Failed to fetch users"
+                })),
+            )
+                .into_response()
         }
     }
 }
@@ -5307,34 +6430,50 @@ pub async fn api_get_user(
     Path(id): Path<String>,
 ) -> impl IntoResponse {
     if auth_session.user.is_none() {
-        return (StatusCode::UNAUTHORIZED, Json(json!({
-            "error": "UNAUTHORIZED",
-            "message": "Authentication required"
-        }))).into_response();
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({
+                "error": "UNAUTHORIZED",
+                "message": "Authentication required"
+            })),
+        )
+            .into_response();
     }
 
     let user_id = match Uuid::parse_str(&id) {
         Ok(id) => id,
         Err(_) => {
-            return (StatusCode::BAD_REQUEST, Json(json!({
-                "error": "INVALID_ID",
-                "message": "Invalid user ID format"
-            }))).into_response();
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": "INVALID_ID",
+                    "message": "Invalid user ID format"
+                })),
+            )
+                .into_response();
         }
     };
 
     match state.store.get_user(user_id).await {
         Ok(Some(user)) => Json(UserResponse::from(user)).into_response(),
-        Ok(None) => (StatusCode::NOT_FOUND, Json(json!({
-            "error": "NOT_FOUND",
-            "message": "User not found"
-        }))).into_response(),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({
+                "error": "NOT_FOUND",
+                "message": "User not found"
+            })),
+        )
+            .into_response(),
         Err(e) => {
             error!("Failed to fetch user: {}", e);
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
-                "error": "DATABASE_ERROR",
-                "message": "Failed to fetch user"
-            }))).into_response()
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "error": "DATABASE_ERROR",
+                    "message": "Failed to fetch user"
+                })),
+            )
+                .into_response()
         }
     }
 }
@@ -5347,37 +6486,53 @@ pub async fn api_create_user(
     Json(request): Json<CreateUserRequest>,
 ) -> impl IntoResponse {
     if auth_session.user.is_none() {
-        return (StatusCode::UNAUTHORIZED, Json(json!({
-            "error": "UNAUTHORIZED",
-            "message": "Authentication required"
-        }))).into_response();
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({
+                "error": "UNAUTHORIZED",
+                "message": "Authentication required"
+            })),
+        )
+            .into_response();
     }
 
     // Validate input
     if request.username.trim().is_empty() {
-        return (StatusCode::BAD_REQUEST, Json(json!({
-            "error": "INVALID_INPUT",
-            "message": "Username cannot be empty"
-        }))).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": "INVALID_INPUT",
+                "message": "Username cannot be empty"
+            })),
+        )
+            .into_response();
     }
 
     if request.password.len() < 4 {
-        return (StatusCode::BAD_REQUEST, Json(json!({
-            "error": "INVALID_INPUT",
-            "message": "Password must be at least 4 characters"
-        }))).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": "INVALID_INPUT",
+                "message": "Password must be at least 4 characters"
+            })),
+        )
+            .into_response();
     }
 
     // Check if username already exists
     if let Ok(Some(_)) = state.store.get_user_by_username(&request.username).await {
-        return (StatusCode::CONFLICT, Json(json!({
-            "error": "DUPLICATE_USER",
-            "message": "A user with this username already exists"
-        }))).into_response();
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": "DUPLICATE_USER",
+                "message": "A user with this username already exists"
+            })),
+        )
+            .into_response();
     }
 
     // Hash the password
-    use argon2::{password_hash::SaltString, Argon2, PasswordHasher};
+    use argon2::{Argon2, PasswordHasher, password_hash::SaltString};
     use rand::rngs::OsRng;
 
     let salt = SaltString::generate(&mut OsRng);
@@ -5386,10 +6541,14 @@ pub async fn api_create_user(
         Ok(hash) => hash.to_string(),
         Err(e) => {
             error!("Failed to hash password: {}", e);
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
-                "error": "HASH_ERROR",
-                "message": "Failed to create user"
-            }))).into_response();
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "error": "HASH_ERROR",
+                    "message": "Failed to create user"
+                })),
+            )
+                .into_response();
         }
     };
 
@@ -5407,19 +6566,27 @@ pub async fn api_create_user(
     match state.store.put_user(&user).await {
         Ok(()) => {
             info!("Created new user: {} (id: {})", request.username, user_id);
-            (StatusCode::CREATED, Json(json!({
-                "id": user_id.to_string(),
-                "username": request.username,
-                "created_at": now,
-                "updated_at": now
-            }))).into_response()
+            (
+                StatusCode::CREATED,
+                Json(json!({
+                    "id": user_id.to_string(),
+                    "username": request.username,
+                    "created_at": now,
+                    "updated_at": now
+                })),
+            )
+                .into_response()
         }
         Err(e) => {
             error!("Failed to create user: {}", e);
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
-                "error": "DATABASE_ERROR",
-                "message": "Failed to create user"
-            }))).into_response()
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "error": "DATABASE_ERROR",
+                    "message": "Failed to create user"
+                })),
+            )
+                .into_response()
         }
     }
 }
@@ -5433,19 +6600,27 @@ pub async fn api_update_user(
     Json(request): Json<UpdateUserRequest>,
 ) -> impl IntoResponse {
     if auth_session.user.is_none() {
-        return (StatusCode::UNAUTHORIZED, Json(json!({
-            "error": "UNAUTHORIZED",
-            "message": "Authentication required"
-        }))).into_response();
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({
+                "error": "UNAUTHORIZED",
+                "message": "Authentication required"
+            })),
+        )
+            .into_response();
     }
 
     let user_id = match Uuid::parse_str(&id) {
         Ok(id) => id,
         Err(_) => {
-            return (StatusCode::BAD_REQUEST, Json(json!({
-                "error": "INVALID_ID",
-                "message": "Invalid user ID format"
-            }))).into_response();
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": "INVALID_ID",
+                    "message": "Invalid user ID format"
+                })),
+            )
+                .into_response();
         }
     };
 
@@ -5453,17 +6628,25 @@ pub async fn api_update_user(
     let mut user = match state.store.get_user(user_id).await {
         Ok(Some(user)) => user,
         Ok(None) => {
-            return (StatusCode::NOT_FOUND, Json(json!({
-                "error": "NOT_FOUND",
-                "message": "User not found"
-            }))).into_response();
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({
+                    "error": "NOT_FOUND",
+                    "message": "User not found"
+                })),
+            )
+                .into_response();
         }
         Err(e) => {
             error!("Failed to check user: {}", e);
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
-                "error": "DATABASE_ERROR",
-                "message": "Failed to update user"
-            }))).into_response();
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "error": "DATABASE_ERROR",
+                    "message": "Failed to update user"
+                })),
+            )
+                .into_response();
         }
     };
 
@@ -5475,10 +6658,14 @@ pub async fn api_update_user(
             // Check if new username is already taken
             if let Ok(Some(existing)) = state.store.get_user_by_username(username).await {
                 if existing.id != user_id {
-                    return (StatusCode::CONFLICT, Json(json!({
-                        "error": "DUPLICATE_USER",
-                        "message": "A user with this username already exists"
-                    }))).into_response();
+                    return (
+                        StatusCode::CONFLICT,
+                        Json(json!({
+                            "error": "DUPLICATE_USER",
+                            "message": "A user with this username already exists"
+                        })),
+                    )
+                        .into_response();
                 }
             }
             user.username = username.clone();
@@ -5488,7 +6675,7 @@ pub async fn api_update_user(
     // Update password if provided
     if let Some(ref password) = request.password {
         if !password.is_empty() {
-            use argon2::{password_hash::SaltString, Argon2, PasswordHasher};
+            use argon2::{Argon2, PasswordHasher, password_hash::SaltString};
             use rand::rngs::OsRng;
 
             let salt = SaltString::generate(&mut OsRng);
@@ -5497,10 +6684,14 @@ pub async fn api_update_user(
                 Ok(hash) => hash.to_string(),
                 Err(e) => {
                     error!("Failed to hash password: {}", e);
-                    return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
-                        "error": "HASH_ERROR",
-                        "message": "Failed to update password"
-                    }))).into_response();
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({
+                            "error": "HASH_ERROR",
+                            "message": "Failed to update password"
+                        })),
+                    )
+                        .into_response();
                 }
             };
             user.password_hash = password_hash;
@@ -5512,17 +6703,25 @@ pub async fn api_update_user(
     match state.store.put_user(&user).await {
         Ok(()) => {
             info!("Updated user id: {}", user_id);
-            (StatusCode::OK, Json(json!({
-                "success": true,
-                "id": user_id.to_string()
-            }))).into_response()
+            (
+                StatusCode::OK,
+                Json(json!({
+                    "success": true,
+                    "id": user_id.to_string()
+                })),
+            )
+                .into_response()
         }
         Err(e) => {
             error!("Failed to update user: {}", e);
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
-                "error": "DATABASE_ERROR",
-                "message": "Failed to update user"
-            }))).into_response()
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "error": "DATABASE_ERROR",
+                    "message": "Failed to update user"
+                })),
+            )
+                .into_response()
         }
     }
 }
@@ -5537,60 +6736,95 @@ pub async fn api_delete_user(
     let current_user = match auth_session.user {
         Some(user) => user,
         None => {
-            return (StatusCode::UNAUTHORIZED, Json(json!({
-                "error": "UNAUTHORIZED",
-                "message": "Authentication required"
-            }))).into_response();
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({
+                    "error": "UNAUTHORIZED",
+                    "message": "Authentication required"
+                })),
+            )
+                .into_response();
         }
     };
 
     let user_id = match Uuid::parse_str(&id) {
         Ok(id) => id,
         Err(_) => {
-            return (StatusCode::BAD_REQUEST, Json(json!({
-                "error": "INVALID_ID",
-                "message": "Invalid user ID format"
-            }))).into_response();
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": "INVALID_ID",
+                    "message": "Invalid user ID format"
+                })),
+            )
+                .into_response();
         }
     };
 
     // Prevent deleting yourself (compare usernames since auth uses username for session)
-    if current_user.username == state.store.get_user(user_id).await.ok().flatten().map(|u| u.username).unwrap_or_default() {
-        return (StatusCode::BAD_REQUEST, Json(json!({
-            "error": "CANNOT_DELETE_SELF",
-            "message": "You cannot delete your own account"
-        }))).into_response();
+    if current_user.username
+        == state
+            .store
+            .get_user(user_id)
+            .await
+            .ok()
+            .flatten()
+            .map(|u| u.username)
+            .unwrap_or_default()
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": "CANNOT_DELETE_SELF",
+                "message": "You cannot delete your own account"
+            })),
+        )
+            .into_response();
     }
 
     // Check how many users exist - don't allow deleting the last user
     let users = state.store.list_users().await.unwrap_or_default();
     if users.len() <= 1 {
-        return (StatusCode::BAD_REQUEST, Json(json!({
-            "error": "LAST_USER",
-            "message": "Cannot delete the last user"
-        }))).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": "LAST_USER",
+                "message": "Cannot delete the last user"
+            })),
+        )
+            .into_response();
     }
 
     match state.store.delete_user(user_id).await {
         Ok(true) => {
             info!("Deleted user id: {}", user_id);
-            (StatusCode::OK, Json(json!({
-                "success": true,
-                "id": user_id.to_string()
-            }))).into_response()
+            (
+                StatusCode::OK,
+                Json(json!({
+                    "success": true,
+                    "id": user_id.to_string()
+                })),
+            )
+                .into_response()
         }
-        Ok(false) => {
-            (StatusCode::NOT_FOUND, Json(json!({
+        Ok(false) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({
                 "error": "NOT_FOUND",
                 "message": "User not found"
-            }))).into_response()
-        }
+            })),
+        )
+            .into_response(),
         Err(e) => {
             error!("Failed to delete user: {}", e);
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
-                "error": "DATABASE_ERROR",
-                "message": "Failed to delete user"
-            }))).into_response()
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "error": "DATABASE_ERROR",
+                    "message": "Failed to delete user"
+                })),
+            )
+                .into_response()
         }
     }
 }
@@ -5608,11 +6842,10 @@ pub struct TemplateInfo {
 }
 
 /// List all templates with their enabled/disabled state
-pub async fn list_templates_handler(
-    State(state): State<crate::AppState>,
-) -> Response {
+pub async fn list_templates_handler(State(state): State<crate::AppState>) -> Response {
     // Get disabled templates from settings
-    let disabled_templates: Vec<String> = state.store
+    let disabled_templates: Vec<String> = state
+        .store
         .get_setting("disabled_templates")
         .await
         .ok()
@@ -5628,30 +6861,37 @@ pub async fn list_templates_handler(
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(json!({ "error": "Failed to list templates" })),
-            ).into_response();
+            )
+                .into_response();
         }
     };
 
     // Map to TemplateInfo
-    let template_infos: Vec<TemplateInfo> = templates.iter().map(|t| {
-        let name = t.metadata.name.clone();
-        let (display_name, icon) = match name.as_str() {
-            "ubuntu-2404" => ("Ubuntu 24.04 LTS".to_string(), "ubuntu".to_string()),
-            "ubuntu-2204" => ("Ubuntu 22.04 LTS".to_string(), "ubuntu".to_string()),
-            "debian-13" => ("Debian 13 (Trixie)".to_string(), "debian".to_string()),
-            "debian-12" => ("Debian 12 (Bookworm)".to_string(), "debian".to_string()),
-            "proxmox" => ("Proxmox VE".to_string(), "proxmox".to_string()),
-            _ => (name.clone(), "generic".to_string()),
-        };
-        let builtin = matches!(name.as_str(), "ubuntu-2404" | "ubuntu-2204" | "debian-13" | "debian-12" | "proxmox");
-        TemplateInfo {
-            name: name.clone(),
-            display_name,
-            icon,
-            enabled: !disabled_templates.contains(&name),
-            builtin,
-        }
-    }).collect();
+    let template_infos: Vec<TemplateInfo> = templates
+        .iter()
+        .map(|t| {
+            let name = t.metadata.name.clone();
+            let (display_name, icon) = match name.as_str() {
+                "ubuntu-2404" => ("Ubuntu 24.04 LTS".to_string(), "ubuntu".to_string()),
+                "ubuntu-2204" => ("Ubuntu 22.04 LTS".to_string(), "ubuntu".to_string()),
+                "debian-13" => ("Debian 13 (Trixie)".to_string(), "debian".to_string()),
+                "debian-12" => ("Debian 12 (Bookworm)".to_string(), "debian".to_string()),
+                "proxmox" => ("Proxmox VE".to_string(), "proxmox".to_string()),
+                _ => (name.clone(), "generic".to_string()),
+            };
+            let builtin = matches!(
+                name.as_str(),
+                "ubuntu-2404" | "ubuntu-2204" | "debian-13" | "debian-12" | "proxmox"
+            );
+            TemplateInfo {
+                name: name.clone(),
+                display_name,
+                icon,
+                enabled: !disabled_templates.contains(&name),
+                builtin,
+            }
+        })
+        .collect();
 
     Json(template_infos).into_response()
 }
@@ -5662,7 +6902,8 @@ pub async fn toggle_template_handler(
     Path(template_name): Path<String>,
 ) -> Response {
     // Get current disabled templates
-    let mut disabled_templates: Vec<String> = state.store
+    let mut disabled_templates: Vec<String> = state
+        .store
         .get_setting("disabled_templates")
         .await
         .ok()
@@ -5680,12 +6921,20 @@ pub async fn toggle_template_handler(
     };
 
     // Save
-    if let Err(e) = state.store.put_setting("disabled_templates", &serde_json::to_string(&disabled_templates).unwrap()).await {
+    if let Err(e) = state
+        .store
+        .put_setting(
+            "disabled_templates",
+            &serde_json::to_string(&disabled_templates).unwrap(),
+        )
+        .await
+    {
         error!("Failed to save disabled_templates: {}", e);
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({ "error": "Failed to save setting" })),
-        ).into_response();
+        )
+            .into_response();
     }
 
     info!(template = %template_name, enabled = now_enabled, "Template toggled");
@@ -5700,29 +6949,30 @@ pub async fn get_template_content_handler(
     // Try to read from file first (source of truth)
     let file_path = format!("/var/lib/dragonfly/os-templates/{}.yml", template_name);
     match tokio::fs::read_to_string(&file_path).await {
-        Ok(content) => {
-            Json(json!({ "name": template_name, "content": content })).into_response()
-        }
+        Ok(content) => Json(json!({ "name": template_name, "content": content })).into_response(),
         Err(_) => {
             // Fall back to store
             match state.store.get_template(&template_name).await {
-                Ok(Some(template)) => {
-                    match serde_yaml::to_string(&template) {
-                        Ok(yaml) => Json(json!({ "name": template_name, "content": yaml })).into_response(),
-                        Err(e) => (
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            Json(json!({ "error": format!("Failed to serialize template: {}", e) })),
-                        ).into_response(),
+                Ok(Some(template)) => match serde_yaml::to_string(&template) {
+                    Ok(yaml) => {
+                        Json(json!({ "name": template_name, "content": yaml })).into_response()
                     }
-                }
+                    Err(e) => (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({ "error": format!("Failed to serialize template: {}", e) })),
+                    )
+                        .into_response(),
+                },
                 Ok(None) => (
                     StatusCode::NOT_FOUND,
                     Json(json!({ "error": "Template not found" })),
-                ).into_response(),
+                )
+                    .into_response(),
                 Err(e) => (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Json(json!({ "error": format!("Failed to get template: {}", e) })),
-                ).into_response(),
+                )
+                    .into_response(),
             }
         }
     }
@@ -5746,7 +6996,8 @@ pub async fn update_template_content_handler(
             return (
                 StatusCode::BAD_REQUEST,
                 Json(json!({ "error": format!("Invalid YAML: {}", e) })),
-            ).into_response();
+            )
+                .into_response();
         }
     };
 
@@ -5755,7 +7006,8 @@ pub async fn update_template_content_handler(
         return (
             StatusCode::BAD_REQUEST,
             Json(json!({ "error": format!("Invalid template: {}", e) })),
-        ).into_response();
+        )
+            .into_response();
     }
 
     // Save to file
@@ -5765,7 +7017,8 @@ pub async fn update_template_content_handler(
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({ "error": format!("Failed to save template: {}", e) })),
-        ).into_response();
+        )
+            .into_response();
     }
 
     // Update in store
@@ -5774,7 +7027,8 @@ pub async fn update_template_content_handler(
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({ "error": format!("Failed to update template: {}", e) })),
-        ).into_response();
+        )
+            .into_response();
     }
 
     info!(template = %template_name, "Template updated");
@@ -5820,16 +7074,30 @@ async fn verify_agent_mac(
     request_mac: &str,
 ) -> Result<dragonfly_common::Machine, Response> {
     let machine_uuid = Uuid::parse_str(machine_id_str).map_err(|_| {
-        (StatusCode::BAD_REQUEST, Json(json!({ "success": false, "message": "Invalid machine_id" }))).into_response()
+        (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "success": false, "message": "Invalid machine_id" })),
+        )
+            .into_response()
     })?;
 
-    let machine = store.get_machine(machine_uuid).await
+    let machine = store
+        .get_machine(machine_uuid)
+        .await
         .map_err(|e| {
             error!("Store error looking up machine: {}", e);
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "success": false, "message": "Store error" }))).into_response()
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "success": false, "message": "Store error" })),
+            )
+                .into_response()
         })?
         .ok_or_else(|| {
-            (StatusCode::NOT_FOUND, Json(json!({ "success": false, "message": "Machine not found" }))).into_response()
+            (
+                StatusCode::NOT_FOUND,
+                Json(json!({ "success": false, "message": "Machine not found" })),
+            )
+                .into_response()
         })?;
 
     // Verify MAC matches
@@ -5842,7 +7110,11 @@ async fn verify_agent_mac(
             stored_mac = %stored_mac,
             "Agent MAC verification failed"
         );
-        return Err((StatusCode::FORBIDDEN, Json(json!({ "success": false, "message": "MAC mismatch" }))).into_response());
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(json!({ "success": false, "message": "MAC mismatch" })),
+        )
+            .into_response());
     }
 
     Ok(machine)
@@ -5858,7 +7130,8 @@ pub async fn agent_request_install_handler(
 ) -> Response {
     info!(machine_id = %req.machine_id, template = %req.template_name, "Agent install request");
 
-    let mut machine = match verify_agent_mac(state.store.as_ref(), &req.machine_id, &req.mac).await {
+    let mut machine = match verify_agent_mac(state.store.as_ref(), &req.machine_id, &req.mac).await
+    {
         Ok(m) => m,
         Err(resp) => return resp,
     };
@@ -5873,9 +7146,13 @@ pub async fn agent_request_install_handler(
         }
         Err(e) => {
             error!("Store error checking template: {}", e);
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
-                "success": false, "message": "Store error"
-            }))).into_response();
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "success": false, "message": "Store error"
+                })),
+            )
+                .into_response();
         }
     }
 
@@ -5885,9 +7162,13 @@ pub async fn agent_request_install_handler(
 
     if let Err(e) = state.store.put_machine(&machine).await {
         error!("Failed to update machine: {}", e);
-        return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
-            "success": false, "message": "Failed to update machine"
-        }))).into_response();
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({
+                "success": false, "message": "Failed to update machine"
+            })),
+        )
+            .into_response();
     }
 
     info!(
@@ -5896,7 +7177,9 @@ pub async fn agent_request_install_handler(
         "Machine flagged for reimage via agent request"
     );
 
-    let _ = state.event_manager.send(format!("machine_updated:{}", req.machine_id));
+    let _ = state
+        .event_manager
+        .send(format!("machine_updated:{}", req.machine_id));
 
     Json(json!({ "success": true, "message": "Install requested" })).into_response()
 }
@@ -5919,17 +7202,25 @@ pub async fn agent_remove_handler(
     match state.store.delete_machine(machine.id).await {
         Ok(true) => {
             info!(machine_id = %req.machine_id, "Machine removed via agent request");
-            let _ = state.event_manager.send(format!("machine_deleted:{}", req.machine_id));
+            let _ = state
+                .event_manager
+                .send(format!("machine_deleted:{}", req.machine_id));
             Json(json!({ "success": true, "message": "Machine removed" })).into_response()
         }
-        Ok(false) => {
-            (StatusCode::NOT_FOUND, Json(json!({ "success": false, "message": "Machine not found" }))).into_response()
-        }
+        Ok(false) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "success": false, "message": "Machine not found" })),
+        )
+            .into_response(),
         Err(e) => {
             error!("Failed to delete machine: {}", e);
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
-                "success": false, "message": "Failed to delete machine"
-            }))).into_response()
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "success": false, "message": "Failed to delete machine"
+                })),
+            )
+                .into_response()
         }
     }
 }
@@ -5958,9 +7249,13 @@ pub async fn agent_boot_mode_handler(
         "memtest" | "rescue" => {}
         "iso" => {
             if req.iso_name.as_ref().map_or(true, |n| n.is_empty()) {
-                return (StatusCode::BAD_REQUEST, Json(json!({
-                    "success": false, "message": "iso_name required for iso mode"
-                }))).into_response();
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({
+                        "success": false, "message": "iso_name required for iso mode"
+                    })),
+                )
+                    .into_response();
             }
             // Verify ISO exists on disk
             let iso_name = req.iso_name.as_ref().unwrap();
@@ -5972,19 +7267,27 @@ pub async fn agent_boot_mode_handler(
             }
         }
         _ => {
-            return (StatusCode::BAD_REQUEST, Json(json!({
-                "success": false, "message": format!("Unknown boot mode: {}", req.mode)
-            }))).into_response();
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "success": false, "message": format!("Unknown boot mode: {}", req.mode)
+                })),
+            )
+                .into_response();
         }
     }
 
-    let mut machine = match verify_agent_mac(state.store.as_ref(), &req.machine_id, &req.mac).await {
+    let mut machine = match verify_agent_mac(state.store.as_ref(), &req.machine_id, &req.mac).await
+    {
         Ok(m) => m,
         Err(resp) => return resp,
     };
 
     // Clear any existing boot-mode and boot-iso tags
-    machine.config.tags.retain(|t| !t.starts_with("boot-mode:") && !t.starts_with("boot-iso:"));
+    machine
+        .config
+        .tags
+        .retain(|t| !t.starts_with("boot-mode:") && !t.starts_with("boot-iso:"));
 
     // Set boot-mode tag
     machine.config.tags.push(format!("boot-mode:{}", req.mode));
@@ -5998,15 +7301,22 @@ pub async fn agent_boot_mode_handler(
 
     if let Err(e) = state.store.put_machine(&machine).await {
         error!("Failed to update machine with boot mode: {}", e);
-        return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
-            "success": false, "message": "Failed to store boot mode"
-        }))).into_response();
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({
+                "success": false, "message": "Failed to store boot mode"
+            })),
+        )
+            .into_response();
     }
 
     info!(machine_id = %req.machine_id, mode = %req.mode, "Boot mode override set");
-    let _ = state.event_manager.send(format!("machine_updated:{}", req.machine_id));
+    let _ = state
+        .event_manager
+        .send(format!("machine_updated:{}", req.machine_id));
 
-    Json(json!({ "success": true, "message": format!("Boot mode '{}' configured", req.mode) })).into_response()
+    Json(json!({ "success": true, "message": format!("Boot mode '{}' configured", req.mode) }))
+        .into_response()
 }
 
 /// GET /api/agent/isos
@@ -6044,13 +7354,15 @@ pub async fn agent_list_isos_handler() -> Response {
 /// GET /api/isos
 ///
 /// Returns detailed list of ISO files for the web UI.
-pub async fn list_isos_handler(
-    auth_session: AuthSession,
-) -> Response {
+pub async fn list_isos_handler(auth_session: AuthSession) -> Response {
     if auth_session.user.is_none() {
-        return (StatusCode::UNAUTHORIZED, Json(json!({
-            "error": "Unauthorized"
-        }))).into_response();
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({
+                "error": "Unauthorized"
+            })),
+        )
+            .into_response();
     }
 
     let iso_dir = std::path::Path::new("/var/lib/dragonfly/isos");
@@ -6068,7 +7380,8 @@ pub async fn list_isos_handler(
                     if name.ends_with(".iso") || name.ends_with(".ISO") {
                         let metadata = std::fs::metadata(&path).ok();
                         let size = metadata.as_ref().map(|m| m.len()).unwrap_or(0);
-                        let modified = metadata.as_ref()
+                        let modified = metadata
+                            .as_ref()
                             .and_then(|m| m.modified().ok())
                             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                             .map(|d| d.as_secs())
@@ -6099,51 +7412,78 @@ pub async fn upload_iso_handler(
     use tokio::io::AsyncWriteExt;
 
     if auth_session.user.is_none() {
-        return (StatusCode::UNAUTHORIZED, Json(json!({
-            "error": "Unauthorized"
-        }))).into_response();
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({
+                "error": "Unauthorized"
+            })),
+        )
+            .into_response();
     }
 
     let iso_dir = std::path::Path::new("/var/lib/dragonfly/isos");
     if let Err(e) = tokio::fs::create_dir_all(iso_dir).await {
         error!("Failed to create ISO directory: {}", e);
-        return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
-            "error": "Failed to create ISO directory"
-        }))).into_response();
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({
+                "error": "Failed to create ISO directory"
+            })),
+        )
+            .into_response();
     }
 
     let mut field = match multipart.next_field().await {
         Ok(Some(field)) => field,
         Ok(None) => {
-            return (StatusCode::BAD_REQUEST, Json(json!({
-                "error": "No file provided"
-            }))).into_response();
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": "No file provided"
+                })),
+            )
+                .into_response();
         }
         Err(e) => {
             error!("Failed to parse multipart upload: {:?}", e);
-            return (StatusCode::BAD_REQUEST, Json(json!({
-                "error": "Failed to parse upload"
-            }))).into_response();
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": "Failed to parse upload"
+                })),
+            )
+                .into_response();
         }
     };
 
     let file_name = match field.file_name() {
         Some(name) => {
             // Sanitize filename - only allow alphanumeric, dash, underscore, dot
-            let sanitized: String = name.chars()
+            let sanitized: String = name
+                .chars()
                 .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_' || *c == '.')
                 .collect();
-            if sanitized.is_empty() || (!sanitized.ends_with(".iso") && !sanitized.ends_with(".ISO")) {
-                return (StatusCode::BAD_REQUEST, Json(json!({
-                    "error": "Invalid filename - must end with .iso"
-                }))).into_response();
+            if sanitized.is_empty()
+                || (!sanitized.ends_with(".iso") && !sanitized.ends_with(".ISO"))
+            {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({
+                        "error": "Invalid filename - must end with .iso"
+                    })),
+                )
+                    .into_response();
             }
             sanitized
         }
         None => {
-            return (StatusCode::BAD_REQUEST, Json(json!({
-                "error": "No filename provided"
-            }))).into_response();
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": "No filename provided"
+                })),
+            )
+                .into_response();
         }
     };
 
@@ -6154,9 +7494,13 @@ pub async fn upload_iso_handler(
         Ok(f) => f,
         Err(e) => {
             error!("Failed to create ISO file {}: {}", file_name, e);
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
-                "error": "Failed to create file"
-            }))).into_response();
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "error": "Failed to create file"
+                })),
+            )
+                .into_response();
         }
     };
 
@@ -6169,9 +7513,13 @@ pub async fn upload_iso_handler(
                     // Clean up partial file
                     drop(file);
                     let _ = tokio::fs::remove_file(&dest).await;
-                    return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
-                        "error": "Failed to write file"
-                    }))).into_response();
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({
+                            "error": "Failed to write file"
+                        })),
+                    )
+                        .into_response();
                 }
                 total_bytes += chunk.len() as u64;
             }
@@ -6181,9 +7529,13 @@ pub async fn upload_iso_handler(
                 // Clean up partial file
                 drop(file);
                 let _ = tokio::fs::remove_file(&dest).await;
-                return (StatusCode::BAD_REQUEST, Json(json!({
-                    "error": "Upload interrupted"
-                }))).into_response();
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({
+                        "error": "Upload interrupted"
+                    })),
+                )
+                    .into_response();
             }
         }
     }
@@ -6197,7 +7549,8 @@ pub async fn upload_iso_handler(
         "success": true,
         "name": file_name,
         "size": total_bytes
-    })).into_response()
+    }))
+    .into_response()
 }
 
 /// DELETE /api/isos/{filename}
@@ -6208,28 +7561,41 @@ pub async fn delete_iso_handler(
     Path(filename): Path<String>,
 ) -> Response {
     if auth_session.user.is_none() {
-        return (StatusCode::UNAUTHORIZED, Json(json!({
-            "error": "Unauthorized"
-        }))).into_response();
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({
+                "error": "Unauthorized"
+            })),
+        )
+            .into_response();
     }
 
     // Sanitize to prevent path traversal
-    let sanitized: String = filename.chars()
+    let sanitized: String = filename
+        .chars()
         .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_' || *c == '.')
         .collect();
 
     if sanitized.is_empty() || sanitized.contains("..") {
-        return (StatusCode::BAD_REQUEST, Json(json!({
-            "error": "Invalid filename"
-        }))).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": "Invalid filename"
+            })),
+        )
+            .into_response();
     }
 
     let path = std::path::Path::new("/var/lib/dragonfly/isos").join(&sanitized);
 
     if !path.exists() {
-        return (StatusCode::NOT_FOUND, Json(json!({
-            "error": "ISO not found"
-        }))).into_response();
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({
+                "error": "ISO not found"
+            })),
+        )
+            .into_response();
     }
 
     match std::fs::remove_file(&path) {
@@ -6239,9 +7605,13 @@ pub async fn delete_iso_handler(
         }
         Err(e) => {
             error!("Failed to delete ISO: {}", e);
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
-                "error": "Failed to delete file"
-            }))).into_response()
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "error": "Failed to delete file"
+                })),
+            )
+                .into_response()
         }
     }
 }
@@ -6255,14 +7625,22 @@ async fn list_networks_handler(
     auth_session: AuthSession,
 ) -> Response {
     if auth_session.user.is_none() {
-        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Not authenticated"}))).into_response();
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": "Not authenticated"})),
+        )
+            .into_response();
     }
 
     match state.store.list_networks().await {
         Ok(networks) => Json(networks).into_response(),
         Err(e) => {
             error!("Failed to list networks: {}", e);
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response()
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": e.to_string()})),
+            )
+                .into_response()
         }
     }
 }
@@ -6273,15 +7651,27 @@ async fn get_network_handler(
     Path(id): Path<Uuid>,
 ) -> Response {
     if auth_session.user.is_none() {
-        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Not authenticated"}))).into_response();
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": "Not authenticated"})),
+        )
+            .into_response();
     }
 
     match state.store.get_network(id).await {
         Ok(Some(network)) => Json(network).into_response(),
-        Ok(None) => (StatusCode::NOT_FOUND, Json(json!({"error": "Network not found"}))).into_response(),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "Network not found"})),
+        )
+            .into_response(),
         Err(e) => {
             error!("Failed to get network: {}", e);
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response()
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": e.to_string()})),
+            )
+                .into_response()
         }
     }
 }
@@ -6292,17 +7682,23 @@ async fn create_network_handler(
     Json(payload): Json<dragonfly_common::Network>,
 ) -> Response {
     if auth_session.user.is_none() {
-        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Not authenticated"}))).into_response();
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": "Not authenticated"})),
+        )
+            .into_response();
     }
 
     info!("Creating network: {}", payload.name);
     match state.store.put_network(&payload).await {
-        Ok(()) => {
-            (StatusCode::CREATED, Json(&payload)).into_response()
-        }
+        Ok(()) => (StatusCode::CREATED, Json(&payload)).into_response(),
         Err(e) => {
             error!("Failed to create network: {}", e);
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response()
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": e.to_string()})),
+            )
+                .into_response()
         }
     }
 }
@@ -6314,7 +7710,11 @@ async fn update_network_handler(
     Json(mut payload): Json<dragonfly_common::Network>,
 ) -> Response {
     if auth_session.user.is_none() {
-        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Not authenticated"}))).into_response();
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": "Not authenticated"})),
+        )
+            .into_response();
     }
 
     // Ensure path ID matches payload
@@ -6328,7 +7728,11 @@ async fn update_network_handler(
         }
         Err(e) => {
             error!("Failed to update network: {}", e);
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response()
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": e.to_string()})),
+            )
+                .into_response()
         }
     }
 }
@@ -6339,7 +7743,11 @@ async fn delete_network_handler(
     Path(id): Path<Uuid>,
 ) -> Response {
     if auth_session.user.is_none() {
-        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Not authenticated"}))).into_response();
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": "Not authenticated"})),
+        )
+            .into_response();
     }
 
     match state.store.delete_network(id).await {
@@ -6347,10 +7755,18 @@ async fn delete_network_handler(
             let _ = state.event_manager.send("network_deleted".to_string());
             Json(json!({"success": true})).into_response()
         }
-        Ok(false) => (StatusCode::NOT_FOUND, Json(json!({"error": "Network not found"}))).into_response(),
+        Ok(false) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "Network not found"})),
+        )
+            .into_response(),
         Err(e) => {
             error!("Failed to delete network: {}", e);
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response()
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": e.to_string()})),
+            )
+                .into_response()
         }
     }
 }
@@ -6365,18 +7781,35 @@ async fn apply_machine_config_handler(
     Path(id): Path<Uuid>,
 ) -> Response {
     if auth_session.user.is_none() {
-        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Not authenticated"}))).into_response();
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": "Not authenticated"})),
+        )
+            .into_response();
     }
 
     // Get machine
     let mut machine = match state.store.get_machine(id).await {
         Ok(Some(m)) => m,
-        Ok(None) => return (StatusCode::NOT_FOUND, Json(json!({"error": "Machine not found"}))).into_response(),
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": "Machine not found"})),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": e.to_string()})),
+            )
+                .into_response();
+        }
     };
 
     if !machine.config.pending_apply {
-        return Json(json!({"success": true, "message": "No pending changes to apply"})).into_response();
+        return Json(json!({"success": true, "message": "No pending changes to apply"}))
+            .into_response();
     }
 
     // Mark as applied — keep new values, clear pending tracking + snapshot
@@ -6387,7 +7820,11 @@ async fn apply_machine_config_handler(
 
     // Update current_ip to reflect the static config that will be applied
     if let Some(ref static_ipv4) = machine.config.static_ipv4 {
-        if matches!(machine.config.network_mode, dragonfly_common::NetworkMode::StaticIpv4 | dragonfly_common::NetworkMode::StaticDualStack) {
+        if matches!(
+            machine.config.network_mode,
+            dragonfly_common::NetworkMode::StaticIpv4
+                | dragonfly_common::NetworkMode::StaticDualStack
+        ) {
             machine.status.current_ip = Some(static_ipv4.address.clone());
         }
     }
@@ -6400,7 +7837,11 @@ async fn apply_machine_config_handler(
         }
         Err(e) => {
             error!("Failed to update machine after apply: {}", e);
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response()
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": e.to_string()})),
+            )
+                .into_response()
         }
     }
 }
@@ -6414,19 +7855,43 @@ async fn apply_proxmox_config(
     use proxmox_client::HttpApiClient;
 
     if auth_session.user.is_none() {
-        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Not authenticated"}))).into_response();
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": "Not authenticated"})),
+        )
+            .into_response();
     }
 
     let machine = match state.store.get_machine(id).await {
         Ok(Some(m)) => m,
-        Ok(None) => return (StatusCode::NOT_FOUND, Json(json!({"error": "Machine not found"}))).into_response(),
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": "Machine not found"})),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": e.to_string()})),
+            )
+                .into_response();
+        }
     };
 
     let (node, vmid, is_lxc) = match &machine.metadata.source {
         dragonfly_common::MachineSource::Proxmox { node, vmid, .. } => (node.clone(), *vmid, false),
-        dragonfly_common::MachineSource::ProxmoxLxc { node, ctid, .. } => (node.clone(), *ctid, true),
-        _ => return (StatusCode::BAD_REQUEST, Json(json!({"error": "Not a Proxmox VM or LXC"}))).into_response(),
+        dragonfly_common::MachineSource::ProxmoxLxc { node, ctid, .. } => {
+            (node.clone(), *ctid, true)
+        }
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "Not a Proxmox VM or LXC"})),
+            )
+                .into_response();
+        }
     };
 
     // Build config JSON to push
@@ -6441,7 +7906,8 @@ async fn apply_proxmox_config(
     }
 
     if config.is_empty() {
-        return Json(json!({"success": true, "message": "No config changes to push"})).into_response();
+        return Json(json!({"success": true, "message": "No config changes to push"}))
+            .into_response();
     }
 
     let vm_type = if is_lxc { "lxc" } else { "qemu" };
@@ -6449,35 +7915,52 @@ async fn apply_proxmox_config(
     let params = serde_json::Value::Object(config.clone());
 
     match crate::handlers::proxmox::connect_to_proxmox(&state, "config").await {
-        Ok(client) => {
-            match client.put(&config_path, &params).await {
-                Ok(response) => {
-                    if response.status >= 200 && response.status < 300 {
-                        info!("Successfully pushed config to Proxmox VM {} (node {}): {:?}", vmid, node, config);
-                        Json(json!({"success": true, "message": "Configuration pushed to Proxmox"})).into_response()
-                    } else {
-                        error!("Proxmox config push failed for VM {}: status {}", vmid, response.status);
-                        (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
+        Ok(client) => match client.put(&config_path, &params).await {
+            Ok(response) => {
+                if response.status >= 200 && response.status < 300 {
+                    info!(
+                        "Successfully pushed config to Proxmox VM {} (node {}): {:?}",
+                        vmid, node, config
+                    );
+                    Json(json!({"success": true, "message": "Configuration pushed to Proxmox"}))
+                        .into_response()
+                } else {
+                    error!(
+                        "Proxmox config push failed for VM {}: status {}",
+                        vmid, response.status
+                    );
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({
                             "error": "Proxmox returned error",
                             "message": format!("Status {}", response.status)
-                        }))).into_response()
-                    }
-                },
-                Err(e) => {
-                    error!("Proxmox config push error for VM {}: {}", vmid, e);
-                    (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
+                        })),
+                    )
+                        .into_response()
+                }
+            }
+            Err(e) => {
+                error!("Proxmox config push error for VM {}: {}", vmid, e);
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({
                         "error": "Failed to push config to Proxmox",
                         "message": e.to_string()
-                    }))).into_response()
-                }
+                    })),
+                )
+                    .into_response()
             }
         },
         Err(e) => {
             error!("Failed to connect to Proxmox for config push: {}", e);
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
-                "error": "Failed to connect to Proxmox",
-                "message": e.to_string()
-            }))).into_response()
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "error": "Failed to connect to Proxmox",
+                    "message": e.to_string()
+                })),
+            )
+                .into_response()
         }
     }
 }
@@ -6489,13 +7972,29 @@ async fn revert_pending_handler(
     Path(id): Path<Uuid>,
 ) -> Response {
     if auth_session.user.is_none() {
-        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Not authenticated"}))).into_response();
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": "Not authenticated"})),
+        )
+            .into_response();
     }
 
     let mut machine = match state.store.get_machine(id).await {
         Ok(Some(m)) => m,
-        Ok(None) => return (StatusCode::NOT_FOUND, Json(json!({"error": "Machine not found"}))).into_response(),
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": "Machine not found"})),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": e.to_string()})),
+            )
+                .into_response();
+        }
     };
 
     revert_pending_changes(&mut machine);
@@ -6508,7 +8007,11 @@ async fn revert_pending_handler(
         }
         Err(e) => {
             error!("Failed to revert pending for machine {}: {}", id, e);
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response()
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": e.to_string()})),
+            )
+                .into_response()
         }
     }
 }

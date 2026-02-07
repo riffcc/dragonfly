@@ -285,8 +285,7 @@ mod tests {
         let workflow = Workflow::new("test", "test", "test");
         let reporter = Arc::new(CollectingReporter::new());
 
-        let ctx = ActionContext::new(hardware, workflow)
-            .with_progress_reporter(reporter.clone());
+        let ctx = ActionContext::new(hardware, workflow).with_progress_reporter(reporter.clone());
 
         let action = ProgressAction;
         let result = action.execute(&ctx).await.unwrap();

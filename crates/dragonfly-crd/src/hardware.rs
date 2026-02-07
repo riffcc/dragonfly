@@ -3,7 +3,7 @@
 //! These types are compatible with Tinkerbell's Hardware CRD format
 //! (tinkerbell.org/v1alpha1) for migration and interoperability.
 
-use crate::{ObjectMeta, TypeMeta, CrdError, Result};
+use crate::{CrdError, ObjectMeta, Result, TypeMeta};
 use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
 use std::str::FromStr;
@@ -314,7 +314,9 @@ impl DhcpSpec {
     pub fn validate(&self) -> Result<()> {
         // Validate MAC address format (basic check)
         if self.mac.is_empty() {
-            return Err(CrdError::InvalidMacAddress("MAC address is empty".to_string()));
+            return Err(CrdError::InvalidMacAddress(
+                "MAC address is empty".to_string(),
+            ));
         }
 
         // MAC should be 6 bytes in hex, separated by colons or dashes
@@ -522,7 +524,14 @@ mod tests {
             spec.metadata.as_ref().unwrap().instance.hostname,
             "server-01"
         );
-        assert!(spec.interfaces[0].netboot.as_ref().unwrap().allow_pxe.unwrap());
+        assert!(
+            spec.interfaces[0]
+                .netboot
+                .as_ref()
+                .unwrap()
+                .allow_pxe
+                .unwrap()
+        );
     }
 
     #[test]
@@ -538,13 +547,22 @@ mod tests {
     #[test]
     fn test_dhcp_spec_validation_invalid_mac() {
         let dhcp = DhcpSpec::new("");
-        assert!(matches!(dhcp.validate(), Err(CrdError::InvalidMacAddress(_))));
+        assert!(matches!(
+            dhcp.validate(),
+            Err(CrdError::InvalidMacAddress(_))
+        ));
 
         let dhcp = DhcpSpec::new("invalid");
-        assert!(matches!(dhcp.validate(), Err(CrdError::InvalidMacAddress(_))));
+        assert!(matches!(
+            dhcp.validate(),
+            Err(CrdError::InvalidMacAddress(_))
+        ));
 
         let dhcp = DhcpSpec::new("00:11:22:33:44"); // Too short
-        assert!(matches!(dhcp.validate(), Err(CrdError::InvalidMacAddress(_))));
+        assert!(matches!(
+            dhcp.validate(),
+            Err(CrdError::InvalidMacAddress(_))
+        ));
     }
 
     #[test]
@@ -558,7 +576,10 @@ mod tests {
             gateway: None,
             netmask: None,
         });
-        assert!(matches!(dhcp.validate(), Err(CrdError::InvalidIpAddress(_))));
+        assert!(matches!(
+            dhcp.validate(),
+            Err(CrdError::InvalidIpAddress(_))
+        ));
     }
 
     #[test]

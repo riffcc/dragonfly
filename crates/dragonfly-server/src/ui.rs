@@ -1,24 +1,24 @@
+use crate::store::conversions::machine_to_common;
 use axum::{
-    extract::{Path, Query, State, OriginalUri},
-    http::{header, HeaderMap, StatusCode},
+    Form, Router,
+    extract::{OriginalUri, Path, Query, State},
+    http::{HeaderMap, StatusCode, header},
     response::{Html, IntoResponse, Redirect, Response},
     routing::{get, post},
-    Form, Router,
 };
-use dragonfly_common::models::{Machine, MachineStatus, DiskInfo};
-use dragonfly_common::Machine as V1Machine;
-use crate::store::conversions::machine_to_common;
-use tracing::{debug, error, info, warn};
-use std::collections::HashMap;
-use chrono::{DateTime, Utc, TimeZone};
+use chrono::{DateTime, TimeZone, Utc};
 use cookie::{Cookie, SameSite};
+use dragonfly_common::Machine as V1Machine;
+use dragonfly_common::models::{DiskInfo, Machine, MachineStatus};
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
-use serde::{Serialize, Deserialize};
+use tracing::{debug, error, info, warn};
 // SQLite db functions removed - using v1 Store trait directly
-use crate::auth::{self, AuthSession, Settings, Credentials};
+use crate::auth::{self, AuthSession, Credentials, Settings};
 use minijinja::{Error as MiniJinjaError, ErrorKind as MiniJinjaErrorKind};
-use std::sync::Arc;
 use std::net::{IpAddr, Ipv4Addr};
+use std::sync::Arc;
 use uuid::Uuid;
 
 // Stub types for workflow info (Tinkerbell integration removed)
@@ -100,7 +100,7 @@ pub struct MachineListTemplate {
 }
 
 // No Serialize derive needed for Askama
-#[derive(Serialize)] 
+#[derive(Serialize)]
 pub struct MachineDetailsTemplate {
     pub machine_json: String, // Serialized machine data
     pub theme: String,
@@ -108,7 +108,7 @@ pub struct MachineDetailsTemplate {
     pub created_at_formatted: String,
     pub updated_at_formatted: String,
     pub workflow_info_json: String, // Serialized workflow info data
-    pub machine: Machine, // Original machine struct for convenience
+    pub machine: Machine,           // Original machine struct for convenience
     pub workflow_info: Option<WorkflowInfo>, // Original workflow info for convenience
     pub current_path: String,
     pub ip_address_type: String, // New field for IP address type
@@ -174,28 +174,28 @@ pub struct ComputeTemplate {
 // Updated render_minijinja function
 pub fn render_minijinja<T: Serialize>(
     app_state: &crate::AppState,
-    template_name: &str, 
-    context: T
+    template_name: &str,
+    context: T,
 ) -> Response {
     // Get the environment based on the mode (static or reloading)
     let render_result = match &app_state.template_env {
-        crate::TemplateEnv::Static(env) => {
-            env.get_template(template_name)
-               .and_then(|tmpl| tmpl.render(context))
-        }
+        crate::TemplateEnv::Static(env) => env
+            .get_template(template_name)
+            .and_then(|tmpl| tmpl.render(context)),
         #[cfg(debug_assertions)]
         crate::TemplateEnv::Reloading(reloader) => {
             // Acquire the environment from the reloader
             match reloader.acquire_env() {
-                Ok(env) => {
-                    env.get_template(template_name)
-                       .and_then(|tmpl| tmpl.render(context))
-                }
+                Ok(env) => env
+                    .get_template(template_name)
+                    .and_then(|tmpl| tmpl.render(context)),
                 Err(e) => {
                     error!("Failed to acquire MiniJinja env from reloader: {}", e);
                     // Convert minijinja::Error to rendering result error
-                    Err(MiniJinjaError::new(MiniJinjaErrorKind::InvalidOperation, 
-                        format!("Failed to acquire env from reloader: {}", e)))
+                    Err(MiniJinjaError::new(
+                        MiniJinjaErrorKind::InvalidOperation,
+                        format!("Failed to acquire env from reloader: {}", e),
+                    ))
                 }
             }
         }
@@ -206,7 +206,11 @@ pub fn render_minijinja<T: Serialize>(
         Ok(html) => Html(html).into_response(),
         Err(e) => {
             error!("MiniJinja render/load error for {}: {}", template_name, e);
-            (StatusCode::INTERNAL_SERVER_ERROR, format!("Template error: {}", e)).into_response()
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Template error: {}", e),
+            )
+                .into_response()
         }
     }
 }
@@ -279,12 +283,12 @@ fn generate_demo_machines() -> Vec<Machine> {
         let mac_suffix = i as u8;
         let ip_suffix = 10 + i as u8;
         machines.push(create_demo_machine(
-            &hostname, 
-            base_mac, 
-            mac_suffix, 
-            base_ip, 
-            ip_suffix, 
-            base_time.clone(), 
+            &hostname,
+            base_mac,
+            mac_suffix,
+            base_ip,
+            ip_suffix,
+            base_time.clone(),
             MachineStatus::Installed,
             Some(500), // 500GB disk
         ));
@@ -296,12 +300,12 @@ fn generate_demo_machines() -> Vec<Machine> {
         let mac_suffix = 10 + i as u8;
         let ip_suffix = 20 + i as u8;
         machines.push(create_demo_machine(
-            &hostname, 
-            base_mac, 
-            mac_suffix, 
-            base_ip, 
-            ip_suffix, 
-            base_time.clone(), 
+            &hostname,
+            base_mac,
+            mac_suffix,
+            base_ip,
+            ip_suffix,
+            base_time.clone(),
             MachineStatus::Installed,
             Some(2000), // 2TB disk
         ));
@@ -313,12 +317,12 @@ fn generate_demo_machines() -> Vec<Machine> {
         let mac_suffix = 20 + i as u8;
         let ip_suffix = 30 + i as u8;
         machines.push(create_demo_machine(
-            &hostname, 
-            base_mac, 
+            &hostname,
+            base_mac,
             mac_suffix,
-            base_ip, 
-            ip_suffix, 
-            base_time.clone(), 
+            base_ip,
+            ip_suffix,
+            base_time.clone(),
             MachineStatus::Installed,
             Some(500), // 500GB disk
         ));
@@ -329,19 +333,19 @@ fn generate_demo_machines() -> Vec<Machine> {
         let hostname = format!("cubefs-datanode{:02}", i);
         let mac_suffix = 30 + i as u8;
         let ip_suffix = 40 + i as u8;
-        let status = if i <= 5 { 
-            MachineStatus::Installed 
-        } else { 
+        let status = if i <= 5 {
+            MachineStatus::Installed
+        } else {
             // Make one datanode show as "installing" for variety
-            MachineStatus::Writing 
+            MachineStatus::Writing
         };
         machines.push(create_demo_machine(
-            &hostname, 
-            base_mac, 
-            mac_suffix, 
-            base_ip, 
-            ip_suffix, 
-            base_time.clone(), 
+            &hostname,
+            base_mac,
+            mac_suffix,
+            base_ip,
+            ip_suffix,
+            base_time.clone(),
             status,
             Some(4000), // 4TB disk
         ));
@@ -364,14 +368,14 @@ fn create_demo_machine(
     // Generate a deterministic UUID based on hostname
     let mut mac = base_mac;
     mac[5] = mac_suffix;
-    
+
     // Use UUID v5 to create a deterministic UUID from the hostname
     // This allows machine details to be found consistently in demo mode
     let namespace = uuid::Uuid::NAMESPACE_DNS;
     let uuid = uuid::Uuid::new_v5(&namespace, hostname.as_bytes());
     let created_at = base_time + chrono::Duration::minutes(mac_suffix as i64);
     let updated_at = created_at + chrono::Duration::hours(1);
-    
+
     let mut ip_octets = base_ip.octets();
     ip_octets[3] = ip_suffix;
     let ip = IpAddr::V4(Ipv4Addr::from(ip_octets));
@@ -451,7 +455,14 @@ pub async fn index(
 ) -> Response {
     let theme = get_theme_from_cookie(&headers);
     let is_authenticated = auth_session.user.is_some();
-    let require_login = app_state.store.get_setting("require_login").await.ok().flatten().map(|v| v == "true").unwrap_or(true);
+    let require_login = app_state
+        .store
+        .get_setting("require_login")
+        .await
+        .ok()
+        .flatten()
+        .map(|v| v == "true")
+        .unwrap_or(true);
     let current_path = uri.path().to_string();
 
     // --- Login check FIRST (before any other logic) ---
@@ -480,7 +491,9 @@ pub async fn index(
             info!("Install server running, rendering index page for installation progress.");
         } else {
             // It's NOT the install server, so this state is truly unexpected.
-            warn!("Root route accessed in unexpected state (not demo, not installed, not install server). Rendering error.");
+            warn!(
+                "Root route accessed in unexpected state (not demo, not installed, not install server). Rendering error."
+            );
             let context = ErrorTemplate {
                 theme,
                 is_authenticated: false, // Assume not authenticated
@@ -498,43 +511,44 @@ pub async fn index(
     }
     // --- End Scenario B Logic ---
 
-    // --- Continue with Dashboard/Demo Rendering --- 
-    let installation_in_progress = std::env::var("DRAGONFLY_INSTALL_SERVER_MODE").is_ok() || app_state.is_installation_server;
+    // --- Continue with Dashboard/Demo Rendering ---
+    let installation_in_progress =
+        std::env::var("DRAGONFLY_INSTALL_SERVER_MODE").is_ok() || app_state.is_installation_server;
     let mut initial_install_message = String::new();
     let mut initial_animation_class = String::new();
 
     // If installing, get initial state
     if installation_in_progress {
         // Clone the Arc out of the RwLock guard before awaiting
-        let install_state_arc_mutex: Option<Arc<tokio::sync::Mutex<InstallationState>>> = {
-            INSTALL_STATE_REF.read().unwrap().as_ref().cloned()
-        };
+        let install_state_arc_mutex: Option<Arc<tokio::sync::Mutex<InstallationState>>> =
+            { INSTALL_STATE_REF.read().unwrap().as_ref().cloned() };
 
         if let Some(state_arc_mutex) = install_state_arc_mutex {
-            let initial_state = state_arc_mutex.lock().await.clone(); 
+            let initial_state = state_arc_mutex.lock().await.clone();
             initial_install_message = initial_state.get_message().to_string();
             initial_animation_class = initial_state.get_animation_class().to_string();
         }
     }
-    
+
     // Prepare context for the template
     // Fetch real/demo data based on app_state.is_demo_mode
-    let (machines, status_counts, status_counts_json, display_dates) = if !installation_in_progress {
-        if app_state.is_demo_mode { // Check the state flag now
+    let (machines, status_counts, status_counts_json, display_dates) = if !installation_in_progress
+    {
+        if app_state.is_demo_mode {
+            // Check the state flag now
             // In demo mode, generate fake demo machines
             let demo_machines = generate_demo_machines();
             let counts = count_machines_by_status(&demo_machines);
             let counts_json = serde_json::to_string(&counts).unwrap_or_else(|_| "{}".to_string());
-            let dates = demo_machines.iter()
+            let dates = demo_machines
+                .iter()
                 .map(|mach| (mach.id.to_string(), format_datetime(&mach.created_at)))
                 .collect();
             (demo_machines, counts, counts_json, dates)
         } else {
             // Normal mode - fetch machines from v1 Store (SQLite with UUIDv7)
             let m: Vec<Machine> = match app_state.store.list_machines().await {
-                Ok(machine_list) => {
-                    machine_list.iter().map(|m| machine_to_common(m)).collect()
-                }
+                Ok(machine_list) => machine_list.iter().map(|m| machine_to_common(m)).collect(),
                 Err(e) => {
                     error!("Failed to list machines from store: {}", e);
                     vec![]
@@ -543,7 +557,8 @@ pub async fn index(
 
             let counts = count_machines_by_status(&m);
             let counts_json = serde_json::to_string(&counts).unwrap_or_else(|_| "{}".to_string());
-            let dates = m.iter()
+            let dates = m
+                .iter()
                 .map(|mach| (mach.id.to_string(), format_datetime(&mach.created_at)))
                 .collect();
             (m, counts, counts_json, dates)
@@ -582,14 +597,23 @@ pub async fn machine_list(
     let is_admin = is_authenticated;
     let current_path = uri.path().to_string();
 
-    let require_login = app_state.store.get_setting("require_login").await.ok().flatten().map(|v| v == "true").unwrap_or(true);
+    let require_login = app_state
+        .store
+        .get_setting("require_login")
+        .await
+        .ok()
+        .flatten()
+        .map(|v| v == "true")
+        .unwrap_or(true);
 
     // Login check (applies to both normal and demo mode if require_login is true)
     if require_login && !is_authenticated {
         info!("Login required for /machines, redirecting to /login");
         // HTMX redirect
         let mut response = Redirect::to("/login").into_response();
-        response.headers_mut().insert("HX-Redirect", "/login".parse().unwrap());
+        response
+            .headers_mut()
+            .insert("HX-Redirect", "/login".parse().unwrap());
         return response;
     }
 
@@ -612,17 +636,16 @@ pub async fn machine_list(
             current_path,
         };
         return render_minijinja(&app_state, "machine_list.html", context);
-    } else { // Normal mode
+    } else {
+        // Normal mode
         // Normal mode - fetch machines from v1 Store (SQLite with UUIDv7)
         let machines_result = match app_state.store.list_machines().await {
             Ok(machine_list) => {
-                let machines: Vec<Machine> = machine_list
-                    .iter()
-                    .map(|m| machine_to_common(m))
-                    .collect();
+                let machines: Vec<Machine> =
+                    machine_list.iter().map(|m| machine_to_common(m)).collect();
                 Ok(machines)
             }
-            Err(e) => Err(e)
+            Err(e) => Err(e),
         };
 
         match machines_result {
@@ -639,7 +662,7 @@ pub async fn machine_list(
                     current_path,
                 };
                 render_minijinja(&app_state, "machine_list.html", context)
-            },
+            }
             Err(e) => {
                 error!("Error fetching machines from SQLite: {}", e);
                 let context = MachineListTemplate {
@@ -667,19 +690,26 @@ pub async fn machine_details(
     let theme = get_theme_from_cookie(&headers);
     let is_authenticated = auth_session.user.is_some();
     let current_path = uri.path().to_string();
-    
+
     // Check if login is required site-wide
-    let require_login = app_state.store.get_setting("require_login").await.ok().flatten().map(|v| v == "true").unwrap_or(true);
-    
+    let require_login = app_state
+        .store
+        .get_setting("require_login")
+        .await
+        .ok()
+        .flatten()
+        .map(|v| v == "true")
+        .unwrap_or(true);
+
     // If require_login is enabled and user is not authenticated,
     // redirect to login page
     if require_login && !is_authenticated {
         return Redirect::to("/login").into_response();
     }
-    
+
     // Check if we are in demo mode
     let is_demo_mode = std::env::var("DRAGONFLY_DEMO_MODE").is_ok();
-    
+
     // Parse UUID from string
     match uuid::Uuid::parse_str(&id) {
         Ok(uuid) => {
@@ -687,27 +717,35 @@ pub async fn machine_details(
             if is_demo_mode {
                 let demo_machines = generate_demo_machines();
                 // Use string comparison for more reliable matching in templates
-                if let Some(machine) = demo_machines.iter().find(|m| m.id.to_string() == uuid.to_string()) {
-                    let created_at_formatted = machine.created_at.format("%Y-%m-%d %H:%M:%S UTC").to_string();
-                    let updated_at_formatted = machine.updated_at.format("%Y-%m-%d %H:%M:%S UTC").to_string();
-                    
+                if let Some(machine) = demo_machines
+                    .iter()
+                    .find(|m| m.id.to_string() == uuid.to_string())
+                {
+                    let created_at_formatted = machine
+                        .created_at
+                        .format("%Y-%m-%d %H:%M:%S UTC")
+                        .to_string();
+                    let updated_at_formatted = machine
+                        .updated_at
+                        .format("%Y-%m-%d %H:%M:%S UTC")
+                        .to_string();
+
                     // Create a mock workflow info if the machine is in installing status
                     let workflow_info = if machine.status == MachineStatus::Writing {
                         Some(WorkflowInfo {
                             state: "running".to_string(),
                             current_action: Some("Writing disk image".to_string()),
                             progress: 65,
-                            tasks: vec![
-                                TaskInfo {
-                                    name: "Installing operating system".to_string(),
-                                    status: "STATE_RUNNING".to_string(),
-                                    started_at: (Utc::now() - chrono::Duration::minutes(15)).to_rfc3339(),
-                                    duration: 900, // 15 minutes in seconds
-                                    reported_duration: 900,
-                                    estimated_duration: 1800, // 30 minutes in seconds
-                                    progress: 65,
-                                }
-                            ],
+                            tasks: vec![TaskInfo {
+                                name: "Installing operating system".to_string(),
+                                status: "STATE_RUNNING".to_string(),
+                                started_at: (Utc::now() - chrono::Duration::minutes(15))
+                                    .to_rfc3339(),
+                                duration: 900, // 15 minutes in seconds
+                                reported_duration: 900,
+                                estimated_duration: 1800, // 30 minutes in seconds
+                                progress: 65,
+                            }],
                             estimated_completion: Some("About 10 minutes remaining".to_string()),
                             template_name: "ubuntu-2204".to_string(),
                         })
@@ -716,29 +754,28 @@ pub async fn machine_details(
                     };
 
                     // Serialize machine and workflow_info to JSON strings
-                    let machine_json = serde_json::to_string(machine)
-                        .unwrap_or_else(|e| {
-                            error!("Failed to serialize demo machine to JSON: {}", e);
-                            "{}".to_string() // Default to empty JSON object on error
-                        });
+                    let machine_json = serde_json::to_string(machine).unwrap_or_else(|e| {
+                        error!("Failed to serialize demo machine to JSON: {}", e);
+                        "{}".to_string() // Default to empty JSON object on error
+                    });
                     // ADD DEBUG LOG
                     info!("Serialized demo machine JSON: {}", machine_json);
-                    
-                    let workflow_info_json = serde_json::to_string(&workflow_info)
-                        .unwrap_or_else(|e| {
-                             error!("Failed to serialize demo workflow info to JSON: {}", e);
-                             "null".to_string() // Default to JSON null on error
-                         });
+
+                    let workflow_info_json =
+                        serde_json::to_string(&workflow_info).unwrap_or_else(|e| {
+                            error!("Failed to serialize demo workflow info to JSON: {}", e);
+                            "null".to_string() // Default to JSON null on error
+                        });
                     // ADD DEBUG LOG
-                    info!("Serialized demo workflow JSON: {}", workflow_info_json);                         
-                    
+                    info!("Serialized demo workflow JSON: {}", workflow_info_json);
+
                     // Determine IP address type
-                    let ip_address_type = if machine.ip_address.is_empty() ||
-                                                machine.ip_address == "0.0.0.0" {
-                        "No IP".to_string()
-                    } else {
-                        "DHCP".to_string()
-                    };
+                    let ip_address_type =
+                        if machine.ip_address.is_empty() || machine.ip_address == "0.0.0.0" {
+                            "No IP".to_string()
+                        } else {
+                            "DHCP".to_string()
+                        };
 
                     // Create the Askama template context
                     let context = MachineDetailsTemplate {
@@ -747,9 +784,9 @@ pub async fn machine_details(
                         is_authenticated,
                         created_at_formatted,
                         updated_at_formatted,
-                        workflow_info_json, // Pass JSON string
+                        workflow_info_json,       // Pass JSON string
                         machine: machine.clone(), // Pass original struct too
-                        workflow_info, // Pass original option too
+                        workflow_info,            // Pass original option too
                         current_path,
                         ip_address_type, // Pass the determined type
                     };
@@ -773,49 +810,64 @@ pub async fn machine_details(
                     return render_minijinja(&app_state, "error.html", context);
                 }
             }
-            
+
             // Normal mode - get machine by ID from v1 Store (SQLite with UUIDv7)
-            let machine_result: Result<Option<Machine>, anyhow::Error> = match app_state.store.get_machine(uuid).await {
-                Ok(Some(m)) => Ok(Some(machine_to_common(&m))),
-                Ok(None) => Ok(None),
-                Err(e) => Err(anyhow::anyhow!("Store error: {}", e)),
-            };
+            let machine_result: Result<Option<Machine>, anyhow::Error> =
+                match app_state.store.get_machine(uuid).await {
+                    Ok(Some(m)) => Ok(Some(machine_to_common(&m))),
+                    Ok(None) => Ok(None),
+                    Err(e) => Err(anyhow::anyhow!("Store error: {}", e)),
+                };
 
             match machine_result {
                 Ok(Some(machine)) => {
                     info!("Rendering machine details page for machine {}", uuid);
-                    
+
                     // Format dates before constructing the template
-                    let created_at_formatted = machine.created_at.format("%Y-%m-%d %H:%M:%S UTC").to_string();
-                    let updated_at_formatted = machine.updated_at.format("%Y-%m-%d %H:%M:%S UTC").to_string();
-                    
+                    let created_at_formatted = machine
+                        .created_at
+                        .format("%Y-%m-%d %H:%M:%S UTC")
+                        .to_string();
+                    let updated_at_formatted = machine
+                        .updated_at
+                        .format("%Y-%m-%d %H:%M:%S UTC")
+                        .to_string();
+
                     // Workflow information stub (Tinkerbell removed - using our own provisioning)
                     let workflow_info: Option<WorkflowInfo> = None;
-                    
+
                     // Serialize machine and workflow_info to JSON strings
-                    let machine_json = serde_json::to_string(&machine)
-                        .unwrap_or_else(|e| {
-                            error!("Failed to serialize machine {} to JSON: {}", machine.id, e);
-                            "{}".to_string() // Default to empty JSON object on error
+                    let machine_json = serde_json::to_string(&machine).unwrap_or_else(|e| {
+                        error!("Failed to serialize machine {} to JSON: {}", machine.id, e);
+                        "{}".to_string() // Default to empty JSON object on error
+                    });
+                    // ADD DEBUG LOG
+                    info!(
+                        "Serialized machine JSON for {}: {}",
+                        machine.id, machine_json
+                    );
+
+                    let workflow_info_json =
+                        serde_json::to_string(&workflow_info).unwrap_or_else(|e| {
+                            error!(
+                                "Failed to serialize workflow info for machine {} to JSON: {}",
+                                machine.id, e
+                            );
+                            "null".to_string() // Default to JSON null on error
                         });
                     // ADD DEBUG LOG
-                    info!("Serialized machine JSON for {}: {}", machine.id, machine_json);
-                    
-                    let workflow_info_json = serde_json::to_string(&workflow_info)
-                        .unwrap_or_else(|e| {
-                             error!("Failed to serialize workflow info for machine {} to JSON: {}", machine.id, e);
-                             "null".to_string() // Default to JSON null on error
-                         });
-                    // ADD DEBUG LOG
-                    info!("Serialized workflow JSON for {}: {}", machine.id, workflow_info_json);                         
+                    info!(
+                        "Serialized workflow JSON for {}: {}",
+                        machine.id, workflow_info_json
+                    );
 
                     // Determine IP address type
-                    let ip_address_type = if machine.ip_address.is_empty() ||
-                                                machine.ip_address == "0.0.0.0" {
-                        "No IP".to_string()
-                    } else {
-                        "DHCP".to_string()
-                    };
+                    let ip_address_type =
+                        if machine.ip_address.is_empty() || machine.ip_address == "0.0.0.0" {
+                            "No IP".to_string()
+                        } else {
+                            "DHCP".to_string()
+                        };
 
                     // Create the Askama template context
                     let context = MachineDetailsTemplate {
@@ -824,15 +876,15 @@ pub async fn machine_details(
                         is_authenticated,
                         created_at_formatted,
                         updated_at_formatted,
-                        workflow_info_json, // Pass JSON string
+                        workflow_info_json,       // Pass JSON string
                         machine: machine.clone(), // Pass original struct too
-                        workflow_info, // Pass original option too
+                        workflow_info,            // Pass original option too
                         current_path,
                         ip_address_type, // Pass the determined type
                     };
                     // Use render_minijinja
                     return render_minijinja(&app_state, "machine_details.html", context);
-                },
+                }
                 Ok(None) => {
                     error!("Machine not found: {}", uuid);
                     let context = ErrorTemplate {
@@ -848,14 +900,15 @@ pub async fn machine_details(
                         current_path,
                     };
                     render_minijinja(&app_state, "error.html", context)
-                },
+                }
                 Err(e) => {
                     error!("Database error fetching machine {}: {}", uuid, e);
                     let context = ErrorTemplate {
                         theme,
                         is_authenticated,
                         title: "Database Error".to_string(),
-                        message: "An error occurred while fetching the machine from the database.".to_string(),
+                        message: "An error occurred while fetching the machine from the database."
+                            .to_string(),
                         error_details: format!("Error: {}", e),
                         back_url: "/machines".to_string(),
                         back_text: "Back to Machines".to_string(),
@@ -866,11 +919,12 @@ pub async fn machine_details(
                     render_minijinja(&app_state, "error.html", context)
                 }
             }
-        },
+        }
         Err(e) => {
             error!("Invalid UUID: {}", e);
             // Use MiniJinja for error template
-            let context = ErrorTemplate { // Use ErrorTemplate
+            let context = ErrorTemplate {
+                // Use ErrorTemplate
                 theme,
                 is_authenticated,
                 title: "Invalid Request".to_string(),
@@ -888,26 +942,31 @@ pub async fn machine_details(
 }
 
 // Handler for theme toggling
-pub async fn toggle_theme(
-    Query(params): Query<HashMap<String, String>>,
-) -> Response {
+pub async fn toggle_theme(Query(params): Query<HashMap<String, String>>) -> Response {
     // Get theme from URL parameters, default to "light"
-    let theme = params.get("theme").cloned().unwrap_or_else(|| "light".to_string());
-    
+    let theme = params
+        .get("theme")
+        .cloned()
+        .unwrap_or_else(|| "light".to_string());
+
     // Create cookie with proper builder pattern
     let mut cookie = Cookie::new("dragonfly_theme", theme);
     cookie.set_path("/");
     cookie.set_max_age(time::Duration::days(365));
     cookie.set_same_site(SameSite::Lax);
-    
+
     // Get the return URL from parameters or default to home page
-    let return_to = params.get("return_to").cloned().unwrap_or_else(|| "/".to_string());
-    
+    let return_to = params
+        .get("return_to")
+        .cloned()
+        .unwrap_or_else(|| "/".to_string());
+
     // Set cookie header and redirect
     (
         [(header::SET_COOKIE, cookie.to_string())],
-        Redirect::to(&return_to)
-    ).into_response()
+        Redirect::to(&return_to),
+    )
+        .into_response()
 }
 
 // Handler for the settings page
@@ -919,48 +978,62 @@ pub async fn settings_page(
 ) -> Response {
     // Get current theme from cookie
     let theme = get_theme_from_cookie(&headers);
-    
+
     // Check if user is authenticated
     let is_authenticated = auth_session.user.is_some();
     let current_path = uri.path().to_string();
-    
+
     // Get current settings from SQLite
     let store = &app_state.store;
-    let require_login = store.get_setting("require_login").await
-        .ok().flatten()
+    let require_login = store
+        .get_setting("require_login")
+        .await
+        .ok()
+        .flatten()
         .map(|v| v == "true")
         .unwrap_or(true); // default to requiring login
-    let default_os = store.get_setting("default_os").await
-        .ok().flatten();
-    let ssh_keys = store.get_setting("ssh_keys").await
-        .ok().flatten()
+    let default_os = store.get_setting("default_os").await.ok().flatten();
+    let ssh_keys = store
+        .get_setting("ssh_keys")
+        .await
+        .ok()
+        .flatten()
         .unwrap_or_default();
-    let ssh_key_subscriptions = store.get_setting("ssh_key_subscriptions").await
-        .ok().flatten()
+    let ssh_key_subscriptions = store
+        .get_setting("ssh_key_subscriptions")
+        .await
+        .ok()
+        .flatten()
         .unwrap_or_else(|| "[]".to_string());
-    let default_user = store.get_setting("default_user").await
-        .ok().flatten()
+    let default_user = store
+        .get_setting("default_user")
+        .await
+        .ok()
+        .flatten()
         .unwrap_or_else(|| "root".to_string());
-    let default_password = store.get_setting("default_password").await
-        .ok().flatten()
+    let default_password = store
+        .get_setting("default_password")
+        .await
+        .ok()
+        .flatten()
         .unwrap_or_default();
 
     info!("Settings page: default_os from SQLite = {:?}", default_os);
-    
+
     // If require_login is enabled and user is not authenticated,
     // redirect to login page
     if require_login && !is_authenticated {
         return Redirect::to("/login").into_response();
     }
-    
+
     let show_admin_settings = is_authenticated;
-    
+
     // Correctly access the username from the AdminUser struct within the Option
     let admin_username = match &auth_session.user {
         Some(user) => user.username.clone(),
         None => "(Not logged in)".to_string(),
     };
-    
+
     // Check if initial password file exists (only for admins)
     let (has_initial_password, rendered_password) = if is_authenticated {
         info!("Checking for initial password file at: initial_password.txt");
@@ -969,12 +1042,12 @@ pub async fn settings_page(
             Err(_) => "unknown".to_string(),
         };
         info!("Current directory: {}", current_dir);
-        
+
         match fs::read_to_string("/var/lib/dragonfly/initial_password.txt") {
             Ok(password) => {
                 info!("Found initial password file, will display to admin");
                 (true, password)
-            },
+            }
             Err(e) => {
                 info!("No initial password file found: {}", e);
                 (false, String::new())
@@ -983,7 +1056,7 @@ pub async fn settings_page(
     } else {
         (false, String::new())
     };
-    
+
     // Replace Askama render with placeholder
     let context = SettingsTemplate {
         theme,
@@ -1020,7 +1093,15 @@ pub async fn settings_page_section(
     uri: OriginalUri,
     Path(section): Path<String>,
 ) -> Response {
-    let valid_tabs = ["general", "users", "security", "provisioning", "credentials", "iso-images", "license"];
+    let valid_tabs = [
+        "general",
+        "users",
+        "security",
+        "provisioning",
+        "credentials",
+        "iso-images",
+        "license",
+    ];
     let tab = if valid_tabs.contains(&section.as_str()) {
         section
     } else {
@@ -1033,8 +1114,11 @@ pub async fn settings_page_section(
     let current_path = uri.path().to_string();
 
     let store = &app_state.store;
-    let require_login = store.get_setting("require_login").await
-        .ok().flatten()
+    let require_login = store
+        .get_setting("require_login")
+        .await
+        .ok()
+        .flatten()
         .map(|v| v == "true")
         .unwrap_or(true);
 
@@ -1043,13 +1127,30 @@ pub async fn settings_page_section(
     }
 
     let default_os = store.get_setting("default_os").await.ok().flatten();
-    let ssh_keys = store.get_setting("ssh_keys").await.ok().flatten().unwrap_or_default();
-    let ssh_key_subscriptions = store.get_setting("ssh_key_subscriptions").await
-        .ok().flatten().unwrap_or_else(|| "[]".to_string());
-    let default_user = store.get_setting("default_user").await
-        .ok().flatten().unwrap_or_else(|| "root".to_string());
-    let default_password = store.get_setting("default_password").await
-        .ok().flatten().unwrap_or_default();
+    let ssh_keys = store
+        .get_setting("ssh_keys")
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    let ssh_key_subscriptions = store
+        .get_setting("ssh_key_subscriptions")
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| "[]".to_string());
+    let default_user = store
+        .get_setting("default_user")
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| "root".to_string());
+    let default_password = store
+        .get_setting("default_password")
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_default();
 
     let show_admin_settings = is_authenticated;
     let admin_username = match &auth_session.user {
@@ -1129,10 +1230,12 @@ pub async fn update_settings(
     let is_authenticated = auth_session.user.is_some();
     // Get theme from form, or fall back to cookie, or default to "system"
     let theme = form.theme.clone().unwrap_or_else(|| {
-        headers.get(axum::http::header::COOKIE)
+        headers
+            .get(axum::http::header::COOKIE)
             .and_then(|c| c.to_str().ok())
             .and_then(|cookies| {
-                cookies.split(';')
+                cookies
+                    .split(';')
                     .find(|c| c.trim().starts_with("dragonfly_theme="))
                     .map(|c| c.trim().trim_start_matches("dragonfly_theme=").to_string())
             })
@@ -1142,22 +1245,24 @@ pub async fn update_settings(
 
     // Only require admin authentication for admin settings
     // If trying to change admin settings but not authenticated, redirect to login
-    if (form.require_login.is_some() ||
-        form.default_os.is_some() ||
-        form.ssh_keys.is_some() ||
-        form.ssh_key_subscriptions.is_some() ||
-        form.username.is_some() || 
-        form.password.is_some() || 
-        form.password_confirm.is_some() ||
-        form.setup_completed.is_some() ||
-        form.admin_email.is_some() ||
-        form.oauth_provider.is_some() ||
-        form.oauth_client_id.is_some() ||
-        form.oauth_client_secret.is_some() ||
-        form.proxmox_host.is_some() ||
-        form.proxmox_username.is_some() ||
-        form.proxmox_password.is_some() ||
-        form.proxmox_port.is_some()) && !is_authenticated {
+    if (form.require_login.is_some()
+        || form.default_os.is_some()
+        || form.ssh_keys.is_some()
+        || form.ssh_key_subscriptions.is_some()
+        || form.username.is_some()
+        || form.password.is_some()
+        || form.password_confirm.is_some()
+        || form.setup_completed.is_some()
+        || form.admin_email.is_some()
+        || form.oauth_provider.is_some()
+        || form.oauth_client_id.is_some()
+        || form.oauth_client_secret.is_some()
+        || form.proxmox_host.is_some()
+        || form.proxmox_username.is_some()
+        || form.proxmox_password.is_some()
+        || form.proxmox_port.is_some())
+        && !is_authenticated
+    {
         return Redirect::to("/login").into_response();
     }
 
@@ -1166,15 +1271,25 @@ pub async fn update_settings(
         let store = &app_state.store;
 
         // Load current settings from SQLite
-        let current_setup_completed = store.get_setting("setup_completed").await
-            .ok().flatten()
+        let current_setup_completed = store
+            .get_setting("setup_completed")
+            .await
+            .ok()
+            .flatten()
             .map(|v| v == "true")
             .unwrap_or(false);
 
         // Construct the new settings
         let settings = Settings {
-            require_login: form.require_login.as_deref().map_or(false, |v| v == "true" || v == "on" || v == "1"),
-            default_os: form.default_os.as_ref().filter(|os| !os.is_empty()).cloned(),
+            require_login: form
+                .require_login
+                .as_deref()
+                .map_or(false, |v| v == "true" || v == "on" || v == "1"),
+            default_os: form
+                .default_os
+                .as_ref()
+                .filter(|os| !os.is_empty())
+                .cloned(),
             setup_completed: form.setup_completed.is_some() || current_setup_completed,
             admin_username: form.username.clone().unwrap_or_else(|| "admin".to_string()),
             admin_password_hash: String::new(), // Password handled separately
@@ -1190,13 +1305,18 @@ pub async fn update_settings(
             proxmox_skip_tls_verify: None,
         };
 
-        info!("Saving settings: require_login={}, default_os={:?}, setup_completed={:?}",
-              settings.require_login, settings.default_os, settings.setup_completed);
+        info!(
+            "Saving settings: require_login={}, default_os={:?}, setup_completed={:?}",
+            settings.require_login, settings.default_os, settings.setup_completed
+        );
 
         // Save settings to SQLite store
         let store = &app_state.store;
 
-        if let Err(e) = store.put_setting("require_login", &settings.require_login.to_string()).await {
+        if let Err(e) = store
+            .put_setting("require_login", &settings.require_login.to_string())
+            .await
+        {
             error!("Failed to save require_login: {}", e);
         }
 
@@ -1238,7 +1358,10 @@ pub async fn update_settings(
             }
         }
 
-        if let Err(e) = store.put_setting("setup_completed", &settings.setup_completed.to_string()).await {
+        if let Err(e) = store
+            .put_setting("setup_completed", &settings.setup_completed.to_string())
+            .await
+        {
             error!("Failed to save setup_completed: {}", e);
         }
 
@@ -1252,7 +1375,9 @@ pub async fn update_settings(
                 let username = match auth::load_credentials(&app_state.store).await {
                     Ok(creds) => creds.username,
                     Err(_) => {
-                        warn!("Could not load current credentials, defaulting username to 'admin' for password change.");
+                        warn!(
+                            "Could not load current credentials, defaulting username to 'admin' for password change."
+                        );
                         "admin".to_string()
                     }
                 };
@@ -1264,15 +1389,35 @@ pub async fn update_settings(
                             error!("Failed to save new admin password: {}", e);
                             // Prepare error message and template for display
                             let error_message = Some(format!("Failed to save credentials: {}", e));
-                            
+
                             // Get current settings for template
                             let admin_username = settings.admin_username.clone();
                             let require_login = settings.require_login;
                             let default_os = settings.default_os.clone();
-                            let ssh_keys = store.get_setting("ssh_keys").await.ok().flatten().unwrap_or_default();
-                            let ssh_key_subscriptions = store.get_setting("ssh_key_subscriptions").await.ok().flatten().unwrap_or_else(|| "[]".to_string());
-                            let default_user = store.get_setting("default_user").await.ok().flatten().unwrap_or_else(|| "root".to_string());
-                            let default_password = store.get_setting("default_password").await.ok().flatten().unwrap_or_default();
+                            let ssh_keys = store
+                                .get_setting("ssh_keys")
+                                .await
+                                .ok()
+                                .flatten()
+                                .unwrap_or_default();
+                            let ssh_key_subscriptions = store
+                                .get_setting("ssh_key_subscriptions")
+                                .await
+                                .ok()
+                                .flatten()
+                                .unwrap_or_else(|| "[]".to_string());
+                            let default_user = store
+                                .get_setting("default_user")
+                                .await
+                                .ok()
+                                .flatten()
+                                .unwrap_or_else(|| "root".to_string());
+                            let default_password = store
+                                .get_setting("default_password")
+                                .await
+                                .ok()
+                                .flatten()
+                                .unwrap_or_default();
 
                             // These fields are not in Settings, use defaults
                             let has_initial_password = false;
@@ -1312,12 +1457,17 @@ pub async fn update_settings(
 
                             return (
                                 [(header::SET_COOKIE, cookie.to_string())],
-                                render_minijinja(&app_state, "settings.html", context)
-                            ).into_response();
+                                render_minijinja(&app_state, "settings.html", context),
+                            )
+                                .into_response();
                         } else {
                             // Password updated successfully, delete initial password file if it exists
-                            if std::path::Path::new("/var/lib/dragonfly/initial_password.txt").exists() {
-                                if let Err(e) = std::fs::remove_file("/var/lib/dragonfly/initial_password.txt") {
+                            if std::path::Path::new("/var/lib/dragonfly/initial_password.txt")
+                                .exists()
+                            {
+                                if let Err(e) =
+                                    std::fs::remove_file("/var/lib/dragonfly/initial_password.txt")
+                                {
                                     warn!("Failed to remove initial_password.txt: {}", e);
                                 }
                             }
@@ -1330,15 +1480,35 @@ pub async fn update_settings(
                         error!("Failed to hash new password: {}", e);
                         // Prepare error message and template for display
                         let error_message = Some(format!("Failed to hash password: {}", e));
-                        
+
                         // Get current settings for template
                         let admin_username = settings.admin_username.clone();
                         let require_login = settings.require_login;
                         let default_os = settings.default_os.clone();
-                        let ssh_keys = store.get_setting("ssh_keys").await.ok().flatten().unwrap_or_default();
-                        let ssh_key_subscriptions = store.get_setting("ssh_key_subscriptions").await.ok().flatten().unwrap_or_else(|| "[]".to_string());
-                        let default_user = store.get_setting("default_user").await.ok().flatten().unwrap_or_else(|| "root".to_string());
-                        let default_password = store.get_setting("default_password").await.ok().flatten().unwrap_or_default();
+                        let ssh_keys = store
+                            .get_setting("ssh_keys")
+                            .await
+                            .ok()
+                            .flatten()
+                            .unwrap_or_default();
+                        let ssh_key_subscriptions = store
+                            .get_setting("ssh_key_subscriptions")
+                            .await
+                            .ok()
+                            .flatten()
+                            .unwrap_or_else(|| "[]".to_string());
+                        let default_user = store
+                            .get_setting("default_user")
+                            .await
+                            .ok()
+                            .flatten()
+                            .unwrap_or_else(|| "root".to_string());
+                        let default_password = store
+                            .get_setting("default_password")
+                            .await
+                            .ok()
+                            .flatten()
+                            .unwrap_or_default();
 
                         // These fields are not in Settings, use defaults
                         let has_initial_password = false;
@@ -1378,8 +1548,9 @@ pub async fn update_settings(
 
                         return (
                             [(header::SET_COOKIE, cookie.to_string())],
-                            render_minijinja(&app_state, "settings.html", context)
-                        ).into_response();
+                            render_minijinja(&app_state, "settings.html", context),
+                        )
+                            .into_response();
                     }
                 }
             }
@@ -1389,21 +1560,41 @@ pub async fn update_settings(
         if form.password.is_some() || form.password_confirm.is_some() {
             let password = form.password.as_deref().unwrap_or("");
             let confirm = form.password_confirm.as_deref().unwrap_or("");
-            
+
             if (!password.is_empty() || !confirm.is_empty()) && password != confirm {
                 // Passwords provided but don't match
                 error!("Password mismatch in settings form");
                 // Prepare error message and template for display
                 let error_message = Some("Passwords do not match.".to_string());
-                
+
                 // Get current settings for template
                 let admin_username = settings.admin_username.clone();
                 let require_login = settings.require_login;
                 let default_os = settings.default_os.clone();
-                let ssh_keys = store.get_setting("ssh_keys").await.ok().flatten().unwrap_or_default();
-                let ssh_key_subscriptions = store.get_setting("ssh_key_subscriptions").await.ok().flatten().unwrap_or_else(|| "[]".to_string());
-                let default_user = store.get_setting("default_user").await.ok().flatten().unwrap_or_else(|| "root".to_string());
-                let default_password = store.get_setting("default_password").await.ok().flatten().unwrap_or_default();
+                let ssh_keys = store
+                    .get_setting("ssh_keys")
+                    .await
+                    .ok()
+                    .flatten()
+                    .unwrap_or_default();
+                let ssh_key_subscriptions = store
+                    .get_setting("ssh_key_subscriptions")
+                    .await
+                    .ok()
+                    .flatten()
+                    .unwrap_or_else(|| "[]".to_string());
+                let default_user = store
+                    .get_setting("default_user")
+                    .await
+                    .ok()
+                    .flatten()
+                    .unwrap_or_else(|| "root".to_string());
+                let default_password = store
+                    .get_setting("default_password")
+                    .await
+                    .ok()
+                    .flatten()
+                    .unwrap_or_default();
 
                 // These fields are not in Settings, use defaults
                 let has_initial_password = false;
@@ -1443,8 +1634,9 @@ pub async fn update_settings(
 
                 return (
                     [(header::SET_COOKIE, cookie.to_string())],
-                    render_minijinja(&app_state, "settings.html", context)
-                ).into_response();
+                    render_minijinja(&app_state, "settings.html", context),
+                )
+                    .into_response();
             }
         }
     }
@@ -1455,12 +1647,13 @@ pub async fn update_settings(
     cookie.set_path("/");
     cookie.set_max_age(time::Duration::days(365));
     cookie.set_same_site(SameSite::Lax);
-    
+
     // Set cookie header and redirect back to settings page
     (
         [(header::SET_COOKIE, cookie.to_string())],
-        Redirect::to("/settings")
-    ).into_response()
+        Redirect::to("/settings"),
+    )
+        .into_response()
 }
 
 // Environment setup for MiniJinja
@@ -1482,70 +1675,82 @@ pub fn setup_minijinja_environment(env: &mut minijinja::Environment) -> Result<(
     });
 
     // Add combined OS info formatter that returns a serializable struct
-    env.add_filter("get_os_info", |value: minijinja::Value| -> minijinja::Value {
-        match value.as_str() {
-            Some(os) => {
-                let info = get_os_info(os);
-                minijinja::value::Value::from_serialize(&info)
-            },
-            None => minijinja::Value::UNDEFINED,
-        }
-    });
-    
+    env.add_filter(
+        "get_os_info",
+        |value: minijinja::Value| -> minijinja::Value {
+            match value.as_str() {
+                Some(os) => {
+                    let info = get_os_info(os);
+                    minijinja::value::Value::from_serialize(&info)
+                }
+                None => minijinja::Value::UNDEFINED,
+            }
+        },
+    );
+
     // Register datetime formatting filter
-    env.add_filter("datetime_format", |args: &[minijinja::Value]| -> Result<String, minijinja::Error> {
-        if args.len() < 2 {
-            return Err(minijinja::Error::new(
-                minijinja::ErrorKind::InvalidOperation,
-                "datetime_format requires a datetime and format string"
-            ));
-        }
-        
-        // Extract the datetime from the first argument
-        let dt_str = args[0].as_str().ok_or_else(|| {
-            minijinja::Error::new(
-                minijinja::ErrorKind::InvalidOperation,
-                "datetime must be a string in ISO format"
-            )
-        })?;
-        
-        // Parse the datetime
-        let dt = match chrono::DateTime::parse_from_rfc3339(dt_str) {
-            Ok(dt) => dt.with_timezone(&chrono::Utc),
-            Err(_) => {
+    env.add_filter(
+        "datetime_format",
+        |args: &[minijinja::Value]| -> Result<String, minijinja::Error> {
+            if args.len() < 2 {
                 return Err(minijinja::Error::new(
                     minijinja::ErrorKind::InvalidOperation,
-                    "could not parse datetime string"
+                    "datetime_format requires a datetime and format string",
                 ));
             }
-        };
-        
-        // Extract the format string
-        let fmt = args[1].as_str().ok_or_else(|| {
-            minijinja::Error::new(
-                minijinja::ErrorKind::InvalidOperation,
-                "format must be a string"
-            )
-        })?;
-        
-        // Format the datetime
-        Ok(dt.format(fmt).to_string())
-    });
-    
+
+            // Extract the datetime from the first argument
+            let dt_str = args[0].as_str().ok_or_else(|| {
+                minijinja::Error::new(
+                    minijinja::ErrorKind::InvalidOperation,
+                    "datetime must be a string in ISO format",
+                )
+            })?;
+
+            // Parse the datetime
+            let dt = match chrono::DateTime::parse_from_rfc3339(dt_str) {
+                Ok(dt) => dt.with_timezone(&chrono::Utc),
+                Err(_) => {
+                    return Err(minijinja::Error::new(
+                        minijinja::ErrorKind::InvalidOperation,
+                        "could not parse datetime string",
+                    ));
+                }
+            };
+
+            // Extract the format string
+            let fmt = args[1].as_str().ok_or_else(|| {
+                minijinja::Error::new(
+                    minijinja::ErrorKind::InvalidOperation,
+                    "format must be a string",
+                )
+            })?;
+
+            // Format the datetime
+            Ok(dt.format(fmt).to_string())
+        },
+    );
+
     // Set up more configuration as needed
-    env.add_global("now", minijinja::Value::from(chrono::Utc::now().to_rfc3339()));
-    
+    env.add_global(
+        "now",
+        minijinja::Value::from(chrono::Utc::now().to_rfc3339()),
+    );
+
     // Add custom filter for robust JSON serialization
-    env.add_filter("to_json", |value: minijinja::Value| -> Result<String, minijinja::Error> {
-        match serde_json::to_string(&value) {
-            Ok(s) => Ok(s),
-            Err(e) => Err(minijinja::Error::new(
-                minijinja::ErrorKind::InvalidOperation,
-                format!("Failed to serialize value to JSON: {}", e)
-            )),
-        }
-    });
-    
+    env.add_filter(
+        "to_json",
+        |value: minijinja::Value| -> Result<String, minijinja::Error> {
+            match serde_json::to_string(&value) {
+                Ok(s) => Ok(s),
+                Err(e) => Err(minijinja::Error::new(
+                    minijinja::ErrorKind::InvalidOperation,
+                    format!("Failed to serialize value to JSON: {}", e),
+                )),
+            }
+        },
+    );
+
     Ok(())
 }
 
@@ -1559,10 +1764,16 @@ pub struct AlertMessage {
 
 impl AlertMessage {
     pub fn success(message: &str) -> Self {
-        AlertMessage { level: "success".to_string(), message: message.to_string() }
+        AlertMessage {
+            level: "success".to_string(),
+            message: message.to_string(),
+        }
     }
     pub fn error(message: &str) -> Self {
-        AlertMessage { level: "error".to_string(), message: message.to_string() }
+        AlertMessage {
+            level: "error".to_string(),
+            message: message.to_string(),
+        }
     }
     // Add info and warning if needed
 }
@@ -1582,13 +1793,13 @@ impl AddAlert for Response {
                     .http_only(true)
                     .secure(false) // Set to true in production with HTTPS
                     .same_site(cookie::SameSite::Lax);
-                    // .finish(); // Removed deprecated finish
+                // .finish(); // Removed deprecated finish
 
                 // The CookieBuilder itself can often be used directly
                 self.headers_mut().insert(
                     axum::http::header::SET_COOKIE,
                     // Use build() to get the final Cookie if needed, or pass builder directly if allowed
-                    cookie.build().to_string().parse().unwrap(), 
+                    cookie.build().to_string().parse().unwrap(),
                 );
             }
             Err(e) => {
@@ -1611,19 +1822,31 @@ pub async fn compute_page(
     let is_admin = is_authenticated;
     let current_path = uri.path().to_string();
 
-    let require_login = app_state.store.get_setting("require_login").await.ok().flatten().map(|v| v == "true").unwrap_or(true);
+    let require_login = app_state
+        .store
+        .get_setting("require_login")
+        .await
+        .ok()
+        .flatten()
+        .map(|v| v == "true")
+        .unwrap_or(true);
 
     // Login check
     if require_login && !is_authenticated {
         info!("Login required for /compute, redirecting to /login");
         let mut response = Redirect::to("/login").into_response();
-        response.headers_mut().insert("HX-Redirect", "/login".parse().unwrap());
+        response
+            .headers_mut()
+            .insert("HX-Redirect", "/login".parse().unwrap());
         return response;
     }
 
     // Fetch all machines from the v1 Store
     let all_machines: Vec<Machine> = match app_state.store.list_machines().await {
-        Ok(v1_machines) => v1_machines.iter().map(|m| crate::store::conversions::machine_to_common(m)).collect(),
+        Ok(v1_machines) => v1_machines
+            .iter()
+            .map(|m| crate::store::conversions::machine_to_common(m))
+            .collect(),
         Err(e) => {
             error!("Error fetching machines for compute page: {}", e);
             // Optionally render an error page or return an empty list
@@ -1638,12 +1861,19 @@ pub async fn compute_page(
     for machine in all_machines {
         // Group by proxmox_cluster if it exists
         if let Some(cluster_name) = &machine.proxmox_cluster {
-            if !cluster_name.is_empty() { // Avoid grouping under empty string
-                 clusters_map.entry(cluster_name.clone()).or_default().push(machine);
+            if !cluster_name.is_empty() {
+                // Avoid grouping under empty string
+                clusters_map
+                    .entry(cluster_name.clone())
+                    .or_default()
+                    .push(machine);
             } else {
-                 // Treat machines with empty cluster name but node/vmid as standalone for now
-                 warn!("Machine {} has Proxmox info but an empty cluster name.", machine.id);
-                 standalone_machines.push(machine);
+                // Treat machines with empty cluster name but node/vmid as standalone for now
+                warn!(
+                    "Machine {} has Proxmox info but an empty cluster name.",
+                    machine.id
+                );
+                standalone_machines.push(machine);
             }
         } else {
             // Machines without a proxmox_cluster field are treated as standalone
@@ -1652,7 +1882,8 @@ pub async fn compute_page(
     }
 
     // Convert the map into the Vec<ProxmoxCluster> structure for the template
-    let clusters: Vec<ProxmoxCluster> = clusters_map.into_iter()
+    let clusters: Vec<ProxmoxCluster> = clusters_map
+        .into_iter()
         .map(|(cluster_name, machines_in_cluster)| {
             // Separate hosts and VMs
             let mut hosts: Vec<Machine> = Vec::new();
@@ -1664,26 +1895,30 @@ pub async fn compute_page(
                     vms.push(machine);
                 }
             }
-            
+
             // Determine the display name for the cluster group
             // Prioritize the hostname of the first host found, fallback to cluster name
-            let display_name = hosts.first()
+            let display_name = hosts
+                .first()
                 .and_then(|h| h.hostname.as_deref().or(h.proxmox_node.as_deref())) // Use hostname or node name of first host
                 .unwrap_or(&cluster_name) // Fallback to the cluster name itself if no hosts found (unlikely)
                 .to_string();
 
             ProxmoxCluster {
-                display_name, // Use the determined display name
+                display_name,                             // Use the determined display name
                 cluster_name: Some(cluster_name.clone()), // The actual cluster identifier
-                hosts, // List of hosts in this cluster
-                vms, // List of VMs in this cluster
+                hosts,                                    // List of hosts in this cluster
+                vms,                                      // List of VMs in this cluster
             }
         })
         .collect();
 
     // Log standalone machines
     if !standalone_machines.is_empty() {
-        warn!("Found {} standalone/unassociated machines not displayed on the Compute page.", standalone_machines.len());
+        warn!(
+            "Found {} standalone/unassociated machines not displayed on the Compute page.",
+            standalone_machines.len()
+        );
         // TODO: Decide how/if to display standalone machines on this page
     }
 
@@ -1709,7 +1944,14 @@ pub async fn networks_page(
     let is_authenticated = auth_session.user.is_some();
     let current_path = uri.path().to_string();
 
-    let require_login = app_state.store.get_setting("require_login").await.ok().flatten().map(|v| v == "true").unwrap_or(true);
+    let require_login = app_state
+        .store
+        .get_setting("require_login")
+        .await
+        .ok()
+        .flatten()
+        .map(|v| v == "true")
+        .unwrap_or(true);
     if require_login && !is_authenticated && !app_state.is_demo_mode {
         return Redirect::to("/login").into_response();
     }
@@ -1746,20 +1988,30 @@ pub async fn tags_page(
     let current_path = uri.path().to_string();
 
     // Check if user is authenticated if login is required
-    let require_login = app_state.store.get_setting("require_login").await.ok().flatten().map(|v| v == "true").unwrap_or(true);
+    let require_login = app_state
+        .store
+        .get_setting("require_login")
+        .await
+        .ok()
+        .flatten()
+        .map(|v| v == "true")
+        .unwrap_or(true);
     if require_login && !is_authenticated && !app_state.is_demo_mode {
         return Redirect::to("/login").into_response();
     }
 
     // Fetch all machines from the v1 Store to display in the tag editor
     let machines: Vec<Machine> = match app_state.store.list_machines().await {
-        Ok(v1_machines) => v1_machines.iter().map(|m| crate::store::conversions::machine_to_common(m)).collect(),
+        Ok(v1_machines) => v1_machines
+            .iter()
+            .map(|m| crate::store::conversions::machine_to_common(m))
+            .collect(),
         Err(e) => {
             error!("Failed to fetch machines for tags page: {}", e);
             vec![]
         }
     };
-    
+
     // Create template context
     let context = serde_json::json!({
         "theme": theme,
@@ -1768,7 +2020,7 @@ pub async fn tags_page(
         "machines": machines,
         "is_admin": auth_session.user.is_some(),
     });
-    
+
     // Render the tags page template
     render_minijinja(&app_state, "tags.html", context)
 }

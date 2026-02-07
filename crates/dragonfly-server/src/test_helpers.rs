@@ -2,11 +2,11 @@
 //!
 //! Provides utilities for creating test instances of the server.
 
-use crate::{AppState, TemplateEnv};
 use crate::auth::Settings;
 use crate::event_manager::EventManager;
 use crate::image_cache::ImageCache;
 use crate::store::v1::MemoryStore;
+use crate::{AppState, TemplateEnv};
 use minijinja::Environment;
 use std::collections::HashMap;
 use std::sync::{Arc, atomic::AtomicBool};
@@ -220,7 +220,9 @@ mod tests {
                     .method("PUT")
                     .uri("/settings")
                     .header("Content-Type", "application/json")
-                    .body(Body::from(r#"{"deployment_mode": "simple", "default_os": "debian-13"}"#))
+                    .body(Body::from(
+                        r#"{"deployment_mode": "simple", "default_os": "debian-13"}"#,
+                    ))
                     .unwrap(),
             )
             .await
@@ -275,8 +277,10 @@ mod tests {
     /// Test that template substitution uses hostname from machine when machine_id is provided
     #[tokio::test]
     async fn test_template_uses_hostname_substitution() {
-        use dragonfly_crd::{Template, ActionStep, WritefileConfig, ObjectMeta, TypeMeta, TemplateSpec};
         use dragonfly_common::{Machine, MachineIdentity};
+        use dragonfly_crd::{
+            ActionStep, ObjectMeta, Template, TemplateSpec, TypeMeta, WritefileConfig,
+        };
 
         let state = create_test_app_state().await;
 
@@ -294,19 +298,17 @@ mod tests {
             type_meta: TypeMeta::template(),
             metadata: ObjectMeta::new("test-template"),
             spec: TemplateSpec {
-                actions: vec![
-                    ActionStep::Writefile(WritefileConfig {
-                        path: "/etc/cloud/cloud.cfg.d/99-hostname.cfg".to_string(),
-                        partition: Some(1),
-                        fs_type: None,
-                        content: Some("local-hostname: {{ friendly_name }}".to_string()),
-                        content_b64: None,
-                        mode: None,
-                        uid: None,
-                        gid: None,
-                        timeout: None,
-                    }),
-                ],
+                actions: vec![ActionStep::Writefile(WritefileConfig {
+                    path: "/etc/cloud/cloud.cfg.d/99-hostname.cfg".to_string(),
+                    partition: Some(1),
+                    fs_type: None,
+                    content: Some("local-hostname: {{ friendly_name }}".to_string()),
+                    content_b64: None,
+                    mode: None,
+                    uid: None,
+                    gid: None,
+                    timeout: None,
+                })],
                 timeout: None,
                 version: None,
             },
@@ -321,16 +323,15 @@ mod tests {
         // Request the template with machine_id
         let uri = format!("/templates/test-template?machine_id={}", machine_id);
         let response = app
-            .oneshot(
-                Request::builder()
-                    .uri(&uri)
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(Request::builder().uri(&uri).body(Body::empty()).unwrap())
             .await
             .unwrap();
 
-        assert_eq!(response.status(), StatusCode::OK, "Template request should succeed");
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "Template request should succeed"
+        );
 
         let body = response.into_body().collect().await.unwrap().to_bytes();
         let returned_template: Template = serde_json::from_slice(&body).unwrap();
@@ -356,8 +357,10 @@ mod tests {
     /// Test that memorable_name is used when hostname is not set
     #[tokio::test]
     async fn test_template_falls_back_to_memorable_name() {
-        use dragonfly_crd::{Template, ActionStep, WritefileConfig, ObjectMeta, TypeMeta, TemplateSpec};
         use dragonfly_common::{Machine, MachineIdentity};
+        use dragonfly_crd::{
+            ActionStep, ObjectMeta, Template, TemplateSpec, TypeMeta, WritefileConfig,
+        };
 
         let state = create_test_app_state().await;
 
@@ -375,19 +378,17 @@ mod tests {
             type_meta: TypeMeta::template(),
             metadata: ObjectMeta::new("test-template-fallback"),
             spec: TemplateSpec {
-                actions: vec![
-                    ActionStep::Writefile(WritefileConfig {
-                        path: "/etc/cloud/cloud.cfg.d/99-hostname.cfg".to_string(),
-                        partition: Some(1),
-                        fs_type: None,
-                        content: Some("local-hostname: {{ friendly_name }}".to_string()),
-                        content_b64: None,
-                        mode: None,
-                        uid: None,
-                        gid: None,
-                        timeout: None,
-                    }),
-                ],
+                actions: vec![ActionStep::Writefile(WritefileConfig {
+                    path: "/etc/cloud/cloud.cfg.d/99-hostname.cfg".to_string(),
+                    partition: Some(1),
+                    fs_type: None,
+                    content: Some("local-hostname: {{ friendly_name }}".to_string()),
+                    content_b64: None,
+                    mode: None,
+                    uid: None,
+                    gid: None,
+                    timeout: None,
+                })],
                 timeout: None,
                 version: None,
             },
@@ -400,18 +401,20 @@ mod tests {
         let app = crate::api::api_router().with_state(state);
 
         // Request the template with machine_id
-        let uri = format!("/templates/test-template-fallback?machine_id={}", machine_id);
+        let uri = format!(
+            "/templates/test-template-fallback?machine_id={}",
+            machine_id
+        );
         let response = app
-            .oneshot(
-                Request::builder()
-                    .uri(&uri)
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(Request::builder().uri(&uri).body(Body::empty()).unwrap())
             .await
             .unwrap();
 
-        assert_eq!(response.status(), StatusCode::OK, "Template request should succeed");
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "Template request should succeed"
+        );
 
         let body = response.into_body().collect().await.unwrap().to_bytes();
         let returned_template: Template = serde_json::from_slice(&body).unwrap();
@@ -438,7 +441,9 @@ mod tests {
     /// Test that direct SSH keys and GitHub/GitLab subscriptions are substituted into templates
     #[tokio::test]
     async fn test_template_ssh_keys_and_subscriptions() {
-        use dragonfly_crd::{Template, ActionStep, WritefileConfig, ObjectMeta, TypeMeta, TemplateSpec};
+        use dragonfly_crd::{
+            ActionStep, ObjectMeta, Template, TemplateSpec, TypeMeta, WritefileConfig,
+        };
 
         let state = create_test_app_state().await;
 
@@ -452,7 +457,11 @@ mod tests {
             { "type": "github", "value": "torvalds", "label": "torvalds@github", "url": "https://github.com/torvalds.keys" },
             { "type": "gitlab", "value": "linus", "label": "linus@gitlab", "url": "https://gitlab.com/linus.keys" }
         ]);
-        state.store.put_setting("ssh_key_subscriptions", &subs.to_string()).await.unwrap();
+        state
+            .store
+            .put_setting("ssh_key_subscriptions", &subs.to_string())
+            .await
+            .unwrap();
 
         // Create template with both placeholders
         let template = Template {
@@ -482,8 +491,14 @@ mod tests {
 
         let app = crate::api::api_router().with_state(state);
         let response = app
-            .oneshot(Request::builder().uri("/templates/test-ssh-combined").body(Body::empty()).unwrap())
-            .await.unwrap();
+            .oneshot(
+                Request::builder()
+                    .uri("/templates/test-ssh-combined")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
         let body = response.into_body().collect().await.unwrap().to_bytes();
@@ -493,16 +508,40 @@ mod tests {
             let content = cfg.content.as_ref().expect("Content should be present");
 
             // Direct keys should be in ssh_authorized_keys
-            assert!(content.contains("wings@tealc"), "Should contain first direct key comment: {}", content);
-            assert!(content.contains("admin@server"), "Should contain second direct key comment: {}", content);
+            assert!(
+                content.contains("wings@tealc"),
+                "Should contain first direct key comment: {}",
+                content
+            );
+            assert!(
+                content.contains("admin@server"),
+                "Should contain second direct key comment: {}",
+                content
+            );
 
             // GitHub/GitLab subscriptions should be in ssh_import_id
-            assert!(content.contains("gh:torvalds"), "Should contain GitHub import_id: {}", content);
-            assert!(content.contains("gl:linus"), "Should contain GitLab import_id: {}", content);
+            assert!(
+                content.contains("gh:torvalds"),
+                "Should contain GitHub import_id: {}",
+                content
+            );
+            assert!(
+                content.contains("gl:linus"),
+                "Should contain GitLab import_id: {}",
+                content
+            );
 
             // Raw template variables should be gone
-            assert!(!content.contains("{{ ssh_authorized_keys }}"), "Should not contain raw placeholder: {}", content);
-            assert!(!content.contains("{{ ssh_import_id }}"), "Should not contain raw placeholder: {}", content);
+            assert!(
+                !content.contains("{{ ssh_authorized_keys }}"),
+                "Should not contain raw placeholder: {}",
+                content
+            );
+            assert!(
+                !content.contains("{{ ssh_import_id }}"),
+                "Should not contain raw placeholder: {}",
+                content
+            );
         } else {
             panic!("Expected Writefile action");
         }
@@ -511,17 +550,22 @@ mod tests {
     /// Test that URL subscription keys are fetched and added to ssh_authorized_keys during provisioning
     #[tokio::test]
     async fn test_template_ssh_url_subscription_resolved() {
-        use dragonfly_crd::{Template, ActionStep, WritefileConfig, ObjectMeta, TypeMeta, TemplateSpec};
-        use tokio::net::TcpListener;
         use axum::{Router, routing::get};
+        use dragonfly_crd::{
+            ActionStep, ObjectMeta, Template, TemplateSpec, TypeMeta, WritefileConfig,
+        };
+        use tokio::net::TcpListener;
 
         // Start a local mock server that serves SSH keys
         let mock_keys = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAImock1 alice@laptop\nssh-rsa AAAAB3NzaC1yc2EAAAAmock2 bob@desktop";
         let mock_keys_owned = mock_keys.to_string();
-        let mock_app = Router::new().route("/keys.txt", get(move || {
-            let keys = mock_keys_owned.clone();
-            async move { keys }
-        }));
+        let mock_app = Router::new().route(
+            "/keys.txt",
+            get(move || {
+                let keys = mock_keys_owned.clone();
+                async move { keys }
+            }),
+        );
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move { axum::serve(listener, mock_app).await.unwrap() });
@@ -533,28 +577,37 @@ mod tests {
         let subs = serde_json::json!([
             { "type": "url", "value": &mock_url, "label": "test-keys", "url": &mock_url }
         ]);
-        state.store.put_setting("ssh_key_subscriptions", &subs.to_string()).await.unwrap();
+        state
+            .store
+            .put_setting("ssh_key_subscriptions", &subs.to_string())
+            .await
+            .unwrap();
 
         // Also add a direct key to verify both coexist
-        state.store.put_setting("ssh_keys", "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIdirect wings@forge").await.unwrap();
+        state
+            .store
+            .put_setting(
+                "ssh_keys",
+                "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIdirect wings@forge",
+            )
+            .await
+            .unwrap();
 
         let template = Template {
             type_meta: TypeMeta::template(),
             metadata: ObjectMeta::new("test-url-sub"),
             spec: TemplateSpec {
-                actions: vec![
-                    ActionStep::Writefile(WritefileConfig {
-                        path: "/etc/cloud/cloud.cfg.d/99-users.cfg".to_string(),
-                        partition: Some(1),
-                        fs_type: None,
-                        content: Some("ssh_authorized_keys: {{ ssh_authorized_keys }}".to_string()),
-                        content_b64: None,
-                        mode: None,
-                        uid: None,
-                        gid: None,
-                        timeout: None,
-                    }),
-                ],
+                actions: vec![ActionStep::Writefile(WritefileConfig {
+                    path: "/etc/cloud/cloud.cfg.d/99-users.cfg".to_string(),
+                    partition: Some(1),
+                    fs_type: None,
+                    content: Some("ssh_authorized_keys: {{ ssh_authorized_keys }}".to_string()),
+                    content_b64: None,
+                    mode: None,
+                    uid: None,
+                    gid: None,
+                    timeout: None,
+                })],
                 timeout: None,
                 version: None,
             },
@@ -563,8 +616,14 @@ mod tests {
 
         let app = crate::api::api_router().with_state(state);
         let response = app
-            .oneshot(Request::builder().uri("/templates/test-url-sub").body(Body::empty()).unwrap())
-            .await.unwrap();
+            .oneshot(
+                Request::builder()
+                    .uri("/templates/test-url-sub")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
         let body = response.into_body().collect().await.unwrap().to_bytes();
@@ -574,11 +633,23 @@ mod tests {
             let content = cfg.content.as_ref().expect("Content should be present");
 
             // URL subscription keys should be fetched and included
-            assert!(content.contains("alice@laptop"), "Should contain key from URL subscription: {}", content);
-            assert!(content.contains("bob@desktop"), "Should contain second key from URL subscription: {}", content);
+            assert!(
+                content.contains("alice@laptop"),
+                "Should contain key from URL subscription: {}",
+                content
+            );
+            assert!(
+                content.contains("bob@desktop"),
+                "Should contain second key from URL subscription: {}",
+                content
+            );
 
             // Direct key should also be present
-            assert!(content.contains("wings@forge"), "Should contain direct key: {}", content);
+            assert!(
+                content.contains("wings@forge"),
+                "Should contain direct key: {}",
+                content
+            );
         } else {
             panic!("Expected Writefile action");
         }
@@ -587,7 +658,9 @@ mod tests {
     /// Test that unreachable URL subscriptions are gracefully skipped without breaking provisioning
     #[tokio::test]
     async fn test_template_ssh_url_subscription_unreachable_gracefully_skipped() {
-        use dragonfly_crd::{Template, ActionStep, WritefileConfig, ObjectMeta, TypeMeta, TemplateSpec};
+        use dragonfly_crd::{
+            ActionStep, ObjectMeta, Template, TemplateSpec, TypeMeta, WritefileConfig,
+        };
 
         let state = create_test_app_state().await;
 
@@ -595,28 +668,37 @@ mod tests {
         let subs = serde_json::json!([
             { "type": "url", "value": "http://127.0.0.1:1/nonexistent.keys", "label": "unreachable", "url": "http://127.0.0.1:1/nonexistent.keys" }
         ]);
-        state.store.put_setting("ssh_key_subscriptions", &subs.to_string()).await.unwrap();
+        state
+            .store
+            .put_setting("ssh_key_subscriptions", &subs.to_string())
+            .await
+            .unwrap();
 
         // Add a direct key that should still work
-        state.store.put_setting("ssh_keys", "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIsurvive wings@resilient").await.unwrap();
+        state
+            .store
+            .put_setting(
+                "ssh_keys",
+                "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIsurvive wings@resilient",
+            )
+            .await
+            .unwrap();
 
         let template = Template {
             type_meta: TypeMeta::template(),
             metadata: ObjectMeta::new("test-unreachable"),
             spec: TemplateSpec {
-                actions: vec![
-                    ActionStep::Writefile(WritefileConfig {
-                        path: "/etc/cloud/cloud.cfg.d/99-users.cfg".to_string(),
-                        partition: Some(1),
-                        fs_type: None,
-                        content: Some("ssh_authorized_keys: {{ ssh_authorized_keys }}".to_string()),
-                        content_b64: None,
-                        mode: None,
-                        uid: None,
-                        gid: None,
-                        timeout: None,
-                    }),
-                ],
+                actions: vec![ActionStep::Writefile(WritefileConfig {
+                    path: "/etc/cloud/cloud.cfg.d/99-users.cfg".to_string(),
+                    partition: Some(1),
+                    fs_type: None,
+                    content: Some("ssh_authorized_keys: {{ ssh_authorized_keys }}".to_string()),
+                    content_b64: None,
+                    mode: None,
+                    uid: None,
+                    gid: None,
+                    timeout: None,
+                })],
                 timeout: None,
                 version: None,
             },
@@ -625,8 +707,14 @@ mod tests {
 
         let app = crate::api::api_router().with_state(state);
         let response = app
-            .oneshot(Request::builder().uri("/templates/test-unreachable").body(Body::empty()).unwrap())
-            .await.unwrap();
+            .oneshot(
+                Request::builder()
+                    .uri("/templates/test-unreachable")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
 
         // Should succeed despite unreachable URL
         assert_eq!(response.status(), StatusCode::OK);
@@ -637,10 +725,18 @@ mod tests {
             let content = cfg.content.as_ref().expect("Content should be present");
 
             // Direct key should survive despite URL subscription failure
-            assert!(content.contains("wings@resilient"), "Direct key should survive URL failure: {}", content);
+            assert!(
+                content.contains("wings@resilient"),
+                "Direct key should survive URL failure: {}",
+                content
+            );
 
             // Template variable should be substituted (not left raw)
-            assert!(!content.contains("{{ ssh_authorized_keys }}"), "Should not contain raw placeholder: {}", content);
+            assert!(
+                !content.contains("{{ ssh_authorized_keys }}"),
+                "Should not contain raw placeholder: {}",
+                content
+            );
         } else {
             panic!("Expected Writefile action");
         }
@@ -654,7 +750,7 @@ mod tests {
     #[tokio::test]
     async fn test_agent_request_install() {
         use dragonfly_common::{Machine, MachineIdentity};
-        use dragonfly_crd::{Template, ObjectMeta, TypeMeta, TemplateSpec};
+        use dragonfly_crd::{ObjectMeta, Template, TemplateSpec, TypeMeta};
 
         let state = create_test_app_state().await;
 
@@ -668,7 +764,11 @@ mod tests {
         let template = Template {
             type_meta: TypeMeta::template(),
             metadata: ObjectMeta::new("debian-13"),
-            spec: TemplateSpec { actions: vec![], timeout: None, version: None },
+            spec: TemplateSpec {
+                actions: vec![],
+                timeout: None,
+                version: None,
+            },
         };
         state.store.put_template(&template).await.unwrap();
 
@@ -699,7 +799,12 @@ mod tests {
 
         // Verify machine was updated
         let machine_uuid = uuid::Uuid::parse_str(&machine_id).unwrap();
-        let updated = state.store.get_machine(machine_uuid).await.unwrap().unwrap();
+        let updated = state
+            .store
+            .get_machine(machine_uuid)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(updated.config.os_choice.as_deref(), Some("debian-13"));
         assert!(updated.config.reimage_requested);
     }
@@ -817,7 +922,12 @@ mod tests {
 
         // Verify boot-mode tag was added
         let machine_uuid = uuid::Uuid::parse_str(&machine_id).unwrap();
-        let updated = state.store.get_machine(machine_uuid).await.unwrap().unwrap();
+        let updated = state
+            .store
+            .get_machine(machine_uuid)
+            .await
+            .unwrap()
+            .unwrap();
         assert!(updated.config.tags.iter().any(|t| t == "boot-mode:memtest"));
     }
 
@@ -856,7 +966,12 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
 
         let machine_uuid = uuid::Uuid::parse_str(&machine_id).unwrap();
-        let updated = state.store.get_machine(machine_uuid).await.unwrap().unwrap();
+        let updated = state
+            .store
+            .get_machine(machine_uuid)
+            .await
+            .unwrap()
+            .unwrap();
         assert!(updated.config.tags.iter().any(|t| t == "boot-mode:rescue"));
     }
 
@@ -921,34 +1036,39 @@ mod tests {
     /// Test that duplicate SSH keys (same type+data, different comments) are deduplicated
     #[tokio::test]
     async fn test_template_ssh_keys_deduplicated() {
-        use dragonfly_crd::{Template, ActionStep, WritefileConfig, ObjectMeta, TypeMeta, TemplateSpec};
+        use dragonfly_crd::{
+            ActionStep, ObjectMeta, Template, TemplateSpec, TypeMeta, WritefileConfig,
+        };
 
         let state = create_test_app_state().await;
 
         // Store keys with same type+base64 but different comments
-        state.store.put_setting("ssh_keys",
-            "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAItest1 wings@tealc\n\
+        state
+            .store
+            .put_setting(
+                "ssh_keys",
+                "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAItest1 wings@tealc\n\
              ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAItest1 wings@desktop\n\
-             ssh-rsa AAAAB3NzaC1yc2EAAAAtest2 admin@server"
-        ).await.unwrap();
+             ssh-rsa AAAAB3NzaC1yc2EAAAAtest2 admin@server",
+            )
+            .await
+            .unwrap();
 
         let template = Template {
             type_meta: TypeMeta::template(),
             metadata: ObjectMeta::new("test-dedup"),
             spec: TemplateSpec {
-                actions: vec![
-                    ActionStep::Writefile(WritefileConfig {
-                        path: "/etc/cloud/cloud.cfg.d/99-users.cfg".to_string(),
-                        partition: Some(1),
-                        fs_type: None,
-                        content: Some("ssh_authorized_keys: {{ ssh_authorized_keys }}".to_string()),
-                        content_b64: None,
-                        mode: None,
-                        uid: None,
-                        gid: None,
-                        timeout: None,
-                    }),
-                ],
+                actions: vec![ActionStep::Writefile(WritefileConfig {
+                    path: "/etc/cloud/cloud.cfg.d/99-users.cfg".to_string(),
+                    partition: Some(1),
+                    fs_type: None,
+                    content: Some("ssh_authorized_keys: {{ ssh_authorized_keys }}".to_string()),
+                    content_b64: None,
+                    mode: None,
+                    uid: None,
+                    gid: None,
+                    timeout: None,
+                })],
                 timeout: None,
                 version: None,
             },
@@ -957,8 +1077,14 @@ mod tests {
 
         let app = crate::api::api_router().with_state(state);
         let response = app
-            .oneshot(Request::builder().uri("/templates/test-dedup").body(Body::empty()).unwrap())
-            .await.unwrap();
+            .oneshot(
+                Request::builder()
+                    .uri("/templates/test-dedup")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
         let body = response.into_body().collect().await.unwrap().to_bytes();
@@ -968,13 +1094,25 @@ mod tests {
             let content = cfg.content.as_ref().expect("Content should be present");
 
             // First occurrence (wings@tealc) should be kept
-            assert!(content.contains("wings@tealc"), "Should keep first occurrence: {}", content);
+            assert!(
+                content.contains("wings@tealc"),
+                "Should keep first occurrence: {}",
+                content
+            );
 
             // Duplicate (wings@desktop, same key data) should be removed
-            assert!(!content.contains("wings@desktop"), "Should deduplicate same key with different comment: {}", content);
+            assert!(
+                !content.contains("wings@desktop"),
+                "Should deduplicate same key with different comment: {}",
+                content
+            );
 
             // Unique key should still be present
-            assert!(content.contains("admin@server"), "Should keep unique key: {}", content);
+            assert!(
+                content.contains("admin@server"),
+                "Should keep unique key: {}",
+                content
+            );
         } else {
             panic!("Expected Writefile action");
         }

@@ -6,10 +6,7 @@
 use crate::error::{Result, WorkflowError};
 use crate::store::WorkflowStateStore;
 use dragonfly_actions::{ActionContext, ActionEngine, Progress, ProgressReporter};
-use dragonfly_crd::{
-    ActionStatus, Hardware, Template, Workflow, WorkflowState,
-    WorkflowStatus,
-};
+use dragonfly_crd::{ActionStatus, Hardware, Template, Workflow, WorkflowState, WorkflowStatus};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::broadcast;
@@ -67,10 +64,7 @@ pub struct WorkflowExecutor {
 
 impl WorkflowExecutor {
     /// Create a new workflow executor
-    pub fn new(
-        action_engine: ActionEngine,
-        state_store: Arc<dyn WorkflowStateStore>,
-    ) -> Self {
+    pub fn new(action_engine: ActionEngine, state_store: Arc<dyn WorkflowStateStore>) -> Self {
         let (event_sender, _) = broadcast::channel(1024);
         Self {
             action_engine,
@@ -270,7 +264,10 @@ impl WorkflowExecutor {
         }
 
         // Get hardware disk paths for template variable substitution
-        let hardware_disks: Vec<String> = hardware.spec.disks.iter()
+        let hardware_disks: Vec<String> = hardware
+            .spec
+            .disks
+            .iter()
             .map(|d| d.device.clone())
             .collect();
 
@@ -345,7 +342,13 @@ impl WorkflowExecutor {
                 if success {
                     status.complete();
                 } else {
-                    status.fail(result.as_ref().err().map(|e| e.to_string()).unwrap_or_default());
+                    status.fail(
+                        result
+                            .as_ref()
+                            .err()
+                            .map(|e| e.to_string())
+                            .unwrap_or_default(),
+                    );
                 }
             });
 
@@ -425,8 +428,8 @@ mod tests {
     use crate::store::MemoryStateStore;
     use dragonfly_actions::NoopAction;
     use dragonfly_crd::{
-        ActionStep, DhcpSpec, DiskSpec, HardwareSpec, Image2DiskConfig, InterfaceSpec,
-        ObjectMeta, TemplateSpec, TypeMeta, WritefileConfig,
+        ActionStep, DhcpSpec, DiskSpec, HardwareSpec, Image2DiskConfig, InterfaceSpec, ObjectMeta,
+        TemplateSpec, TypeMeta, WritefileConfig,
     };
 
     fn test_template() -> Template {
@@ -488,8 +491,8 @@ mod tests {
         action_engine.register(NoopAction::new("writefile"));
         action_engine.register(NoopAction::new("kexec"));
 
-        let executor = WorkflowExecutor::new(action_engine, store.clone())
-            .with_server_url("10.0.0.1");
+        let executor =
+            WorkflowExecutor::new(action_engine, store.clone()).with_server_url("10.0.0.1");
 
         (executor, store)
     }
@@ -574,11 +577,23 @@ mod tests {
         assert!(result.is_ok());
 
         // Check events
-        assert!(events.iter().any(|e| matches!(e, WorkflowEvent::Started { .. })));
-        assert!(events.iter().any(|e| matches!(e, WorkflowEvent::ActionStarted { action, .. } if action == "image2disk")));
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, WorkflowEvent::Started { .. }))
+        );
+        assert!(events.iter().any(
+            |e| matches!(e, WorkflowEvent::ActionStarted { action, .. } if action == "image2disk")
+        ));
         assert!(events.iter().any(|e| matches!(e, WorkflowEvent::ActionCompleted { action, success, .. } if action == "image2disk" && *success)));
-        assert!(events.iter().any(|e| matches!(e, WorkflowEvent::ActionStarted { action, .. } if action == "writefile")));
-        assert!(events.iter().any(|e| matches!(e, WorkflowEvent::Completed { success, .. } if *success)));
+        assert!(events.iter().any(
+            |e| matches!(e, WorkflowEvent::ActionStarted { action, .. } if action == "writefile")
+        ));
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, WorkflowEvent::Completed { success, .. } if *success))
+        );
     }
 
     #[tokio::test]
@@ -596,7 +611,11 @@ mod tests {
 
         // Should succeed — reset to Pending and re-execute
         let result = executor.execute("test-workflow").await;
-        assert!(result.is_ok(), "Interrupted workflow should be re-executed, got: {:?}", result);
+        assert!(
+            result.is_ok(),
+            "Interrupted workflow should be re-executed, got: {:?}",
+            result
+        );
     }
 
     #[tokio::test]
@@ -622,8 +641,14 @@ mod tests {
 
         // Create action engine with slow action
         let mut action_engine = ActionEngine::new();
-        action_engine.register(dragonfly_actions::SleepAction::new("image2disk", Duration::from_secs(10)));
-        action_engine.register(dragonfly_actions::SleepAction::new("writefile", Duration::from_secs(10)));
+        action_engine.register(dragonfly_actions::SleepAction::new(
+            "image2disk",
+            Duration::from_secs(10),
+        ));
+        action_engine.register(dragonfly_actions::SleepAction::new(
+            "writefile",
+            Duration::from_secs(10),
+        ));
 
         let executor = WorkflowExecutor::new(action_engine, store.clone())
             .with_global_timeout(Duration::from_millis(50));

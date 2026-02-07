@@ -148,8 +148,11 @@ impl ActionEngine {
                     .report(Progress::completed(&action_name));
             }
             Err(e) => {
-                ctx.progress_reporter()
-                    .report(Progress::new(&action_name, 0, format!("Failed: {}", e)));
+                ctx.progress_reporter().report(Progress::new(
+                    &action_name,
+                    0,
+                    format!("Failed: {}", e),
+                ));
             }
         }
 
@@ -383,7 +386,9 @@ mod tests {
         engine.register(NoopAction::new("step3"));
 
         let ctx = test_context();
-        let results = engine.execute_sequence(&["step1", "step2", "step3"], &ctx).await;
+        let results = engine
+            .execute_sequence(&["step1", "step2", "step3"], &ctx)
+            .await;
 
         assert_eq!(results.len(), 3);
         assert!(results.iter().all(|r| r.is_ok()));
@@ -397,7 +402,9 @@ mod tests {
         engine.register(NoopAction::new("step3"));
 
         let ctx = test_context();
-        let results = engine.execute_sequence(&["step1", "step2", "step3"], &ctx).await;
+        let results = engine
+            .execute_sequence(&["step1", "step2", "step3"], &ctx)
+            .await;
 
         assert_eq!(results.len(), 2); // stops at step2
         assert!(results[0].is_ok());
@@ -413,7 +420,11 @@ mod tests {
         let ctx = test_context();
 
         assert!(engine.validate_sequence(&["step1", "step2"], &ctx).is_ok());
-        assert!(engine.validate_sequence(&["step1", "missing"], &ctx).is_err());
+        assert!(
+            engine
+                .validate_sequence(&["step1", "missing"], &ctx)
+                .is_err()
+        );
     }
 
     #[test]

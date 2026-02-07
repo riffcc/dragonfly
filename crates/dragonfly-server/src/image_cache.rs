@@ -7,7 +7,7 @@
 //! This offloads the heavy conversion work from memory-constrained agents
 //! to the server, which has more resources.
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -173,7 +173,8 @@ impl ImageCache {
 
         // Step 3: Compress raw to tar.zst
         info!("Compressing raw image to tar.zst");
-        self.compress_to_tar_zst(&temp_raw, &final_path, cache_name).await?;
+        self.compress_to_tar_zst(&temp_raw, &final_path, cache_name)
+            .await?;
 
         // Clean up temp raw
         let _ = fs::remove_file(&temp_raw).await;
@@ -183,8 +184,8 @@ impl ImageCache {
 
     /// Download a file directly to disk
     async fn download_file(&self, url: &str, output: &Path) -> Result<()> {
-        use tokio::io::AsyncWriteExt;
         use futures::StreamExt;
+        use tokio::io::AsyncWriteExt;
 
         let client = reqwest::Client::new();
         let response = client.get(url).send().await?;
@@ -222,9 +223,9 @@ impl ImageCache {
     /// Download a tar.gz and extract the disk image file inside (legacy, for tar.gz sources)
     async fn download_and_extract_image(&self, url: &str, output: &Path) -> Result<()> {
         use async_compression::tokio::bufread::GzipDecoder;
+        use futures::StreamExt;
         use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
         use tokio_tar::Archive;
-        use futures::StreamExt;
 
         let client = reqwest::Client::new();
         let response = client.get(url).send().await?;
@@ -238,9 +239,10 @@ impl ImageCache {
 
         // Stream response -> gzip decoder -> tar archive
         let stream = response.bytes_stream();
-        let stream_reader = tokio_util::io::StreamReader::new(
-            stream.map(|result| result.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e)))
-        );
+        let stream_reader =
+            tokio_util::io::StreamReader::new(stream.map(|result| {
+                result.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+            }));
         let buffered = BufReader::new(stream_reader);
         let decoder = GzipDecoder::new(buffered);
         let mut archive = Archive::new(decoder);
@@ -322,10 +324,12 @@ impl ImageCache {
         header.set_path(format!("{}.raw", name))?;
         header.set_size(input_size);
         header.set_mode(0o644);
-        header.set_mtime(std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs());
+        header.set_mtime(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs(),
+        );
         header.set_cksum();
 
         let input_file = fs::File::open(input).await?;
@@ -393,11 +397,15 @@ mod tests {
 
         // Ubuntu URLs should need conversion
         assert_eq!(
-            cache.needs_conversion("https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.tar.gz"),
+            cache.needs_conversion(
+                "https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.tar.gz"
+            ),
             Some("ubuntu-2404")
         );
         assert_eq!(
-            cache.needs_conversion("https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64.tar.gz"),
+            cache.needs_conversion(
+                "https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64.tar.gz"
+            ),
             Some("ubuntu-2204")
         );
 

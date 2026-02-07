@@ -17,4 +17,4 @@ pub mod v1;
 pub mod conversions;
 
 // Re-export v1 Store as the primary interface
-pub use v1::{create_store, MemoryStore, SqliteStore, Store, StoreConfig, StoreError, Result};
+pub use v1::{MemoryStore, Result, SqliteStore, Store, StoreConfig, StoreError, create_store};

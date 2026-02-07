@@ -165,8 +165,7 @@ mod tests {
 
     #[test]
     fn test_object_meta_serialization() {
-        let meta = ObjectMeta::with_namespace("my-server", "default")
-            .with_label("app", "web");
+        let meta = ObjectMeta::with_namespace("my-server", "default").with_label("app", "web");
 
         let json = serde_json::to_string(&meta).unwrap();
         let parsed: ObjectMeta = serde_json::from_str(&json).unwrap();

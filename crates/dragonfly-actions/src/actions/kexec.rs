@@ -3,11 +3,11 @@
 //! Uses kexec to boot directly into the installed kernel without a full
 //! reboot cycle. This is the final step in provisioning.
 
+use super::writefile::cleanup_mount;
 use crate::context::{ActionContext, ActionResult};
 use crate::error::{ActionError, Result};
 use crate::progress::Progress;
 use crate::traits::Action;
-use super::writefile::cleanup_mount;
 use async_trait::async_trait;
 use std::time::Duration;
 use tokio::process::Command;
@@ -37,7 +37,15 @@ impl Action for KexecAction {
     }
 
     fn optional_env_vars(&self) -> Vec<&str> {
-        vec!["FS_TYPE", "KERNEL_PATH", "INITRD_PATH", "CMDLINE", "SERVER_URL", "WORKFLOW_ID", "MACHINE_ID"]
+        vec![
+            "FS_TYPE",
+            "KERNEL_PATH",
+            "INITRD_PATH",
+            "CMDLINE",
+            "SERVER_URL",
+            "WORKFLOW_ID",
+            "MACHINE_ID",
+        ]
     }
 
     fn validate(&self, ctx: &ActionContext) -> Result<()> {
@@ -85,7 +93,9 @@ impl Action for KexecAction {
         // CRITICAL: Notify server IMMEDIATELY that kexec is starting
         // The machine WILL reboot and async events may not arrive in time
         // This direct HTTP call ensures the server knows installation is complete
-        if let (Some(server_url), Some(workflow_id)) = (ctx.env("SERVER_URL"), ctx.env("WORKFLOW_ID")) {
+        if let (Some(server_url), Some(workflow_id)) =
+            (ctx.env("SERVER_URL"), ctx.env("WORKFLOW_ID"))
+        {
             let url = format!("{}/api/workflows/{}/events", server_url, workflow_id);
             tracing::info!(url = %url, "Notifying server that kexec is starting - marking installation complete");
 
@@ -144,7 +154,11 @@ impl Action for KexecAction {
                 }
             }
             Err(e) => {
-                tracing::info!("Cannot read {} - kexec may not be supported: {}", kexec_disabled_path, e);
+                tracing::info!(
+                    "Cannot read {} - kexec may not be supported: {}",
+                    kexec_disabled_path,
+                    e
+                );
                 // Try anyway - maybe the kernel just doesn't have this sysctl
                 true
             }
@@ -160,9 +174,11 @@ impl Action for KexecAction {
 
             let _ = Command::new("reboot").spawn();
 
-            return Ok(ActionResult::success("Reboot initiated (kexec disabled by kernel)")
-                .with_output("method", "reboot")
-                .with_output("reason", "kexec_load_disabled"));
+            return Ok(
+                ActionResult::success("Reboot initiated (kexec disabled by kernel)")
+                    .with_output("method", "reboot")
+                    .with_output("reason", "kexec_load_disabled"),
+            );
         }
 
         // Create mount point
@@ -257,7 +273,11 @@ impl Action for KexecAction {
 
         if !kexec_available {
             // Unmount the filesystem since we're not using kexec
-            reporter.report(Progress::new(self.name(), 90, "Unmounting target filesystem"));
+            reporter.report(Progress::new(
+                self.name(),
+                90,
+                "Unmounting target filesystem",
+            ));
             let _ = Command::new("umount").arg(mount_point).output().await;
 
             reporter.report(Progress::new(
@@ -269,22 +289,34 @@ impl Action for KexecAction {
             // Fall back to regular reboot
             let _ = Command::new("reboot").spawn();
 
-            return Ok(ActionResult::success("Reboot initiated (kexec load failed)")
-                .with_output("method", "reboot")
-                .with_output("reason", "kexec_load_failed"));
+            return Ok(
+                ActionResult::success("Reboot initiated (kexec load failed)")
+                    .with_output("method", "reboot")
+                    .with_output("reason", "kexec_load_failed"),
+            );
         }
 
         // Unmount the filesystem
-        reporter.report(Progress::new(self.name(), 80, "Unmounting target filesystem"));
+        reporter.report(Progress::new(
+            self.name(),
+            80,
+            "Unmounting target filesystem",
+        ));
 
         let _ = Command::new("umount").arg(mount_point).output().await;
 
         // Execute kexec
-        reporter.report(Progress::new(self.name(), 100, "Executing kexec - goodbye!"));
+        reporter.report(Progress::new(
+            self.name(),
+            100,
+            "Executing kexec - goodbye!",
+        ));
 
         // Notify server directly before rebooting - the async event system may not deliver in time
         // This is critical because kexec will immediately reboot the machine
-        if let (Some(server_url), Some(workflow_id)) = (ctx.env("SERVER_URL"), ctx.env("WORKFLOW_ID")) {
+        if let (Some(server_url), Some(workflow_id)) =
+            (ctx.env("SERVER_URL"), ctx.env("WORKFLOW_ID"))
+        {
             let url = format!("{}/api/workflows/{}/events", server_url, workflow_id);
             tracing::info!(url = %url, workflow_id = %workflow_id, "Sending kexec completion notification to server");
 
@@ -315,10 +347,7 @@ impl Action for KexecAction {
         tracing::info!("Executing kexec -e NOW!");
 
         // Use output() instead of spawn() to ensure it actually runs
-        let result = Command::new("kexec")
-            .arg("-e")
-            .output()
-            .await;
+        let result = Command::new("kexec").arg("-e").output().await;
 
         // If we get here, kexec -e failed!
         if let Ok(output) = result {
@@ -331,10 +360,12 @@ impl Action for KexecAction {
         }
 
         // If we get here, kexec might have failed or not taken over
-        Ok(ActionResult::success("Kexec initiated - system should be rebooting")
-            .with_output("kernel", kernel_path)
-            .with_output("initrd", initrd_path)
-            .with_output("cmdline", cmdline))
+        Ok(
+            ActionResult::success("Kexec initiated - system should be rebooting")
+                .with_output("kernel", kernel_path)
+                .with_output("initrd", initrd_path)
+                .with_output("cmdline", cmdline),
+        )
     }
 }
 
@@ -344,8 +375,8 @@ async fn try_kexec_load(kernel: &str, initrd: Option<&str>, cmdline: &str) -> bo
     // Include reset flags to prevent black screen after kexec
     let mut base_args = vec![
         "-l".to_string(),
-        "--reset-vga".to_string(),     // Reset VGA adapter before boot
-        "--console-vga".to_string(),   // Use VGA console
+        "--reset-vga".to_string(),   // Reset VGA adapter before boot
+        "--console-vga".to_string(), // Use VGA console
         kernel.to_string(),
         format!("--command-line={}", cmdline),
     ];
@@ -435,10 +466,7 @@ async fn unload_graphics_modules() {
     ];
 
     for module in &modules {
-        let output = Command::new("rmmod")
-            .arg(module)
-            .output()
-            .await;
+        let output = Command::new("rmmod").arg(module).output().await;
 
         match output {
             Ok(o) if o.status.success() => {
@@ -540,8 +568,8 @@ fn convert_root_to_uuid(cmdline: &str, uuid: &str) -> String {
 fn find_kernel(mount_point: &str) -> Option<String> {
     // Check both /boot subdirectory AND root of mount (for separate boot partitions)
     let search_dirs = [
-        format!("{}/boot", mount_point),  // Kernel in /boot subdir (root partition)
-        mount_point.to_string(),           // Kernel at root (separate boot partition)
+        format!("{}/boot", mount_point), // Kernel in /boot subdir (root partition)
+        mount_point.to_string(),         // Kernel at root (separate boot partition)
     ];
 
     for search_dir in &search_dirs {
@@ -550,7 +578,11 @@ fn find_kernel(mount_point: &str) -> Option<String> {
             let files: Vec<_> = entries
                 .flatten()
                 .map(|e| e.file_name().to_string_lossy().into_owned())
-                .filter(|n| n.starts_with("vmlinuz") || n.starts_with("initrd") || n.starts_with("initramfs"))
+                .filter(|n| {
+                    n.starts_with("vmlinuz")
+                        || n.starts_with("initrd")
+                        || n.starts_with("initramfs")
+                })
                 .collect();
             if !files.is_empty() {
                 tracing::info!(dir = %search_dir, files = ?files, "Found boot files");
@@ -562,7 +594,11 @@ fn find_kernel(mount_point: &str) -> Option<String> {
         }
     }
 
-    tracing::error!("Could not find kernel in {}/boot or {}", mount_point, mount_point);
+    tracing::error!(
+        "Could not find kernel in {}/boot or {}",
+        mount_point,
+        mount_point
+    );
     None
 }
 
@@ -592,7 +628,8 @@ fn find_kernel_in_dir(search_dir: &str, mount_point: &str) -> Option<String> {
                         std::path::Path::new(search_dir).join(&target)
                     } else {
                         // Absolute symlinks need to be rebased to mount point
-                        std::path::Path::new(mount_point).join(target.strip_prefix("/").unwrap_or(&target))
+                        std::path::Path::new(mount_point)
+                            .join(target.strip_prefix("/").unwrap_or(&target))
                     };
                     if resolved.exists() {
                         tracing::info!(symlink = %path.display(), target = %resolved.display(), "Resolved kernel symlink");
@@ -615,8 +652,8 @@ fn find_kernel_in_dir(search_dir: &str, mount_point: &str) -> Option<String> {
 fn find_initrd(mount_point: &str) -> Option<String> {
     // Check both /boot subdirectory AND root of mount (for separate boot partitions)
     let search_dirs = [
-        format!("{}/boot", mount_point),  // Initrd in /boot subdir (root partition)
-        mount_point.to_string(),           // Initrd at root (separate boot partition)
+        format!("{}/boot", mount_point), // Initrd in /boot subdir (root partition)
+        mount_point.to_string(),         // Initrd at root (separate boot partition)
     ];
 
     for search_dir in &search_dirs {
@@ -625,7 +662,11 @@ fn find_initrd(mount_point: &str) -> Option<String> {
         }
     }
 
-    tracing::warn!("Could not find initrd in {}/boot or {} (continuing without initrd)", mount_point, mount_point);
+    tracing::warn!(
+        "Could not find initrd in {}/boot or {} (continuing without initrd)",
+        mount_point,
+        mount_point
+    );
     None
 }
 
@@ -654,7 +695,8 @@ fn find_initrd_in_dir(search_dir: &str, mount_point: &str) -> Option<String> {
                     let resolved = if target.is_relative() {
                         std::path::Path::new(search_dir).join(&target)
                     } else {
-                        std::path::Path::new(mount_point).join(target.strip_prefix("/").unwrap_or(&target))
+                        std::path::Path::new(mount_point)
+                            .join(target.strip_prefix("/").unwrap_or(&target))
                     };
                     if resolved.exists() {
                         tracing::info!(symlink = %path.display(), target = %resolved.display(), "Resolved initrd symlink");
@@ -684,10 +726,7 @@ const NOTIFY_TIMEOUT: Duration = Duration::from_secs(5);
 /// will appear stuck at "Installing" forever. We retry aggressively because
 /// the server may be temporarily busy handling other machines' events.
 async fn notify_server_with_retry(url: &str, event_data: &serde_json::Value) {
-    let client = match reqwest::Client::builder()
-        .timeout(NOTIFY_TIMEOUT)
-        .build()
-    {
+    let client = match reqwest::Client::builder().timeout(NOTIFY_TIMEOUT).build() {
         Ok(c) => c,
         Err(e) => {
             tracing::error!(error = %e, "Failed to build HTTP client for server notification");
@@ -726,7 +765,10 @@ async fn notify_server_with_retry(url: &str, event_data: &serde_json::Value) {
         // Exponential backoff: 500ms, 1s, 2s, 4s
         if attempt < MAX_NOTIFY_RETRIES {
             let backoff = Duration::from_millis(500 * 2u64.pow(attempt - 1));
-            tracing::info!(backoff_ms = backoff.as_millis() as u64, "Backing off before retry");
+            tracing::info!(
+                backoff_ms = backoff.as_millis() as u64,
+                "Backing off before retry"
+            );
             tokio::time::sleep(backoff).await;
         }
     }

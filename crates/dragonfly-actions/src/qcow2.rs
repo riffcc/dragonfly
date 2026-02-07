@@ -20,9 +20,9 @@ pub struct Qcow2Header {
     pub backing_file_offset: u64,
     pub backing_file_size: u32,
     pub cluster_bits: u32,
-    pub size: u64,           // Virtual disk size in bytes
+    pub size: u64, // Virtual disk size in bytes
     pub crypt_method: u32,
-    pub l1_size: u32,        // Number of entries in L1 table
+    pub l1_size: u32, // Number of entries in L1 table
     pub l1_table_offset: u64,
     pub refcount_table_offset: u64,
     pub refcount_table_clusters: u32,
@@ -43,7 +43,10 @@ impl Qcow2Header {
         if magic != QCOW2_MAGIC {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("Invalid QCOW2 magic: 0x{:08x}, expected 0x{:08x}", magic, QCOW2_MAGIC),
+                format!(
+                    "Invalid QCOW2 magic: 0x{:08x}, expected 0x{:08x}",
+                    magic, QCOW2_MAGIC
+                ),
             ));
         }
 
@@ -68,18 +71,23 @@ impl Qcow2Header {
         let snapshots_offset = reader.read_u64::<BigEndian>()?;
 
         // V3 additional fields
-        let (incompatible_features, compatible_features, autoclear_features, refcount_order, header_length) =
-            if version >= 3 {
-                (
-                    reader.read_u64::<BigEndian>()?,
-                    reader.read_u64::<BigEndian>()?,
-                    reader.read_u64::<BigEndian>()?,
-                    reader.read_u32::<BigEndian>()?,
-                    reader.read_u32::<BigEndian>()?,
-                )
-            } else {
-                (0, 0, 0, 4, 72) // v2 defaults
-            };
+        let (
+            incompatible_features,
+            compatible_features,
+            autoclear_features,
+            refcount_order,
+            header_length,
+        ) = if version >= 3 {
+            (
+                reader.read_u64::<BigEndian>()?,
+                reader.read_u64::<BigEndian>()?,
+                reader.read_u64::<BigEndian>()?,
+                reader.read_u32::<BigEndian>()?,
+                reader.read_u32::<BigEndian>()?,
+            )
+        } else {
+            (0, 0, 0, 4, 72) // v2 defaults
+        };
 
         // Check for unsupported features
         if crypt_method != 0 {
@@ -105,7 +113,10 @@ impl Qcow2Header {
         if version >= 3 && (incompatible_features & !0b11) != 0 {
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
-                format!("Unsupported QCOW2 incompatible features: 0x{:x}", incompatible_features),
+                format!(
+                    "Unsupported QCOW2 incompatible features: 0x{:x}",
+                    incompatible_features
+                ),
             ));
         }
 
@@ -138,7 +149,7 @@ impl Qcow2Header {
 
     /// Get number of L2 entries per L2 table
     pub fn l2_entries_per_table(&self) -> u64 {
-        self.cluster_size() / 8  // Each L2 entry is 8 bytes
+        self.cluster_size() / 8 // Each L2 entry is 8 bytes
     }
 }
 
@@ -236,7 +247,8 @@ impl<R: Read + Seek> Qcow2Reader<R> {
             };
 
             self.reader.seek(SeekFrom::Start(compressed_offset))?;
-            let mut compressed_data = vec![0u8; compressed_size.min(self.cluster_size as usize * 2)];
+            let mut compressed_data =
+                vec![0u8; compressed_size.min(self.cluster_size as usize * 2)];
             let bytes_read = self.reader.read(&mut compressed_data)?;
             compressed_data.truncate(bytes_read);
 

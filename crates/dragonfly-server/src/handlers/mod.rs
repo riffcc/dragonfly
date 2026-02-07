@@ -1,2 +1,2 @@
+pub mod machines;
 pub mod proxmox;
-pub mod machines; 

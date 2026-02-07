@@ -3,22 +3,22 @@ mod kexec;
 mod probe;
 mod workflow;
 
-use reqwest::Client;
-use anyhow::{Result, Context};
+use anyhow::{Context, Result};
+use clap::Parser;
 use dragonfly_common::models::DiskInfo;
 use dragonfly_crd::{Hardware, Workflow};
+use reqwest::Client;
+use std::collections::hash_map::DefaultHasher;
 use std::env;
 use std::fs;
+use std::hash::{Hash, Hasher};
 use std::path::Path;
 use std::process::Command;
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
 use std::time::Duration;
-use clap::Parser;
-use tracing::{info, error, warn, debug};
+use tracing::{debug, error, info, warn};
 // Use wildcard import for sysinfo to bring traits into scope
 use sysinfo::*;
-use workflow::{AgentWorkflowRunner, AgentAction, AgentHardwareInfo, checkin_native};
+use workflow::{AgentAction, AgentHardwareInfo, AgentWorkflowRunner, checkin_native};
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -82,8 +82,10 @@ impl KernelParams {
         }
 
         if params.url.is_some() || params.mode.is_some() {
-            info!("Parsed kernel parameters: url={:?}, mode={:?}, mac={:?}, hardware={:?}, workflow={:?}",
-                params.url, params.mode, params.mac, params.hardware_id, params.workflow_id);
+            info!(
+                "Parsed kernel parameters: url={:?}, mode={:?}, mac={:?}, hardware={:?}, workflow={:?}",
+                params.url, params.mode, params.mac, params.hardware_id, params.workflow_id
+            );
         }
 
         params
@@ -161,6 +163,10 @@ fn detect_disks() -> Vec<DiskInfo> {
             size_bytes,
             model,
             calculated_size: None,
+            serial: None,
+            disk_type: None,
+            wearout: None,
+            health: None,
         });
     }
 
@@ -170,7 +176,9 @@ fn detect_disks() -> Vec<DiskInfo> {
             "  Disk: {} ({} bytes){}",
             disk.device,
             disk.size_bytes,
-            disk.model.as_ref().map_or("".to_string(), |m| format!(", Model: {}", m))
+            disk.model
+                .as_ref()
+                .map_or("".to_string(), |m| format!(", Model: {}", m))
         );
     }
 
@@ -207,19 +215,17 @@ fn detect_nameservers(local_ip: &str, mac: &str) -> Vec<String> {
 fn parse_resolv_conf() -> Vec<String> {
     let resolv_path = Path::new("/etc/resolv.conf");
     match fs::read_to_string(resolv_path) {
-        Ok(contents) => {
-            contents
-                .lines()
-                .filter_map(|line| {
-                    let trimmed = line.trim();
-                    if trimmed.starts_with("nameserver") {
-                        trimmed.split_whitespace().nth(1).map(|s| s.to_string())
-                    } else {
-                        None
-                    }
-                })
-                .collect()
-        }
+        Ok(contents) => contents
+            .lines()
+            .filter_map(|line| {
+                let trimmed = line.trim();
+                if trimmed.starts_with("nameserver") {
+                    trimmed.split_whitespace().nth(1).map(|s| s.to_string())
+                } else {
+                    None
+                }
+            })
+            .collect(),
         Err(_) => Vec::new(),
     }
 }
@@ -236,13 +242,15 @@ struct DhcpInformResult {
 /// just give me my configuration options." The server replies with a
 /// DHCPACK containing DNS servers, domain name, etc.
 fn dhcp_inform(local_ip: &str, mac: &str) -> Result<DhcpInformResult> {
-    use std::net::{Ipv4Addr, UdpSocket, SocketAddr};
+    use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
 
-    let our_ip: Ipv4Addr = local_ip.parse()
+    let our_ip: Ipv4Addr = local_ip
+        .parse()
         .context("Invalid local IP for DHCP INFORM")?;
 
     // Parse MAC address
-    let mac_bytes: Vec<u8> = mac.split(':')
+    let mac_bytes: Vec<u8> = mac
+        .split(':')
         .filter_map(|h| u8::from_str_radix(h, 16).ok())
         .collect();
     if mac_bytes.len() != 6 {
@@ -259,9 +267,9 @@ fn dhcp_inform(local_ip: &str, mac: &str) -> Result<DhcpInformResult> {
     };
     let mut packet = vec![0u8; 300];
 
-    packet[0] = 1;    // op: BOOTREQUEST
-    packet[1] = 1;    // htype: Ethernet
-    packet[2] = 6;    // hlen: MAC length
+    packet[0] = 1; // op: BOOTREQUEST
+    packet[1] = 1; // htype: Ethernet
+    packet[2] = 6; // hlen: MAC length
     // packet[3] = 0; // hops
 
     // xid (transaction ID)
@@ -310,14 +318,16 @@ fn dhcp_inform(local_ip: &str, mac: &str) -> Result<DhcpInformResult> {
     socket.set_read_timeout(Some(Duration::from_secs(5)))?;
 
     let dest = SocketAddr::from((Ipv4Addr::BROADCAST, 67));
-    socket.send_to(&packet, dest)
+    socket
+        .send_to(&packet, dest)
         .context("Failed to send DHCPINFORM")?;
 
     tracing::debug!("Sent DHCPINFORM (xid={:#010x}) from {}", xid, local_ip);
 
     // Wait for DHCPACK response
     let mut buf = vec![0u8; 1500];
-    let (len, _src) = socket.recv_from(&mut buf)
+    let (len, _src) = socket
+        .recv_from(&mut buf)
         .context("No DHCP response received (timeout)")?;
 
     // Verify it's a response to our request
@@ -329,7 +339,11 @@ fn dhcp_inform(local_ip: &str, mac: &str) -> Result<DhcpInformResult> {
     }
     let resp_xid = u32::from_be_bytes([buf[4], buf[5], buf[6], buf[7]]);
     if resp_xid != xid {
-        anyhow::bail!("XID mismatch: expected {:#010x}, got {:#010x}", xid, resp_xid);
+        anyhow::bail!(
+            "XID mismatch: expected {:#010x}, got {:#010x}",
+            xid,
+            resp_xid
+        );
     }
 
     // Verify magic cookie
@@ -346,14 +360,23 @@ fn dhcp_inform(local_ip: &str, mac: &str) -> Result<DhcpInformResult> {
     let mut pos = 240;
     while pos < len {
         let option = buf[pos];
-        if option == 255 { break; } // End
-        if option == 0 { pos += 1; continue; } // Padding
+        if option == 255 {
+            break;
+        } // End
+        if option == 0 {
+            pos += 1;
+            continue;
+        } // Padding
 
-        if pos + 1 >= len { break; }
+        if pos + 1 >= len {
+            break;
+        }
         let opt_len = buf[pos + 1] as usize;
         let data_start = pos + 2;
         let data_end = data_start + opt_len;
-        if data_end > len { break; }
+        if data_end > len {
+            break;
+        }
 
         match option {
             6 => {
@@ -398,12 +421,14 @@ async fn main() -> Result<()> {
     // 2. Command line argument (--server)
     // 3. Environment variable (DRAGONFLY_API_URL)
     // 4. Default
-    let api_url = kernel_params.url.clone()
+    let api_url = kernel_params
+        .url
+        .clone()
         .or(args.server.clone())
         .or_else(|| env::var("DRAGONFLY_API_URL").ok())
         .unwrap_or_else(|| "http://localhost:3000".to_string());
 
-    // --- Get required system info FIRST --- 
+    // --- Get required system info FIRST ---
     // Get MAC address and IP address (using improved logic)
     let mac_address = get_mac_address().context("Failed to get MAC address")?;
     let ip_address_str = get_ip_address().context("Failed to get IP address")?;
@@ -413,12 +438,15 @@ async fn main() -> Result<()> {
     let local_ip: Option<std::net::IpAddr> = match ip_address_str.parse() {
         Ok(ip) => Some(ip),
         Err(e) => {
-            warn!("Failed to parse determined IP address '{}' for binding: {}. Client will use default interface.", ip_address_str, e);
+            warn!(
+                "Failed to parse determined IP address '{}' for binding: {}. Client will use default interface.",
+                ip_address_str, e
+            );
             None
         }
     };
-    
-    // --- Create HTTP client, binding to the determined IP if possible --- 
+
+    // --- Create HTTP client, binding to the determined IP if possible ---
     let client_builder = Client::builder();
     let client = match local_ip {
         Some(ip) => {
@@ -435,31 +463,40 @@ async fn main() -> Result<()> {
                 .context("Failed to build default HTTP client")?
         }
     };
-    
+
     // Get system information (rest of it)
     let mut sys = System::new_all();
     sys.refresh_all();
-    
+
     // Get hostname
     let hostname = System::host_name().unwrap_or_else(|| "unknown".to_string());
-    
-    // --- Detect CPU, Core Count, and RAM --- 
+
+    // --- Detect CPU, Core Count, and RAM ---
     // Ensure sysinfo is refreshed first
     sys.refresh_cpu();
     sys.refresh_memory();
 
     let cpu_model = sys.cpus().first().map(|cpu| cpu.brand().to_string());
     // Prefer physical cores, fallback to logical cores (cpus().len())
-    let cpu_cores = sys.physical_core_count().map(|c| c as u32).or_else(|| Some(sys.cpus().len() as u32));
+    let cpu_cores = sys
+        .physical_core_count()
+        .map(|c| c as u32)
+        .or_else(|| Some(sys.cpus().len() as u32));
     let total_ram_bytes = sys.total_memory();
     // Convert total RAM to GiB for logging (optional, but often more readable)
     let total_ram_gib = total_ram_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
-    
-    info!("Detected CPU: {:?}", cpu_model.as_deref().unwrap_or("Unknown"));
+
+    info!(
+        "Detected CPU: {:?}",
+        cpu_model.as_deref().unwrap_or("Unknown")
+    );
     info!("Detected CPU Cores: {:?}", cpu_cores); // Log Option<u32>
-    info!("Detected RAM: {} bytes ({:.2} GiB)", total_ram_bytes, total_ram_gib);
+    info!(
+        "Detected RAM: {} bytes ({:.2} GiB)",
+        total_ram_bytes, total_ram_gib
+    );
     // --- End CPU/RAM Detection ---
-    
+
     // Detect disks and nameservers
     let disks = detect_disks();
     let nameservers = detect_nameservers(&ip_address_str, &mac_address);
@@ -473,7 +510,10 @@ async fn main() -> Result<()> {
         nameservers,
     };
 
-    info!("Starting Dragonfly agent (Mage boot: {})", kernel_params.has_dragonfly_params());
+    info!(
+        "Starting Dragonfly agent (Mage boot: {})",
+        kernel_params.has_dragonfly_params()
+    );
 
     // Build Hardware CRD from detected info for workflow execution context
     let hardware = build_hardware_from_detected_info(
@@ -496,7 +536,10 @@ async fn main() -> Result<()> {
         if let Some(ref cpu) = cpu_model {
             println!("CPU: {} ({} cores)", cpu, cpu_cores.unwrap_or(0));
         }
-        println!("RAM: {:.1} GiB", total_ram_bytes as f64 / (1024.0 * 1024.0 * 1024.0));
+        println!(
+            "RAM: {:.1} GiB",
+            total_ram_bytes as f64 / (1024.0 * 1024.0 * 1024.0)
+        );
         for disk in &disks {
             println!("Disk: {} ({} bytes)", disk.device, disk.size_bytes);
         }
@@ -506,9 +549,7 @@ async fn main() -> Result<()> {
 
         // Replace this process with a shell so the user gets an interactive console
         use std::os::unix::process::CommandExt;
-        let err = std::process::Command::new("/bin/sh")
-            .arg("-l")
-            .exec();
+        let err = std::process::Command::new("/bin/sh").arg("-l").exec();
         // exec() only returns on error
         eprintln!("Failed to exec shell: {}", err);
         std::process::exit(1);
@@ -526,7 +567,8 @@ async fn main() -> Result<()> {
         Duration::from_secs(args.checkin_interval),
         args.action.clone(),
         kernel_params.mode.as_deref(),
-    ).await
+    )
+    .await
 }
 
 /// Build a Hardware CRD from detected system information
@@ -539,7 +581,9 @@ fn build_hardware_from_detected_info(
     _total_ram_bytes: u64,
     disks: &[DiskInfo],
 ) -> Hardware {
-    use dragonfly_crd::{HardwareSpec, InterfaceSpec, DhcpSpec, IpSpec, DiskSpec, InstanceMetadata, Instance};
+    use dragonfly_crd::{
+        DhcpSpec, DiskSpec, HardwareSpec, Instance, InstanceMetadata, InterfaceSpec, IpSpec,
+    };
 
     // Build primary interface with DHCP
     let mut primary_dhcp = DhcpSpec::new(mac);
@@ -556,11 +600,12 @@ fn build_hardware_from_detected_info(
     };
 
     // Build disk specs from detected disks
-    let disk_specs: Vec<DiskSpec> = disks.iter().map(|d| {
-        DiskSpec {
+    let disk_specs: Vec<DiskSpec> = disks
+        .iter()
+        .map(|d| DiskSpec {
             device: d.device.clone(),
-        }
-    }).collect();
+        })
+        .collect();
 
     // Build instance metadata
     let hardware_id = format!("hw-{}", mac.replace(':', ""));
@@ -626,7 +671,8 @@ async fn run_native_provisioning_loop(
     };
 
     // Use hostname from existing OS if available, otherwise use system hostname
-    let effective_hostname = existing_os.as_ref()
+    let effective_hostname = existing_os
+        .as_ref()
         .and_then(|os| os.hostname.as_ref())
         .map(|h| h.as_str())
         .or(hostname);
@@ -645,8 +691,15 @@ async fn run_native_provisioning_loop(
             attempt += 1;
             info!(attempt, "Imaging mode - checking in with server");
             let response = checkin_with_retry(
-                client, server_url, mac, effective_hostname, ip_address, existing_os.as_ref(), Some(agent_hw_info),
-            ).await?;
+                client,
+                server_url,
+                mac,
+                effective_hostname,
+                ip_address,
+                existing_os.as_ref(),
+                Some(agent_hw_info),
+            )
+            .await?;
 
             info!(
                 machine_id = %response.machine_id,
@@ -663,7 +716,9 @@ async fn run_native_provisioning_loop(
                 server_url,
                 &hardware,
                 &action_filter,
-            ).await {
+            )
+            .await
+            {
                 Ok(()) => return Ok(()),
                 Err(e) => {
                     let error_msg = format!("{:#}", e);
@@ -674,11 +729,11 @@ async fn run_native_provisioning_loop(
                         Some(wf_id) => {
                             let url = format!("{}/api/workflows/{}", server_url, wf_id);
                             match client.get(&url).send().await {
-                                Ok(resp) if resp.status().is_success() => {
-                                    resp.json::<Workflow>().await
-                                        .map(|wf| wf.spec.template_ref)
-                                        .unwrap_or_else(|_| response.memorable_name.clone())
-                                }
+                                Ok(resp) if resp.status().is_success() => resp
+                                    .json::<Workflow>()
+                                    .await
+                                    .map(|wf| wf.spec.template_ref)
+                                    .unwrap_or_else(|_| response.memorable_name.clone()),
                                 _ => response.memorable_name.clone(),
                             }
                         }
@@ -732,16 +787,19 @@ async fn run_native_provisioning_loop(
                 ip_address_owned.as_deref(),
                 existing_os_clone.as_ref(),
                 Some(&hw_info_clone),
-            ).await
+            )
+            .await
         },
         existing_os.as_ref(),
-    ).await?;
+    )
+    .await?;
 
     // Handle the result
     let initial_response = match checkin_result {
         None => {
             // User requested menu
-            let selection = boot_menu::show_boot_menu(existing_os.as_ref(), Some(server_url)).await?;
+            let selection =
+                boot_menu::show_boot_menu(existing_os.as_ref(), Some(server_url)).await?;
             return handle_menu_selection(
                 selection,
                 &existing_os,
@@ -749,7 +807,8 @@ async fn run_native_provisioning_loop(
                 server_url,
                 &hardware,
                 &action_filter,
-            ).await;
+            )
+            .await;
         }
         Some(response) => response,
     };
@@ -773,7 +832,8 @@ async fn run_native_provisioning_loop(
         server_url,
         &hardware,
         &action_filter,
-    ).await?;
+    )
+    .await?;
 
     // If we get here after LocalBoot/Execute, the action didn't terminate
     // Enter the main loop for ongoing check-ins (only if action was Wait)
@@ -781,7 +841,17 @@ async fn run_native_provisioning_loop(
         loop {
             tokio::time::sleep(checkin_interval).await;
 
-            match checkin_native(client, server_url, mac, effective_hostname, ip_address, existing_os.as_ref(), Some(agent_hw_info)).await {
+            match checkin_native(
+                client,
+                server_url,
+                mac,
+                effective_hostname,
+                ip_address,
+                existing_os.as_ref(),
+                Some(agent_hw_info),
+            )
+            .await
+            {
                 Ok(response) => {
                     debug!(action = ?response.action, "Check-in response");
                     handle_agent_action(
@@ -791,7 +861,8 @@ async fn run_native_provisioning_loop(
                         server_url,
                         &hardware,
                         &action_filter,
-                    ).await?;
+                    )
+                    .await?;
                 }
                 Err(e) => {
                     // After initial success, we can be more lenient with retries
@@ -820,7 +891,17 @@ async fn checkin_with_retry(
     let mut attempt: u32 = 0;
     loop {
         attempt += 1;
-        match checkin_native(client, server_url, mac, hostname, ip_address, existing_os, agent_hw_info).await {
+        match checkin_native(
+            client,
+            server_url,
+            mac,
+            hostname,
+            ip_address,
+            existing_os,
+            agent_hw_info,
+        )
+        .await
+        {
             Ok(response) => return Ok(response),
             Err(e) => {
                 // Cap backoff at 10s — the server is local, retries should be quick
@@ -899,11 +980,9 @@ async fn handle_menu_selection(
             let mut hw = hardware.clone();
             hw.metadata.name = "menu-selected".to_string();
 
-            let runner = workflow::AgentWorkflowRunner::new(
-                client.clone(),
-                server_url.to_string(),
-                hw,
-            ).with_action_filter(action_filter.clone());
+            let runner =
+                workflow::AgentWorkflowRunner::new(client.clone(), server_url.to_string(), hw)
+                    .with_action_filter(action_filter.clone());
 
             match runner.execute(&workflow_id).await {
                 Ok(()) => info!(workflow_id = %workflow_id, "Workflow completed"),
@@ -957,13 +1036,12 @@ async fn handle_agent_action(
                 let mut hw = hardware.clone();
                 hw.metadata.name = response.machine_id.clone();
 
-                let runner = AgentWorkflowRunner::new(
-                    client.clone(),
-                    server_url.to_string(),
-                    hw,
-                ).with_action_filter(action_filter.clone());
+                let runner = AgentWorkflowRunner::new(client.clone(), server_url.to_string(), hw)
+                    .with_action_filter(action_filter.clone());
 
-                runner.execute(workflow_id).await
+                runner
+                    .execute(workflow_id)
+                    .await
                     .context(format!("Workflow {} failed", workflow_id))?;
 
                 if action_filter.is_some() {
@@ -977,13 +1055,17 @@ async fn handle_agent_action(
         }
         AgentAction::Reboot => {
             info!("Server requested reboot");
-            Command::new("reboot").status().context("Failed to reboot")?;
+            Command::new("reboot")
+                .status()
+                .context("Failed to reboot")?;
             Ok(())
         }
         AgentAction::LocalBoot => {
             if let Some(os) = existing_os {
                 info!(name = %os.name, "Booting into existing OS via reboot");
-                Command::new("reboot").status().context("Failed to reboot")?;
+                Command::new("reboot")
+                    .status()
+                    .context("Failed to reboot")?;
             } else {
                 warn!("Server said LocalBoot but no existing OS detected");
             }
@@ -994,10 +1076,7 @@ async fn handle_agent_action(
 
 fn get_mac_address() -> Result<String> {
     // First try the ip command
-    if let Ok(output) = Command::new("ip")
-        .args(["link", "show"])
-        .output()
-    {
+    if let Ok(output) = Command::new("ip").args(["link", "show"]).output() {
         if output.status.success() {
             let stdout = String::from_utf8_lossy(&output.stdout);
             // Skip loopback interfaces
@@ -1013,11 +1092,9 @@ fn get_mac_address() -> Result<String> {
             }
         }
     }
-    
+
     // Then try with ifconfig
-    if let Ok(output) = Command::new("ifconfig")
-        .output()
-    {
+    if let Ok(output) = Command::new("ifconfig").output() {
         if output.status.success() {
             let stdout = String::from_utf8_lossy(&output.stdout);
             // Skip loopback interfaces
@@ -1033,7 +1110,7 @@ fn get_mac_address() -> Result<String> {
             }
         }
     }
-    
+
     // Fallback to looking for network interfaces directly
     let net_dir = Path::new("/sys/class/net");
     if net_dir.exists() {
@@ -1041,12 +1118,12 @@ fn get_mac_address() -> Result<String> {
             let entry = entry?;
             let path = entry.path();
             let if_name = path.file_name().unwrap().to_string_lossy();
-            
+
             // Skip loopback interface
             if if_name == "lo" {
                 continue;
             }
-            
+
             let address_path = path.join("address");
             if address_path.exists() {
                 if let Ok(mac) = fs::read_to_string(address_path) {
@@ -1059,20 +1136,25 @@ fn get_mac_address() -> Result<String> {
             }
         }
     }
-    
+
     // Last resort fallback - use a deterministic ID based on hostname
     // This ensures we still get the same ID on subsequent runs
     let hostname = System::host_name().unwrap_or_else(|| "unknown".to_string());
     let mut hasher = DefaultHasher::new();
     hostname.hash(&mut hasher);
     let hash = hasher.finish();
-    
-    let mac = format!("02:00:00:{:02x}:{:02x}:{:02x}", 
+
+    let mac = format!(
+        "02:00:00:{:02x}:{:02x}:{:02x}",
         (hash >> 16) as u8,
         (hash >> 8) as u8,
-        hash as u8);
-    
-    tracing::warn!("Could not detect MAC address, using hostname-based fallback: {}", mac);
+        hash as u8
+    );
+
+    tracing::warn!(
+        "Could not detect MAC address, using hostname-based fallback: {}",
+        mac
+    );
     Ok(mac)
 }
 
@@ -1084,11 +1166,16 @@ fn get_ip_address() -> Result<String> {
             return Ok(ip);
         }
         Ok(None) => {
-            info!("No default route found or no IP on default interface, scanning all interfaces...");
+            info!(
+                "No default route found or no IP on default interface, scanning all interfaces..."
+            );
             // Proceed to scan all interfaces
         }
         Err(e) => {
-            warn!("Error checking default route interface: {}. Scanning all interfaces...", e);
+            warn!(
+                "Error checking default route interface: {}. Scanning all interfaces...",
+                e
+            );
             // Proceed to scan all interfaces
         }
     }
@@ -1124,23 +1211,33 @@ fn get_ip_address() -> Result<String> {
                     let if_name = parts[1].trim_end_matches(':').to_string();
                     let is_lo = if_name == "lo";
                     let is_up = line.contains("<UP,") || line.contains(",UP>");
-                    let has_bad_prefix = bad_prefixes.iter().any(|prefix| if_name.starts_with(prefix));
+                    let has_bad_prefix = bad_prefixes
+                        .iter()
+                        .any(|prefix| if_name.starts_with(prefix));
                     // Check if the interface is attached to a known bad master
-                    let is_attached_to_bad_master = bad_masters.iter().any(|master| line.contains(&format!(" master {}", master)));
+                    let is_attached_to_bad_master = bad_masters
+                        .iter()
+                        .any(|master| line.contains(&format!(" master {}", master)));
 
                     // Determine if this interface should be considered
                     if is_lo || !is_up || has_bad_prefix || is_attached_to_bad_master {
                         if is_attached_to_bad_master {
-                            tracing::debug!("Ignoring interface {} because it is attached to a bad master", if_name);
+                            tracing::debug!(
+                                "Ignoring interface {} because it is attached to a bad master",
+                                if_name
+                            );
                         } else if has_bad_prefix {
-                             tracing::debug!("Ignoring interface {} because it has a bad prefix", if_name);
+                            tracing::debug!(
+                                "Ignoring interface {} because it has a bad prefix",
+                                if_name
+                            );
                         } // Add other debug logs if needed
                         current_interface = None; // Skip this interface block
                     } else {
                         current_interface = Some(if_name); // Good candidate interface
                     }
                 } else {
-                     current_interface = None; // Malformed line?
+                    current_interface = None; // Malformed line?
                 }
                 continue; // Move to the next line after processing interface header
             }
@@ -1169,21 +1266,33 @@ fn get_ip_address() -> Result<String> {
     if candidates.is_empty() {
         warn!("No suitable IP address candidates found after filtering scanning all interfaces.");
     } else {
-        info!("Found {} IP address candidates from scanning all interfaces:", candidates.len());
+        info!(
+            "Found {} IP address candidates from scanning all interfaces:",
+            candidates.len()
+        );
         for (if_name, ip) in &candidates {
             info!("  - Interface: {}, IP: {}", if_name, ip);
         }
     }
 
     // Prioritize candidates based on preferred interface prefixes
-    if let Some((if_name, ip)) = candidates.iter().find(|(name, _)| preferred_prefixes.iter().any(|p| name.starts_with(p))) {
-        info!("Selected preferred IP {} from interface {} based on prefix matching (fallback scan).", ip, if_name);
+    if let Some((if_name, ip)) = candidates
+        .iter()
+        .find(|(name, _)| preferred_prefixes.iter().any(|p| name.starts_with(p)))
+    {
+        info!(
+            "Selected preferred IP {} from interface {} based on prefix matching (fallback scan).",
+            ip, if_name
+        );
         return Ok(ip.clone());
     }
 
     // If no preferred interface found, return the first valid candidate
     if let Some((if_name, ip)) = candidates.first() {
-        info!("Selected first available IP {} from interface {} (fallback scan, no preferred prefix match).", ip, if_name);
+        info!(
+            "Selected first available IP {} from interface {} (fallback scan, no preferred prefix match).",
+            ip, if_name
+        );
         return Ok(ip.clone());
     }
 
@@ -1221,7 +1330,10 @@ fn get_ip_from_default_route_interface() -> Result<Option<String>> {
                     .context(format!("Failed to run 'ip addr show dev {}'", if_name))?;
 
                 if !addr_output.status.success() {
-                    warn!("Failed to get address for default interface {}. Status: {}", if_name, addr_output.status);
+                    warn!(
+                        "Failed to get address for default interface {}. Status: {}",
+                        if_name, addr_output.status
+                    );
                     return Ok(None);
                 }
 
@@ -1239,7 +1351,10 @@ fn get_ip_from_default_route_interface() -> Result<Option<String>> {
                         }
                     }
                 }
-                warn!("No valid inet address found on default interface {}", if_name);
+                warn!(
+                    "No valid inet address found on default interface {}",
+                    if_name
+                );
                 return Ok(None); // Found interface but no suitable IP
             } else {
                 warn!("Could not parse interface name after 'dev' in default route line");
@@ -1252,4 +1367,4 @@ fn get_ip_from_default_route_interface() -> Result<Option<String>> {
     }
 
     Ok(None) // No default route found or couldn't parse it
-} 
+}

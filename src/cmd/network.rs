@@ -1,20 +1,20 @@
 use color_eyre::eyre::{Result, eyre};
+use crossterm::{
+    cursor,
+    event::{self, Event, KeyCode, KeyEvent},
+    execute,
+    style::{Color, Print, ResetColor, SetForegroundColor},
+    terminal::{self, disable_raw_mode, enable_raw_mode},
+};
+use network_interface::{Addr, NetworkInterface, NetworkInterfaceConfig};
+use std::io::{self, Write};
 use std::net::Ipv4Addr;
 use std::process::Command;
-use std::io::{self, Write};
-use network_interface::{NetworkInterface, NetworkInterfaceConfig, Addr};
-use crossterm::{
-    event::{self, Event, KeyCode, KeyEvent},
-    terminal::{self, disable_raw_mode, enable_raw_mode},
-    style::{Color, Print, ResetColor, SetForegroundColor},
-    execute,
-    cursor,
-};
 
 /// Get the network interface configuration with IP and netmask
 fn get_network_config() -> Result<(Ipv4Addr, Ipv4Addr)> {
-    let interfaces = NetworkInterface::show()
-        .map_err(|e| eyre!("Failed to get network interfaces: {}", e))?;
+    let interfaces =
+        NetworkInterface::show().map_err(|e| eyre!("Failed to get network interfaces: {}", e))?;
 
     for interface in interfaces {
         // Skip loopback interfaces
@@ -23,10 +23,11 @@ fn get_network_config() -> Result<(Ipv4Addr, Ipv4Addr)> {
         }
 
         // Skip Kubernetes CNI interfaces (flannel, calico, cni, etc.)
-        if interface.name.starts_with("flannel") ||
-           interface.name.starts_with("cali") ||
-           interface.name.starts_with("cni") ||
-           interface.name.starts_with("vxlan") {
+        if interface.name.starts_with("flannel")
+            || interface.name.starts_with("cali")
+            || interface.name.starts_with("cni")
+            || interface.name.starts_with("vxlan")
+        {
             continue;
         }
 
@@ -42,8 +43,9 @@ fn get_network_config() -> Result<(Ipv4Addr, Ipv4Addr)> {
 
                 // Skip Kubernetes CNI ranges (k3s uses 10.42.0.0/16, flannel uses 10.244.0.0/16)
                 let ip_octets = ip.octets();
-                if (ip_octets[0] == 10 && ip_octets[1] == 42) ||
-                   (ip_octets[0] == 10 && ip_octets[1] == 244) {
+                if (ip_octets[0] == 10 && ip_octets[1] == 42)
+                    || (ip_octets[0] == 10 && ip_octets[1] == 244)
+                {
                     continue;
                 }
 
@@ -99,7 +101,7 @@ fn is_ip_available(ip: Ipv4Addr) -> bool {
 
     match output {
         Ok(result) => !result.status.success(), // If ping fails, IP is available
-        Err(_) => true, // If we can't ping, assume it's available
+        Err(_) => true,                         // If we can't ping, assume it's available
     }
 }
 
@@ -136,11 +138,14 @@ pub fn validate_ipv4(ip_str: &str) -> Result<Ipv4Addr> {
 
     // Check if the trimmed string is different from original (has spaces)
     if trimmed != ip_str {
-        return Err(eyre!("IP address should not contain leading or trailing spaces"));
+        return Err(eyre!(
+            "IP address should not contain leading or trailing spaces"
+        ));
     }
 
     // Parse the IP address
-    let ip: Ipv4Addr = trimmed.parse()
+    let ip: Ipv4Addr = trimmed
+        .parse()
         .map_err(|_| eyre!("Invalid IPv4 address format: {}", ip_str))?;
 
     Ok(ip)
@@ -168,14 +173,13 @@ pub fn prompt_for_ip(default_ip: Ipv4Addr) -> Result<Ipv4Addr> {
     io::stdout().flush()?;
 
     // Enable raw mode to capture individual key presses
-    enable_raw_mode()
-        .map_err(|e| eyre!("Failed to enable raw terminal mode: {}", e))?;
+    enable_raw_mode().map_err(|e| eyre!("Failed to enable raw terminal mode: {}", e))?;
 
     let result = (|| -> Result<Ipv4Addr> {
         loop {
             // Wait for an event (key press)
-            if let Event::Key(key_event) = event::read()
-                .map_err(|e| eyre!("Failed to read key event: {}", e))?
+            if let Event::Key(key_event) =
+                event::read().map_err(|e| eyre!("Failed to read key event: {}", e))?
             {
                 match key_event.code {
                     KeyCode::Enter => {
@@ -186,7 +190,9 @@ pub fn prompt_for_ip(default_ip: Ipv4Addr) -> Result<Ipv4Addr> {
                         // Switch to input mode
                         return read_custom_ip();
                     }
-                    KeyCode::Char('c') if key_event.modifiers.contains(event::KeyModifiers::CONTROL) => {
+                    KeyCode::Char('c')
+                        if key_event.modifiers.contains(event::KeyModifiers::CONTROL) =>
+                    {
                         // Ctrl+C - exit
                         return Err(eyre!("Cancelled by user"));
                     }
@@ -199,8 +205,7 @@ pub fn prompt_for_ip(default_ip: Ipv4Addr) -> Result<Ipv4Addr> {
     })();
 
     // Always disable raw mode before returning
-    disable_raw_mode()
-        .map_err(|e| eyre!("Failed to disable raw terminal mode: {}", e))?;
+    disable_raw_mode().map_err(|e| eyre!("Failed to disable raw terminal mode: {}", e))?;
 
     result
 }
@@ -218,7 +223,8 @@ fn read_custom_ip() -> Result<Ipv4Addr> {
         ResetColor,
         // Move cursor back to start of input (right after "> ")
         cursor::MoveLeft(11)
-    ).map_err(|e| eyre!("Failed to write prompt: {}", e))?;
+    )
+    .map_err(|e| eyre!("Failed to write prompt: {}", e))?;
 
     stdout.flush()?;
 
@@ -226,8 +232,8 @@ fn read_custom_ip() -> Result<Ipv4Addr> {
     let mut placeholder_shown = true;
 
     loop {
-        if let Event::Key(key_event) = event::read()
-            .map_err(|e| eyre!("Failed to read key event: {}", e))?
+        if let Event::Key(key_event) =
+            event::read().map_err(|e| eyre!("Failed to read key event: {}", e))?
         {
             match key_event.code {
                 KeyCode::Enter => {
@@ -236,7 +242,8 @@ fn read_custom_ip() -> Result<Ipv4Addr> {
                         stdout,
                         terminal::Clear(terminal::ClearType::UntilNewLine),
                         Print("\r\n")
-                    ).map_err(|e| eyre!("Failed to clear line: {}", e))?;
+                    )
+                    .map_err(|e| eyre!("Failed to clear line: {}", e))?;
                     stdout.flush()?;
 
                     if input.is_empty() {
@@ -247,16 +254,14 @@ fn read_custom_ip() -> Result<Ipv4Addr> {
                 KeyCode::Backspace => {
                     if !input.is_empty() {
                         input.pop();
-                        execute!(
-                            stdout,
-                            cursor::MoveLeft(1),
-                            Print(" "),
-                            cursor::MoveLeft(1)
-                        ).map_err(|e| eyre!("Failed to handle backspace: {}", e))?;
+                        execute!(stdout, cursor::MoveLeft(1), Print(" "), cursor::MoveLeft(1))
+                            .map_err(|e| eyre!("Failed to handle backspace: {}", e))?;
                         stdout.flush()?;
                     }
                 }
-                KeyCode::Char('c') if key_event.modifiers.contains(event::KeyModifiers::CONTROL) => {
+                KeyCode::Char('c')
+                    if key_event.modifiers.contains(event::KeyModifiers::CONTROL) =>
+                {
                     return Err(eyre!("Cancelled by user"));
                 }
                 KeyCode::Char(c) => {
@@ -266,7 +271,8 @@ fn read_custom_ip() -> Result<Ipv4Addr> {
                             stdout,
                             Print("           "), // Clear placeholder (11 spaces to overwrite "Enter an IP")
                             cursor::MoveLeft(11)  // Move cursor back to start of input area
-                        ).map_err(|e| eyre!("Failed to clear placeholder: {}", e))?;
+                        )
+                        .map_err(|e| eyre!("Failed to clear placeholder: {}", e))?;
                         placeholder_shown = false;
                     }
 
@@ -364,11 +370,11 @@ mod tests {
     fn test_validate_ipv4_invalid_addresses() {
         let test_cases = vec![
             "256.256.256.256", // Out of range
-            "192.168.1",        // Incomplete
-            "192.168.1.1.1",    // Too many octets
-            "abc.def.ghi.jkl",  // Non-numeric
-            "",                 // Empty
-            "192.168.-1.1",     // Negative
+            "192.168.1",       // Incomplete
+            "192.168.1.1.1",   // Too many octets
+            "abc.def.ghi.jkl", // Non-numeric
+            "",                // Empty
+            "192.168.-1.1",    // Negative
         ];
 
         for ip_str in test_cases {
@@ -381,11 +387,20 @@ mod tests {
     fn test_validate_ipv4_edge_cases() {
         // Test boundary values
         assert!(validate_ipv4("0.0.0.0").is_ok(), "0.0.0.0 should be valid");
-        assert!(validate_ipv4("255.255.255.255").is_ok(), "255.255.255.255 should be valid");
+        assert!(
+            validate_ipv4("255.255.255.255").is_ok(),
+            "255.255.255.255 should be valid"
+        );
 
         // Test with spaces
-        assert!(validate_ipv4(" 192.168.1.1").is_err(), "Should reject leading space");
-        assert!(validate_ipv4("192.168.1.1 ").is_err(), "Should reject trailing space");
+        assert!(
+            validate_ipv4(" 192.168.1.1").is_err(),
+            "Should reject leading space"
+        );
+        assert!(
+            validate_ipv4("192.168.1.1 ").is_err(),
+            "Should reject trailing space"
+        );
     }
 
     #[test]
@@ -396,10 +411,9 @@ mod tests {
             let octets = ip.octets();
 
             // Check if it's in a private network range
-            let is_private =
-                (octets[0] == 10) ||
-                (octets[0] == 172 && (16..=31).contains(&octets[1])) ||
-                (octets[0] == 192 && octets[1] == 168);
+            let is_private = (octets[0] == 10)
+                || (octets[0] == 172 && (16..=31).contains(&octets[1]))
+                || (octets[0] == 192 && octets[1] == 168);
 
             assert!(is_private, "Detected IP should be in a private range");
         }
@@ -434,11 +448,7 @@ mod tests {
     fn test_process_ip_input_rejects_invalid_custom_ip() {
         let default_ip = Ipv4Addr::new(10, 7, 1, 130);
 
-        let invalid_ips = vec![
-            "256.256.256.256",
-            "not.an.ip.address",
-            "192.168.1",
-        ];
+        let invalid_ips = vec!["256.256.256.256", "not.an.ip.address", "192.168.1"];
 
         for invalid_ip in invalid_ips {
             let result = process_ip_input(invalid_ip, default_ip);

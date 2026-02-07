@@ -6,7 +6,7 @@
 
 use super::{Result, Store, StoreError, User};
 use async_trait::async_trait;
-use dragonfly_common::{normalize_mac, Machine, MachineState, Network};
+use dragonfly_common::{Machine, MachineState, Network, normalize_mac};
 use dragonfly_crd::{Template, Workflow};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
 use sqlx::{Row, SqlitePool};
@@ -75,12 +75,10 @@ impl SqliteStore {
             .execute(&self.pool)
             .await
             .map_err(|e| StoreError::Database(e.to_string()))?;
-        sqlx::query(
-            "CREATE INDEX IF NOT EXISTS idx_machines_identity ON machines(identity_hash)",
-        )
-        .execute(&self.pool)
-        .await
-        .map_err(|e| StoreError::Database(e.to_string()))?;
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_machines_identity ON machines(identity_hash)")
+            .execute(&self.pool)
+            .await
+            .map_err(|e| StoreError::Database(e.to_string()))?;
         sqlx::query("CREATE INDEX IF NOT EXISTS idx_machines_ip ON machines(current_ip)")
             .execute(&self.pool)
             .await
@@ -145,12 +143,10 @@ impl SqliteStore {
         .await
         .map_err(|e| StoreError::Database(e.to_string()))?;
 
-        sqlx::query(
-            "CREATE INDEX IF NOT EXISTS idx_workflows_machine ON workflows(machine_id)",
-        )
-        .execute(&self.pool)
-        .await
-        .map_err(|e| StoreError::Database(e.to_string()))?;
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_workflows_machine ON workflows(machine_id)")
+            .execute(&self.pool)
+            .await
+            .map_err(|e| StoreError::Database(e.to_string()))?;
 
         sqlx::query(
             r#"
@@ -306,12 +302,11 @@ impl Store for SqliteStore {
         .map_err(|e| StoreError::Database(e.to_string()))?;
 
         // Get old tags for this machine before replacing
-        let old_tag_rows =
-            sqlx::query("SELECT tag FROM machine_tags WHERE machine_id = ?")
-                .bind(&id_bytes)
-                .fetch_all(&self.pool)
-                .await
-                .map_err(|e| StoreError::Database(e.to_string()))?;
+        let old_tag_rows = sqlx::query("SELECT tag FROM machine_tags WHERE machine_id = ?")
+            .bind(&id_bytes)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| StoreError::Database(e.to_string()))?;
         let old_tags: Vec<String> = old_tag_rows.iter().map(|r| r.get("tag")).collect();
 
         // Rebuild machine_tags
@@ -345,13 +340,11 @@ impl Store for SqliteStore {
             if new_tags.contains(old_tag) {
                 continue;
             }
-            let count_row = sqlx::query(
-                "SELECT COUNT(*) as cnt FROM machine_tags WHERE tag = ?",
-            )
-            .bind(old_tag)
-            .fetch_one(&self.pool)
-            .await
-            .map_err(|e| StoreError::Database(e.to_string()))?;
+            let count_row = sqlx::query("SELECT COUNT(*) as cnt FROM machine_tags WHERE tag = ?")
+                .bind(old_tag)
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| StoreError::Database(e.to_string()))?;
             let count: i64 = count_row.get("cnt");
             if count == 0 {
                 sqlx::query("DELETE FROM tags WHERE name = ?")
@@ -462,14 +455,12 @@ impl Store for SqliteStore {
 
     async fn create_tag(&self, name: &str) -> Result<bool> {
         let now = chrono::Utc::now().to_rfc3339();
-        let result = sqlx::query(
-            "INSERT OR IGNORE INTO tags (name, created_at) VALUES (?, ?)",
-        )
-        .bind(name)
-        .bind(&now)
-        .execute(&self.pool)
-        .await
-        .map_err(|e| StoreError::Database(e.to_string()))?;
+        let result = sqlx::query("INSERT OR IGNORE INTO tags (name, created_at) VALUES (?, ?)")
+            .bind(name)
+            .bind(&now)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| StoreError::Database(e.to_string()))?;
 
         Ok(result.rows_affected() > 0)
     }
@@ -622,10 +613,9 @@ impl Store for SqliteStore {
     async fn put_workflow(&self, workflow: &Workflow) -> Result<()> {
         let workflow_id = Uuid::parse_str(&workflow.metadata.name)
             .map_err(|e| StoreError::InvalidData(format!("Invalid workflow UUID: {}", e)))?;
-        let machine_id = Uuid::parse_str(&workflow.spec.hardware_ref)
-            .map_err(|e| {
-                StoreError::InvalidData(format!("Invalid machine UUID in workflow: {}", e))
-            })?;
+        let machine_id = Uuid::parse_str(&workflow.spec.hardware_ref).map_err(|e| {
+            StoreError::InvalidData(format!("Invalid machine UUID in workflow: {}", e))
+        })?;
 
         let wf_id_bytes = workflow_id.as_bytes().to_vec();
         let machine_id_bytes = machine_id.as_bytes().to_vec();
@@ -832,10 +822,11 @@ impl Store for SqliteStore {
     }
 
     async fn list_users(&self) -> Result<Vec<User>> {
-        let rows = sqlx::query("SELECT data FROM users ORDER BY json_extract(data, '$.created_at')")
-            .fetch_all(&self.pool)
-            .await
-            .map_err(|e| StoreError::Database(e.to_string()))?;
+        let rows =
+            sqlx::query("SELECT data FROM users ORDER BY json_extract(data, '$.created_at')")
+                .fetch_all(&self.pool)
+                .await
+                .map_err(|e| StoreError::Database(e.to_string()))?;
 
         let mut users = Vec::with_capacity(rows.len());
         for row in rows {

@@ -64,5 +64,5 @@ pub use controller::{BmcController, BmcOperation};
 pub use error::{BmcError, Result};
 pub use ipmi::IpmiController;
 pub use redfish::RedfishController;
-pub use types::{BootDevice, BmcProtocol, IpmiConfig, PowerState, RedfishConfig, WolConfig};
+pub use types::{BmcProtocol, BootDevice, IpmiConfig, PowerState, RedfishConfig, WolConfig};
 pub use wol::WolController;

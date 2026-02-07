@@ -108,30 +108,68 @@ impl Action for Image2DiskAction {
             ImageType::Qcow2 => {
                 stream_qcow2(img_url, dest_disk, reporter.as_ref(), self.name()).await
             }
-            ImageType::Raw => {
-                stream_raw(img_url, dest_disk, reporter.as_ref(), self.name()).await
-            }
+            ImageType::Raw => stream_raw(img_url, dest_disk, reporter.as_ref(), self.name()).await,
             ImageType::RawGz => {
-                stream_compressed(img_url, dest_disk, Compression::Gzip, reporter.as_ref(), self.name()).await
+                stream_compressed(
+                    img_url,
+                    dest_disk,
+                    Compression::Gzip,
+                    reporter.as_ref(),
+                    self.name(),
+                )
+                .await
             }
             ImageType::RawXz => {
-                stream_compressed(img_url, dest_disk, Compression::Xz, reporter.as_ref(), self.name()).await
+                stream_compressed(
+                    img_url,
+                    dest_disk,
+                    Compression::Xz,
+                    reporter.as_ref(),
+                    self.name(),
+                )
+                .await
             }
             ImageType::RawZst => {
-                stream_compressed(img_url, dest_disk, Compression::Zstd, reporter.as_ref(), self.name()).await
+                stream_compressed(
+                    img_url,
+                    dest_disk,
+                    Compression::Zstd,
+                    reporter.as_ref(),
+                    self.name(),
+                )
+                .await
             }
             ImageType::TarGz => {
-                stream_tar_compressed(img_url, dest_disk, Compression::Gzip, reporter.as_ref(), self.name()).await
+                stream_tar_compressed(
+                    img_url,
+                    dest_disk,
+                    Compression::Gzip,
+                    reporter.as_ref(),
+                    self.name(),
+                )
+                .await
             }
             ImageType::TarXz => {
-                stream_tar_compressed(img_url, dest_disk, Compression::Xz, reporter.as_ref(), self.name()).await
+                stream_tar_compressed(
+                    img_url,
+                    dest_disk,
+                    Compression::Xz,
+                    reporter.as_ref(),
+                    self.name(),
+                )
+                .await
             }
             ImageType::TarZst => {
-                stream_tar_compressed(img_url, dest_disk, Compression::Zstd, reporter.as_ref(), self.name()).await
+                stream_tar_compressed(
+                    img_url,
+                    dest_disk,
+                    Compression::Zstd,
+                    reporter.as_ref(),
+                    self.name(),
+                )
+                .await
             }
-            ImageType::Tar => {
-                stream_tar(img_url, dest_disk, reporter.as_ref(), self.name()).await
-            }
+            ImageType::Tar => stream_tar(img_url, dest_disk, reporter.as_ref(), self.name()).await,
         };
 
         match result {
@@ -148,18 +186,16 @@ impl Action for Image2DiskAction {
                     .arg(&dest_disk)
                     .output()
                     .await
-                    .map_err(|e| ActionError::ExecutionFailed(format!("Failed to run partprobe: {}", e)))
+                    .map_err(|e| {
+                        ActionError::ExecutionFailed(format!("Failed to run partprobe: {}", e))
+                    })
                 {
                     // Log warning but don't fail - partprobe may fail harmlessly
                     tracing::warn!("partprobe failed (non-critical): {}", e);
                 }
 
                 // On Alpine/mdev systems, refresh device nodes after partition table change
-                if let Err(e) = Command::new("mdev")
-                    .arg("-s")
-                    .output()
-                    .await
-                {
+                if let Err(e) = Command::new("mdev").arg("-s").output().await {
                     tracing::debug!("mdev -s not available (not Alpine?): {}", e);
                 }
 
@@ -213,7 +249,8 @@ fn detect_image_type(path: &str) -> ImageType {
         ImageType::RawGz
     } else if lower.ends_with(".raw.xz") || lower.ends_with(".img.xz") || lower.ends_with(".xz") {
         ImageType::RawXz
-    } else if lower.ends_with(".raw.zst") || lower.ends_with(".img.zst") || lower.ends_with(".zst") {
+    } else if lower.ends_with(".raw.zst") || lower.ends_with(".img.zst") || lower.ends_with(".zst")
+    {
         ImageType::RawZst
     } else {
         // Default to raw
@@ -239,9 +276,7 @@ async fn stream_qcow2(
         .args(["convert", "-f", "qcow2", "-O", "raw", "-p", source, dest])
         .output()
         .await
-        .map_err(|e| {
-            ActionError::ExecutionFailed(format!("Failed to run qemu-img: {}", e))
-        })?;
+        .map_err(|e| ActionError::ExecutionFailed(format!("Failed to run qemu-img: {}", e)))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -252,9 +287,9 @@ async fn stream_qcow2(
     }
 
     // Get the size of the destination
-    let metadata = tokio::fs::metadata(dest).await.map_err(|e| {
-        ActionError::ExecutionFailed(format!("Failed to stat destination: {}", e))
-    })?;
+    let metadata = tokio::fs::metadata(dest)
+        .await
+        .map_err(|e| ActionError::ExecutionFailed(format!("Failed to stat destination: {}", e)))?;
 
     Ok(metadata.len())
 }
@@ -292,7 +327,10 @@ async fn stream_compressed(
     reporter.report(Progress::new(
         action_name,
         15,
-        format!("Streaming {:?} compressed image to disk (native)", compression),
+        format!(
+            "Streaming {:?} compressed image to disk (native)",
+            compression
+        ),
     ));
 
     let is_url = source.starts_with("http://") || source.starts_with("https://");
@@ -336,7 +374,9 @@ async fn stream_from_url(
         format!(
             "Downloading {} ({})",
             url,
-            total_size.map(|s| format_bytes(s)).unwrap_or_else(|| "unknown size".to_string())
+            total_size
+                .map(|s| format_bytes(s))
+                .unwrap_or_else(|| "unknown size".to_string())
         ),
     ));
 
@@ -350,7 +390,7 @@ async fn stream_from_url(
     // Convert response body to async reader
     let stream = response.bytes_stream();
     let stream_reader = tokio_util::io::StreamReader::new(
-        stream.map(|result| result.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e)))
+        stream.map(|result| result.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))),
     );
     let buffered = BufReader::new(stream_reader);
 
@@ -368,15 +408,14 @@ async fn stream_from_url(
             let decoder = ZstdDecoder::new(buffered);
             write_to_disk(decoder, &mut dest_file, total_size, reporter, action_name).await?
         }
-        None => {
-            write_to_disk(buffered, &mut dest_file, total_size, reporter, action_name).await?
-        }
+        None => write_to_disk(buffered, &mut dest_file, total_size, reporter, action_name).await?,
     };
 
     // Sync to ensure all data is written
-    dest_file.sync_all().await.map_err(|e| {
-        ActionError::ExecutionFailed(format!("Failed to sync disk: {}", e))
-    })?;
+    dest_file
+        .sync_all()
+        .await
+        .map_err(|e| ActionError::ExecutionFailed(format!("Failed to sync disk: {}", e)))?;
 
     Ok(bytes_written)
 }
@@ -401,11 +440,13 @@ async fn stream_from_file(
         .await
         .map_err(|e| ActionError::ExecutionFailed(format!("Failed to open {}: {}", dest, e)))?;
 
-    let bytes_written = write_to_disk(buffered, &mut dest_file, total_size, reporter, action_name).await?;
+    let bytes_written =
+        write_to_disk(buffered, &mut dest_file, total_size, reporter, action_name).await?;
 
-    dest_file.sync_all().await.map_err(|e| {
-        ActionError::ExecutionFailed(format!("Failed to sync disk: {}", e))
-    })?;
+    dest_file
+        .sync_all()
+        .await
+        .map_err(|e| ActionError::ExecutionFailed(format!("Failed to sync disk: {}", e)))?;
 
     Ok(bytes_written)
 }
@@ -446,9 +487,10 @@ async fn stream_compressed_file(
         }
     };
 
-    dest_file.sync_all().await.map_err(|e| {
-        ActionError::ExecutionFailed(format!("Failed to sync disk: {}", e))
-    })?;
+    dest_file
+        .sync_all()
+        .await
+        .map_err(|e| ActionError::ExecutionFailed(format!("Failed to sync disk: {}", e)))?;
 
     Ok(bytes_written)
 }
@@ -470,17 +512,18 @@ async fn write_to_disk<R: AsyncRead + Unpin>(
     let start_time = std::time::Instant::now();
 
     loop {
-        let n = reader.read(&mut buffer).await.map_err(|e| {
-            ActionError::ExecutionFailed(format!("Read error: {}", e))
-        })?;
+        let n = reader
+            .read(&mut buffer)
+            .await
+            .map_err(|e| ActionError::ExecutionFailed(format!("Read error: {}", e)))?;
 
         if n == 0 {
             break;
         }
 
-        dest.write_all(&buffer[..n]).await.map_err(|e| {
-            ActionError::ExecutionFailed(format!("Write error: {}", e))
-        })?;
+        dest.write_all(&buffer[..n])
+            .await
+            .map_err(|e| ActionError::ExecutionFailed(format!("Write error: {}", e)))?;
 
         bytes_written += n as u64;
 
@@ -507,7 +550,11 @@ async fn write_to_disk<R: AsyncRead + Unpin>(
                 Progress::new(
                     action_name,
                     0, // will be calculated by with_bytes
-                    format!("{} @ {}/s", format_bytes(bytes_written), format_bytes(speed)),
+                    format!(
+                        "{} @ {}/s",
+                        format_bytes(bytes_written),
+                        format_bytes(speed)
+                    ),
                 )
                 .with_bytes(bytes_written, total)
             } else {
@@ -515,7 +562,11 @@ async fn write_to_disk<R: AsyncRead + Unpin>(
                 Progress::new(
                     action_name,
                     50, // Unknown progress
-                    format!("{} @ {}/s", format_bytes(bytes_written), format_bytes(speed)),
+                    format!(
+                        "{} @ {}/s",
+                        format_bytes(bytes_written),
+                        format_bytes(speed)
+                    ),
                 )
             };
 
@@ -647,14 +698,16 @@ async fn stream_tar_from_url(
         format!(
             "Downloading tar archive {} ({})",
             url,
-            total_size.map(|s| format_bytes(s)).unwrap_or_else(|| "unknown size".to_string())
+            total_size
+                .map(|s| format_bytes(s))
+                .unwrap_or_else(|| "unknown size".to_string())
         ),
     ));
 
     // Convert response body to async reader
     let stream = response.bytes_stream();
     let stream_reader = tokio_util::io::StreamReader::new(
-        stream.map(|result| result.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e)))
+        stream.map(|result| result.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))),
     );
     let buffered = BufReader::new(stream_reader);
 
@@ -672,9 +725,7 @@ async fn stream_tar_from_url(
             let decoder = ZstdDecoder::new(buffered);
             extract_disk_from_tar(decoder, dest, reporter, action_name).await?
         }
-        None => {
-            extract_disk_from_tar(buffered, dest, reporter, action_name).await?
-        }
+        None => extract_disk_from_tar(buffered, dest, reporter, action_name).await?,
     };
 
     Ok(bytes_written)
@@ -707,9 +758,7 @@ async fn stream_tar_from_file(
             let decoder = ZstdDecoder::new(buffered);
             extract_disk_from_tar(decoder, dest, reporter, action_name).await?
         }
-        None => {
-            extract_disk_from_tar(buffered, dest, reporter, action_name).await?
-        }
+        None => extract_disk_from_tar(buffered, dest, reporter, action_name).await?,
     };
 
     Ok(bytes_written)
@@ -724,13 +773,13 @@ async fn extract_disk_from_tar<R: AsyncRead + Unpin>(
     reporter: &dyn crate::progress::ProgressReporter,
     action_name: &str,
 ) -> Result<u64> {
-    use tokio_tar::Archive;
     use tokio::io::AsyncReadExt;
+    use tokio_tar::Archive;
 
     let mut archive = Archive::new(reader);
-    let mut entries = archive.entries().map_err(|e| {
-        ActionError::ExecutionFailed(format!("Failed to read tar entries: {}", e))
-    })?;
+    let mut entries = archive
+        .entries()
+        .map_err(|e| ActionError::ExecutionFailed(format!("Failed to read tar entries: {}", e)))?;
 
     reporter.report(Progress::new(
         action_name,
@@ -765,22 +814,26 @@ async fn extract_disk_from_tar<R: AsyncRead + Unpin>(
                 .write(true)
                 .open(dest)
                 .await
-                .map_err(|e| ActionError::ExecutionFailed(format!("Failed to open {}: {}", dest, e)))?;
+                .map_err(|e| {
+                    ActionError::ExecutionFailed(format!("Failed to open {}: {}", dest, e))
+                })?;
 
             // Stream the entry directly to disk
             let entry_size = entry.header().size().ok();
-            let bytes_written = write_to_disk(entry, &mut dest_file, entry_size, reporter, action_name).await?;
+            let bytes_written =
+                write_to_disk(entry, &mut dest_file, entry_size, reporter, action_name).await?;
 
-            dest_file.sync_all().await.map_err(|e| {
-                ActionError::ExecutionFailed(format!("Failed to sync disk: {}", e))
-            })?;
+            dest_file
+                .sync_all()
+                .await
+                .map_err(|e| ActionError::ExecutionFailed(format!("Failed to sync disk: {}", e)))?;
 
             return Ok(bytes_written);
         }
     }
 
     Err(ActionError::ExecutionFailed(
-        "No disk image found in tar archive (expected .raw, .img, or .qcow2 file)".to_string()
+        "No disk image found in tar archive (expected .raw, .img, or .qcow2 file)".to_string(),
     ))
 }
 
@@ -807,14 +860,8 @@ mod tests {
             ImageType::Qcow2
         ));
         assert!(matches!(detect_image_type("disk.raw"), ImageType::Raw));
-        assert!(matches!(
-            detect_image_type("disk.raw.gz"),
-            ImageType::RawGz
-        ));
-        assert!(matches!(
-            detect_image_type("disk.raw.xz"),
-            ImageType::RawXz
-        ));
+        assert!(matches!(detect_image_type("disk.raw.gz"), ImageType::RawGz));
+        assert!(matches!(detect_image_type("disk.raw.xz"), ImageType::RawXz));
         assert!(matches!(
             detect_image_type("rootfs.tar.gz"),
             ImageType::TarGz

@@ -3,12 +3,11 @@
 //! This module provides helpers for migrating from the old database schema
 //! to the new v0.1.0 Store trait.
 
+use chrono::{DateTime, Utc};
 use dragonfly_common::{
     BmcConfig, BmcType, Disk, HardwareInfo, InterfaceType, Machine, MachineConfig, MachineIdentity,
-    MachineMetadata, MachineSource, MachineState, MachineStatus, NetworkInterface,
-    WorkflowResult,
+    MachineMetadata, MachineSource, MachineState, MachineStatus, NetworkInterface, WorkflowResult,
 };
-use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use uuid::Uuid;
@@ -116,10 +115,16 @@ impl From<&HardwareInfo> for HardwareResponse {
             cpu_model: h.cpu_model.clone(),
             cpu_cores: h.cpu_cores,
             cpu_threads: h.cpu_threads,
-            memory_gb: h.memory_bytes.map(|b| b as f64 / (1024.0 * 1024.0 * 1024.0)),
+            memory_gb: h
+                .memory_bytes
+                .map(|b| b as f64 / (1024.0 * 1024.0 * 1024.0)),
             disks: h.disks.iter().map(DiskResponse::from).collect(),
             gpus: h.gpus.iter().map(GpuResponse::from).collect(),
-            network_interfaces: h.network_interfaces.iter().map(NetworkInterfaceResponse::from).collect(),
+            network_interfaces: h
+                .network_interfaces
+                .iter()
+                .map(NetworkInterfaceResponse::from)
+                .collect(),
             is_virtual: h.is_virtual,
             virt_platform: h.virt_platform.clone(),
         }
@@ -206,7 +211,11 @@ pub fn string_to_machine_state(status: &str) -> MachineState {
         "installed" => MachineState::Installed,
         "offline" => MachineState::Offline,
         s if s.starts_with("existing_os:") => {
-            let os_name = s.strip_prefix("existing_os:").unwrap_or("Unknown").trim().to_string();
+            let os_name = s
+                .strip_prefix("existing_os:")
+                .unwrap_or("Unknown")
+                .trim()
+                .to_string();
             MachineState::ExistingOs { os_name }
         }
         s if s.starts_with("failed:") => {
@@ -221,10 +230,18 @@ pub fn string_to_machine_state(status: &str) -> MachineState {
 pub fn machine_source_to_string(source: &MachineSource) -> String {
     match source {
         MachineSource::Agent => "agent".to_string(),
-        MachineSource::Proxmox { cluster, node, vmid } => {
+        MachineSource::Proxmox {
+            cluster,
+            node,
+            vmid,
+        } => {
             format!("proxmox:{}:{}:{}", cluster, node, vmid)
         }
-        MachineSource::ProxmoxLxc { cluster, node, ctid } => {
+        MachineSource::ProxmoxLxc {
+            cluster,
+            node,
+            ctid,
+        } => {
             format!("proxmox-lxc:{}:{}:{}", cluster, node, ctid)
         }
         MachineSource::ProxmoxNode { cluster, node } => {
@@ -297,7 +314,11 @@ impl From<RegisterMachineRequest> for Machine {
             memory_bytes: req.memory_bytes,
             disks: req.disks.into_iter().map(Disk::from).collect(),
             gpus: Vec::new(),
-            network_interfaces: req.network_interfaces.into_iter().map(NetworkInterface::from).collect(),
+            network_interfaces: req
+                .network_interfaces
+                .into_iter()
+                .map(NetworkInterface::from)
+                .collect(),
             is_virtual: req.is_virtual,
             virt_platform: req.virt_platform,
         };
@@ -364,7 +385,9 @@ fn snapshot_and_mark(machine: &mut Machine, field: &str, old_value: serde_json::
     if !machine.config.pending_fields.contains(&field.to_string()) {
         machine.config.pending_fields.push(field.to_string());
         // Capture original value into snapshot JSON map
-        let mut snap: serde_json::Map<String, serde_json::Value> = machine.config.pending_snapshot
+        let mut snap: serde_json::Map<String, serde_json::Value> = machine
+            .config
+            .pending_snapshot
             .as_ref()
             .and_then(|s| serde_json::from_str(s).ok())
             .unwrap_or_default();
@@ -376,15 +399,27 @@ fn snapshot_and_mark(machine: &mut Machine, field: &str, old_value: serde_json::
 /// Apply update request to a machine
 pub fn apply_machine_update(machine: &mut Machine, req: UpdateMachineRequest) {
     if let Some(hostname) = req.hostname {
-        snapshot_and_mark(machine, "hostname", serde_json::json!(machine.config.hostname));
-        machine.config.hostname = if hostname.is_empty() { None } else { Some(hostname) };
+        snapshot_and_mark(
+            machine,
+            "hostname",
+            serde_json::json!(machine.config.hostname),
+        );
+        machine.config.hostname = if hostname.is_empty() {
+            None
+        } else {
+            Some(hostname)
+        };
     }
     if let Some(memorable_name) = req.memorable_name {
         machine.config.memorable_name = memorable_name;
     }
     if let Some(domain) = req.domain {
         snapshot_and_mark(machine, "domain", serde_json::json!(machine.config.domain));
-        machine.config.domain = if domain.is_empty() { None } else { Some(domain) };
+        machine.config.domain = if domain.is_empty() {
+            None
+        } else {
+            Some(domain)
+        };
     }
     if let Some(ip_address) = req.ip_address {
         machine.status.current_ip = Some(ip_address);
@@ -402,21 +437,37 @@ pub fn apply_machine_update(machine: &mut Machine, req: UpdateMachineRequest) {
         machine.status.state = string_to_machine_state(&status);
     }
     if let Some(network_mode) = req.network_mode {
-        snapshot_and_mark(machine, "network_mode", serde_json::json!(machine.config.network_mode));
+        snapshot_and_mark(
+            machine,
+            "network_mode",
+            serde_json::json!(machine.config.network_mode),
+        );
         machine.config.network_mode = network_mode;
     }
     if let Some(static_ipv4) = req.static_ipv4 {
-        snapshot_and_mark(machine, "static_ipv4", serde_json::json!(machine.config.static_ipv4));
+        snapshot_and_mark(
+            machine,
+            "static_ipv4",
+            serde_json::json!(machine.config.static_ipv4),
+        );
         // Update displayed IP to match the configured static address
         machine.status.current_ip = Some(static_ipv4.address.clone());
         machine.config.static_ipv4 = Some(static_ipv4);
     }
     if let Some(static_ipv6) = req.static_ipv6 {
-        snapshot_and_mark(machine, "static_ipv6", serde_json::json!(machine.config.static_ipv6));
+        snapshot_and_mark(
+            machine,
+            "static_ipv6",
+            serde_json::json!(machine.config.static_ipv6),
+        );
         machine.config.static_ipv6 = Some(static_ipv6);
     }
     if let Some(nameservers) = req.nameservers {
-        snapshot_and_mark(machine, "nameservers", serde_json::json!(machine.config.nameservers));
+        snapshot_and_mark(
+            machine,
+            "nameservers",
+            serde_json::json!(machine.config.nameservers),
+        );
         machine.config.nameservers = nameservers;
     }
     if let Some(network_id) = req.network_id {
@@ -436,12 +487,21 @@ pub fn apply_machine_update(machine: &mut Machine, req: UpdateMachineRequest) {
             machine.config.primary_interface = None;
         } else {
             // Validate: interface name must exist in hardware.network_interfaces
-            let valid = machine.hardware.network_interfaces.iter().any(|i| i.name == *primary_interface);
+            let valid = machine
+                .hardware
+                .network_interfaces
+                .iter()
+                .any(|i| i.name == *primary_interface);
             if valid {
                 machine.config.primary_interface = Some(primary_interface.clone());
                 // Also update identity.primary_mac to the selected interface's MAC
                 // This keeps PXE boot lookup fast (indexed primary_mac column)
-                if let Some(iface) = machine.hardware.network_interfaces.iter().find(|i| i.name == *primary_interface) {
+                if let Some(iface) = machine
+                    .hardware
+                    .network_interfaces
+                    .iter()
+                    .find(|i| i.name == *primary_interface)
+                {
                     machine.identity.primary_mac = iface.mac.clone();
                 }
             }
@@ -454,19 +514,36 @@ pub fn apply_machine_update(machine: &mut Machine, req: UpdateMachineRequest) {
 /// Restore config fields from pending_snapshot, clearing all pending state
 pub fn revert_pending_changes(machine: &mut Machine) {
     if let Some(ref snapshot_str) = machine.config.pending_snapshot.clone() {
-        if let Ok(snap) = serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(snapshot_str) {
+        if let Ok(snap) =
+            serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(snapshot_str)
+        {
             for (field, value) in &snap {
                 match field.as_str() {
-                    "hostname" => machine.config.hostname = serde_json::from_value(value.clone()).unwrap_or(None),
-                    "domain" => machine.config.domain = serde_json::from_value(value.clone()).unwrap_or(None),
+                    "hostname" => {
+                        machine.config.hostname =
+                            serde_json::from_value(value.clone()).unwrap_or(None)
+                    }
+                    "domain" => {
+                        machine.config.domain =
+                            serde_json::from_value(value.clone()).unwrap_or(None)
+                    }
                     "network_mode" => {
                         if let Ok(mode) = serde_json::from_value(value.clone()) {
                             machine.config.network_mode = mode;
                         }
                     }
-                    "static_ipv4" => machine.config.static_ipv4 = serde_json::from_value(value.clone()).unwrap_or(None),
-                    "static_ipv6" => machine.config.static_ipv6 = serde_json::from_value(value.clone()).unwrap_or(None),
-                    "nameservers" => machine.config.nameservers = serde_json::from_value(value.clone()).unwrap_or_default(),
+                    "static_ipv4" => {
+                        machine.config.static_ipv4 =
+                            serde_json::from_value(value.clone()).unwrap_or(None)
+                    }
+                    "static_ipv6" => {
+                        machine.config.static_ipv6 =
+                            serde_json::from_value(value.clone()).unwrap_or(None)
+                    }
+                    "nameservers" => {
+                        machine.config.nameservers =
+                            serde_json::from_value(value.clone()).unwrap_or_default()
+                    }
                     _ => {}
                 }
             }
@@ -490,9 +567,7 @@ pub struct BmcConfigRequest {
 // === Conversion to dragonfly_common::models::Machine (for backwards compatibility with UI) ===
 
 use dragonfly_common::models::{
-    Machine as CommonMachine,
-    MachineStatus as CommonMachineStatus,
-    DiskInfo as CommonDiskInfo,
+    DiskInfo as CommonDiskInfo, Machine as CommonMachine, MachineStatus as CommonMachineStatus,
 };
 
 /// Convert v0.1.0 MachineState to common MachineStatus
@@ -523,11 +598,17 @@ pub fn machine_to_common(m: &Machine) -> CommonMachine {
 
     CommonMachine {
         id: m.id,
-        mac_address: m.config.primary_interface.as_ref()
+        mac_address: m
+            .config
+            .primary_interface
+            .as_ref()
             .and_then(|pi| m.hardware.network_interfaces.iter().find(|i| &i.name == pi))
             .map(|i| i.mac.clone())
             .unwrap_or_else(|| m.identity.primary_mac.clone()),
-        ip_address: m.config.primary_interface.as_ref()
+        ip_address: m
+            .config
+            .primary_interface
+            .as_ref()
             .and_then(|pi| m.hardware.network_interfaces.iter().find(|i| &i.name == pi))
             .and_then(|i| i.ip_address.clone())
             .or_else(|| m.status.current_ip.clone())
@@ -537,31 +618,42 @@ pub fn machine_to_common(m: &Machine) -> CommonMachine {
         os_choice: m.config.os_choice.clone(),
         os_installed,
         status: machine_state_to_common_status(&m.status.state),
-        disks: m.hardware.disks.iter().map(|d| CommonDiskInfo {
-            device: d.device.clone(),
-            size_bytes: d.size_bytes,
-            model: d.model.clone(),
-            calculated_size: Some(format!("{:.1} GB", d.size_bytes as f64 / 1_000_000_000.0)),
-            serial: d.serial.clone(),
-            disk_type: d.disk_type.clone(),
-            wearout: d.wearout,
-            health: d.health.clone(),
-        }).collect(),
+        disks: m
+            .hardware
+            .disks
+            .iter()
+            .map(|d| CommonDiskInfo {
+                device: d.device.clone(),
+                size_bytes: d.size_bytes,
+                model: d.model.clone(),
+                calculated_size: Some(format!("{:.1} GB", d.size_bytes as f64 / 1_000_000_000.0)),
+                serial: d.serial.clone(),
+                disk_type: d.disk_type.clone(),
+                wearout: d.wearout,
+                health: d.health.clone(),
+            })
+            .collect(),
         nameservers: m.config.nameservers.clone(),
         reported_nameservers: m.config.reported_nameservers.clone(),
         created_at: m.metadata.created_at,
         updated_at: m.metadata.updated_at,
         memorable_name: Some(m.config.memorable_name.clone()),
-        bmc_credentials: m.config.bmc.as_ref().map(|b| dragonfly_common::models::BmcCredentials {
-            address: b.address.clone(),
-            username: b.username.clone(),
-            password: None, // Never expose password
-            bmc_type: match b.bmc_type {
-                BmcType::Ipmi => dragonfly_common::models::BmcType::IPMI,
-                BmcType::Redfish => dragonfly_common::models::BmcType::Redfish,
-                BmcType::ProxmoxApi => dragonfly_common::models::BmcType::Other("proxmox".to_string()),
-            },
-        }),
+        bmc_credentials: m
+            .config
+            .bmc
+            .as_ref()
+            .map(|b| dragonfly_common::models::BmcCredentials {
+                address: b.address.clone(),
+                username: b.username.clone(),
+                password: None, // Never expose password
+                bmc_type: match b.bmc_type {
+                    BmcType::Ipmi => dragonfly_common::models::BmcType::IPMI,
+                    BmcType::Redfish => dragonfly_common::models::BmcType::Redfish,
+                    BmcType::ProxmoxApi => {
+                        dragonfly_common::models::BmcType::Other("proxmox".to_string())
+                    }
+                },
+            }),
         installation_progress: m.config.installation_progress,
         installation_step: m.config.installation_step.clone(),
         last_deployment_duration: None,
@@ -635,9 +727,9 @@ pub fn machine_from_register_request(req: &CommonRegisterRequest) -> Machine {
     let identity = MachineIdentity::new(
         req.mac_address.clone(),
         vec![req.mac_address.clone()], // Only primary MAC from legacy request
-        None, // No SMBIOS UUID in legacy format
-        None, // No machine_id in legacy format
-        None, // No fs_uuid in legacy format
+        None,                          // No SMBIOS UUID in legacy format
+        None,                          // No machine_id in legacy format
+        None,                          // No fs_uuid in legacy format
     );
 
     let mut machine = Machine::new(identity);
@@ -649,15 +741,19 @@ pub fn machine_from_register_request(req: &CommonRegisterRequest) -> Machine {
         cpu_cores: req.cpu_cores,
         cpu_threads: None,
         memory_bytes: req.total_ram_bytes,
-        disks: req.disks.iter().map(|d| Disk {
-            device: d.device.clone(),
-            size_bytes: d.size_bytes,
-            model: d.model.clone(),
-            serial: None,
-            disk_type: None,
-            wearout: None,
-            health: None,
-        }).collect(),
+        disks: req
+            .disks
+            .iter()
+            .map(|d| Disk {
+                device: d.device.clone(),
+                size_bytes: d.size_bytes,
+                model: d.model.clone(),
+                serial: None,
+                disk_type: None,
+                wearout: None,
+                health: None,
+            })
+            .collect(),
         gpus: Vec::new(),
         network_interfaces: vec![NetworkInterface {
             name: "eth0".to_string(), // Default name
@@ -671,7 +767,11 @@ pub fn machine_from_register_request(req: &CommonRegisterRequest) -> Machine {
             mtu: None,
         }],
         is_virtual: req.proxmox_vmid.is_some(), // Assume virtual if Proxmox VMID present
-        virt_platform: if req.proxmox_vmid.is_some() { Some("proxmox".to_string()) } else { None },
+        virt_platform: if req.proxmox_vmid.is_some() {
+            Some("proxmox".to_string())
+        } else {
+            None
+        },
     };
 
     // Set Proxmox source based on type
@@ -753,17 +853,37 @@ mod tests {
 
     #[test]
     fn test_state_string_conversion() {
-        assert_eq!(machine_state_to_string(&MachineState::Discovered), "discovered");
-        assert_eq!(machine_state_to_string(&MachineState::ReadyToInstall), "ready_to_install");
-        assert_eq!(machine_state_to_string(&MachineState::Installing), "installing");
-        assert_eq!(machine_state_to_string(&MachineState::Installed), "installed");
         assert_eq!(
-            machine_state_to_string(&MachineState::Failed { message: "test".to_string() }),
+            machine_state_to_string(&MachineState::Discovered),
+            "discovered"
+        );
+        assert_eq!(
+            machine_state_to_string(&MachineState::ReadyToInstall),
+            "ready_to_install"
+        );
+        assert_eq!(
+            machine_state_to_string(&MachineState::Installing),
+            "installing"
+        );
+        assert_eq!(
+            machine_state_to_string(&MachineState::Installed),
+            "installed"
+        );
+        assert_eq!(
+            machine_state_to_string(&MachineState::Failed {
+                message: "test".to_string()
+            }),
             "failed: test"
         );
 
-        assert!(matches!(string_to_machine_state("ready_to_install"), MachineState::ReadyToInstall));
-        assert!(matches!(string_to_machine_state("installed"), MachineState::Installed));
+        assert!(matches!(
+            string_to_machine_state("ready_to_install"),
+            MachineState::ReadyToInstall
+        ));
+        assert!(matches!(
+            string_to_machine_state("installed"),
+            MachineState::Installed
+        ));
         assert!(matches!(
             string_to_machine_state("failed: something failed"),
             MachineState::Failed { .. }

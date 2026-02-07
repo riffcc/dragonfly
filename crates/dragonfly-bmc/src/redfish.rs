@@ -65,20 +65,14 @@ impl RedfishController {
 #[async_trait]
 impl BmcController for RedfishController {
     async fn power_on(&self) -> Result<()> {
-        self.execute_action(
-            "ComputerSystem.Reset",
-            Some(r#"{"ResetType": "On"}"#),
-        )
-        .await?;
+        self.execute_action("ComputerSystem.Reset", Some(r#"{"ResetType": "On"}"#))
+            .await?;
         Ok(())
     }
 
     async fn power_off(&self) -> Result<()> {
-        self.execute_action(
-            "ComputerSystem.Reset",
-            Some(r#"{"ResetType": "ForceOff"}"#),
-        )
-        .await?;
+        self.execute_action("ComputerSystem.Reset", Some(r#"{"ResetType": "ForceOff"}"#))
+            .await?;
         Ok(())
     }
 
@@ -198,8 +192,8 @@ mod tests {
 
     #[test]
     fn test_insecure_config() {
-        let config = RedfishConfig::new("https://bmc.local", "admin", "password")
-            .with_insecure(true);
+        let config =
+            RedfishConfig::new("https://bmc.local", "admin", "password").with_insecure(true);
 
         assert!(config.insecure);
     }
