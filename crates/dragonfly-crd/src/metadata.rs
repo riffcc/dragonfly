@@ -76,8 +76,6 @@ impl ObjectMeta {
     }
 }
 
-
-
 /// Type metadata for CRD objects
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
