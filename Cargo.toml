@@ -127,3 +127,4 @@ proxmox-time = { path = "patches/proxmox-time" }
 proxmox-compression = { path = "patches/proxmox-compression" }
 proxmox-sys = { path = "patches/proxmox-sys" }
 proxmox-http = { path = "patches/proxmox-http" }
+proxmox-io = { path = "patches/proxmox-io" }

@@ -1,0 +1,10 @@
+[package]
+name = "proxmox-io"
+description = "extension traits for Read and Write - patched to remove endian_trait"
+version = "1.2.1"
+edition = "2024"
+license = "AGPL-3.0-or-later"
+
+[dependencies]
+# endian_trait removed — local Endian trait used instead (RUSTSEC-2021-0039)
+tokio = { version = "1", features = ["io-util"], optional = true }
