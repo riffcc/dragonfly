@@ -22,7 +22,7 @@ reqwest = { version = "0.12", default-features = false, features = ["stream", "r
 futures = "0.3"
 tokio-util = { version = "0.7", features = ["io"] }
 async-compression = { version = "0.4", features = ["tokio", "gzip", "xz", "zstd"] }
-tokio-tar = "0.3"
+astral-tokio-tar = "0.5"
 flate2 = "1.0"  # For QCOW2 compressed clusters (zlib/deflate)
 byteorder = "1.5"  # For reading big-endian QCOW2 headers
 

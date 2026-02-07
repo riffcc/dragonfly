@@ -15,7 +15,6 @@ use std::task::{Context, Poll};
 use std::time::SystemTime;
 
 use anyhow::{format_err, Error, Result};
-use endian_trait::Endian;
 use futures::ready;
 use libc::{S_IFDIR, S_IFLNK, S_IFREG};
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, ReadBuf};
@@ -79,7 +78,20 @@ pub enum FileType {
     Symlink,
 }
 
-#[derive(Endian)]
+trait ToLe {
+    fn to_le(self) -> Self;
+}
+
+macro_rules! impl_to_le {
+    ($name:ident { $($field:ident),* $(,)? }) => {
+        impl ToLe for $name {
+            fn to_le(self) -> Self {
+                Self { $($field: self.$field.to_le()),* }
+            }
+        }
+    };
+}
+
 #[repr(C, packed)]
 struct Zip64Field {
     field_type: u16,
@@ -87,8 +99,8 @@ struct Zip64Field {
     uncompressed_size: u64,
     compressed_size: u64,
 }
+impl_to_le!(Zip64Field { field_type, field_size, uncompressed_size, compressed_size });
 
-#[derive(Endian)]
 #[repr(C, packed)]
 struct Zip64FieldWithOffset {
     field_type: u16,
@@ -98,8 +110,8 @@ struct Zip64FieldWithOffset {
     offset: u64,
     start_disk: u32,
 }
+impl_to_le!(Zip64FieldWithOffset { field_type, field_size, uncompressed_size, compressed_size, offset, start_disk });
 
-#[derive(Endian)]
 #[repr(C, packed)]
 struct LocalFileHeader {
     signature: u32,
@@ -114,8 +126,8 @@ struct LocalFileHeader {
     filename_len: u16,
     extra_field_len: u16,
 }
+impl_to_le!(LocalFileHeader { signature, version_needed, flags, compression, time, date, crc32, compressed_size, uncompressed_size, filename_len, extra_field_len });
 
-#[derive(Endian)]
 #[repr(C, packed)]
 struct LocalFileFooter {
     signature: u32,
@@ -123,8 +135,8 @@ struct LocalFileFooter {
     compressed_size: u64,
     uncompressed_size: u64,
 }
+impl_to_le!(LocalFileFooter { signature, crc32, compressed_size, uncompressed_size });
 
-#[derive(Endian)]
 #[repr(C, packed)]
 struct CentralDirectoryFileHeader {
     signature: u32,
@@ -145,8 +157,8 @@ struct CentralDirectoryFileHeader {
     external_flags: u32,
     offset: u32,
 }
+impl_to_le!(CentralDirectoryFileHeader { signature, version_made_by, version_needed, flags, compression, time, date, crc32, compressed_size, uncompressed_size, filename_len, extra_field_len, comment_len, start_disk, internal_flags, external_flags, offset });
 
-#[derive(Endian)]
 #[repr(C, packed)]
 struct EndOfCentralDir {
     signature: u32,
@@ -158,8 +170,8 @@ struct EndOfCentralDir {
     directory_offset: u32,
     comment_len: u16,
 }
+impl_to_le!(EndOfCentralDir { signature, disk_number, start_disk, disk_record_count, total_record_count, directory_size, directory_offset, comment_len });
 
-#[derive(Endian)]
 #[repr(C, packed)]
 struct Zip64EOCDRecord {
     signature: u32,
@@ -173,8 +185,8 @@ struct Zip64EOCDRecord {
     directory_size: u64,
     directory_offset: u64,
 }
+impl_to_le!(Zip64EOCDRecord { signature, field_size, version_made_by, version_needed, disk_number, disk_number_central_dir, disk_record_count, total_record_count, directory_size, directory_offset });
 
-#[derive(Endian)]
 #[repr(C, packed)]
 struct Zip64EOCDLocator {
     signature: u32,
@@ -182,11 +194,12 @@ struct Zip64EOCDLocator {
     offset: u64,
     disk_count: u32,
 }
+impl_to_le!(Zip64EOCDLocator { signature, disk_number, offset, disk_count });
 
 async fn write_struct<E, T>(output: &mut T, data: E) -> io::Result<()>
 where
     T: AsyncWrite + ?Sized + Unpin,
-    E: Endian,
+    E: ToLe,
 {
     let data = data.to_le();
 

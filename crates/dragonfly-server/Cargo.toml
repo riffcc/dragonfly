@@ -69,7 +69,7 @@ dragonfly-actions = { path = "../dragonfly-actions" }
 
 # Async compression and tar for image cache
 async-compression = { version = "0.4", features = ["tokio", "gzip", "zstd"] }
-tokio-tar = "0.3"
+astral-tokio-tar = "0.5"
 tokio-util = { version = "0.7", features = ["io"] }
 
 # Storage — SQLite via sqlx (already in deps above)

@@ -74,7 +74,6 @@ tracing-subscriber = { workspace = true }
 
 # Security
 bcrypt = "0.15"
-jsonwebtoken = "9.2"
 
 # Utilities
 uuid = { workspace = true }
