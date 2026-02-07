@@ -1,6 +1,6 @@
 [package]
 name = "dragonfly-actions"
-version = "0.2.2"
+version = "0.2.3"
 edition = "2024"
 authors = ["Sparx"]
 description = "Native action engine for Dragonfly bare metal provisioning"
