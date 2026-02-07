@@ -1,0 +1,105 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"           # stable: v0.1.0, v1.2.3
+      - "v[0-9]+.[0-9]+.[0-9]+-*"         # pre-release: v0.1.0-alpha1, v0.1.0-rc2
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            artifact: dragonfly-server
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            artifact: dragonfly-agent
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libssl-dev pkg-config
+          if [ "${{ matrix.target }}" = "x86_64-unknown-linux-musl" ]; then
+            sudo apt-get install -y musl-tools
+          fi
+
+      - name: Build server
+        if: matrix.artifact == 'dragonfly-server'
+        run: cargo build --release --target ${{ matrix.target }} -p dragonfly-server
+
+      - name: Build agent (static musl)
+        if: matrix.artifact == 'dragonfly-agent'
+        run: cargo build --release --target ${{ matrix.target }} -p dragonfly-agent
+
+      - name: Prepare artifacts
+        run: |
+          mkdir -p dist
+          if [ "${{ matrix.artifact }}" = "dragonfly-server" ]; then
+            cp target/${{ matrix.target }}/release/dragonfly-server dist/dragonfly-server-x86_64
+          elif [ "${{ matrix.artifact }}" = "dragonfly-agent" ]; then
+            cp target/${{ matrix.target }}/release/dragonfly-agent dist/dragonfly-agent-x86_64
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}-${{ matrix.target }}
+          path: dist/
+
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Collect release files
+        run: |
+          mkdir -p release
+          find artifacts -type f -exec cp {} release/ \;
+          ls -la release/
+
+      - name: Determine pre-release
+        id: prerelease
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          if echo "$TAG" | grep -qP '^\d+\.\d+\.\d+$' || echo "$TAG" | grep -qP '^v\d+\.\d+\.\d+$'; then
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+            echo "Stable release: $TAG"
+          else
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+            echo "Pre-release: $TAG"
+          fi
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release/*
+          prerelease: ${{ steps.prerelease.outputs.prerelease == 'true' }}
+          generate_release_notes: true
