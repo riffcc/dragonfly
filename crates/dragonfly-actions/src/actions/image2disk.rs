@@ -673,8 +673,6 @@ async fn stream_tar_from_url(
     reporter: &dyn crate::progress::ProgressReporter,
     action_name: &str,
 ) -> Result<u64> {
-    use tokio_tar::Archive;
-
     // Create HTTP client and start download
     let client = reqwest::Client::new();
     let response = client
@@ -773,7 +771,6 @@ async fn extract_disk_from_tar<R: AsyncRead + Unpin>(
     reporter: &dyn crate::progress::ProgressReporter,
     action_name: &str,
 ) -> Result<u64> {
-    use tokio::io::AsyncReadExt;
     use tokio_tar::Archive;
 
     let mut archive = Archive::new(reader);
@@ -789,7 +786,7 @@ async fn extract_disk_from_tar<R: AsyncRead + Unpin>(
 
     // Find the disk image entry (look for .raw, .img, or largest file)
     while let Some(entry) = entries.next().await {
-        let mut entry = entry.map_err(|e| {
+        let entry = entry.map_err(|e| {
             ActionError::ExecutionFailed(format!("Failed to read tar entry: {}", e))
         })?;
 
