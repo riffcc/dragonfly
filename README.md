@@ -60,7 +60,7 @@ See [dragonfly.computer](https://dragonfly.computer/docs/installation/) for inst
 
 ## 📚 Credits
 
-Dragonfly is inspired by and intended as a GUI for the Tinkerbell project. It would not be possible without their work, and we're grateful for their efforts.
+Dragonfly is inspired by the Tinkerbell project. It would not have been possible without their work, and we're grateful for their efforts.
 
 We also thank other projects that Dragonfly builds on, such as:
 * [MooseFS](https://moosefs.org/)
@@ -75,3 +75,4 @@ Thanks to [Taylor Vick](https://unsplash.com/photos/cable-network-M5tzZtFCOfs) f
 Dragonfly is licensed under the AGPLv3 license.
 
 See the [LICENSE](LICENSE) for more details.
+
