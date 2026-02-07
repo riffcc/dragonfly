@@ -1,6 +1,6 @@
 use clap::Args;
 use color_eyre::eyre::Result;
-use include_dir::{include_dir, Dir};
+use include_dir::{Dir, include_dir};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
