@@ -217,12 +217,14 @@ async fn handle_read_request(
 
     let timeout_secs = options.timeout.unwrap_or(DEFAULT_TIMEOUT);
 
-    // Send OACK if client requested options
+    // Send OACK if client requested options — RFC 2347: only echo back
+    // options the client actually asked for. Strict PXE ROMs (VMware EFI)
+    // reject OACKs containing unsolicited options.
     if !options.is_empty() {
         let oack_options = TftpOptions {
-            blksize: Some(block_size),
-            tsize: Some(file_size),
-            timeout: Some(timeout_secs),
+            blksize: options.blksize.map(|_| block_size),
+            tsize: options.tsize.map(|_| file_size),
+            timeout: options.timeout,
             windowsize: options.windowsize,
         };
 
