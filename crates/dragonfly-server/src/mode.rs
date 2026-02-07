@@ -1129,6 +1129,7 @@ pub async fn configure_flight_mode(store: std::sync::Arc<dyn Store>) -> Result<(
     // Download Spark ELF (bare metal discovery agent)
     let spark_download_fut = async {
         let dest = "/var/lib/dragonfly/spark.elf";
+        let tmp_dest = "/var/lib/dragonfly/spark.elf.tmp";
         let version_file = "/var/lib/dragonfly/spark.elf.version";
         let current_version = env!("CARGO_PKG_VERSION");
 
@@ -1147,10 +1148,12 @@ pub async fn configure_flight_mode(store: std::sync::Arc<dyn Store>) -> Result<(
             } else {
                 info!("Spark ELF exists but no version marker, re-downloading");
             }
+        } else {
+            info!("Spark ELF not found, downloading");
         }
 
         let download_url = format!(
-            "https://github.com/riffcc/dragonfly/releases/download/v{}/dragonfly-spark",
+            "https://github.com/riffcc/dragonfly/releases/download/v{}/spark.elf",
             current_version
         );
         info!(
@@ -1159,29 +1162,47 @@ pub async fn configure_flight_mode(store: std::sync::Arc<dyn Store>) -> Result<(
         );
 
         let client = reqwest::Client::new();
-        let response = client.get(&download_url).send().await?;
-        if response.status().is_success() {
-            let bytes = response.bytes().await?;
-            tokio::fs::write(dest, &bytes).await?;
-            let mut perms = tokio::fs::metadata(dest).await?.permissions();
-            perms.set_mode(0o755);
-            tokio::fs::set_permissions(dest, perms).await?;
-            tokio::fs::write(version_file, current_version).await?;
-            info!(
-                "Spark ELF v{} downloaded ({} bytes)",
-                current_version,
-                bytes.len()
-            );
-            Ok(())
-        } else {
+        let response = match client.get(&download_url).send().await {
+            Ok(r) => r,
+            Err(e) => {
+                warn!("Failed to connect to GitHub for Spark download: {}", e);
+                return Ok(());
+            }
+        };
+
+        if !response.status().is_success() {
             warn!(
                 "Failed to download Spark: HTTP {} ({})",
                 response.status(),
                 download_url
             );
-            // Non-fatal - Spark might not be needed if only using Mage
-            Ok(())
+            return Ok(());
         }
+
+        let bytes = response.bytes().await?;
+
+        // Validate: must be non-empty and start with ELF magic
+        if bytes.len() < 4 || &bytes[..4] != b"\x7fELF" {
+            warn!(
+                "Downloaded Spark is invalid ({} bytes, not an ELF file). Keeping existing copy.",
+                bytes.len()
+            );
+            return Ok(());
+        }
+
+        // Atomic write: download to temp, validate, then rename
+        tokio::fs::write(tmp_dest, &bytes).await?;
+        let mut perms = tokio::fs::metadata(tmp_dest).await?.permissions();
+        perms.set_mode(0o755);
+        tokio::fs::set_permissions(tmp_dest, perms).await?;
+        tokio::fs::rename(tmp_dest, dest).await?;
+        tokio::fs::write(version_file, current_version).await?;
+        info!(
+            "Spark ELF v{} downloaded ({} bytes)",
+            current_version,
+            bytes.len()
+        );
+        Ok(())
     };
 
     // Generate Mage APK overlay for x86_64
