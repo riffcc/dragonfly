@@ -30,15 +30,13 @@ jobs:
             agent-target: x86_64-unknown-linux-musl
             agent-artifact: dragonfly-agent-linux-amd64
 
-          # Dragonfly — linux arm64
+          # Dragonfly — linux arm64 (native ARM runner)
           - name: linux-arm64
-            os: ubuntu-latest
+            os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
             artifact: dragonfly-linux-arm64
-            cross: true
             agent-target: aarch64-unknown-linux-musl
             agent-artifact: dragonfly-agent-linux-arm64
-            agent-cross: true
 
           # Dragonfly — macOS arm64 (Apple Silicon)
           - name: macos-arm64
@@ -64,12 +62,8 @@ jobs:
         with:
           key: ${{ matrix.target }}
 
-      - name: Install cross
-        if: matrix.cross
-        uses: taiki-e/install-action@cross
-
       - name: Install system dependencies
-        if: runner.os == 'Linux' && !matrix.cross
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y pkg-config
@@ -77,21 +71,15 @@ jobs:
             sudo apt-get install -y musl-tools
           fi
 
-      # Pre-build Tailwind CSS on the host, then remove node_modules so
+      # Pre-build Tailwind CSS, then remove node_modules so
       # build.rs uses the pre-built CSS instead of trying to invoke node
       - name: Pre-build Tailwind CSS
         run: |
           npx tailwindcss -i crates/dragonfly-server/src/input.css -o crates/dragonfly-server/static/css/tailwind.css -c tailwind.config.js
           rm -rf node_modules
 
-      # ── Main dragonfly binary ──
-      - name: Build dragonfly (native)
-        if: "!matrix.cross"
+      - name: Build dragonfly
         run: cargo build --release --target ${{ matrix.target }}
-
-      - name: Build dragonfly (cross)
-        if: matrix.cross
-        run: cross build --release --target ${{ matrix.target }}
 
       - name: Upload dragonfly
         uses: actions/upload-artifact@v4
@@ -100,13 +88,9 @@ jobs:
           path: target/${{ matrix.target }}/release/dragonfly
 
       # ── Agent binary (linux only, static musl) ──
-      - name: Build agent (native)
-        if: matrix.agent-target && !matrix.agent-cross
+      - name: Build agent
+        if: matrix.agent-target
         run: cargo build --release --target ${{ matrix.agent-target }} -p dragonfly-agent
-
-      - name: Build agent (cross)
-        if: matrix.agent-cross
-        run: cross build --release --target ${{ matrix.agent-target }} -p dragonfly-agent
 
       - name: Upload agent
         if: matrix.agent-artifact
