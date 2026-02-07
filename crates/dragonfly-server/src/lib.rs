@@ -438,7 +438,10 @@ pub async fn run() -> anyhow::Result<()> {
         let agent_dest = std::path::Path::new("/var/lib/dragonfly/mage/x86_64/dragonfly-agent");
         if !agent_dest.exists() {
             info!("Downloading dragonfly-agent binary...");
-            let download_url = "https://github.com/riffcc/dragonfly/releases/download/latest/dragonfly-agent-x86_64";
+            let download_url = format!(
+                "https://github.com/riffcc/dragonfly/releases/download/v{}/dragonfly-agent-linux-amd64",
+                env!("CARGO_PKG_VERSION")
+            );
             let client = reqwest::Client::new();
             match client.get(download_url).send().await {
                 Ok(response) if response.status().is_success() => {

@@ -2414,11 +2414,13 @@ pub async fn serve_ipxe_artifact(
     // Define constants for directories and URLs
     const DEFAULT_ARTIFACT_DIR: &str = "/var/lib/dragonfly/ipxe-artifacts";
     const ARTIFACT_DIR_ENV_VAR: &str = "DRAGONFLY_IPXE_ARTIFACT_DIR";
-    const ALLOWED_IPXE_SCRIPTS: &[&str] = &["hookos", "dragonfly-agent"]; // Define allowlist
+    const ALLOWED_IPXE_SCRIPTS: &[&str] = &["dragonfly-agent"];
     const AGENT_APKOVL_PATH: &str =
         "/var/lib/dragonfly/ipxe-artifacts/dragonfly-agent/localhost.apkovl.tar.gz";
-    const AGENT_BINARY_URL: &str =
-        "https://github.com/riffcc/dragonfly/releases/download/latest/dragonfly-agent-x86_64"; // TODO: Make configurable
+    let agent_binary_url = format!(
+        "https://github.com/riffcc/dragonfly/releases/download/v{}/dragonfly-agent-linux-amd64",
+        env!("CARGO_PKG_VERSION")
+    );
 
     // --- Get Machine ID from Client IP ---
     let client_ip = state.client_ip.lock().await.clone();
@@ -2593,7 +2595,7 @@ pub async fn serve_ipxe_artifact(
             match generate_agent_apkovl(
                 &generation_target_path,
                 &base_url,
-                AgentSource::Url(AGENT_BINARY_URL),
+                AgentSource::Url(&agent_binary_url),
             )
             .await
             {
@@ -6877,11 +6879,12 @@ pub async fn list_templates_handler(State(state): State<crate::AppState>) -> Res
                 "debian-13" => ("Debian 13 (Trixie)".to_string(), "debian".to_string()),
                 "debian-12" => ("Debian 12 (Bookworm)".to_string(), "debian".to_string()),
                 "proxmox" => ("Proxmox VE".to_string(), "proxmox".to_string()),
+                "rocky-10" => ("Rocky Linux 10".to_string(), "rocky".to_string()),
                 _ => (name.clone(), "generic".to_string()),
             };
             let builtin = matches!(
                 name.as_str(),
-                "ubuntu-2404" | "ubuntu-2204" | "debian-13" | "debian-12" | "proxmox"
+                "ubuntu-2404" | "ubuntu-2204" | "debian-13" | "debian-12" | "proxmox" | "rocky-10"
             );
             TemplateInfo {
                 name: name.clone(),

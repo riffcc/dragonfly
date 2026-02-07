@@ -1010,14 +1010,16 @@ pub async fn configure_flight_mode(store: std::sync::Arc<dyn Store>) -> Result<(
         let base_url = format!("http://{}:3000", get_loadbalancer_ip().await?);
 
         // URL for the agent binary
-        let agent_binary_url =
-            "https://github.com/riffcc/dragonfly/releases/download/latest/dragonfly-agent-x86_64";
+        let agent_binary_url = format!(
+            "https://github.com/riffcc/dragonfly/releases/download/v{}/dragonfly-agent-linux-amd64",
+            env!("CARGO_PKG_VERSION")
+        );
 
         // Generate the APK overlay
         match crate::api::generate_agent_apkovl(
             &target_apkovl_path,
             &base_url,
-            crate::api::AgentSource::Url(agent_binary_url),
+            crate::api::AgentSource::Url(&agent_binary_url),
         )
         .await
         {
@@ -1080,8 +1082,10 @@ pub async fn configure_flight_mode(store: std::sync::Arc<dyn Store>) -> Result<(
         }
 
         // Download from GitHub releases
-        let download_url =
-            "https://github.com/riffcc/dragonfly/releases/download/latest/dragonfly-agent-x86_64";
+        let download_url = format!(
+            "https://github.com/riffcc/dragonfly/releases/download/v{}/dragonfly-agent-linux-amd64",
+            env!("CARGO_PKG_VERSION")
+        );
         debug!("Downloading agent from {}", download_url);
 
         let client = reqwest::Client::new();

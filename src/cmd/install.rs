@@ -768,10 +768,16 @@ WantedBy=multi-user.target
     let temp_service = "/tmp/dragonfly.service";
     fs::write(temp_service, &service_content)?;
 
-    std::process::Command::new("sudo")
+    let status = std::process::Command::new("sudo")
         .args(["mv", temp_service, SYSTEMD_SERVICE])
         .status()
         .map_err(|e| color_eyre::eyre::eyre!("Failed to install service: {}", e))?;
+    if !status.success() {
+        return Err(color_eyre::eyre::eyre!(
+            "Failed to move service file to {}",
+            SYSTEMD_SERVICE
+        ));
+    }
 
     // If dev mode, create a path unit to watch the binary
     if dev_mode {
@@ -797,15 +803,31 @@ WantedBy=multi-user.target
             .status()?;
     }
 
-    std::process::Command::new("sudo")
+    let status = std::process::Command::new("sudo")
         .args(["systemctl", "daemon-reload"])
         .status()
         .map_err(|e| color_eyre::eyre::eyre!("Failed to reload systemd: {}", e))?;
+    if !status.success() {
+        return Err(color_eyre::eyre::eyre!("systemctl daemon-reload failed"));
+    }
+
+    // Verify the service file exists before enabling
+    if !Path::new(SYSTEMD_SERVICE).exists() {
+        return Err(color_eyre::eyre::eyre!(
+            "Service file not found at {} after installation",
+            SYSTEMD_SERVICE
+        ));
+    }
 
     // Enable and start the service
-    std::process::Command::new("sudo")
+    let status = std::process::Command::new("sudo")
         .args(["systemctl", "enable", "--now", "dragonfly"])
         .status()?;
+    if !status.success() {
+        return Err(color_eyre::eyre::eyre!(
+            "Failed to enable and start dragonfly service"
+        ));
+    }
 
     // If dev mode, also enable the path watcher
     if dev_mode {
