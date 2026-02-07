@@ -137,6 +137,8 @@ pub struct SettingsTemplate {
     pub error_message: Option<String>,
     pub current_path: String,
     pub active_tab: String,
+    pub dhcp_mode: String,
+    pub dhcp_full_network_id: String,
 }
 
 #[derive(Serialize)]
@@ -1057,6 +1059,10 @@ pub async fn settings_page(
         (false, String::new())
     };
 
+    // Load DHCP settings
+    let dhcp_mode = store.get_setting("dhcp_mode").await.ok().flatten().unwrap_or_else(|| "flexible".to_string());
+    let dhcp_full_network_id = store.get_setting("dhcp_full_network_id").await.ok().flatten().unwrap_or_default();
+
     // Replace Askama render with placeholder
     let context = SettingsTemplate {
         theme,
@@ -1080,6 +1086,8 @@ pub async fn settings_page(
         error_message: None,
         current_path,
         active_tab: "general".to_string(),
+        dhcp_mode,
+        dhcp_full_network_id,
     };
     // Pass AppState to render_minijinja
     render_minijinja(&app_state, "settings.html", context)
@@ -1167,6 +1175,10 @@ pub async fn settings_page_section(
         (false, String::new())
     };
 
+    // Load DHCP settings
+    let dhcp_mode = store.get_setting("dhcp_mode").await.ok().flatten().unwrap_or_else(|| "flexible".to_string());
+    let dhcp_full_network_id = store.get_setting("dhcp_full_network_id").await.ok().flatten().unwrap_or_default();
+
     let context = SettingsTemplate {
         theme,
         is_authenticated,
@@ -1189,6 +1201,8 @@ pub async fn settings_page_section(
         error_message: None,
         current_path,
         active_tab: tab,
+        dhcp_mode,
+        dhcp_full_network_id,
     };
     render_minijinja(&app_state, "settings.html", context)
 }
@@ -1216,6 +1230,8 @@ pub struct SettingsForm {
     pub proxmox_username: Option<String>,
     pub proxmox_password: Option<String>,
     pub proxmox_port: Option<String>,
+    pub dhcp_mode: Option<String>,
+    pub dhcp_full_network_id: Option<String>,
 }
 
 // Handler for settings form submission
@@ -1260,7 +1276,9 @@ pub async fn update_settings(
         || form.proxmox_host.is_some()
         || form.proxmox_username.is_some()
         || form.proxmox_password.is_some()
-        || form.proxmox_port.is_some())
+        || form.proxmox_port.is_some()
+        || form.dhcp_mode.is_some()
+        || form.dhcp_full_network_id.is_some())
         && !is_authenticated
     {
         return Redirect::to("/login").into_response();
@@ -1358,6 +1376,28 @@ pub async fn update_settings(
             }
         }
 
+        // Save DHCP settings and restart services if any changed
+        let mut dhcp_changed = false;
+        if let Some(ref mode) = form.dhcp_mode {
+            if let Err(e) = store.put_setting("dhcp_mode", mode).await {
+                error!("Failed to save dhcp_mode: {}", e);
+            } else {
+                dhcp_changed = true;
+            }
+        }
+        if let Some(ref v) = form.dhcp_full_network_id {
+            if let Err(e) = store.put_setting("dhcp_full_network_id", v).await {
+                error!("Failed to save dhcp_full_network_id: {}", e);
+            } else {
+                dhcp_changed = true;
+            }
+        }
+
+        // Restart network services if DHCP config changed
+        if dhcp_changed {
+            crate::restart_network_services(&app_state).await;
+        }
+
         if let Err(e) = store
             .put_setting("setup_completed", &settings.setup_completed.to_string())
             .await
@@ -1447,6 +1487,8 @@ pub async fn update_settings(
                                 error_message,
                                 current_path,
                                 active_tab: "security".to_string(),
+                                dhcp_mode: String::new(),
+                                dhcp_full_network_id: String::new(),
                             };
 
                             // Return the error template
@@ -1538,6 +1580,8 @@ pub async fn update_settings(
                             error_message,
                             current_path,
                             active_tab: "security".to_string(),
+                            dhcp_mode: String::new(),
+                            dhcp_full_network_id: String::new(),
                         };
 
                         // Return the error template
@@ -1624,6 +1668,8 @@ pub async fn update_settings(
                     error_message,
                     current_path,
                     active_tab: "security".to_string(),
+                    dhcp_mode: String::new(),
+                    dhcp_full_network_id: String::new(),
                 };
 
                 // Return the error template
@@ -1964,12 +2010,17 @@ pub async fn networks_page(
         }
     };
 
+    let dhcp_full_network_id = app_state.store.get_setting("dhcp_full_network_id").await.ok().flatten().unwrap_or_default();
+    let dhcp_mode = app_state.store.get_setting("dhcp_mode").await.ok().flatten().unwrap_or_else(|| "flexible".to_string());
+
     let context = serde_json::json!({
         "theme": theme,
         "is_authenticated": is_authenticated,
         "current_path": current_path,
         "networks": networks,
         "is_admin": auth_session.user.is_some(),
+        "dhcp_full_network_id": dhcp_full_network_id,
+        "dhcp_mode": dhcp_mode,
     });
 
     render_minijinja(&app_state, "networks.html", context)

@@ -31,9 +31,9 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 
 [package]
 name = "dragonfly"
-version = "0.2.3"
+version = "0.3.0-alpha0"
 edition = "2024"
-authors = ["Sparx"]
+authors = ["Riff.CC"]
 description = "A web application for managing bare metal datacenter infrastructure"
 
 [features]

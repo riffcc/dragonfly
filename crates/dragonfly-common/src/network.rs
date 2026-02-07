@@ -27,10 +27,28 @@ pub struct Network {
     pub dhcp_enabled: bool,
     #[serde(default)]
     pub description: Option<String>,
+    /// DHCP pool range start (for Full DHCP mode)
+    #[serde(default)]
+    pub pool_start: Option<String>,
+    /// DHCP pool range end (for Full DHCP mode)
+    #[serde(default)]
+    pub pool_end: Option<String>,
+    /// Static MAC→IP reservations
+    #[serde(default)]
+    pub reservations: Vec<StaticLease>,
     #[serde(default = "Utc::now")]
     pub created_at: DateTime<Utc>,
     #[serde(default = "Utc::now")]
     pub updated_at: DateTime<Utc>,
+}
+
+/// A static DHCP reservation (MAC→IP binding)
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct StaticLease {
+    pub mac: String,
+    pub ip: String,
+    #[serde(default)]
+    pub hostname: Option<String>,
 }
 
 impl Network {
@@ -47,6 +65,9 @@ impl Network {
             is_native: false,
             dhcp_enabled: true,
             description: None,
+            pool_start: None,
+            pool_end: None,
+            reservations: Vec::new(),
             created_at: now,
             updated_at: now,
         }
@@ -82,5 +103,28 @@ mod tests {
         assert_eq!(net.name, "Minimal");
         assert!(!net.is_native);
         assert!(!net.dhcp_enabled);
+        // New fields default gracefully from old data
+        assert!(net.pool_start.is_none());
+        assert!(net.pool_end.is_none());
+        assert!(net.reservations.is_empty());
+    }
+
+    #[test]
+    fn test_network_pool_and_reservations() {
+        let mut net = Network::new("DHCP Net".to_string(), "10.0.0.0/24".to_string());
+        net.pool_start = Some("10.0.0.100".to_string());
+        net.pool_end = Some("10.0.0.200".to_string());
+        net.reservations.push(StaticLease {
+            mac: "aa:bb:cc:dd:ee:ff".to_string(),
+            ip: "10.0.0.50".to_string(),
+            hostname: Some("server1".to_string()),
+        });
+
+        let json = serde_json::to_string(&net).unwrap();
+        let restored: Network = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.pool_start, Some("10.0.0.100".to_string()));
+        assert_eq!(restored.pool_end, Some("10.0.0.200".to_string()));
+        assert_eq!(restored.reservations.len(), 1);
+        assert_eq!(restored.reservations[0].mac, "aa:bb:cc:dd:ee:ff");
     }
 }

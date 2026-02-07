@@ -53,6 +53,10 @@ pub async fn create_test_app_state() -> AppState {
         store,
         network_services_started: Arc::new(AtomicBool::new(false)),
         image_cache,
+        services_shutdown_tx: Arc::new(Mutex::new(None)),
+        dhcp_lease_table: Arc::new(tokio::sync::RwLock::new(
+            dragonfly_dhcp::LeaseTable::new(),
+        )),
     }
 }
 

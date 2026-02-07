@@ -43,7 +43,10 @@
                         <template x-if="net.is_native">
                             <span class="text-xs px-2 py-0.5 rounded-full bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400 font-medium">Native</span>
                         </template>
-                        <template x-if="net.dhcp_enabled">
+                        <template x-if="net.dhcp_enabled && isFullDhcpTarget(net)">
+                            <span class="text-xs px-2 py-0.5 rounded-full bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400 font-medium">Full DHCP</span>
+                        </template>
+                        <template x-if="net.dhcp_enabled && !isFullDhcpTarget(net)">
                             <span class="text-xs px-2 py-0.5 rounded-full bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400 font-medium">DHCP</span>
                         </template>
                         <template x-if="!net.dhcp_enabled">
@@ -81,12 +84,16 @@
                 <template x-if="net.description">
                     <p class="mt-2 text-sm text-gray-500 dark:text-gray-400 italic" x-text="net.description"></p>
                 </template>
-                {% if is_authenticated %}
-                <div class="mt-1 text-right">
+                <div class="mt-1 flex items-center justify-between">
+                    <button @click="viewNetwork(net)"
+                        class="text-sm text-gray-500 dark:text-gray-400 hover:text-purple-600 dark:hover:text-purple-400 transition-colors">
+                        <i class="fas fa-eye mr-1"></i>View
+                    </button>
+                    {% if is_authenticated %}
                     <button @click="editNetwork(net)"
                         class="text-sm text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 transition-colors">Edit</button>
+                    {% endif %}
                 </div>
-                {% endif %}
             </div>
         </template>
     </div>
@@ -175,6 +182,21 @@
                         DHCP enabled
                     </label>
                 </div>
+                <template x-if="editingNetwork && isFullDhcpTarget(editingNetwork)">
+                    <div class="col-span-2 grid grid-cols-2 gap-3 rounded-lg border border-orange-300 dark:border-orange-700 bg-orange-50/50 dark:bg-orange-900/10 p-3">
+                        <div class="col-span-2 text-xs font-medium text-orange-700 dark:text-orange-400 uppercase tracking-wider">Full DHCP Pool</div>
+                        <div>
+                            <label class="block text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-1">Pool Start</label>
+                            <input type="text" x-model="form.pool_start" placeholder="10.0.0.100"
+                                class="w-full text-sm tech-mono rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-[#1a1a1a] text-gray-900 dark:text-gray-100 px-3 py-2 focus:ring-2 focus:ring-purple-500 focus:border-transparent">
+                        </div>
+                        <div>
+                            <label class="block text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-1">Pool End</label>
+                            <input type="text" x-model="form.pool_end" placeholder="10.0.0.200"
+                                class="w-full text-sm tech-mono rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-[#1a1a1a] text-gray-900 dark:text-gray-100 px-3 py-2 focus:ring-2 focus:ring-purple-500 focus:border-transparent">
+                        </div>
+                    </div>
+                </template>
             </div>
             <div class="flex items-center mt-6 pt-4 border-t border-gray-200 dark:border-[#222]">
                 <template x-if="editingNetwork">
@@ -194,6 +216,195 @@
                     </button>
                 </div>
             </div>
+        </div>
+    </div>
+
+    {# View detail panel — slides in from right #}
+    <div x-show="viewingNetwork" x-cloak
+        @click="viewingNetwork = null"
+        class="fixed inset-0 z-40"
+        x-transition:enter="transition ease-out duration-200"
+        x-transition:enter-start="opacity-0"
+        x-transition:enter-end="opacity-100"
+        x-transition:leave="transition ease-in duration-150"
+        x-transition:leave-start="opacity-100"
+        x-transition:leave-end="opacity-0"></div>
+
+    <div x-show="viewingNetwork" x-cloak
+        class="fixed inset-y-0 right-0 z-50 w-full max-w-lg"
+        x-transition:enter="transition ease-out duration-200"
+        x-transition:enter-start="translate-x-full"
+        x-transition:enter-end="translate-x-0"
+        x-transition:leave="transition ease-in duration-150"
+        x-transition:leave-start="translate-x-0"
+        x-transition:leave-end="translate-x-full">
+        <div class="h-full bg-white dark:bg-[#111] border-l border-gray-200 dark:border-[#1a1a1a] shadow-2xl overflow-y-auto p-6">
+            <div class="flex items-center justify-between mb-4">
+                <h2 class="text-lg font-semibold text-gray-900 dark:text-white" x-text="viewingNetwork ? viewingNetwork.name : ''"></h2>
+                <button @click="viewingNetwork = null" class="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 transition-colors">
+                    <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+                </button>
+            </div>
+
+            <template x-if="viewingNetwork">
+                <div class="space-y-5">
+                    {# Network info #}
+                    <div class="grid grid-cols-2 gap-3 text-sm">
+                        <div>
+                            <span class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider font-medium">Subnet</span>
+                            <p class="text-emerald-600 dark:text-emerald-400 tech-mono" x-text="viewingNetwork.subnet || 'N/A'"></p>
+                        </div>
+                        <div>
+                            <span class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider font-medium">Gateway</span>
+                            <p class="text-gray-700 dark:text-gray-300 tech-mono" x-text="viewingNetwork.gateway || 'N/A'"></p>
+                        </div>
+                        <template x-if="viewingNetwork.domain">
+                            <div>
+                                <span class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider font-medium">Domain</span>
+                                <p class="text-teal-600 dark:text-cyan-400" x-text="viewingNetwork.domain"></p>
+                            </div>
+                        </template>
+                        <div :class="viewingNetwork.domain ? '' : 'col-span-2'">
+                            <span class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider font-medium">DNS</span>
+                            <div class="flex flex-wrap gap-1 mt-0.5">
+                                <template x-for="ns in (viewingNetwork.dns_servers || [])" :key="ns">
+                                    <span class="text-sm tech-mono px-2 py-0.5 rounded bg-gray-100 dark:bg-[#1a1a1a] text-gray-700 dark:text-gray-300" x-text="ns"></span>
+                                </template>
+                                <template x-if="!viewingNetwork.dns_servers || viewingNetwork.dns_servers.length === 0">
+                                    <span class="text-sm text-gray-400 dark:text-gray-500 italic">None</span>
+                                </template>
+                            </div>
+                        </div>
+                        <template x-if="viewingNetwork.pool_start && viewingNetwork.pool_end">
+                            <div class="col-span-2">
+                                <span class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider font-medium">DHCP Pool</span>
+                                <p class="tech-mono text-gray-700 dark:text-gray-300" x-text="viewingNetwork.pool_start + ' — ' + viewingNetwork.pool_end"></p>
+                            </div>
+                        </template>
+                        <template x-if="viewingNetwork.description">
+                            <div class="col-span-2">
+                                <span class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider font-medium">Description</span>
+                                <p class="text-gray-600 dark:text-gray-400 italic" x-text="viewingNetwork.description"></p>
+                            </div>
+                        </template>
+                    </div>
+
+                    {# Active Leases — only for Full DHCP target #}
+                    <template x-if="isFullDhcpTarget(viewingNetwork)">
+                        <div>
+                            <div class="flex items-center justify-between mb-2">
+                                <h3 class="text-sm font-semibold text-gray-900 dark:text-white uppercase tracking-wider">Active Leases</h3>
+                                <button @click="fetchLeases()" class="text-xs text-purple-500 hover:text-purple-600 dark:text-purple-400">
+                                    <i class="fas fa-sync-alt mr-1"></i>Refresh
+                                </button>
+                            </div>
+                            <template x-if="leases.length === 0">
+                                <p class="text-sm text-gray-400 dark:text-gray-500 italic py-2">No active leases</p>
+                            </template>
+                            <template x-if="leases.length > 0">
+                                <div class="rounded-lg border border-gray-200 dark:border-[#1a1a1a] overflow-hidden">
+                                    <table class="w-full text-sm">
+                                        <thead class="bg-gray-50 dark:bg-[#0a0a0a]">
+                                            <tr>
+                                                <th class="text-left px-3 py-2 text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">MAC</th>
+                                                <th class="text-left px-3 py-2 text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">IP</th>
+                                                <th class="text-left px-3 py-2 text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">Remaining</th>
+                                                <th class="px-3 py-2"></th>
+                                            </tr>
+                                        </thead>
+                                        <tbody class="divide-y divide-gray-100 dark:divide-[#1a1a1a]">
+                                            <template x-for="lease in leases" :key="lease.mac">
+                                                <tr class="hover:bg-gray-50 dark:hover:bg-[#0d0d0d]">
+                                                    <td class="px-3 py-2 tech-mono text-gray-900 dark:text-gray-100" x-text="lease.mac"></td>
+                                                    <td class="px-3 py-2 tech-mono text-emerald-600 dark:text-emerald-400" x-text="lease.ip"></td>
+                                                    <td class="px-3 py-2 text-gray-500 dark:text-gray-400" x-text="formatSeconds(lease.remaining_secs)"></td>
+                                                    <td class="px-3 py-2 text-right">
+                                                        {% if is_authenticated %}
+                                                        <button @click="terminateLease(lease.mac)"
+                                                            class="text-xs text-red-500 hover:text-red-700 dark:text-red-400 dark:hover:text-red-300">
+                                                            Terminate
+                                                        </button>
+                                                        {% endif %}
+                                                    </td>
+                                                </tr>
+                                            </template>
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </template>
+                        </div>
+                    </template>
+
+                    {# Static Reservations #}
+                    <template x-if="isFullDhcpTarget(viewingNetwork)">
+                        <div>
+                            <div class="flex items-center justify-between mb-2">
+                                <h3 class="text-sm font-semibold text-gray-900 dark:text-white uppercase tracking-wider">Static Reservations</h3>
+                                {% if is_authenticated %}
+                                <button @click="showAddReservation = true" class="text-xs text-purple-500 hover:text-purple-600 dark:text-purple-400">
+                                    <i class="fas fa-plus mr-1"></i>Add
+                                </button>
+                                {% endif %}
+                            </div>
+
+                            {# Add reservation inline form #}
+                            <template x-if="showAddReservation">
+                                <div class="mb-3 p-3 rounded-lg border border-purple-200 dark:border-purple-800 bg-purple-50/50 dark:bg-purple-900/10 space-y-2">
+                                    <div class="grid grid-cols-2 gap-2">
+                                        <input type="text" x-model="newReservation.mac" placeholder="00:11:22:33:44:55"
+                                            class="text-sm tech-mono rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-[#1a1a1a] text-gray-900 dark:text-gray-100 px-2 py-1.5 focus:ring-2 focus:ring-purple-500 focus:border-transparent">
+                                        <input type="text" x-model="newReservation.ip" placeholder="10.0.0.50"
+                                            class="text-sm tech-mono rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-[#1a1a1a] text-gray-900 dark:text-gray-100 px-2 py-1.5 focus:ring-2 focus:ring-purple-500 focus:border-transparent">
+                                    </div>
+                                    <input type="text" x-model="newReservation.hostname" placeholder="Hostname (optional)"
+                                        class="w-full text-sm rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-[#1a1a1a] text-gray-900 dark:text-gray-100 px-2 py-1.5 focus:ring-2 focus:ring-purple-500 focus:border-transparent">
+                                    <div class="flex justify-end gap-2">
+                                        <button @click="showAddReservation = false; newReservation = {mac:'',ip:'',hostname:''}"
+                                            class="text-xs text-gray-500 hover:text-gray-700 dark:text-gray-400 px-2 py-1">Cancel</button>
+                                        <button @click="addReservation()"
+                                            class="text-xs bg-purple-600 hover:bg-purple-700 text-white px-3 py-1 rounded-md">Add</button>
+                                    </div>
+                                </div>
+                            </template>
+
+                            <template x-if="viewingNetwork.reservations && viewingNetwork.reservations.length > 0">
+                                <div class="rounded-lg border border-gray-200 dark:border-[#1a1a1a] overflow-hidden">
+                                    <table class="w-full text-sm">
+                                        <thead class="bg-gray-50 dark:bg-[#0a0a0a]">
+                                            <tr>
+                                                <th class="text-left px-3 py-2 text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">MAC</th>
+                                                <th class="text-left px-3 py-2 text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">IP</th>
+                                                <th class="text-left px-3 py-2 text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">Host</th>
+                                                <th class="px-3 py-2"></th>
+                                            </tr>
+                                        </thead>
+                                        <tbody class="divide-y divide-gray-100 dark:divide-[#1a1a1a]">
+                                            <template x-for="(res, idx) in viewingNetwork.reservations" :key="res.mac">
+                                                <tr class="hover:bg-gray-50 dark:hover:bg-[#0d0d0d]">
+                                                    <td class="px-3 py-2 tech-mono text-gray-900 dark:text-gray-100" x-text="res.mac"></td>
+                                                    <td class="px-3 py-2 tech-mono text-emerald-600 dark:text-emerald-400" x-text="res.ip"></td>
+                                                    <td class="px-3 py-2 text-gray-500 dark:text-gray-400" x-text="res.hostname || '—'"></td>
+                                                    <td class="px-3 py-2 text-right">
+                                                        {% if is_authenticated %}
+                                                        <button @click="removeReservation(idx)"
+                                                            class="text-xs text-red-500 hover:text-red-700 dark:text-red-400 dark:hover:text-red-300">
+                                                            Remove
+                                                        </button>
+                                                        {% endif %}
+                                                    </td>
+                                                </tr>
+                                            </template>
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </template>
+                            <template x-if="!viewingNetwork.reservations || viewingNetwork.reservations.length === 0">
+                                <p class="text-sm text-gray-400 dark:text-gray-500 italic py-2" x-show="!showAddReservation">No static reservations</p>
+                            </template>
+                        </div>
+                    </template>
+                </div>
+            </template>
         </div>
     </div>
 
@@ -241,10 +452,16 @@ function networksData() {
         loading: true,
         showCreateModal: false,
         editingNetwork: null,
+        viewingNetwork: null,
         deleteTarget: null,
         showDiscardConfirm: false,
         saving: false,
         formError: '',
+        fullDhcpTargetId: '{{ dhcp_full_network_id|default("") }}',
+        dhcpMode: '{{ dhcp_mode|default("flexible") }}',
+        leases: [],
+        showAddReservation: false,
+        newReservation: { mac: '', ip: '', hostname: '' },
         form: {
             name: '',
             vlan_id: null,
@@ -255,10 +472,18 @@ function networksData() {
             is_native: false,
             dhcp_enabled: true,
             description: '',
+            pool_start: '',
+            pool_end: '',
         },
 
         init() {
             this.fetchNetworks();
+        },
+
+        isFullDhcpTarget(net) {
+            if (this.dhcpMode !== 'full') return false;
+            if (this.fullDhcpTargetId) return net.id === this.fullDhcpTargetId;
+            return net.is_native;
         },
 
         fetchNetworks() {
@@ -268,6 +493,11 @@ function networksData() {
                 .then(data => {
                     this.networks = data;
                     this.loading = false;
+                    // Refresh viewingNetwork if open
+                    if (this.viewingNetwork) {
+                        const updated = data.find(n => n.id === this.viewingNetwork.id);
+                        if (updated) this.viewingNetwork = updated;
+                    }
                 })
                 .catch(err => {
                     console.error('Failed to load networks:', err);
@@ -279,7 +509,7 @@ function networksData() {
             this.form = {
                 name: '', vlan_id: null, subnet: '', gateway: '',
                 dns_servers_str: '', domain: '', is_native: false,
-                dhcp_enabled: true, description: '',
+                dhcp_enabled: true, description: '', pool_start: '', pool_end: '',
             };
             this.formError = '';
         },
@@ -296,8 +526,97 @@ function networksData() {
                 is_native: net.is_native || false,
                 dhcp_enabled: net.dhcp_enabled !== false,
                 description: net.description || '',
+                pool_start: net.pool_start || '',
+                pool_end: net.pool_end || '',
             };
             this.formError = '';
+        },
+
+        viewNetwork(net) {
+            this.viewingNetwork = net;
+            if (this.isFullDhcpTarget(net)) {
+                this.fetchLeases();
+            }
+        },
+
+        async fetchLeases() {
+            try {
+                const resp = await fetch('/api/dhcp/leases', { credentials: 'include' });
+                if (resp.ok) {
+                    this.leases = await resp.json();
+                }
+            } catch (e) {
+                console.error('Failed to fetch leases', e);
+            }
+        },
+
+        async terminateLease(mac) {
+            try {
+                const resp = await fetch(`/api/dhcp/leases/${encodeURIComponent(mac)}`, {
+                    method: 'DELETE',
+                    credentials: 'include',
+                });
+                if (resp.ok) {
+                    if (window.showToast) window.showToast('Lease terminated', 'success');
+                    await this.fetchLeases();
+                } else {
+                    if (window.showToast) window.showToast('Failed to terminate lease', 'error');
+                }
+            } catch (e) {
+                if (window.showToast) window.showToast('Failed to terminate lease', 'error');
+            }
+        },
+
+        formatSeconds(secs) {
+            if (secs >= 3600) return Math.floor(secs / 3600) + 'h ' + Math.floor((secs % 3600) / 60) + 'm';
+            if (secs >= 60) return Math.floor(secs / 60) + 'm ' + (secs % 60) + 's';
+            return secs + 's';
+        },
+
+        async addReservation() {
+            if (!this.newReservation.mac || !this.newReservation.ip) return;
+            const net = this.viewingNetwork;
+            const reservations = [...(net.reservations || []), {
+                mac: this.newReservation.mac,
+                ip: this.newReservation.ip,
+                hostname: this.newReservation.hostname || null,
+            }];
+            try {
+                const resp = await fetch(`/api/networks/${net.id}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'include',
+                    body: JSON.stringify({ ...net, reservations }),
+                });
+                if (resp.ok) {
+                    this.showAddReservation = false;
+                    this.newReservation = { mac: '', ip: '', hostname: '' };
+                    this.fetchNetworks();
+                    if (window.showToast) window.showToast('Reservation added', 'success');
+                }
+            } catch (e) {
+                if (window.showToast) window.showToast('Failed to add reservation', 'error');
+            }
+        },
+
+        async removeReservation(idx) {
+            const net = this.viewingNetwork;
+            const reservations = [...(net.reservations || [])];
+            reservations.splice(idx, 1);
+            try {
+                const resp = await fetch(`/api/networks/${net.id}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'include',
+                    body: JSON.stringify({ ...net, reservations }),
+                });
+                if (resp.ok) {
+                    this.fetchNetworks();
+                    if (window.showToast) window.showToast('Reservation removed', 'success');
+                }
+            } catch (e) {
+                if (window.showToast) window.showToast('Failed to remove reservation', 'error');
+            }
         },
 
         closeModal() {
@@ -320,7 +639,9 @@ function networksData() {
                     this.form.domain !== (net.domain || '') ||
                     this.form.is_native !== (net.is_native || false) ||
                     this.form.dhcp_enabled !== (net.dhcp_enabled !== false) ||
-                    this.form.description !== (net.description || '');
+                    this.form.description !== (net.description || '') ||
+                    this.form.pool_start !== (net.pool_start || '') ||
+                    this.form.pool_end !== (net.pool_end || '');
             }
             return false;
         },
@@ -355,6 +676,8 @@ function networksData() {
                 is_native: this.form.is_native,
                 dhcp_enabled: this.form.dhcp_enabled,
                 description: this.form.description || null,
+                pool_start: this.form.pool_start || null,
+                pool_end: this.form.pool_end || null,
             };
 
             const url = this.editingNetwork ? `/api/networks/${this.editingNetwork.id}` : '/api/networks';

@@ -71,6 +71,12 @@ pub struct DhcpConfig {
 
     /// Enable UEFI support
     pub uefi_support: bool,
+
+    /// Pool range start (for Full/Reservation mode with dynamic allocation)
+    pub pool_range_start: Option<Ipv4Addr>,
+
+    /// Pool range end (inclusive)
+    pub pool_range_end: Option<Ipv4Addr>,
 }
 
 impl Default for DhcpConfig {
@@ -89,6 +95,8 @@ impl Default for DhcpConfig {
             ipxe_script_url: None,
             http_port: 8080,
             uefi_support: true,
+            pool_range_start: None,
+            pool_range_end: None,
         }
     }
 }
@@ -170,6 +178,13 @@ impl DhcpConfig {
     /// Enable or disable UEFI support
     pub fn with_uefi_support(mut self, enabled: bool) -> Self {
         self.uefi_support = enabled;
+        self
+    }
+
+    /// Set the IP pool range for dynamic allocation in Reservation/Full mode
+    pub fn with_pool_range(mut self, start: Ipv4Addr, end: Ipv4Addr) -> Self {
+        self.pool_range_start = Some(start);
+        self.pool_range_end = Some(end);
         self
     }
 

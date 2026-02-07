@@ -19,7 +19,7 @@ use crate::auth::{AdminBackend, Settings, auth_router};
 // Legacy db module removed — all storage via Store trait
 use crate::event_manager::EventManager;
 use crate::services::{DhcpServiceConfig, ServiceRunner, ServicesConfig, TftpServiceConfig};
-use dragonfly_dhcp::DhcpMode;
+use dragonfly_dhcp::{DhcpMode, LeaseTable};
 use std::path::PathBuf;
 
 // Add MiniJinja imports
@@ -261,6 +261,128 @@ pub struct AppState {
     pub network_services_started: Arc<AtomicBool>,
     // Image cache for JIT QCOW2 conversion
     pub image_cache: Arc<image_cache::ImageCache>,
+    // Shutdown sender for network services (allows independent restart)
+    pub services_shutdown_tx: Arc<Mutex<Option<watch::Sender<bool>>>>,
+    // Shared DHCP lease table — survives service restarts, queryable from API
+    pub dhcp_lease_table: Arc<tokio::sync::RwLock<LeaseTable>>,
+}
+
+/// Map settings store dhcp_mode string to DhcpMode enum
+fn dhcp_mode_from_setting(mode_str: &str) -> DhcpMode {
+    match mode_str {
+        "selective" => DhcpMode::Proxy,
+        "flexible" => DhcpMode::AutoProxy,
+        "full" => DhcpMode::Reservation,
+        _ => DhcpMode::AutoProxy, // default
+    }
+}
+
+/// Map DhcpMode enum to settings store string
+pub fn dhcp_mode_to_setting(mode: DhcpMode) -> &'static str {
+    match mode {
+        DhcpMode::Proxy => "selective",
+        DhcpMode::AutoProxy => "flexible",
+        DhcpMode::Reservation => "full",
+    }
+}
+
+/// Build DhcpServiceConfig from settings store and Network entity
+async fn build_dhcp_config_from_store(store: &Arc<dyn store::v1::Store>) -> DhcpServiceConfig {
+    let mode_str = store
+        .get_setting("dhcp_mode")
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| "flexible".to_string());
+
+    let mode = dhcp_mode_from_setting(&mode_str);
+
+    // For Full mode, derive pool/gateway/subnet/dns from the target Network entity
+    let (pool_range_start, pool_range_end, subnet_mask, gateway, dns_servers) =
+        if mode == DhcpMode::Reservation {
+            match find_full_dhcp_network(store).await {
+                Some(net) => {
+                    let pool_start = net
+                        .pool_start
+                        .as_deref()
+                        .and_then(|s| s.parse::<std::net::Ipv4Addr>().ok());
+                    let pool_end = net
+                        .pool_end
+                        .as_deref()
+                        .and_then(|s| s.parse::<std::net::Ipv4Addr>().ok());
+                    let mask = cidr_to_subnet_mask(&net.subnet);
+                    let gw = net
+                        .gateway
+                        .as_deref()
+                        .and_then(|s| s.parse::<std::net::Ipv4Addr>().ok());
+                    let dns: Vec<std::net::Ipv4Addr> = net
+                        .dns_servers
+                        .iter()
+                        .filter_map(|s| s.parse().ok())
+                        .collect();
+                    (pool_start, pool_end, mask, gw, dns)
+                }
+                None => {
+                    warn!("Full DHCP mode configured but no target network found");
+                    (None, None, None, None, Vec::new())
+                }
+            }
+        } else {
+            (None, None, None, None, Vec::new())
+        };
+
+    DhcpServiceConfig {
+        mode,
+        boot_filename_bios: "undionly.kpxe".to_string(),
+        boot_filename_uefi: "ipxe.efi".to_string(),
+        http_boot_url: None,
+        pool_range_start,
+        pool_range_end,
+        subnet_mask,
+        gateway,
+        dns_servers,
+    }
+}
+
+/// Find the network designated for Full DHCP mode.
+/// Priority: dhcp_full_network_id setting → native network → first network
+async fn find_full_dhcp_network(
+    store: &Arc<dyn store::v1::Store>,
+) -> Option<dragonfly_common::Network> {
+    // Check explicit setting first
+    if let Some(id_str) = store
+        .get_setting("dhcp_full_network_id")
+        .await
+        .ok()
+        .flatten()
+    {
+        if let Ok(id) = id_str.parse::<uuid::Uuid>() {
+            if let Ok(Some(net)) = store.get_network(id).await {
+                return Some(net);
+            }
+        }
+    }
+
+    // Fallback: find native network
+    if let Ok(networks) = store.list_networks().await {
+        networks.into_iter().find(|n| n.is_native)
+    } else {
+        None
+    }
+}
+
+/// Convert CIDR subnet string "10.0.0.0/24" to subnet mask Ipv4Addr
+fn cidr_to_subnet_mask(subnet: &str) -> Option<std::net::Ipv4Addr> {
+    let prefix_len: u8 = subnet.split('/').nth(1)?.parse().ok()?;
+    if prefix_len > 32 {
+        return None;
+    }
+    let mask = if prefix_len == 0 {
+        0u32
+    } else {
+        !0u32 << (32 - prefix_len)
+    };
+    Some(std::net::Ipv4Addr::from(mask))
 }
 
 /// Start network services (DHCP/TFTP) for Flight mode
@@ -274,27 +396,36 @@ pub async fn start_network_services(app_state: &AppState, shutdown_rx: watch::Re
         return;
     }
 
+    // Build DHCP config from settings store
+    let dhcp_config = build_dhcp_config_from_store(&app_state.store).await;
+    let mode_label = dhcp_mode_to_setting(dhcp_config.mode);
+
     // Create services configuration
     let services_config = ServicesConfig {
-        dhcp: Some(DhcpServiceConfig {
-            mode: DhcpMode::AutoProxy, // Auto-discovery of unknown machines
-            boot_filename_bios: "undionly.kpxe".to_string(),
-            boot_filename_uefi: "ipxe.efi".to_string(),
-            http_boot_url: None,
-        }),
+        dhcp: Some(dhcp_config),
         tftp: Some(TftpServiceConfig {
             boot_dir: PathBuf::from("/var/lib/dragonfly/tftp"),
         }),
         server_ip: std::net::Ipv4Addr::new(0, 0, 0, 0), // Bind to all interfaces
-        http_port: read_port_from_config(),             // Use same port as HTTP server
+        http_port: read_port_from_config(),               // Use same port as HTTP server
     };
 
-    // Create service runner with native store for hardware lookup
-    let service_runner = ServiceRunner::new(services_config, app_state.store.clone());
+    // Create service runner with native store for hardware lookup and shared lease table
+    let service_runner = ServiceRunner::with_lease_table(
+        services_config,
+        app_state.store.clone(),
+        app_state.dhcp_lease_table.clone(),
+    );
 
     // Create a bool-based shutdown channel for the services
     // (ServiceRunner expects watch::Receiver<bool>)
     let (services_shutdown_tx, services_shutdown_rx) = watch::channel(false);
+
+    // Store the shutdown sender so we can restart services later
+    {
+        let mut tx_guard = app_state.services_shutdown_tx.lock().await;
+        *tx_guard = Some(services_shutdown_tx.clone());
+    }
 
     // Forward the main shutdown signal to the services shutdown channel
     let mut main_shutdown_rx = shutdown_rx;
@@ -304,11 +435,12 @@ pub async fn start_network_services(app_state: &AppState, shutdown_rx: watch::Re
     });
 
     // Start services in a background task
+    let mode_label_owned = mode_label.to_string();
     tokio::spawn(async move {
         match service_runner.start(services_shutdown_rx).await {
             Ok(handles) => {
                 if handles.dhcp.is_some() {
-                    println!("  DHCP: 0.0.0.0:67 (AutoProxy)");
+                    println!("  DHCP: 0.0.0.0:67 ({})", mode_label_owned);
                 }
                 if handles.tftp.is_some() {
                     println!("  TFTP: 0.0.0.0:69");
@@ -319,6 +451,28 @@ pub async fn start_network_services(app_state: &AppState, shutdown_rx: watch::Re
             }
         }
     });
+}
+
+/// Restart network services with updated configuration from settings store
+pub async fn restart_network_services(app_state: &AppState) {
+    info!("Restarting network services with updated DHCP configuration");
+
+    // Signal existing services to stop
+    {
+        let mut tx_guard = app_state.services_shutdown_tx.lock().await;
+        if let Some(tx) = tx_guard.take() {
+            let _ = tx.send(true);
+        }
+    }
+
+    // Reset the started flag so start_network_services will proceed
+    app_state
+        .network_services_started
+        .store(false, Ordering::SeqCst);
+
+    // Start with fresh configuration
+    let shutdown_rx = app_state.shutdown_rx.clone();
+    start_network_services(app_state, shutdown_rx).await;
 }
 
 pub async fn run() -> anyhow::Result<()> {
@@ -645,6 +799,10 @@ pub async fn run() -> anyhow::Result<()> {
         network_services_started: Arc::new(AtomicBool::new(false)),
         // Image cache for JIT QCOW2 conversion
         image_cache: image_cache.clone(),
+        // Services shutdown sender for independent restart
+        services_shutdown_tx: Arc::new(Mutex::new(None)),
+        // Shared DHCP lease table
+        dhcp_lease_table: Arc::new(tokio::sync::RwLock::new(LeaseTable::new())),
     };
 
     // Load Proxmox API tokens from database to memory

@@ -421,6 +421,41 @@
                             <h3 class="text-base font-semibold text-black dark:text-white mb-4">Provisioning</h3>
 
                             <div class="space-y-6">
+                                <!-- Full Mode Network Picker (shown only when Full selected) -->
+                                <div x-data="dhcpFullConfig()" x-show="showFull" x-cloak
+                                     @dhcp-mode-changed.window="showFull = ($event.detail === 'full')"
+                                   class="rounded-lg border border-orange-300 dark:border-orange-700 bg-orange-50/50 dark:bg-orange-900/10 p-4 space-y-3">
+                                    <div class="flex items-start gap-2">
+                                        <i class="fas fa-exclamation-triangle text-orange-500 mt-0.5"></i>
+                                        <p class="text-xs text-orange-700 dark:text-orange-300">In Full mode, Dragonfly acts as the sole DHCP server on the network. Make sure no other DHCP server is running.</p>
+                                    </div>
+
+                                    <div>
+                                        <label class="block text-xs font-medium text-black dark:text-white mb-1">DHCP Network</label>
+                                        <select x-model="selectedNetworkId" @change="selectNetwork()"
+                                                class="w-full rounded-lg border border-purple-300 dark:border-purple-700 bg-transparent text-black dark:text-white text-sm px-3 py-1.5 focus:border-purple-500 focus:ring-1 focus:ring-purple-500 focus:outline-none">
+                                            <template x-for="net in networks" :key="net.id">
+                                                <option :value="net.id" x-text="net.name + (net.subnet ? ' (' + net.subnet + ')' : '')" :selected="net.id === selectedNetworkId"></option>
+                                            </template>
+                                        </select>
+                                    </div>
+
+                                    <!-- Summary of selected network -->
+                                    <template x-if="selectedNet">
+                                        <div class="text-xs text-black/70 dark:text-white/70 space-y-1 pl-1">
+                                            <div x-show="selectedNet.subnet"><span class="font-medium">Subnet:</span> <span x-text="selectedNet.subnet" class="font-mono"></span></div>
+                                            <div x-show="selectedNet.gateway"><span class="font-medium">Gateway:</span> <span x-text="selectedNet.gateway" class="font-mono"></span></div>
+                                            <div x-show="selectedNet.dns_servers && selectedNet.dns_servers.length"><span class="font-medium">DNS:</span> <span x-text="selectedNet.dns_servers.join(', ')" class="font-mono"></span></div>
+                                            <div x-show="selectedNet.pool_start && selectedNet.pool_end">
+                                                <span class="font-medium">Pool:</span> <span x-text="selectedNet.pool_start + ' — ' + selectedNet.pool_end" class="font-mono"></span>
+                                            </div>
+                                            <div x-show="!selectedNet.pool_start || !selectedNet.pool_end" class="text-amber-600 dark:text-amber-400">
+                                                <i class="fas fa-info-circle mr-1"></i>No pool range set — edit this network to configure Pool Start/End.
+                                            </div>
+                                        </div>
+                                    </template>
+                                </div>
+
                                 <!-- Default OS and Default User row -->
                                 <div class="flex gap-6 items-start">
                                     <!-- Default OS -->
@@ -561,6 +596,74 @@
                                         </div>
                                         <p x-show="value === ''" class="mt-1.5 text-xs text-green-600 dark:text-green-400">Password login disabled.</p>
                                         <p x-show="value !== ''" x-cloak class="mt-1.5 text-xs text-amber-600 dark:text-amber-400">Password login enabled. SSH keys recommended.</p>
+                                    </div>
+
+                                    <!-- DHCP Mode -->
+                                    <div x-data="{
+                                        open: false,
+                                        selected: '{{ dhcp_mode|default('flexible') }}',
+                                        options: [
+                                            { value: 'selective', label: 'Selective', desc: 'Only reply to registered MACs', icon: 'fas fa-filter text-blue-500' },
+                                            { value: 'flexible', label: 'Flexible', desc: 'Coexist with existing DHCP server', icon: 'fas fa-handshake text-green-500' },
+                                            { value: 'full', label: 'Full', desc: 'Dragonfly provides full DHCP services', icon: 'fas fa-server text-orange-500' }
+                                        ],
+                                        init() {
+                                            window._dhcpMode = this.selected;
+                                        },
+                                        get selectedOption() {
+                                            return this.options.find(o => o.value === this.selected) || this.options[1];
+                                        },
+                                        async selectMode(value) {
+                                            this.selected = value;
+                                            window._dhcpMode = value;
+                                            window.dispatchEvent(new CustomEvent('dhcp-mode-changed', { detail: value }));
+                                            this.open = false;
+                                            const params = new URLSearchParams();
+                                            params.append('dhcp_mode', value);
+                                            try {
+                                                const response = await fetch('/settings', {
+                                                    method: 'POST',
+                                                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                                                    body: params.toString(),
+                                                    credentials: 'include',
+                                                    redirect: 'manual'
+                                                });
+                                                if (response.type === 'opaqueredirect' || response.ok || response.status === 0) {
+                                                    showToast('DHCP mode updated — services restarting', 'success');
+                                                } else {
+                                                    showToast('Failed to save DHCP mode', 'error');
+                                                }
+                                            } catch (e) {
+                                                showToast('Failed to save DHCP mode', 'error');
+                                            }
+                                        }
+                                    }" @click.away="open = false" class="relative flex-1 max-w-xs">
+                                        <label class="block text-sm font-medium text-black dark:text-white mb-1.5">DHCP Mode</label>
+                                        <button type="button" @click="open = !open"
+                                                class="w-full rounded-lg border border-purple-300 dark:border-purple-700 bg-transparent text-black dark:text-white text-sm px-3 py-2 focus:border-purple-500 focus:ring-1 focus:ring-purple-500 focus:outline-none flex items-center justify-between">
+                                            <span class="flex items-center gap-2">
+                                                <i class="w-4 flex-shrink-0 text-center" :class="selectedOption.icon"></i>
+                                                <span x-text="selectedOption.label"></span>
+                                            </span>
+                                            <svg class="w-4 h-4 ml-2" :class="{ 'rotate-180': open }" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+                                            </svg>
+                                        </button>
+                                        <div x-show="open" x-cloak x-transition
+                                             class="absolute z-50 mt-1 w-72 rounded-lg border border-purple-300 dark:border-purple-700 bg-white dark:bg-gray-900 shadow-lg">
+                                            <template x-for="option in options" :key="option.value">
+                                                <a href="#" @click.prevent="selectMode(option.value)"
+                                                   class="block px-3 py-2 text-sm text-black dark:text-white hover:bg-purple-100 dark:hover:bg-purple-900/30 first:rounded-t-lg last:rounded-b-lg"
+                                                   :class="{ 'bg-purple-50 dark:bg-purple-900/20': selected === option.value }">
+                                                    <div class="flex items-center gap-2">
+                                                        <i class="w-4 flex-shrink-0 text-center" :class="option.icon"></i>
+                                                        <span class="font-medium" x-text="option.label"></span>
+                                                    </div>
+                                                    <p class="ml-6 text-xs text-black/60 dark:text-white/60" x-text="option.desc"></p>
+                                                </a>
+                                            </template>
+                                        </div>
+                                        <p class="mt-1.5 text-xs text-black/70 dark:text-white/70" x-text="selectedOption.desc"></p>
                                     </div>
                                 </div>
 
@@ -1929,6 +2032,60 @@
                     }
                 } catch (e) {
                     showToast('Failed to update password', 'error');
+                }
+            }
+        };
+    }
+
+    function dhcpFullConfig() {
+        return {
+            networks: [],
+            selectedNetworkId: '{{ dhcp_full_network_id|default("") }}',
+            showFull: '{{ dhcp_mode|default("flexible") }}' === 'full',
+
+            get selectedNet() {
+                return this.networks.find(n => n.id === this.selectedNetworkId) || null;
+            },
+
+            async init() {
+                await this.fetchNetworks();
+            },
+
+            async fetchNetworks() {
+                try {
+                    const resp = await fetch('/api/networks', { credentials: 'include' });
+                    if (resp.ok) {
+                        this.networks = await resp.json();
+                        // If no network selected yet, default to native/first
+                        if (!this.selectedNetworkId && this.networks.length > 0) {
+                            const native = this.networks.find(n => n.is_native);
+                            this.selectedNetworkId = native ? native.id : this.networks[0].id;
+                            await this.selectNetwork();
+                        }
+                    }
+                } catch (e) {
+                    console.error('Failed to fetch networks', e);
+                }
+            },
+
+            async selectNetwork() {
+                const params = new URLSearchParams();
+                params.append('dhcp_full_network_id', this.selectedNetworkId);
+                try {
+                    const response = await fetch('/settings', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                        body: params.toString(),
+                        credentials: 'include',
+                        redirect: 'manual'
+                    });
+                    if (response.type === 'opaqueredirect' || response.ok || response.status === 0) {
+                        showToast('DHCP network updated — services restarting', 'success');
+                    } else {
+                        showToast('Failed to update DHCP network', 'error');
+                    }
+                } catch (e) {
+                    showToast('Failed to update DHCP network', 'error');
                 }
             }
         };

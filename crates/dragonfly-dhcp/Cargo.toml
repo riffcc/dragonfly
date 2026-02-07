@@ -11,6 +11,7 @@ dragonfly-common = { path = "../dragonfly-common" }
 tokio = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+serde = { workspace = true }
 async-trait = "0.1"
 
 # DHCP protocol

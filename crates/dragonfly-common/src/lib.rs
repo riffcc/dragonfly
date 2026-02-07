@@ -8,6 +8,6 @@ pub mod models;
 
 pub use error::Error;
 pub use machine::*;
-pub use network::Network;
+pub use network::{Network, StaticLease};
 
 pub type Result<T> = std::result::Result<T, Error>;

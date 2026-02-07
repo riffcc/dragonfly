@@ -11,7 +11,7 @@ use crate::store::v1::Store;
 use async_trait::async_trait;
 use bytes::Bytes;
 use dragonfly_common::Machine;
-use dragonfly_dhcp::{DhcpConfig, DhcpEvent, DhcpMode, DhcpServer, MachineLookup};
+use dragonfly_dhcp::{DhcpConfig, DhcpEvent, DhcpMode, DhcpServer, LeaseTable, MachineLookup};
 use dragonfly_tftp::{FileProvider, TftpEvent, TftpServer};
 use std::collections::HashMap;
 use std::net::Ipv4Addr;
@@ -55,6 +55,16 @@ pub struct DhcpServiceConfig {
     pub boot_filename_uefi: String,
     /// HTTP boot URL (for UEFI HTTP boot)
     pub http_boot_url: Option<String>,
+    /// Pool range start (for Full/Reservation mode)
+    pub pool_range_start: Option<Ipv4Addr>,
+    /// Pool range end (for Full/Reservation mode)
+    pub pool_range_end: Option<Ipv4Addr>,
+    /// Subnet mask override
+    pub subnet_mask: Option<Ipv4Addr>,
+    /// Gateway override
+    pub gateway: Option<Ipv4Addr>,
+    /// DNS servers
+    pub dns_servers: Vec<Ipv4Addr>,
 }
 
 impl Default for DhcpServiceConfig {
@@ -64,6 +74,11 @@ impl Default for DhcpServiceConfig {
             boot_filename_bios: "undionly.kpxe".to_string(),
             boot_filename_uefi: "ipxe.efi".to_string(),
             http_boot_url: None,
+            pool_range_start: None,
+            pool_range_end: None,
+            subnet_mask: None,
+            gateway: None,
+            dns_servers: Vec::new(),
         }
     }
 }
@@ -89,12 +104,30 @@ impl Default for TftpServiceConfig {
 pub struct ServiceRunner {
     config: ServicesConfig,
     store: Arc<dyn Store>,
+    lease_table: Option<Arc<tokio::sync::RwLock<LeaseTable>>>,
 }
 
 impl ServiceRunner {
     /// Create a new service runner
     pub fn new(config: ServicesConfig, store: Arc<dyn Store>) -> Self {
-        Self { config, store }
+        Self {
+            config,
+            store,
+            lease_table: None,
+        }
+    }
+
+    /// Create a service runner with a shared lease table
+    pub fn with_lease_table(
+        config: ServicesConfig,
+        store: Arc<dyn Store>,
+        lease_table: Arc<tokio::sync::RwLock<LeaseTable>>,
+    ) -> Self {
+        Self {
+            config,
+            store,
+            lease_table: Some(lease_table),
+        }
     }
 
     /// Start all configured services
@@ -146,15 +179,33 @@ impl ServiceRunner {
 
         info!(bind_ip = %self.config.server_ip, actual_ip = %actual_ip, "DHCP using detected server IP");
 
-        let dhcp_config = DhcpConfig::new(actual_ip)
+        let mut dhcp_config = DhcpConfig::new(actual_ip)
             .with_mode(config.mode.clone())
             .with_tftp_server(actual_ip)
             .with_http_port(self.config.http_port);
 
+        // Apply optional Full mode configuration
+        if let (Some(start), Some(end)) = (config.pool_range_start, config.pool_range_end) {
+            dhcp_config = dhcp_config.with_pool_range(start, end);
+        }
+        if let Some(mask) = config.subnet_mask {
+            dhcp_config = dhcp_config.with_subnet_mask(mask);
+        }
+        if let Some(gw) = config.gateway {
+            dhcp_config = dhcp_config.with_gateway(gw);
+        }
+        for dns in &config.dns_servers {
+            dhcp_config = dhcp_config.with_dns_server(*dns);
+        }
+
         // Create machine lookup wrapper
         let lookup = StoreMachineLookup::new(self.store.clone());
 
-        let server = Arc::new(DhcpServer::new(dhcp_config, Arc::new(lookup)));
+        let server = Arc::new(if let Some(ref lt) = self.lease_table {
+            DhcpServer::with_lease_table(dhcp_config, Arc::new(lookup), lt.clone())
+        } else {
+            DhcpServer::new(dhcp_config, Arc::new(lookup))
+        });
         let server_clone = server.clone();
 
         info!(

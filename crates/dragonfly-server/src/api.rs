@@ -162,6 +162,12 @@ pub fn api_router() -> Router<crate::AppState> {
                 .put(update_network_handler)
                 .delete(delete_network_handler),
         )
+        // --- DHCP Lease Routes ---
+        .route("/dhcp/leases", get(list_dhcp_leases_handler))
+        .route(
+            "/dhcp/leases/{mac}",
+            delete(terminate_dhcp_lease_handler),
+        )
         // --- Machine Apply Route ---
         .route("/machines/{id}/apply", post(apply_machine_config_handler))
         .route(
@@ -7774,6 +7780,13 @@ async fn update_network_handler(
     match state.store.put_network(&payload).await {
         Ok(()) => {
             let _ = state.event_manager.send("network_updated".to_string());
+
+            // If this network is the Full DHCP target, restart services so changes take effect
+            let is_full_target = is_full_dhcp_target_network(&state, id).await;
+            if is_full_target {
+                crate::restart_network_services(&state).await;
+            }
+
             Json(&payload).into_response()
         }
         Err(e) => {
@@ -7785,6 +7798,41 @@ async fn update_network_handler(
                 .into_response()
         }
     }
+}
+
+/// Check if a given network ID is the Full DHCP target
+async fn is_full_dhcp_target_network(state: &AppState, network_id: Uuid) -> bool {
+    // Check if we're in Full mode
+    let mode = state
+        .store
+        .get_setting("dhcp_mode")
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    if mode != "full" {
+        return false;
+    }
+
+    // Check explicit target
+    if let Some(target_id) = state
+        .store
+        .get_setting("dhcp_full_network_id")
+        .await
+        .ok()
+        .flatten()
+    {
+        if let Ok(id) = target_id.parse::<Uuid>() {
+            return id == network_id;
+        }
+    }
+
+    // Fallback: check if this is the native network
+    if let Ok(Some(net)) = state.store.get_network(network_id).await {
+        return net.is_native;
+    }
+
+    false
 }
 
 async fn delete_network_handler(
@@ -8063,5 +8111,53 @@ async fn revert_pending_handler(
             )
                 .into_response()
         }
+    }
+}
+
+// =============================================================================
+// DHCP Lease Management
+// =============================================================================
+
+/// GET /api/dhcp/leases — List all active DHCP leases
+async fn list_dhcp_leases_handler(
+    State(state): State<AppState>,
+    auth_session: AuthSession,
+) -> Response {
+    if auth_session.user.is_none() {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": "Not authenticated"})),
+        )
+            .into_response();
+    }
+
+    let table = state.dhcp_lease_table.read().await;
+    let leases = table.active_leases();
+    Json(leases).into_response()
+}
+
+/// DELETE /api/dhcp/leases/{mac} — Terminate a specific DHCP lease
+async fn terminate_dhcp_lease_handler(
+    State(state): State<AppState>,
+    auth_session: AuthSession,
+    Path(mac): Path<String>,
+) -> Response {
+    if auth_session.user.is_none() {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": "Not authenticated"})),
+        )
+            .into_response();
+    }
+
+    let mut table = state.dhcp_lease_table.write().await;
+    if table.remove_lease(&mac) {
+        Json(json!({"success": true})).into_response()
+    } else {
+        (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "Lease not found"})),
+        )
+            .into_response()
     }
 }

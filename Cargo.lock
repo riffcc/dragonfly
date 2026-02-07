@@ -1683,7 +1683,7 @@ checksum = "1aaf95b3e5c8f23aa320147307562d361db0ae0d51242340f558153b4eb2439b"
 
 [[package]]
 name = "dragonfly"
-version = "0.2.3"
+version = "0.3.0-alpha0"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -1825,6 +1825,7 @@ dependencies = [
  "async-trait",
  "dhcproto",
  "dragonfly-common",
+ "serde",
  "socket2 0.5.10",
  "thiserror 1.0.69",
  "tokio",
