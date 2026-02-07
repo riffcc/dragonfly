@@ -3583,8 +3583,66 @@ pub async fn get_template_handler(
                 sub.get("value").and_then(|v| v.as_str()),
             ) {
                 match sub_type {
-                    "github" => import_ids.push(format!("gh:{}", value)),
-                    "gitlab" => import_ids.push(format!("gl:{}", value)),
+                    "github" => {
+                        import_ids.push(format!("gh:{}", value));
+                        // Also fetch actual keys — ssh-import-id only exists on Debian/Ubuntu
+                        let keys_url = format!("https://github.com/{}.keys", value);
+                        let client = reqwest::Client::builder()
+                            .timeout(std::time::Duration::from_secs(10))
+                            .build()
+                            .unwrap_or_default();
+                        match client.get(&keys_url).send().await {
+                            Ok(response) if response.status().is_success() => {
+                                if let Ok(keys_text) = response.text().await {
+                                    let mut count = 0u32;
+                                    for line in keys_text.lines() {
+                                        let key = line.trim();
+                                        if !key.is_empty() && !key.starts_with('#') {
+                                            url_subscription_keys.push(key.to_string());
+                                            count += 1;
+                                        }
+                                    }
+                                    info!(github_user = %value, keys_count = count, "Fetched SSH keys from GitHub");
+                                }
+                            }
+                            Ok(response) => {
+                                warn!(github_user = %value, status = %response.status(), "Failed to fetch GitHub keys (ssh-import-id fallback will be used)");
+                            }
+                            Err(e) => {
+                                warn!(github_user = %value, error = %e, "Failed to fetch GitHub keys (ssh-import-id fallback will be used)");
+                            }
+                        }
+                    }
+                    "gitlab" => {
+                        import_ids.push(format!("gl:{}", value));
+                        // Also fetch actual keys — ssh-import-id only exists on Debian/Ubuntu
+                        let keys_url = format!("https://gitlab.com/{}.keys", value);
+                        let client = reqwest::Client::builder()
+                            .timeout(std::time::Duration::from_secs(10))
+                            .build()
+                            .unwrap_or_default();
+                        match client.get(&keys_url).send().await {
+                            Ok(response) if response.status().is_success() => {
+                                if let Ok(keys_text) = response.text().await {
+                                    let mut count = 0u32;
+                                    for line in keys_text.lines() {
+                                        let key = line.trim();
+                                        if !key.is_empty() && !key.starts_with('#') {
+                                            url_subscription_keys.push(key.to_string());
+                                            count += 1;
+                                        }
+                                    }
+                                    info!(gitlab_user = %value, keys_count = count, "Fetched SSH keys from GitLab");
+                                }
+                            }
+                            Ok(response) => {
+                                warn!(gitlab_user = %value, status = %response.status(), "Failed to fetch GitLab keys (ssh-import-id fallback will be used)");
+                            }
+                            Err(e) => {
+                                warn!(gitlab_user = %value, error = %e, "Failed to fetch GitLab keys (ssh-import-id fallback will be used)");
+                            }
+                        }
+                    }
                     "url" => {
                         // Fetch keys from URL subscription at provisioning time
                         let url = sub.get("url").and_then(|u| u.as_str()).unwrap_or(value);
