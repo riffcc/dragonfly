@@ -11,11 +11,9 @@ RUN apt-get update && apt-get install -y \
     curl \
     clang \
     libclang-dev \
+    nodejs \
+    npm \
     && rm -rf /var/lib/apt/lists/*
-
-# Install Node.JS 23.x via NodeSource
-RUN bash -c 'curl -fsSL https://deb.nodesource.com/setup_23.x | bash -' && \
-    apt-get install -y nodejs
 
 # Copy source (build context is repo root, cargo fetches jetpack via git)
 COPY . /workspace/dragonfly/
