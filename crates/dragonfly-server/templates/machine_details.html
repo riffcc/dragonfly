@@ -214,7 +214,7 @@
         </div>
         <div class="flex flex-col gap-1">
             <span class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider font-medium">Uptime</span>
-            <span class="text-sm text-gray-900 dark:text-gray-200" x-text="machine.uptime || 'Unknown'"></span>
+            <span class="text-sm text-gray-900 dark:text-gray-200" x-text="formatUptime(machine.uptime_seconds)"></span>
         </div>
         <div class="flex flex-col gap-1">
             <span class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider font-medium">Created</span>
@@ -379,8 +379,10 @@
         </template>
     </template>
 
-    {# ===== TWO-COLUMN: INFO + NETWORK ===== #}
+    {# ===== TWO-COLUMN: (INFO + INTERFACES) | NETWORK ===== #}
     <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
+        {# Left column: Info + Interfaces stacked #}
+        <div class="flex flex-col gap-4">
         {# Info Section #}
         <div class="rounded-xl border border-gray-200 dark:border-[#1a1a1a] bg-white dark:bg-[#111] p-5">
             <div class="mb-4">
@@ -463,8 +465,13 @@
                 </div>
                 <template x-if="machine.gpus && machine.gpus.length > 0">
                     <div class="flex flex-col gap-1">
-                        <span class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider font-medium">GPU</span>
-                        <span class="text-base font-semibold text-gray-900 dark:text-gray-100" x-text="machine.gpus[0].name"></span>
+                        <span class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider font-medium" x-text="machine.gpus.length > 1 ? 'GPUs' : 'GPU'"></span>
+                        <template x-for="gpu in machine.gpus" :key="gpu.name">
+                            <div class="flex items-center gap-2">
+                                <span class="text-base font-semibold text-gray-900 dark:text-gray-100" x-text="gpu.name"></span>
+                                <span x-show="gpu.vram_gb" class="text-xs text-gray-400" x-text="gpu.vram_gb ? gpu.vram_gb.toFixed(0) + ' GB VRAM' : ''"></span>
+                            </div>
+                        </template>
                     </div>
                 </template>
                 <template x-if="machine.bmc_credentials">
@@ -480,6 +487,50 @@
                 </template>
             </div>
         </div>
+
+        {# Interfaces card #}
+        <template x-if="machine.network_interfaces && machine.network_interfaces.length > 0">
+        <div class="rounded-xl border border-gray-200 dark:border-[#1a1a1a] bg-white dark:bg-[#111] p-5">
+            <div class="mb-4">
+                <h2 class="text-sm font-semibold text-gray-500 dark:text-gray-500 uppercase tracking-wider">Interfaces</h2>
+            </div>
+            <div class="space-y-0.5">
+                <template x-for="node in buildInterfaceTree()" :key="node.iface.name">
+                    <div class="flex items-center gap-2 py-1.5 px-2 rounded transition-colors"
+                         :class="dragOverIface === node.iface.name ? 'bg-purple-50 dark:bg-purple-900/20 ring-2 ring-purple-400' : 'hover:bg-gray-50 dark:hover:bg-[#1a1a1a]'"
+                         :style="`margin-left: ${node.depth * 24}px`"
+                         @dragover.prevent="dragOverIface = node.iface.name"
+                         @dragleave="dragOverIface = null"
+                         @drop.prevent="dragOverIface = null; setPrimaryInterface(node.iface.name)">
+                        <span class="inline-block w-2 h-2 rounded-full flex-shrink-0"
+                              :class="node.iface.active === true ? 'bg-green-500' : (node.iface.active === false ? 'bg-red-500' : 'bg-gray-400')"></span>
+                        <span class="text-[10px] uppercase tracking-wider font-semibold px-1.5 py-0.5 rounded flex-shrink-0"
+                              :class="{
+                                  'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400': node.iface.interface_type === 'bridge',
+                                  'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400': node.iface.interface_type === 'bond',
+                                  'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400': node.iface.interface_type === 'ether' || node.iface.interface_type === 'unknown'
+                              }"
+                              x-text="node.iface.interface_type || 'ether'"></span>
+                        <span class="text-sm font-medium tech-mono text-purple-600 dark:text-purple-400" x-text="node.iface.name"></span>
+                        <span x-show="machine.primary_interface === node.iface.name"
+                              draggable="true"
+                              @dragstart="$event.dataTransfer.setData('text/plain', 'primary')"
+                              class="text-[10px] uppercase tracking-wider font-bold px-1.5 py-0.5 rounded bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-300 cursor-grab active:cursor-grabbing select-none">Primary</span>
+                        <span class="text-xs tech-mono text-cyan-600 dark:text-cyan-400 ml-auto" x-text="node.iface.mac"></span>
+                        <span x-show="node.iface.speed_mbps" class="text-xs text-gray-500 dark:text-gray-400"
+                              x-text="node.iface.speed_mbps >= 1000 ? (node.iface.speed_mbps / 1000) + ' Gbps' : node.iface.speed_mbps + ' Mbps'"></span>
+                        <span x-show="node.iface.ip_address" class="text-xs tech-mono text-emerald-600 dark:text-emerald-400"
+                              x-text="node.iface.ip_address"></span>
+                        <span x-show="node.iface.bond_mode" class="text-[10px] px-1.5 py-0.5 rounded bg-amber-50 text-amber-600 dark:bg-amber-900/20 dark:text-amber-300"
+                              x-text="node.iface.bond_mode"></span>
+                        <span x-show="node.iface.mtu && node.iface.mtu !== 1500" class="text-[10px] text-gray-400"
+                              x-text="'MTU ' + node.iface.mtu"></span>
+                    </div>
+                </template>
+            </div>
+        </div>
+        </template>
+        </div>{# /left column flex #}
 
         {# Network Section — per-field click-to-edit, no bulk edit mode #}
         <div class="rounded-xl border border-gray-200 dark:border-[#1a1a1a] bg-white dark:bg-[#111] p-5">
@@ -793,58 +844,6 @@
         </div>
     </div>
 
-    {# ===== INTERFACES (full width) ===== #}
-    <template x-if="machine.network_interfaces && machine.network_interfaces.length > 0">
-    <div class="rounded-xl border border-gray-200 dark:border-[#1a1a1a] bg-white dark:bg-[#111] p-5 mb-6">
-        <div class="mb-4">
-            <h2 class="text-sm font-semibold text-gray-500 dark:text-gray-500 uppercase tracking-wider">Interfaces</h2>
-        </div>
-        <div class="space-y-0.5">
-            <template x-for="node in buildInterfaceTree()" :key="node.iface.name">
-                <div class="flex items-center gap-2 py-1.5 px-2 rounded hover:bg-gray-50 dark:hover:bg-[#1a1a1a] transition-colors"
-                     :style="`margin-left: ${node.depth * 24}px`">
-                    {# Link state dot #}
-                    <span class="inline-block w-2 h-2 rounded-full flex-shrink-0"
-                          :class="node.iface.active === true ? 'bg-green-500' : (node.iface.active === false ? 'bg-red-500' : 'bg-gray-400')"></span>
-                    {# Type badge #}
-                    <span class="text-[10px] uppercase tracking-wider font-semibold px-1.5 py-0.5 rounded flex-shrink-0"
-                          :class="{
-                              'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400': node.iface.interface_type === 'bridge',
-                              'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400': node.iface.interface_type === 'bond',
-                              'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400': node.iface.interface_type === 'ether' || node.iface.interface_type === 'unknown'
-                          }"
-                          x-text="node.iface.interface_type || 'ether'"></span>
-                    {# Interface name #}
-                    <span class="text-sm font-medium tech-mono text-purple-600 dark:text-purple-400" x-text="node.iface.name"></span>
-                    {# PRIMARY badge #}
-                    <span x-show="machine.primary_interface === node.iface.name"
-                          class="text-[10px] uppercase tracking-wider font-bold px-1.5 py-0.5 rounded bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-300">Primary</span>
-                    {# MAC #}
-                    <span class="text-xs tech-mono text-cyan-600 dark:text-cyan-400 ml-auto" x-text="node.iface.mac"></span>
-                    {# Speed #}
-                    <span x-show="node.iface.speed_mbps" class="text-xs text-gray-500 dark:text-gray-400"
-                          x-text="node.iface.speed_mbps >= 1000 ? (node.iface.speed_mbps / 1000) + ' Gbps' : node.iface.speed_mbps + ' Mbps'"></span>
-                    {# IP address #}
-                    <span x-show="node.iface.ip_address" class="text-xs tech-mono text-emerald-600 dark:text-emerald-400"
-                          x-text="node.iface.ip_address"></span>
-                    {# Bond mode #}
-                    <span x-show="node.iface.bond_mode" class="text-[10px] px-1.5 py-0.5 rounded bg-amber-50 text-amber-600 dark:bg-amber-900/20 dark:text-amber-300"
-                          x-text="node.iface.bond_mode"></span>
-                    {# MTU #}
-                    <span x-show="node.iface.mtu && node.iface.mtu !== 1500" class="text-[10px] text-gray-400"
-                          x-text="'MTU ' + node.iface.mtu"></span>
-                    {# Set Primary button #}
-                    {% if is_authenticated %}
-                    <button x-show="machine.primary_interface !== node.iface.name"
-                            @click="setPrimaryInterface(node.iface.name)"
-                            class="text-[10px] px-2 py-0.5 rounded border border-gray-300 dark:border-gray-600 text-gray-500 dark:text-gray-400 hover:border-purple-500 hover:text-purple-600 dark:hover:border-purple-400 dark:hover:text-purple-400 transition-colors">Set Primary</button>
-                    {% endif %}
-                </div>
-            </template>
-        </div>
-    </div>
-    </template>
-
     {# ===== STORAGE (full width) ===== #}
     <div class="rounded-xl border border-gray-200 dark:border-[#1a1a1a] bg-white dark:bg-[#111] p-5 mb-6">
         <div class="mb-4">
@@ -855,16 +854,52 @@
                 <thead>
                     <tr class="border-b border-gray-100 dark:border-[#222]">
                         <th class="text-left text-[11px] text-gray-400 dark:text-gray-400 uppercase tracking-wider pb-2 font-medium">Device</th>
+                        <th class="text-left text-[11px] text-gray-400 dark:text-gray-400 uppercase tracking-wider pb-2 font-medium">Type</th>
                         <th class="text-left text-[11px] text-gray-400 dark:text-gray-400 uppercase tracking-wider pb-2 font-medium">Size</th>
                         <th class="text-left text-[11px] text-gray-400 dark:text-gray-400 uppercase tracking-wider pb-2 font-medium">Model</th>
+                        <th class="text-left text-[11px] text-gray-400 dark:text-gray-400 uppercase tracking-wider pb-2 font-medium">Health</th>
+                        <th class="text-left text-[11px] text-gray-400 dark:text-gray-400 uppercase tracking-wider pb-2 font-medium">Wear</th>
                     </tr>
                 </thead>
                 <tbody>
                     <template x-for="disk in machine.disks" :key="disk.device">
                         <tr class="border-b border-gray-50 dark:border-[#1a1a1a] last:border-0">
                             <td class="py-3 text-sm tech-mono text-purple-600 dark:text-purple-400" x-text="disk.device"></td>
-                            <td class="py-3 text-sm text-gray-700 dark:text-gray-300" x-text="disk.size_bytes ? formatDiskSize(disk.size_bytes) : 'Unknown'"></td>
+                            <td class="py-3">
+                                <span class="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium uppercase"
+                                      :class="{
+                                          'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400': disk.disk_type === 'nvme',
+                                          'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400': disk.disk_type === 'ssd',
+                                          'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400': disk.disk_type === 'hdd' || !disk.disk_type
+                                      }"
+                                      x-text="(disk.disk_type || 'unknown').toUpperCase()"></span>
+                            </td>
+                            <td class="py-3 text-sm text-gray-700 dark:text-gray-300" x-text="disk.size_bytes ? formatDiskSize(disk.size_bytes) : (disk.size_gb ? disk.size_gb.toFixed(1) + ' GB' : 'Unknown')"></td>
                             <td class="py-3 text-sm text-gray-700 dark:text-gray-300" x-text="disk.model || 'Unknown'"></td>
+                            <td class="py-3">
+                                <span x-show="disk.health" class="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium"
+                                      :class="disk.health === 'PASSED' ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400' : 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400'"
+                                      x-text="disk.health"></span>
+                                <span x-show="!disk.health" class="text-sm text-gray-400">—</span>
+                            </td>
+                            <td class="py-3">
+                                <template x-if="disk.wearout != null">
+                                    <div class="flex items-center gap-2">
+                                        <div class="w-20 h-2 rounded-full overflow-hidden relative"
+                                             :class="disk.wearout > 80 ? 'bg-green-100 dark:bg-green-900/20' : disk.wearout > 40 ? 'bg-amber-100 dark:bg-amber-900/20' : 'bg-red-100 dark:bg-red-900/20'">
+                                            <div class="h-full rounded-full transition-all"
+                                                 :class="disk.wearout > 80 ? 'bg-green-400 dark:bg-green-500' : disk.wearout > 40 ? 'bg-amber-400 dark:bg-amber-500' : 'bg-red-400 dark:bg-red-500'"
+                                                 :style="'width: ' + disk.wearout + '%'"></div>
+                                        </div>
+                                        <span class="text-[11px] whitespace-nowrap"
+                                              :class="disk.wearout > 80 ? 'text-green-600 dark:text-green-400' : disk.wearout > 40 ? 'text-amber-600 dark:text-amber-400' : 'text-red-600 dark:text-red-400'"
+                                              x-text="disk.wearout + '% healthy'"></span>
+                                    </div>
+                                </template>
+                                <template x-if="disk.wearout == null">
+                                    <span class="text-sm text-gray-400">—</span>
+                                </template>
+                            </td>
                         </tr>
                     </template>
                 </tbody>
@@ -1033,6 +1068,19 @@
 
   // Keep formatBytes as alias for backward compat (uses binary)
   const formatBytes = formatBinaryBytes;
+
+  // Format uptime seconds into human-readable + availability nines
+  const formatUptime = (seconds) => {
+      if (seconds == null || seconds < 0) return 'Unknown';
+      const d = Math.floor(seconds / 86400);
+      const h = Math.floor((seconds % 86400) / 3600);
+      const m = Math.floor((seconds % 3600) / 60);
+      let parts = [];
+      if (d > 0) parts.push(d + 'd');
+      if (h > 0) parts.push(h + 'h');
+      if (m > 0 || parts.length === 0) parts.push(m + 'm');
+      return parts.join(' ');
+  };
   const findMatchingStreamTasks = (fileName) => {
       const taskRows = document.querySelectorAll('#tasks-table-body tr[data-task-name]');
       const matchingRows = [];
@@ -1104,6 +1152,9 @@
         editableNameservers: [],
         editFormError: '',
         isSubmitting: false,
+
+        // Drag-and-drop primary interface
+        dragOverIface: null,
 
         // Power/action in progress
         actionInProgress: null,
