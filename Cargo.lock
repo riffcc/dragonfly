@@ -1683,7 +1683,7 @@ checksum = "1aaf95b3e5c8f23aa320147307562d361db0ae0d51242340f558153b4eb2439b"
 
 [[package]]
 name = "dragonfly"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -1734,7 +1734,7 @@ dependencies = [
 
 [[package]]
 name = "dragonfly-actions"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "astral-tokio-tar",
  "async-compression",
@@ -1758,7 +1758,7 @@ dependencies = [
 
 [[package]]
 name = "dragonfly-agent"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1783,7 +1783,7 @@ dependencies = [
 
 [[package]]
 name = "dragonfly-bmc"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "thiserror 1.0.69",
@@ -1793,7 +1793,7 @@ dependencies = [
 
 [[package]]
 name = "dragonfly-common"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "rand 0.8.5",
@@ -1806,7 +1806,7 @@ dependencies = [
 
 [[package]]
 name = "dragonfly-crd"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "dragonfly-common",
@@ -1820,7 +1820,7 @@ dependencies = [
 
 [[package]]
 name = "dragonfly-dhcp"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "dhcproto",
@@ -1834,7 +1834,7 @@ dependencies = [
 
 [[package]]
 name = "dragonfly-ipxe"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "dragonfly-crd",
  "thiserror 1.0.69",
@@ -1842,7 +1842,7 @@ dependencies = [
 
 [[package]]
 name = "dragonfly-metadata"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "dragonfly-crd",
  "serde",
@@ -1852,7 +1852,7 @@ dependencies = [
 
 [[package]]
 name = "dragonfly-server"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -1939,7 +1939,7 @@ dependencies = [
 
 [[package]]
 name = "dragonfly-tftp"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "bytes",
@@ -1952,7 +1952,7 @@ dependencies = [
 
 [[package]]
 name = "dragonfly-workflow"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "chrono",

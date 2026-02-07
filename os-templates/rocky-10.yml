@@ -1,0 +1,71 @@
+apiVersion: dragonfly.computer/v1
+kind: Template
+metadata:
+  name: rocky-10
+spec:
+  timeout: 9800
+  actions:
+    - action: image2disk
+      url: "https://dl.rockylinux.org/pub/rocky/10/images/x86_64/Rocky-10-GenericCloud-Base.latest.x86_64.qcow2"
+      disk: auto
+      timeout: 9600
+
+    - action: writefile
+      path: /etc/cloud/ds-identify.cfg
+      partition: 1
+      content: |
+        datasource: NoCloud
+      mode: "0644"
+      timeout: 90
+
+    - action: writefile
+      path: /var/lib/cloud/seed/nocloud/meta-data
+      partition: 1
+      content: |
+        instance-id: {{ instance_id }}
+        local-hostname: {{ friendly_name }}
+      mode: "0644"
+      timeout: 90
+
+    - action: writefile
+      path: /var/lib/cloud/seed/nocloud/network-config
+      partition: 1
+      content: |
+        {{ network_config_cloudinit }}
+      mode: "0644"
+      timeout: 90
+
+    - action: writefile
+      path: /var/lib/cloud/seed/nocloud/user-data
+      partition: 1
+      content: |
+        #cloud-config
+        manage_etc_hosts: localhost
+        users:
+          - name: "{{ default_user }}"
+            sudo: ALL=(ALL) NOPASSWD:ALL
+            shell: /bin/bash
+            lock_passwd: false
+            ssh_authorized_keys: {{ ssh_authorized_keys }}
+            ssh_import_id: {{ ssh_import_id }}
+        disable_root: false
+        chpasswd:
+          expire: false
+          users:
+            - name: "{{ default_user }}"
+              password: "{{ default_password }}"
+              type: text
+        ssh_pwauth: {{ ssh_pwauth }}
+        runcmd:
+          - |
+            # Only install qemu-guest-agent if virtio serial port exists (running on QEMU/KVM)
+            if [ -e /dev/virtio-ports/org.qemu.guest_agent.0 ]; then
+              dnf install -y qemu-guest-agent
+              systemctl enable qemu-guest-agent
+              systemctl start qemu-guest-agent
+            fi
+      mode: "0644"
+      timeout: 90
+
+    - action: reboot
+      timeout: 90
