@@ -15,7 +15,6 @@ extern crate alloc;
 use core::panic::PanicInfo;
 
 use net::NetDevice;
-use virtio_net::VirtioNet;
 
 mod ahci;
 mod allocator;
@@ -25,6 +24,7 @@ mod block_logo;
 mod chainload;
 mod cmdline;
 mod disk;
+mod e1000e;
 mod font;
 mod framebuffer;
 mod http;
@@ -53,7 +53,7 @@ const MULTIBOOT2_BOOTLOADER_MAGIC: u32 = 0x36d76289;
 pub extern "C" fn _start(multiboot_magic: u32, multiboot_info: u32) -> ! {
     // Initialize serial first for debugging
     serial::init();
-    serial::println("Dragonfly Spark v0.1.0 - Serial debug enabled");
+    serial::println("Dragonfly Spark v0.2.2 - Serial debug enabled");
 
     // Detect multiboot version and handle accordingly
     let is_multiboot2 = match multiboot_magic {
@@ -867,23 +867,35 @@ static mut SOCKET_STORAGE: [smoltcp::iface::SocketStorage<'static>; 4] = [
 ];
 
 /// Initialize network stack (non-blocking) - DHCP will be polled during UI countdown
+///
+/// Tries e1000e (real hardware) first, then falls back to VirtIO-net (VMs).
 fn init_network_stack() -> Option<net::NetworkStack<'static>> {
-    // Initialize VirtIO-net
-    let virtio_net = VirtioNet::init()?;
-
-    serial::print("MAC: ");
-    let mac = virtio_net.mac_address();
-    for i in 0..6 {
-        if i > 0 { serial::print(":"); }
-        serial::print_hex32(mac[i] as u32);
-    }
-    serial::println("");
+    // Try e1000e first (real hardware Intel NICs)
+    let device = if let Some(e1000e) = e1000e::E1000e::init() {
+        serial::print("MAC: ");
+        let mac = e1000e.mac_address();
+        for i in 0..6 {
+            if i > 0 { serial::print(":"); }
+            serial::print_hex32(mac[i] as u32);
+        }
+        serial::println("");
+        NetDevice::new_e1000e(e1000e)
+    } else if let Some(virtio_net) = virtio_net::VirtioNet::init() {
+        serial::print("MAC: ");
+        let mac = virtio_net.mac_address();
+        for i in 0..6 {
+            if i > 0 { serial::print(":"); }
+            serial::print_hex32(mac[i] as u32);
+        }
+        serial::println("");
+        NetDevice::new_virtio(virtio_net)
+    } else {
+        serial::println("NET: No network device found (tried e1000e, VirtIO-net)");
+        return None;
+    };
 
     // Disable interrupts (no IDT)
     unsafe { core::arch::asm!("cli"); }
-
-    // Wrap in NetDevice
-    let device = NetDevice::new(virtio_net);
 
     // Initialize network stack with DHCP (uses static socket storage)
     // SAFETY: This is only called once at boot, no concurrent access
@@ -903,29 +915,35 @@ fn test_network() {
 
     vga::println("Initializing network...");
 
-    // Initialize VirtIO-net
-    let virtio_net = match VirtioNet::init() {
-        Some(dev) => dev,
-        None => {
-            serial::println("ERROR: No VirtIO-net device found");
-            vga::print_error("No VirtIO-net device found");
-            return;
+    // Initialize NIC — try e1000e first, then VirtIO-net
+    let device = if let Some(e1000e) = e1000e::E1000e::init() {
+        let mac = e1000e.mac_address();
+        serial::print("MAC: ");
+        for i in 0..6 {
+            if i > 0 { serial::print(":"); }
+            serial::print_hex32(mac[i] as u32);
         }
+        serial::println("");
+        NetDevice::new_e1000e(e1000e)
+    } else if let Some(virtio_net) = virtio_net::VirtioNet::init() {
+        let mac = virtio_net.mac_address();
+        serial::print("MAC: ");
+        for i in 0..6 {
+            if i > 0 { serial::print(":"); }
+            serial::print_hex32(mac[i] as u32);
+        }
+        serial::println("");
+        NetDevice::new_virtio(virtio_net)
+    } else {
+        serial::println("ERROR: No network device found");
+        vga::print_error("No network device found (tried e1000e, VirtIO-net)");
+        return;
     };
 
-    let mac = virtio_net.mac_address();
-    serial::print("MAC: ");
-    for i in 0..6 {
-        if i > 0 { serial::print(":"); }
-        serial::print_hex32(mac[i] as u32);
-    }
-    serial::println("");
+    let mac = device.mac_address();
 
     // Disable interrupts (no IDT)
     unsafe { core::arch::asm!("cli"); }
-
-    // Wrap in NetDevice
-    let device = NetDevice::new(virtio_net);
 
     // Create socket storage
     let mut socket_storage: [smoltcp::iface::SocketStorage<'_>; 4] = Default::default();

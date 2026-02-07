@@ -1,7 +1,8 @@
 //! Network stack integration using smoltcp
 //!
-//! Provides TCP/IP networking over VirtIO-net
+//! Provides TCP/IP networking over VirtIO-net or Intel e1000e
 
+use crate::e1000e::E1000e;
 use crate::serial;
 use crate::virtio_net::VirtioNet;
 use smoltcp::iface::{Config, Interface, SocketSet, SocketHandle};
@@ -10,17 +11,54 @@ use smoltcp::socket::{dhcpv4, tcp};
 use smoltcp::time::Instant;
 use smoltcp::wire::{EthernetAddress, HardwareAddress, IpCidr, IpEndpoint, Ipv4Address};
 
-/// Wrapper around VirtioNet that implements smoltcp's Device trait
+/// Abstraction over supported NIC drivers
+pub enum NicDriver {
+    E1000e(E1000e),
+    VirtioNet(VirtioNet),
+}
+
+impl NicDriver {
+    pub fn mac_address(&self) -> [u8; 6] {
+        match self {
+            NicDriver::E1000e(d) => d.mac_address(),
+            NicDriver::VirtioNet(d) => d.mac_address(),
+        }
+    }
+
+    pub fn send(&mut self, frame: &[u8]) -> bool {
+        match self {
+            NicDriver::E1000e(d) => d.send(frame),
+            NicDriver::VirtioNet(d) => d.send(frame),
+        }
+    }
+
+    pub fn recv(&mut self, buffer: &mut [u8]) -> usize {
+        match self {
+            NicDriver::E1000e(d) => d.recv(buffer),
+            NicDriver::VirtioNet(d) => d.recv(buffer),
+        }
+    }
+}
+
+/// Wrapper around NicDriver that implements smoltcp's Device trait
 pub struct NetDevice {
-    inner: VirtioNet,
+    inner: NicDriver,
     rx_buffer: [u8; 1514],
     rx_len: usize,
 }
 
 impl NetDevice {
-    pub fn new(device: VirtioNet) -> Self {
+    pub fn new_e1000e(device: E1000e) -> Self {
         NetDevice {
-            inner: device,
+            inner: NicDriver::E1000e(device),
+            rx_buffer: [0; 1514],
+            rx_len: 0,
+        }
+    }
+
+    pub fn new_virtio(device: VirtioNet) -> Self {
+        NetDevice {
+            inner: NicDriver::VirtioNet(device),
             rx_buffer: [0; 1514],
             rx_len: 0,
         }
@@ -83,7 +121,7 @@ impl<'a> RxToken for RxTokenImpl<'a> {
 }
 
 pub struct TxTokenImpl<'a> {
-    device: &'a mut VirtioNet,
+    device: &'a mut NicDriver,
 }
 
 impl<'a> TxToken for TxTokenImpl<'a> {

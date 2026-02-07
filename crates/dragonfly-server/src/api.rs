@@ -4785,7 +4785,7 @@ pub async fn download_ipxe_binaries() -> anyhow::Result<()> {
 
     // iPXE binaries to download from boot.ipxe.org
     let binaries = vec![
-        ("ipxe.efi", "https://boot.ipxe.org/ipxe.efi"),
+        ("ipxe.efi", "https://boot.ipxe.org/x86_64-efi/ipxe.efi"),
         ("undionly.kpxe", "https://boot.ipxe.org/undionly.kpxe"),
     ];
 

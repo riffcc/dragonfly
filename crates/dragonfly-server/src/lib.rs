@@ -752,6 +752,13 @@ pub async fn run() -> anyhow::Result<()> {
                 error!("Handoff listener failed: {}", e);
             }
         });
+
+        // Download iPXE binaries (idempotent — skips if already present)
+        match api::download_ipxe_binaries().await {
+            Ok(_) => info!("iPXE binaries ready"),
+            Err(e) => warn!("Failed to download iPXE binaries: {} — PXE boot may not work", e),
+        }
+
         start_network_services(&app_state, shutdown_rx.clone()).await;
     }
 

@@ -1,6 +1,6 @@
 [package]
 name = "dragonfly-crd"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2024"
 authors = ["Sparx"]
 description = "CRD-compatible types for Dragonfly bare metal provisioning"
