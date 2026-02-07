@@ -329,6 +329,17 @@ impl DhcpResponseBuilder {
                     .opts_mut()
                     .insert(DhcpOption::ClassIdentifier(vendor.into_bytes()));
             }
+
+            // PXE vendor options (Option 43) — tells PXE ROM to skip Boot Server
+            // Discovery and use the filename from DHCP directly. Required for VMware
+            // and other PXE ROMs that default to discovery mode without this.
+            // Format: sub-option 6 (PXE_DISCOVERY_CONTROL) = 0x08, then END (0xFF)
+            response
+                .opts_mut()
+                .insert(DhcpOption::VendorExtensions(vec![
+                    0x06, 0x01, 0x08, // Sub-option 6, length 1, value 8 (skip discovery)
+                    0xFF,             // END
+                ]));
         }
 
         Ok(response)
