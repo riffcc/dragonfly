@@ -1,8 +1,14 @@
 use clap::Args;
 use color_eyre::eyre::Result;
+use include_dir::{include_dir, Dir};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+
+/// Static assets and templates embedded at compile time.
+/// This allows `dragonfly install` to work from a standalone binary download.
+static EMBEDDED_STATIC: Dir = include_dir!("crates/dragonfly-server/static");
+static EMBEDDED_TEMPLATES: Dir = include_dir!("crates/dragonfly-server/templates");
 
 const DRAGONFLY_DIR: &str = "/var/lib/dragonfly";
 const DRAGONFLY_CONFIG: &str = "/var/lib/dragonfly/config.toml";
@@ -559,86 +565,106 @@ fn install_os_templates(dev_mode: bool) -> Result<()> {
     Ok(())
 }
 
+/// Extract an embedded directory tree to a destination path on disk.
+fn extract_embedded_dir(embedded: &Dir, dest: &Path) -> Result<()> {
+    for file in embedded.files() {
+        let out_path = dest.join(file.path());
+        if let Some(parent) = out_path.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|e| color_eyre::eyre::eyre!("mkdir {}: {}", parent.display(), e))?;
+        }
+        fs::write(&out_path, file.contents())
+            .map_err(|e| color_eyre::eyre::eyre!("write {}: {}", out_path.display(), e))?;
+    }
+    for subdir in embedded.dirs() {
+        extract_embedded_dir(subdir, dest)?;
+    }
+    Ok(())
+}
+
 fn install_web_assets(dev_mode: bool) -> Result<()> {
     let templates_src = Path::new("crates/dragonfly-server/templates");
     let static_src = Path::new("crates/dragonfly-server/static");
 
-    // Check if we're running from project directory
-    if templates_src.exists() && static_src.exists() {
-        // Copy from local project
+    std::process::Command::new("sudo")
+        .args(["mkdir", "-p", OPT_DIR])
+        .status()?;
+
+    // Remove existing assets first
+    let _ = std::process::Command::new("sudo")
+        .args(["rm", "-rf", &format!("{}/templates", OPT_DIR)])
+        .status();
+    let _ = std::process::Command::new("sudo")
+        .args(["rm", "-rf", &format!("{}/static", OPT_DIR)])
+        .status();
+
+    // Dev mode with project directory: symlink for hot reload
+    if dev_mode && templates_src.exists() && static_src.exists() {
+        let templates_abs = std::fs::canonicalize(templates_src)?;
+        let static_abs = std::fs::canonicalize(static_src)?;
+
         std::process::Command::new("sudo")
-            .args(["mkdir", "-p", OPT_DIR])
+            .args([
+                "ln",
+                "-s",
+                &templates_abs.to_string_lossy(),
+                &format!("{}/templates", OPT_DIR),
+            ])
             .status()?;
-
-        // In dev mode, symlink instead of copy for hot reload
-        if dev_mode {
-            let templates_abs = std::fs::canonicalize(templates_src)?;
-            let static_abs = std::fs::canonicalize(static_src)?;
-
-            // Remove existing and create symlinks
-            let _ = std::process::Command::new("sudo")
-                .args(["rm", "-rf", &format!("{}/templates", OPT_DIR)])
-                .status();
-            let _ = std::process::Command::new("sudo")
-                .args(["rm", "-rf", &format!("{}/static", OPT_DIR)])
-                .status();
-
-            std::process::Command::new("sudo")
-                .args([
-                    "ln",
-                    "-s",
-                    &templates_abs.to_string_lossy(),
-                    &format!("{}/templates", OPT_DIR),
-                ])
-                .status()?;
-            std::process::Command::new("sudo")
-                .args([
-                    "ln",
-                    "-s",
-                    &static_abs.to_string_lossy(),
-                    &format!("{}/static", OPT_DIR),
-                ])
-                .status()?;
-        } else {
-            // Production: copy files
-            let _ = std::process::Command::new("sudo")
-                .args(["rm", "-rf", &format!("{}/templates", OPT_DIR)])
-                .status();
-            let _ = std::process::Command::new("sudo")
-                .args(["rm", "-rf", &format!("{}/static", OPT_DIR)])
-                .status();
-
-            std::process::Command::new("sudo")
-                .args([
-                    "cp",
-                    "-r",
-                    &templates_src.to_string_lossy(),
-                    &format!("{}/templates", OPT_DIR),
-                ])
-                .status()?;
-            std::process::Command::new("sudo")
-                .args([
-                    "cp",
-                    "-r",
-                    &static_src.to_string_lossy(),
-                    &format!("{}/static", OPT_DIR),
-                ])
-                .status()?;
-        }
+        std::process::Command::new("sudo")
+            .args([
+                "ln",
+                "-s",
+                &static_abs.to_string_lossy(),
+                &format!("{}/static", OPT_DIR),
+            ])
+            .status()?;
+    } else if !dev_mode && templates_src.exists() && static_src.exists() {
+        // Production install from project directory: copy files
+        std::process::Command::new("sudo")
+            .args([
+                "cp",
+                "-r",
+                &templates_src.to_string_lossy(),
+                &format!("{}/templates", OPT_DIR),
+            ])
+            .status()?;
+        std::process::Command::new("sudo")
+            .args([
+                "cp",
+                "-r",
+                &static_src.to_string_lossy(),
+                &format!("{}/static", OPT_DIR),
+            ])
+            .status()?;
     } else {
-        // Not in project directory - check if assets already exist
-        let opt_templates = Path::new(OPT_DIR).join("templates");
-        let opt_static = Path::new(OPT_DIR).join("static");
+        // Standalone binary — extract embedded assets
+        let temp_dir = tempfile::tempdir()?;
 
-        if !opt_templates.exists() || !opt_static.exists() {
-            return Err(color_eyre::eyre::eyre!(
-                "Web assets not found. Run installer from the project directory."
-            ));
-        }
-        // TODO: Download from GitHub when releases are available
-        // let temp_zip = "/tmp/dragonfly-web.zip";
-        // curl -fsSL -o temp_zip GITHUB_WEB_ASSETS_URL
-        // sudo unzip -o -q temp_zip -d OPT_DIR
+        let static_tmp = temp_dir.path().join("static");
+        let templates_tmp = temp_dir.path().join("templates");
+        fs::create_dir_all(&static_tmp)?;
+        fs::create_dir_all(&templates_tmp)?;
+
+        extract_embedded_dir(&EMBEDDED_STATIC, &static_tmp)?;
+        extract_embedded_dir(&EMBEDDED_TEMPLATES, &templates_tmp)?;
+
+        std::process::Command::new("sudo")
+            .args([
+                "cp",
+                "-r",
+                &static_tmp.to_string_lossy(),
+                &format!("{}/static", OPT_DIR),
+            ])
+            .status()?;
+        std::process::Command::new("sudo")
+            .args([
+                "cp",
+                "-r",
+                &templates_tmp.to_string_lossy(),
+                &format!("{}/templates", OPT_DIR),
+            ])
+            .status()?;
     }
 
     Ok(())

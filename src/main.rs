@@ -60,6 +60,12 @@ fn is_installed() -> bool {
 }
 
 fn main() -> Result<()> {
+    // Install the rustls CryptoProvider globally before any TLS operations.
+    // Required by rustls 0.23+ (used by proxmox-client, reqwest, etc.)
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .expect("Failed to install rustls CryptoProvider");
+
     let cli = Cli::parse();
 
     // Fast path: status display needs no runtime or fancy error handling

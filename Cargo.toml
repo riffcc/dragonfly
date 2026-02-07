@@ -89,6 +89,8 @@ listenfd = "1.0.1"
 lazy_static = "1.4.0"
 aes-gcm = "0.10.3"
 base64 = "0.22"
+rustls = { version = "0.23", features = ["ring"] }
+include_dir = "0.7"
 notify = "6.1"
 
 # Automation & Progress
