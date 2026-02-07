@@ -2280,6 +2280,8 @@
       // Check if a tag has any selected nodes
       hasSelectedNodes(tag) {
         if (!this.tagBuckets[tag] || !this.selectedNodeIds.length) return false;
+        // When a tag was explicitly clicked, only highlight THAT tag
+        if (this.activeTag !== null) return tag === this.activeTag;
         return this.tagBuckets[tag].some(nodeId => this.selectedNodeIds.includes(nodeId));
       },
     };
