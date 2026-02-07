@@ -793,6 +793,58 @@
         </div>
     </div>
 
+    {# ===== INTERFACES (full width) ===== #}
+    <template x-if="machine.network_interfaces && machine.network_interfaces.length > 0">
+    <div class="rounded-xl border border-gray-200 dark:border-[#1a1a1a] bg-white dark:bg-[#111] p-5 mb-6">
+        <div class="mb-4">
+            <h2 class="text-sm font-semibold text-gray-500 dark:text-gray-500 uppercase tracking-wider">Interfaces</h2>
+        </div>
+        <div class="space-y-0.5">
+            <template x-for="node in buildInterfaceTree()" :key="node.iface.name">
+                <div class="flex items-center gap-2 py-1.5 px-2 rounded hover:bg-gray-50 dark:hover:bg-[#1a1a1a] transition-colors"
+                     :style="`margin-left: ${node.depth * 24}px`">
+                    {# Link state dot #}
+                    <span class="inline-block w-2 h-2 rounded-full flex-shrink-0"
+                          :class="node.iface.active === true ? 'bg-green-500' : (node.iface.active === false ? 'bg-red-500' : 'bg-gray-400')"></span>
+                    {# Type badge #}
+                    <span class="text-[10px] uppercase tracking-wider font-semibold px-1.5 py-0.5 rounded flex-shrink-0"
+                          :class="{
+                              'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400': node.iface.interface_type === 'bridge',
+                              'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400': node.iface.interface_type === 'bond',
+                              'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400': node.iface.interface_type === 'ether' || node.iface.interface_type === 'unknown'
+                          }"
+                          x-text="node.iface.interface_type || 'ether'"></span>
+                    {# Interface name #}
+                    <span class="text-sm font-medium tech-mono text-purple-600 dark:text-purple-400" x-text="node.iface.name"></span>
+                    {# PRIMARY badge #}
+                    <span x-show="machine.primary_interface === node.iface.name"
+                          class="text-[10px] uppercase tracking-wider font-bold px-1.5 py-0.5 rounded bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-300">Primary</span>
+                    {# MAC #}
+                    <span class="text-xs tech-mono text-cyan-600 dark:text-cyan-400 ml-auto" x-text="node.iface.mac"></span>
+                    {# Speed #}
+                    <span x-show="node.iface.speed_mbps" class="text-xs text-gray-500 dark:text-gray-400"
+                          x-text="node.iface.speed_mbps >= 1000 ? (node.iface.speed_mbps / 1000) + ' Gbps' : node.iface.speed_mbps + ' Mbps'"></span>
+                    {# IP address #}
+                    <span x-show="node.iface.ip_address" class="text-xs tech-mono text-emerald-600 dark:text-emerald-400"
+                          x-text="node.iface.ip_address"></span>
+                    {# Bond mode #}
+                    <span x-show="node.iface.bond_mode" class="text-[10px] px-1.5 py-0.5 rounded bg-amber-50 text-amber-600 dark:bg-amber-900/20 dark:text-amber-300"
+                          x-text="node.iface.bond_mode"></span>
+                    {# MTU #}
+                    <span x-show="node.iface.mtu && node.iface.mtu !== 1500" class="text-[10px] text-gray-400"
+                          x-text="'MTU ' + node.iface.mtu"></span>
+                    {# Set Primary button #}
+                    {% if is_authenticated %}
+                    <button x-show="machine.primary_interface !== node.iface.name"
+                            @click="setPrimaryInterface(node.iface.name)"
+                            class="text-[10px] px-2 py-0.5 rounded border border-gray-300 dark:border-gray-600 text-gray-500 dark:text-gray-400 hover:border-purple-500 hover:text-purple-600 dark:hover:border-purple-400 dark:hover:text-purple-400 transition-colors">Set Primary</button>
+                    {% endif %}
+                </div>
+            </template>
+        </div>
+    </div>
+    </template>
+
     {# ===== STORAGE (full width) ===== #}
     <div class="rounded-xl border border-gray-200 dark:border-[#1a1a1a] bg-white dark:bg-[#111] p-5 mb-6">
         <div class="mb-4">
@@ -1313,6 +1365,76 @@
             this.machine.total_ram_bytes = bytes;
             this._setPending('total_ram_bytes', bytes);
             this.cancelFieldEdit();
+        },
+
+        // Build a depth-first interface tree: bridges → bonds → ethers
+        buildInterfaceTree() {
+            const ifaces = this.machine.network_interfaces || [];
+            if (!ifaces.length) return [];
+
+            // Build a name→iface map
+            const byName = {};
+            for (const iface of ifaces) byName[iface.name] = iface;
+
+            // Determine parent for each interface from members arrays
+            const parentOf = {};
+            for (const iface of ifaces) {
+                for (const member of (iface.members || [])) {
+                    if (byName[member]) parentOf[member] = iface.name;
+                }
+            }
+
+            // Recursive DFS
+            const result = [];
+            const visited = new Set();
+            const visit = (name, depth) => {
+                if (visited.has(name) || !byName[name]) return;
+                visited.add(name);
+                result.push({ iface: byName[name], depth });
+                for (const member of (byName[name].members || [])) {
+                    visit(member, depth + 1);
+                }
+            };
+
+            // Start with root interfaces (those not a member of anything)
+            // Sort: bridges first, then bonds, then ethers
+            const typeOrder = { bridge: 0, bond: 1, ether: 2, unknown: 3 };
+            const roots = ifaces
+                .filter(i => !parentOf[i.name])
+                .sort((a, b) => (typeOrder[a.interface_type] || 3) - (typeOrder[b.interface_type] || 3));
+            for (const root of roots) visit(root.name, 0);
+
+            // Add any orphans (referenced as members but not in the list)
+            for (const iface of ifaces) {
+                if (!visited.has(iface.name)) {
+                    result.push({ iface, depth: 0 });
+                }
+            }
+            return result;
+        },
+
+        // Set primary interface via direct PATCH
+        async setPrimaryInterface(ifaceName) {
+            try {
+                const resp = await fetch(`/api/machines/${this.machine.id}`, {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ primary_interface: ifaceName })
+                });
+                if (resp.ok) {
+                    const updated = await resp.json();
+                    if (updated && updated.id) {
+                        this.machine = updated;
+                        this._originalMachine = JSON.parse(JSON.stringify(updated));
+                    }
+                    if (window.showToast) window.showToast(`Primary interface set to ${ifaceName}`, 'success');
+                } else {
+                    const text = await resp.text();
+                    if (window.showToast) window.showToast(`Failed: ${text}`, 'error');
+                }
+            } catch (e) {
+                if (window.showToast) window.showToast(`Error: ${e.message}`, 'error');
+            }
         },
 
         // Calculate first usable address in subnet as default gateway

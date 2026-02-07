@@ -1243,7 +1243,10 @@ async fn delete_machine(
     State(state): State<AppState>,
     auth_session: AuthSession,
     Path(id): Path<Uuid>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> Response {
+    use dragonfly_common::MachineSource;
+
     // Check if user is authenticated as admin
     if auth_session.user.is_none() {
         return (StatusCode::UNAUTHORIZED, Json(json!({
@@ -1253,6 +1256,47 @@ async fn delete_machine(
     }
 
     info!("Request to delete machine: {}", id);
+
+    let delete_in_proxmox = params.get("delete_in_proxmox").map(|v| v == "true").unwrap_or(false);
+
+    // If requested, also delete the VM/LXC in Proxmox before removing from DB
+    if delete_in_proxmox {
+        match state.store.get_machine(id).await {
+            Ok(Some(machine)) => {
+                let (api_type, node, vmid) = match &machine.metadata.source {
+                    MachineSource::Proxmox { node, vmid, .. } => ("qemu", node.clone(), *vmid),
+                    MachineSource::ProxmoxLxc { node, ctid, .. } => ("lxc", node.clone(), *ctid),
+                    _ => {
+                        // Not a Proxmox VM/LXC — nothing to delete in Proxmox
+                        info!("Machine {} is not a Proxmox VM/LXC, skipping Proxmox deletion", id);
+                        ("", String::new(), 0)
+                    }
+                };
+                if !api_type.is_empty() {
+                    use proxmox_client::HttpApiClient;
+                    // Try "power" token (needs VM.Allocate), fall back to "config"
+                    let client_result = crate::handlers::proxmox::connect_to_proxmox(&state, "power").await
+                        .or(crate::handlers::proxmox::connect_to_proxmox(&state, "config").await);
+                    let client = match client_result {
+                        Ok(c) => Some(c),
+                        Err(e) => {
+                            warn!("Cannot connect to Proxmox to delete {} {}: {}", api_type, vmid, e);
+                            None
+                        }
+                    };
+                    if let Some(client) = client {
+                        let path = format!("/api2/json/nodes/{}/{}/{}", node, api_type, vmid);
+                        match client.delete(&path).await {
+                            Ok(_) => info!("Deleted {} {} on node '{}' in Proxmox", api_type, vmid, node),
+                            Err(e) => warn!("Failed to delete {} {} in Proxmox: {} — removing from Dragonfly anyway", api_type, vmid, e),
+                        }
+                    }
+                }
+            }
+            Ok(None) => {},
+            Err(e) => warn!("Failed to read machine {} before Proxmox deletion: {}", id, e),
+        }
+    }
 
     // Delete from v1 Store
     match state.store.delete_machine(id).await {
