@@ -813,7 +813,7 @@ pub async fn generate_proxmox_tokens_with_credentials(
             // 2. Update roles with proper permissions
             let role_permissions = [
                 ("DragonflyVMConfig", "VM.Config.Options,VM.Config.Disk"), // Changed VM.Config.Boot to VM.Config.Disk
-                ("DragonflySync", "VM.Audit,Sys.Audit,Sys.Modify,SDN.Audit"),
+                ("DragonflySync", "VM.Audit,Sys.Audit,Sys.Modify,SDN.Audit,VM.Config.Options"),
             ];
             
             for (role_name, permissions) in role_permissions.iter() {
@@ -3261,7 +3261,7 @@ async fn create_token_with_role(
                                                             // Try to set permissions
                                                             let permissions = match role_name {
                                                                 "DragonflyVMConfig" => "VM.Config.Options,VM.Config.Disk",
-                                                                "DragonflySync" => "VM.Audit,Sys.Audit,Sys.Modify,SDN.Audit",
+                                                                "DragonflySync" => "VM.Audit,Sys.Audit,Sys.Modify,SDN.Audit,VM.Config.Options",
                                                                 _ => "",
                                                             };
                                                             
