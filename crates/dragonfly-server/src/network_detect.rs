@@ -38,7 +38,13 @@ pub async fn init_default_network(store: Arc<dyn Store>) -> Result<()> {
 
     let iface_info = detect_primary_interface()?;
     let gateway = detect_default_gateway();
-    let dns_servers = detect_dns_servers();
+    let mut dns_servers = detect_dns_servers();
+    // Filter out loopback stubs (systemd-resolved) and fall back to public DNS
+    dns_servers.retain(|s| !s.starts_with("127."));
+    if dns_servers.is_empty() {
+        info!("No usable DNS servers detected, defaulting to 1.1.1.1 and 8.8.8.8");
+        dns_servers = vec!["1.1.1.1".to_string(), "8.8.8.8".to_string()];
+    }
 
     let subnet = format!(
         "{}/{}",

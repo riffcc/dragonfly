@@ -557,10 +557,12 @@ impl DhcpServer {
             builder = builder.with_dns_servers(self.config.dns_servers.clone());
         }
 
-        // Add PXE options if this is a PXE request and allowed
-        if request.is_pxe_request() && machine.allows_pxe() {
+        // Add PXE boot options if allowed
+        // In Full mode, always include boot options — some PXE ROMs (VMware)
+        // drop Option 60 on REQUEST after sending it on DISCOVER, so we can't
+        // gate on is_pxe_request() alone.
+        if machine.allows_pxe() {
             let pxe = if request.is_ipxe {
-                // iPXE client - send boot script URL
                 let script_url = self.config.ipxe_script_url.clone().unwrap_or_else(|| {
                     format!(
                         "http://{}:{}/boot/${{mac}}",
@@ -574,7 +576,6 @@ impl DhcpServer {
                     boot_servers: vec![],
                 }
             } else {
-                // Standard PXE client - send iPXE binary
                 PxeOptions::from_config(&self.config, is_uefi, arch)
             };
             builder = builder.with_pxe_options(pxe);
@@ -609,10 +610,9 @@ impl DhcpServer {
             builder = builder.with_dns_servers(self.config.dns_servers.clone());
         }
 
-        // Add PXE options if this is a PXE request and allowed
-        if request.is_pxe_request() && machine.allows_pxe() {
+        // Always include boot options in Full mode (see build_offer comment)
+        if machine.allows_pxe() {
             let pxe = if request.is_ipxe {
-                // iPXE client - send boot script URL
                 let script_url = self.config.ipxe_script_url.clone().unwrap_or_else(|| {
                     format!(
                         "http://{}:{}/boot/${{mac}}",
@@ -626,7 +626,6 @@ impl DhcpServer {
                     boot_servers: vec![],
                 }
             } else {
-                // Standard PXE client - send iPXE binary
                 PxeOptions::from_config(&self.config, is_uefi, arch)
             };
             builder = builder.with_pxe_options(pxe);
@@ -659,8 +658,10 @@ impl DhcpServer {
             builder = builder.with_dns_servers(self.config.dns_servers.clone());
         }
 
-        // Add PXE options for PXE requests
-        if request.is_pxe_request() {
+        // Always include boot options in Full mode for pool clients —
+        // non-PXE clients simply ignore Option 66/67, and some PXE ROMs
+        // (VMware) drop Option 60 on REQUEST after sending it on DISCOVER.
+        {
             let pxe = if request.is_ipxe {
                 let script_url = self.config.ipxe_script_url.clone().unwrap_or_else(|| {
                     format!(
@@ -701,7 +702,8 @@ impl DhcpServer {
             builder = builder.with_dns_servers(self.config.dns_servers.clone());
         }
 
-        if request.is_pxe_request() {
+        // Always include boot options (see build_pool_offer comment)
+        {
             let pxe = if request.is_ipxe {
                 let script_url = self.config.ipxe_script_url.clone().unwrap_or_else(|| {
                     format!(

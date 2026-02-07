@@ -315,11 +315,18 @@ async fn build_dhcp_config_from_store(store: &Arc<dyn store::v1::Store>) -> Dhcp
                         .gateway
                         .as_deref()
                         .and_then(|s| s.parse::<std::net::Ipv4Addr>().ok());
-                    let dns: Vec<std::net::Ipv4Addr> = net
+                    let mut dns: Vec<std::net::Ipv4Addr> = net
                         .dns_servers
                         .iter()
                         .filter_map(|s| s.parse().ok())
                         .collect();
+                    if dns.is_empty() {
+                        info!("No DNS servers configured on network '{}', using public defaults (1.1.1.1, 8.8.8.8)", net.name);
+                        dns = vec![
+                            std::net::Ipv4Addr::new(1, 1, 1, 1),
+                            std::net::Ipv4Addr::new(8, 8, 8, 8),
+                        ];
+                    }
                     (pool_start, pool_end, mask, gw, dns)
                 }
                 None => {
