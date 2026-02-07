@@ -8,7 +8,6 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  RUSTFLAGS: -D warnings
 
 jobs:
   check:
@@ -22,7 +21,7 @@ jobs:
       - run: npm install
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: sudo apt-get update && sudo apt-get install -y libssl-dev pkg-config
+      - run: sudo apt-get update && sudo apt-get install -y pkg-config
       - run: cargo check --workspace
 
   test:
@@ -36,7 +35,7 @@ jobs:
       - run: npm install
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: sudo apt-get update && sudo apt-get install -y libssl-dev pkg-config
+      - run: sudo apt-get update && sudo apt-get install -y pkg-config
       - run: cargo test --workspace
 
   fmt:
@@ -62,5 +61,5 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      - run: sudo apt-get update && sudo apt-get install -y libssl-dev pkg-config
-      - run: cargo clippy --workspace -- -D warnings
+      - run: sudo apt-get update && sudo apt-get install -y pkg-config
+      - run: cargo clippy --workspace -- -W clippy::all

@@ -11,22 +11,22 @@ use anyhow::Error;
 // macOS and Linux have different function signatures for libc::major/minor
 #[cfg(target_os = "macos")]
 fn device_major(dev: u64) -> u32 {
-    unsafe { libc::major(dev as i32) as u32 }
+    libc::major(dev as i32) as u32
 }
 
 #[cfg(target_os = "macos")]
 fn device_minor(dev: u64) -> u32 {
-    unsafe { libc::minor(dev as i32) as u32 }
+    libc::minor(dev as i32) as u32
 }
 
 #[cfg(not(target_os = "macos"))]
 fn device_major(dev: u64) -> u32 {
-    device_major(dev)
+    libc::major(dev) as u32
 }
 
 #[cfg(not(target_os = "macos"))]
 fn device_minor(dev: u64) -> u32 {
-    device_minor(dev)
+    libc::minor(dev) as u32
 }
 
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};

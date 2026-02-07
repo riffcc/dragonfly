@@ -351,19 +351,14 @@ pub struct Disk {
     pub health: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum InterfaceType {
+    #[default]
     Ether,
     Bond,
     Bridge,
     Unknown,
-}
-
-impl Default for InterfaceType {
-    fn default() -> Self {
-        Self::Ether
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -392,20 +387,15 @@ pub struct NetworkInterface {
 // ============================================================================
 
 /// Network configuration mode
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum NetworkMode {
+    #[default]
     Dhcp,
     DhcpStaticDns,
     StaticIpv4,
     StaticIpv6,
     StaticDualStack,
-}
-
-impl Default for NetworkMode {
-    fn default() -> Self {
-        Self::Dhcp
-    }
 }
 
 /// Static IPv4 configuration

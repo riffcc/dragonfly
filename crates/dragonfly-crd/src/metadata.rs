@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use uuid::Uuid;
 
 /// Kubernetes-style object metadata
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ObjectMeta {
     /// Resource name (required)
@@ -76,19 +76,7 @@ impl ObjectMeta {
     }
 }
 
-impl Default for ObjectMeta {
-    fn default() -> Self {
-        Self {
-            name: String::new(),
-            namespace: None,
-            uid: None,
-            resource_version: None,
-            labels: HashMap::new(),
-            annotations: HashMap::new(),
-            creation_timestamp: None,
-        }
-    }
-}
+
 
 /// Type metadata for CRD objects
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
