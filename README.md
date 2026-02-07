@@ -38,7 +38,6 @@ The main highlights:
 - 📡 Automatic machine registration via PXE + Spark (Dragonfly Agent)
 - 🔄 Automated OS installation with support for ISOs, PXE, and chainloading.
 - 🏎️ Deploy Linux in under 60 seconds.
-  Dragonfly deploys - fast. Bring up a machine all the way to SSH in 60 seconds or less.
 - 🔧 Perform maintenance tasks such as memtest, rescue mode boot and remote reimaging.
 More features:
 - 🔒 Login system with admin/user roles and permissions
