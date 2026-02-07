@@ -631,7 +631,7 @@ pub async fn generate_default_credentials(
     }
 
     // Save password to file for user convenience
-    if let Err(e) = fs::write(INITIAL_PASSWORD_FILE, &password) {
+    if let Err(e) = fs::write(INITIAL_PASSWORD_FILE, format!("{}\n", password)) {
         error!("Failed to save initial password to file: {}", e);
         // This is not a critical error, so we can continue
     } else {

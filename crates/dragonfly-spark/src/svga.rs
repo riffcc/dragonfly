@@ -7,7 +7,7 @@
 //! after iPXE has run.
 //!
 //! Register interface:
-//!   BAR0 = I/O port pair (index at +0, value at +1)
+//!   BAR0 = I/O port pair (index at +0, value at +4, dword-spaced)
 //!   BAR1 = Framebuffer VRAM (linear, memory-mapped)
 
 use crate::framebuffer::{Framebuffer, FB};
@@ -19,9 +19,9 @@ const VMWARE_VENDOR: u16 = 0x15AD;
 /// VMware SVGA II device ID
 const SVGA_DEVICE: u16 = 0x0405;
 
-/// I/O port offsets from BAR0
+/// I/O port offsets from BAR0 (dword-spaced, not byte-spaced)
 const SVGA_INDEX_PORT: u16 = 0;
-const SVGA_VALUE_PORT: u16 = 1;
+const SVGA_VALUE_PORT: u16 = 4;
 
 /// SVGA II register indices
 const SVGA_REG_ID: u32 = 0;
@@ -121,6 +121,9 @@ pub fn init() -> bool {
     serial::print_hex32(fb_base);
     serial::println("");
 
+    // Enable PCI I/O + memory space BEFORE accessing registers
+    pci::enable_bus_master(&dev);
+
     unsafe {
         // Version negotiation — request SVGA II
         svga_write(iobase, SVGA_REG_ID, SVGA_ID_2);
@@ -197,9 +200,6 @@ pub fn init() -> bool {
         serial::print("SVGA: Framebuffer at 0x");
         serial::print_hex32(fb_addr);
         serial::println("");
-
-        // Enable PCI memory space access (bit 1 of PCI command register)
-        pci::enable_bus_master(&dev);
 
         // Store in global framebuffer
         *FB.lock() = Some(Framebuffer {

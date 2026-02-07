@@ -1048,7 +1048,7 @@ pub async fn settings_page(
         match fs::read_to_string("/var/lib/dragonfly/initial_password.txt") {
             Ok(password) => {
                 info!("Found initial password file, will display to admin");
-                (true, password)
+                (true, password.trim().to_string())
             }
             Err(e) => {
                 info!("No initial password file found: {}", e);
@@ -1168,7 +1168,7 @@ pub async fn settings_page_section(
 
     let (has_initial_password, rendered_password) = if is_authenticated {
         match std::fs::read_to_string("/var/lib/dragonfly/initial_password.txt") {
-            Ok(password) => (true, password),
+            Ok(password) => (true, password.trim().to_string()),
             Err(_) => (false, String::new()),
         }
     } else {
