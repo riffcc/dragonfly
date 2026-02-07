@@ -813,7 +813,7 @@ pub async fn generate_proxmox_tokens_with_credentials(
             // 2. Update roles with proper permissions
             let role_permissions = [
                 ("DragonflyVMConfig", "VM.Config.Options,VM.Config.Disk"), // Changed VM.Config.Boot to VM.Config.Disk
-                ("DragonflySync", "VM.Audit,Sys.Audit"),
+                ("DragonflySync", "VM.Audit,Sys.Audit,Sys.Modify,SDN.Audit"),
             ];
             
             for (role_name, permissions) in role_permissions.iter() {
@@ -1180,10 +1180,17 @@ async fn discover_and_register_proxmox_vms(
         // Exclude virtual interfaces (tap, veth, fwbr, fwpr, fwln, docker, virbr, lo)
         let node_net_path = format!("/api2/json/nodes/{}/network", node_name);
         let mut physical_nics: Vec<dragonfly_common::NetworkInterface> = Vec::new();
+        let mut node_iface_methods: std::collections::HashMap<String, String> = std::collections::HashMap::new();
 
         if let Ok(resp) = client.get(&node_net_path).await {
             if let Ok(val) = serde_json::from_slice::<serde_json::Value>(&resp.body) {
                 if let Some(ifaces) = val.get("data").and_then(|d| d.as_array()) {
+                    // Log ALL interfaces from Proxmox API before any filtering
+                    let all_names: Vec<&str> = ifaces.iter()
+                        .filter_map(|i| i.get("iface").and_then(|n| n.as_str()))
+                        .collect();
+                    info!("Node '{}': Proxmox API returned {} interfaces: {:?}", node_name, ifaces.len(), all_names);
+
                     for iface in ifaces {
                         let name = iface.get("iface").and_then(|n| n.as_str()).unwrap_or("");
                         let itype = iface.get("type").and_then(|t| t.as_str()).unwrap_or("");
@@ -1251,8 +1258,13 @@ async fn discover_and_register_proxmox_vms(
                         let mtu = iface.get("mtu")
                             .and_then(|v| v.as_str().and_then(|s| s.parse().ok()).or_else(|| v.as_u64().map(|n| n as u32)));
 
-                        info!("Node '{}': found NIC {} (type={}, hwaddr={}, active={}, members={:?})",
-                              node_name, name, itype, hwaddr, active, members);
+                        // Track the network method (static/dhcp/manual) per interface
+                        if let Some(method) = iface.get("method").and_then(|m| m.as_str()) {
+                            node_iface_methods.insert(name.to_string(), method.to_string());
+                        }
+
+                        info!("Node '{}': found NIC {} (type={}, hwaddr={}, active={}, ip={:?}, members={:?})",
+                              node_name, name, itype, hwaddr, active, ip_address, members);
 
                         physical_nics.push(dragonfly_common::NetworkInterface {
                             name: name.to_string(),
@@ -1270,6 +1282,72 @@ async fn discover_and_register_proxmox_vms(
                             bond_mode,
                             mtu,
                         });
+                    }
+                }
+            }
+        } else {
+            warn!("Node '{}': failed to fetch /nodes/{}/network — no NICs collected", node_name, node_name);
+        }
+
+        // Log collected NIC summary
+        let collected_names: Vec<&str> = physical_nics.iter().map(|n| n.name.as_str()).collect();
+        info!("Node '{}': collected {} NICs after filtering: {:?}", node_name, physical_nics.len(), collected_names);
+
+        // ── GPUs from /nodes/{node}/hardware/pci ──────────────────────────
+        let mut host_gpus: Vec<dragonfly_common::GpuInfo> = Vec::new();
+        let pci_path = format!("/api2/json/nodes/{}/hardware/pci", node_name);
+        if let Ok(pci_resp) = client.get(&pci_path).await {
+            if let Ok(pci_val) = serde_json::from_slice::<serde_json::Value>(&pci_resp.body) {
+                if let Some(pci_devices) = pci_val.get("data").and_then(|d| d.as_array()) {
+                    for dev in pci_devices {
+                        let class = dev.get("class").and_then(|c| c.as_str()).unwrap_or("");
+                        // VGA compatible (0x0300), 3D controller (0x0302), Display (0x0380)
+                        if class.starts_with("0x03") {
+                            let name = dev.get("device_name").and_then(|n| n.as_str()).unwrap_or("Unknown GPU").to_string();
+                            let vendor = dev.get("vendor_name").and_then(|v| v.as_str()).map(String::from);
+                            info!("Node '{}': found GPU: {} ({})", node_name, name, vendor.as_deref().unwrap_or("unknown"));
+                            host_gpus.push(dragonfly_common::GpuInfo {
+                                name,
+                                vendor,
+                                vram_bytes: None, // Proxmox PCI API doesn't expose VRAM
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── Disks from /nodes/{node}/disks/list ──────────────────────────
+        let mut host_disks: Vec<dragonfly_common::Disk> = Vec::new();
+        let disks_path = format!("/api2/json/nodes/{}/disks/list", node_name);
+        if let Ok(disks_resp) = client.get(&disks_path).await {
+            if let Ok(disks_val) = serde_json::from_slice::<serde_json::Value>(&disks_resp.body) {
+                if let Some(disks_data) = disks_val.get("data").and_then(|d| d.as_array()) {
+                    for disk in disks_data {
+                        let devpath = disk.get("devpath").and_then(|d| d.as_str()).unwrap_or("").to_string();
+                        let size = disk.get("size").and_then(|s| s.as_u64()).unwrap_or(0);
+                        let model = disk.get("model").and_then(|m| m.as_str()).map(String::from);
+                        let serial = disk.get("serial").and_then(|s| s.as_str()).map(String::from);
+                        let disk_type = disk.get("type").and_then(|t| t.as_str()).map(String::from);
+                        let wearout = disk.get("wearout").and_then(|w| w.as_u64()).map(|w| w as u32);
+                        let health = disk.get("health").and_then(|h| h.as_str()).map(String::from);
+                        if !devpath.is_empty() && size > 0 {
+                            info!("Node '{}': found disk {} ({}, {:.0}GB, wear={}%, health={})",
+                                  node_name, devpath,
+                                  disk_type.as_deref().unwrap_or("?"),
+                                  size as f64 / 1e9,
+                                  wearout.map(|w| w.to_string()).unwrap_or("N/A".to_string()),
+                                  health.as_deref().unwrap_or("?"));
+                            host_disks.push(dragonfly_common::Disk {
+                                device: devpath,
+                                size_bytes: size,
+                                model,
+                                serial,
+                                disk_type,
+                                wearout,
+                                health,
+                            });
+                        }
                     }
                 }
             }
@@ -1314,14 +1392,15 @@ async fn discover_and_register_proxmox_vms(
                     current_ip: Some(host_ip.clone()),
                     current_workflow: None,
                     last_workflow_result: None,
+                    uptime_seconds: None,
                 },
                 hardware: dragonfly_common::HardwareInfo {
                     cpu_model: host_cpu_model,
                     cpu_cores: host_cpu_cores,
                     cpu_threads: host_cpu_threads,
                     memory_bytes: host_ram_bytes,
-                    disks: Vec::new(),
-                    gpus: Vec::new(),
+                    disks: host_disks,
+                    gpus: host_gpus,
                     network_interfaces: physical_nics,
                     is_virtual: false,
                     virt_platform: None,
@@ -1329,6 +1408,49 @@ async fn discover_and_register_proxmox_vms(
                 config: {
                     let mut cfg = dragonfly_common::MachineConfig::with_mac(&primary_mac);
                     cfg.hostname = Some(host_hostname.clone());
+
+                    // Detect network mode from interface method fields
+                    // We stored method in node_iface_methods during NIC enumeration
+                    if let Some(method) = node_iface_methods.get("vmbr0")
+                        .or_else(|| node_iface_methods.values().find(|m| *m == "static"))
+                    {
+                        match method.as_str() {
+                            "static" => {
+                                // Check if we have both IPv4 and IPv6
+                                if node_iface_methods.values().any(|m| m == "static") {
+                                    cfg.network_mode = dragonfly_common::NetworkMode::StaticIpv4;
+                                }
+                            }
+                            _ => {} // Dhcp is the default
+                        }
+                    }
+
+                    // Fetch DNS nameservers from /nodes/{node}/dns
+                    let dns_path = format!("/api2/json/nodes/{}/dns", node_name);
+                    if let Ok(dns_resp) = client.get(&dns_path).await {
+                        if let Ok(dns_val) = serde_json::from_slice::<serde_json::Value>(&dns_resp.body) {
+                            if let Some(data) = dns_val.get("data") {
+                                let mut nameservers = Vec::new();
+                                for key in &["dns1", "dns2", "dns3"] {
+                                    if let Some(ns) = data.get(key).and_then(|v| v.as_str()) {
+                                        if !ns.is_empty() {
+                                            nameservers.push(ns.to_string());
+                                        }
+                                    }
+                                }
+                                if !nameservers.is_empty() {
+                                    info!("Node '{}': DNS nameservers: {:?}", node_name, nameservers);
+                                    cfg.nameservers = nameservers;
+                                }
+                                if let Some(search) = data.get("search").and_then(|v| v.as_str()) {
+                                    if !search.is_empty() {
+                                        cfg.domain = Some(search.to_string());
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     cfg
                 },
                 metadata: dragonfly_common::MachineMetadata {
@@ -2240,11 +2362,11 @@ pub async fn start_proxmox_sync_task(
                         continue;
                     }
 
-                    // Connect to Proxmox — try "config" token first (needed for tag write-back),
-                    // fall back to "sync" token (read-only)
-                    let client = match connect_to_proxmox(&state_clone, "config").await {
+                    // Connect to Proxmox — try "sync" token first (has VM.Audit for visibility),
+                    // fall back to "config" token (may lack VM.Audit)
+                    let client = match connect_to_proxmox(&state_clone, "sync").await {
                         Ok(c) => c,
-                        Err(_) => match connect_to_proxmox(&state_clone, "sync").await {
+                        Err(_) => match connect_to_proxmox(&state_clone, "config").await {
                             Ok(c) => c,
                             Err(e) => {
                                 error!("Failed to connect to Proxmox for sync check: {}", e);
@@ -2478,10 +2600,12 @@ async fn sync_proxmox_machines(
         .ok_or_else(|| anyhow::anyhow!("Sync: Invalid nodes response format"))?;
 
     let mut existing_node_names = std::collections::HashSet::new();
-    // VM details: vmid → (node, status, agent_running, tags)
-    let mut vm_details: std::collections::HashMap<u32, (String, String, bool, Vec<String>)> = std::collections::HashMap::new();
-    // LXC details: ctid → (node, status, tags)
-    let mut lxc_details: std::collections::HashMap<u32, (String, String, Vec<String>)> = std::collections::HashMap::new();
+    // VM details: vmid → (node, status, agent_running, tags, uptime_secs)
+    let mut vm_details: std::collections::HashMap<u32, (String, String, bool, Vec<String>, Option<u64>)> = std::collections::HashMap::new();
+    // LXC details: ctid → (node, status, tags, uptime_secs)
+    let mut lxc_details: std::collections::HashMap<u32, (String, String, Vec<String>, Option<u64>)> = std::collections::HashMap::new();
+    // Node uptime: node_name → uptime_secs
+    let mut node_uptimes: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
     // Track which nodes we successfully enumerated VMs/LXCs for.
     // Only prune machines from nodes where we got a confirmed successful API response.
     let mut nodes_with_successful_vm_enum: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -2492,19 +2616,25 @@ async fn sync_proxmox_machines(
             .and_then(|n| n.as_str())
             .ok_or_else(|| anyhow::anyhow!("Sync: Node missing 'node' field"))?;
         existing_node_names.insert(node_name.to_string());
+        if let Some(uptime) = node.get("uptime").and_then(|u| u.as_u64()) {
+            node_uptimes.insert(node_name.to_string(), uptime);
+        }
 
         // ── VMs (qemu) ──────────────────────────────────────────────────
         let vms_path = format!("/api2/json/nodes/{}/qemu", node_name);
         match client.get(&vms_path).await {
             Ok(vms_resp) => {
+                if vms_resp.status != 200 {
+                    warn!("Sync: Node '{}' VM endpoint returned HTTP {} — skipping", node_name, vms_resp.status);
+                } else {
                 match serde_json::from_slice::<serde_json::Value>(&vms_resp.body) {
                     Ok(vms_val) => {
                         if let Some(vms_data) = vms_val.get("data").and_then(|d| d.as_array()) {
-                            // Successful enumeration — we can trust this list
                             nodes_with_successful_vm_enum.insert(node_name.to_string());
                             for vm in vms_data {
                                 let Some(vmid) = vm.get("vmid").and_then(|id| id.as_u64()).map(|id| id as u32) else { continue };
                                 let status = vm.get("status").and_then(|s| s.as_str()).unwrap_or("unknown").to_string();
+                                let uptime = vm.get("uptime").and_then(|u| u.as_u64());
 
                                 // Fetch VM config for agent check + tags
                                 let cfg_path = format!("/api2/json/nodes/{}/qemu/{}/config", node_name, vmid);
@@ -2538,7 +2668,7 @@ async fn sync_proxmox_machines(
                                         .unwrap_or(false);
                                 }
 
-                                vm_details.insert(vmid, (node_name.to_string(), status, agent_running, api_tags));
+                                vm_details.insert(vmid, (node_name.to_string(), status, agent_running, api_tags, uptime));
                             }
                         } else {
                             warn!("Sync: Node '{}' VM response missing 'data' array — skipping VM sync for this node", node_name);
@@ -2546,6 +2676,7 @@ async fn sync_proxmox_machines(
                     }
                     Err(e) => warn!("Sync: Failed to parse VM response for node '{}': {} — skipping VM sync for this node", node_name, e),
                 }
+                } // status == 200
             }
             Err(e) => warn!("Sync: Failed to fetch VMs for node '{}': {} — skipping VM sync for this node", node_name, e),
         }
@@ -2554,14 +2685,17 @@ async fn sync_proxmox_machines(
         let lxc_path = format!("/api2/json/nodes/{}/lxc", node_name);
         match client.get(&lxc_path).await {
             Ok(lxc_resp) => {
+                if lxc_resp.status != 200 {
+                    warn!("Sync: Node '{}' LXC endpoint returned HTTP {} — skipping", node_name, lxc_resp.status);
+                } else {
                 match serde_json::from_slice::<serde_json::Value>(&lxc_resp.body) {
                     Ok(lxc_val) => {
                         if let Some(lxc_data) = lxc_val.get("data").and_then(|d| d.as_array()) {
-                            // Successful enumeration — we can trust this list
                             nodes_with_successful_lxc_enum.insert(node_name.to_string());
                             for ct in lxc_data {
                                 let Some(ctid) = ct.get("vmid").and_then(|id| id.as_u64()).map(|id| id as u32) else { continue };
                                 let status = ct.get("status").and_then(|s| s.as_str()).unwrap_or("unknown").to_string();
+                                let uptime = ct.get("uptime").and_then(|u| u.as_u64());
 
                                 // Fetch LXC config for tags
                                 let cfg_path = format!("/api2/json/nodes/{}/lxc/{}/config", node_name, ctid);
@@ -2573,7 +2707,7 @@ async fn sync_proxmox_machines(
                                     Err(_) => Vec::new(),
                                 };
 
-                                lxc_details.insert(ctid, (node_name.to_string(), status, api_tags));
+                                lxc_details.insert(ctid, (node_name.to_string(), status, api_tags, uptime));
                             }
                         } else {
                             warn!("Sync: Node '{}' LXC response missing 'data' array — skipping LXC sync for this node", node_name);
@@ -2581,6 +2715,7 @@ async fn sync_proxmox_machines(
                     }
                     Err(e) => warn!("Sync: Failed to parse LXC response for node '{}': {} — skipping LXC sync for this node", node_name, e),
                 }
+                } // status == 200
             }
             Err(e) => warn!("Sync: Failed to fetch LXCs for node '{}': {} — skipping LXC sync for this node", node_name, e),
         }
@@ -2608,12 +2743,28 @@ async fn sync_proxmox_machines(
                     info!("Sync: Proxmox host '{}' (ID: {}) removed from cluster, deleting",
                           node, db_machine.id);
                     machines_to_prune.push(db_machine.id);
+                } else if let Some(&uptime) = node_uptimes.get(node) {
+                    // Sync uptime for physical hosts
+                    let mut machine = match state.store.get_machine(db_machine.id).await {
+                        Ok(Some(m)) => m,
+                        _ => continue,
+                    };
+                    if machine.status.uptime_seconds != Some(uptime) {
+                        machine.status.uptime_seconds = Some(uptime);
+                        machine.status.last_seen = Some(chrono::Utc::now());
+                        machine.metadata.updated_at = chrono::Utc::now();
+                        if let Err(e) = state.store.put_machine(&machine).await {
+                            error!("Sync: Failed to save node '{}' uptime: {}", node, e);
+                        } else {
+                            updated_count += 1;
+                        }
+                    }
                 }
             }
 
             // ── QEMU VMs ────────────────────────────────────────────
             MachineSource::Proxmox { node, vmid, .. } => {
-                if let Some((api_node, api_status, agent_running, api_tags)) = vm_details.get(vmid) {
+                if let Some((api_node, api_status, agent_running, api_tags, api_uptime)) = vm_details.get(vmid) {
                     let mut machine = match state.store.get_machine(db_machine.id).await {
                         Ok(Some(m)) => m,
                         _ => continue,
@@ -2629,6 +2780,12 @@ async fn sync_proxmox_machines(
                     if machine.status.state != new_state {
                         info!("Sync: VM {} status {:?} → {:?}", vmid, machine.status.state, new_state);
                         machine.status.state = new_state;
+                        changed = true;
+                    }
+
+                    // Uptime sync
+                    if machine.status.uptime_seconds != *api_uptime {
+                        machine.status.uptime_seconds = *api_uptime;
                         changed = true;
                     }
 
@@ -2685,7 +2842,7 @@ async fn sync_proxmox_machines(
 
             // ── LXC containers ──────────────────────────────────────
             MachineSource::ProxmoxLxc { node, ctid, .. } => {
-                if let Some((api_node, api_status, api_tags)) = lxc_details.get(ctid) {
+                if let Some((api_node, api_status, api_tags, api_uptime)) = lxc_details.get(ctid) {
                     let mut machine = match state.store.get_machine(db_machine.id).await {
                         Ok(Some(m)) => m,
                         _ => continue,
@@ -2701,6 +2858,12 @@ async fn sync_proxmox_machines(
                     if machine.status.state != new_state {
                         info!("Sync: LXC {} status {:?} → {:?}", ctid, machine.status.state, new_state);
                         machine.status.state = new_state;
+                        changed = true;
+                    }
+
+                    // Uptime sync
+                    if machine.status.uptime_seconds != *api_uptime {
+                        machine.status.uptime_seconds = *api_uptime;
                         changed = true;
                     }
 
@@ -2743,16 +2906,75 @@ async fn sync_proxmox_machines(
     }
 
     // ── Phase 3: Delete machines confirmed gone from Proxmox ─────────────
+    // Safety invariant: NEVER prune to 0 through sync alone. If the API shows 0
+    // VMs/LXCs on a node but the DB has machines there, the last deletions must
+    // come through the live event stream. This protects against permission issues
+    // where the token can't see VMs (200 OK with empty data:[]).
     if !machines_to_prune.is_empty() {
-        info!("Sync: Deleting {} machines confirmed removed from Proxmox", machines_to_prune.len());
-        for machine_id in &machines_to_prune {
-            match state.store.delete_machine(*machine_id).await {
-                Ok(true) => {
-                    info!("Sync: Deleted machine {}", machine_id);
-                    pruned_count += 1;
+        // Count how many DB machines of each type exist per node
+        let mut db_vm_per_node: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        let mut db_lxc_per_node: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        for m in db_machines {
+            match &m.metadata.source {
+                MachineSource::Proxmox { node, .. } => *db_vm_per_node.entry(node.clone()).or_default() += 1,
+                MachineSource::ProxmoxLxc { node, .. } => *db_lxc_per_node.entry(node.clone()).or_default() += 1,
+                _ => {}
+            }
+        }
+
+        // Count how many would be pruned per node per type
+        let mut prune_vm_per_node: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        let mut prune_lxc_per_node: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        for m in db_machines {
+            if !machines_to_prune.contains(&m.id) { continue; }
+            match &m.metadata.source {
+                MachineSource::Proxmox { node, .. } => *prune_vm_per_node.entry(node.clone()).or_default() += 1,
+                MachineSource::ProxmoxLxc { node, .. } => *prune_lxc_per_node.entry(node.clone()).or_default() += 1,
+                _ => {}
+            }
+        }
+
+        // Build blocked nodes — where pruning would go to 0
+        let mut blocked_nodes_vm: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut blocked_nodes_lxc: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for (node, prune_count) in &prune_vm_per_node {
+            if let Some(&db_count) = db_vm_per_node.get(node) {
+                if *prune_count >= db_count {
+                    warn!("Sync: Refusing to prune all {} VMs on node '{}' — last deletions must come through event stream", db_count, node);
+                    blocked_nodes_vm.insert(node.clone());
                 }
-                Ok(false) => warn!("Sync: Machine {} already deleted", machine_id),
-                Err(e) => error!("Sync: Failed to delete machine {}: {}", machine_id, e),
+            }
+        }
+        for (node, prune_count) in &prune_lxc_per_node {
+            if let Some(&db_count) = db_lxc_per_node.get(node) {
+                if *prune_count >= db_count {
+                    warn!("Sync: Refusing to prune all {} LXCs on node '{}' — last deletions must come through event stream", db_count, node);
+                    blocked_nodes_lxc.insert(node.clone());
+                }
+            }
+        }
+
+        // Filter out blocked prunes
+        let safe_prunes: Vec<uuid::Uuid> = machines_to_prune.iter().filter(|id| {
+            let m = db_machines.iter().find(|m| m.id == **id);
+            match m.map(|m| &m.metadata.source) {
+                Some(MachineSource::Proxmox { node, .. }) => !blocked_nodes_vm.contains(node),
+                Some(MachineSource::ProxmoxLxc { node, .. }) => !blocked_nodes_lxc.contains(node),
+                _ => true, // nodes are pruned by cluster membership, different rule
+            }
+        }).copied().collect();
+
+        if !safe_prunes.is_empty() {
+            info!("Sync: Deleting {} machines confirmed removed from Proxmox", safe_prunes.len());
+            for machine_id in &safe_prunes {
+                match state.store.delete_machine(*machine_id).await {
+                    Ok(true) => {
+                        info!("Sync: Deleted machine {}", machine_id);
+                        pruned_count += 1;
+                    }
+                    Ok(false) => warn!("Sync: Machine {} already deleted", machine_id),
+                    Err(e) => error!("Sync: Failed to delete machine {}: {}", machine_id, e),
+                }
             }
         }
     }
@@ -2952,7 +3174,20 @@ pub async fn load_proxmox_tokens_to_memory(
     
     // Release the lock
     drop(tokens);
-    
+
+    // Also populate connection settings in memory (host, port, username, tls)
+    // so connect_to_proxmox can find the host when using in-memory tokens
+    {
+        let mut app_settings = state.settings.lock().await;
+        if app_settings.proxmox_host.is_none() {
+            app_settings.proxmox_host = Some(settings.host.clone());
+            app_settings.proxmox_port = Some(settings.port as u16);
+            app_settings.proxmox_username = Some(settings.username.clone());
+            app_settings.proxmox_skip_tls_verify = Some(settings.skip_tls_verify);
+            info!("Restored Proxmox connection settings from DB: {}:{}", settings.host, settings.port);
+        }
+    }
+
     info!("Loaded {} Proxmox API tokens from database to memory", tokens_loaded);
     Ok(())
 }
@@ -3026,7 +3261,7 @@ async fn create_token_with_role(
                                                             // Try to set permissions
                                                             let permissions = match role_name {
                                                                 "DragonflyVMConfig" => "VM.Config.Options,VM.Config.Disk",
-                                                                "DragonflySync" => "VM.Audit,Sys.Audit",
+                                                                "DragonflySync" => "VM.Audit,Sys.Audit,Sys.Modify,SDN.Audit",
                                                                 _ => "",
                                                             };
                                                             
