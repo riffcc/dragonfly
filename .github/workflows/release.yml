@@ -3,73 +3,221 @@ name: Release
 on:
   push:
     tags:
-      - "v[0-9]+.[0-9]+.[0-9]+"           # stable: v0.1.0, v1.2.3
-      - "v[0-9]+.[0-9]+.[0-9]+-*"         # pre-release: v0.1.0-alpha1, v0.1.0-rc2
+      - "v[0-9]+.[0-9]+.[0-9]+"         # stable: v0.1.0
+      - "v[0-9]+.[0-9]+.[0-9]+-*"       # channel: v0.1.0-alpha1, v0.1.0-rc2, v0.1.0-devmybranch
 
 permissions:
   contents: write
+  packages: write
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # ── Build binaries ────────────────────────────────────────────────
   build:
-    name: Build ${{ matrix.target }}
+    name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - target: x86_64-unknown-linux-gnu
+          # Dragonfly — linux amd64
+          - name: linux-amd64
             os: ubuntu-latest
-            artifact: dragonfly-server
-          - target: x86_64-unknown-linux-musl
+            target: x86_64-unknown-linux-gnu
+            artifact: dragonfly-linux-amd64
+            agent-target: x86_64-unknown-linux-musl
+            agent-artifact: dragonfly-agent-linux-amd64
+
+          # Dragonfly — linux arm64
+          - name: linux-arm64
             os: ubuntu-latest
-            artifact: dragonfly-agent
+            target: aarch64-unknown-linux-gnu
+            artifact: dragonfly-linux-arm64
+            cross: true
+            agent-target: aarch64-unknown-linux-musl
+            agent-artifact: dragonfly-agent-linux-arm64
+            agent-cross: true
+
+          # Dragonfly — macOS arm64 (Apple Silicon)
+          - name: macos-arm64
+            os: macos-latest
+            target: aarch64-apple-darwin
+            artifact: dragonfly-macos-arm64
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "23"
+
+      - run: npm install
+
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.target }}
+          targets: ${{ matrix.target }}${{ matrix.agent-target && format(',{0}', matrix.agent-target) || '' }}
+
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}
 
-      - name: Install dependencies
+      - name: Install cross
+        if: matrix.cross
+        uses: taiki-e/install-action@cross
+
+      - name: Install system dependencies
+        if: runner.os == 'Linux' && !matrix.cross
         run: |
           sudo apt-get update
           sudo apt-get install -y libssl-dev pkg-config
-          if [ "${{ matrix.target }}" = "x86_64-unknown-linux-musl" ]; then
+          if [ -n "${{ matrix.agent-target }}" ]; then
             sudo apt-get install -y musl-tools
           fi
 
-      - name: Build server
-        if: matrix.artifact == 'dragonfly-server'
-        run: cargo build --release --target ${{ matrix.target }} -p dragonfly-server
+      # Pre-build Tailwind CSS on the host so cross containers don't need npm
+      - name: Pre-build Tailwind CSS
+        if: matrix.cross
+        run: npx tailwindcss -i crates/dragonfly-server/src/input.css -o crates/dragonfly-server/static/css/tailwind.css -c tailwind.config.js
 
-      - name: Build agent (static musl)
-        if: matrix.artifact == 'dragonfly-agent'
-        run: cargo build --release --target ${{ matrix.target }} -p dragonfly-agent
+      # ── Main dragonfly binary ──
+      - name: Build dragonfly (native)
+        if: "!matrix.cross"
+        run: cargo build --release --target ${{ matrix.target }}
 
-      - name: Prepare artifacts
-        run: |
-          mkdir -p dist
-          if [ "${{ matrix.artifact }}" = "dragonfly-server" ]; then
-            cp target/${{ matrix.target }}/release/dragonfly-server dist/dragonfly-server-x86_64
-          elif [ "${{ matrix.artifact }}" = "dragonfly-agent" ]; then
-            cp target/${{ matrix.target }}/release/dragonfly-agent dist/dragonfly-agent-x86_64
-          fi
+      - name: Build dragonfly (cross)
+        if: matrix.cross
+        run: cross build --release --target ${{ matrix.target }}
 
-      - name: Upload artifact
+      - name: Upload dragonfly
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact }}-${{ matrix.target }}
-          path: dist/
+          name: ${{ matrix.artifact }}
+          path: target/${{ matrix.target }}/release/dragonfly
 
+      # ── Agent binary (linux only, static musl) ──
+      - name: Build agent (native)
+        if: matrix.agent-target && !matrix.agent-cross
+        run: cargo build --release --target ${{ matrix.agent-target }} -p dragonfly-agent
+
+      - name: Build agent (cross)
+        if: matrix.agent-cross
+        run: cross build --release --target ${{ matrix.agent-target }} -p dragonfly-agent
+
+      - name: Upload agent
+        if: matrix.agent-artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.agent-artifact }}
+          path: target/${{ matrix.agent-target }}/release/dragonfly-agent
+
+  # ── Spark (bare metal bootloader, x86_64 only) ───────────────────
+  spark:
+    name: Spark
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+
+      - name: Install Spark build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y nasm grub-pc-bin xorriso mtools
+
+      - name: Build Spark
+        working-directory: crates/dragonfly-spark
+        run: |
+          cargo +nightly build \
+            --target x86_64-spark.json \
+            -Zbuild-std=core,alloc \
+            -Zbuild-std-features=compiler-builtins-mem \
+            -Zjson-target-spec \
+            --release
+          strip -o spark.elf target/x86_64-spark/release/dragonfly-spark
+          objcopy -O elf32-i386 spark.elf spark.elf
+
+          mkdir -p iso/boot/grub
+          cp spark.elf iso/boot/spark.bin
+          cp spark.elf iso/boot/spark.elf
+          cat > iso/boot/grub/grub.cfg << 'GRUBEOF'
+          set timeout=0
+          set default=0
+          menuentry "Dragonfly Spark" {
+              multiboot2 /boot/spark.bin
+              boot
+          }
+          GRUBEOF
+          grub-mkrescue -o spark.iso iso 2>/dev/null
+
+      - name: Upload spark.elf
+        uses: actions/upload-artifact@v4
+        with:
+          name: dragonfly-spark
+          path: crates/dragonfly-spark/spark.elf
+
+      - name: Upload spark.iso
+        uses: actions/upload-artifact@v4
+        with:
+          name: dragonfly-spark-iso
+          path: crates/dragonfly-spark/spark.iso
+
+  # ── Docker images (multi-arch) ────────────────────────────────────
+  docker:
+    name: Docker ${{ matrix.image }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: dragonfly
+            dockerfile: Dockerfile
+          - image: dragonfly-agent
+            dockerfile: crates/dragonfly-agent/Dockerfile
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/riffcc/${{ matrix.image }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable=${{ !contains(github.ref, '-') }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ── GitHub Release ────────────────────────────────────────────────
   release:
     name: Create Release
-    needs: build
+    needs: [build, spark, docker]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -82,19 +230,20 @@ jobs:
       - name: Collect release files
         run: |
           mkdir -p release
-          find artifacts -type f -exec cp {} release/ \;
+          for dir in artifacts/*/; do
+            name=$(basename "$dir")
+            find "$dir" -type f -exec cp {} "release/$name" \;
+          done
           ls -la release/
 
       - name: Determine pre-release
         id: prerelease
         run: |
           TAG="${GITHUB_REF#refs/tags/}"
-          if echo "$TAG" | grep -qP '^\d+\.\d+\.\d+$' || echo "$TAG" | grep -qP '^v\d+\.\d+\.\d+$'; then
+          if echo "$TAG" | grep -qP '^v\d+\.\d+\.\d+$'; then
             echo "prerelease=false" >> "$GITHUB_OUTPUT"
-            echo "Stable release: $TAG"
           else
             echo "prerelease=true" >> "$GITHUB_OUTPUT"
-            echo "Pre-release: $TAG"
           fi
 
       - name: Create GitHub Release

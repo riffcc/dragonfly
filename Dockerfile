@@ -18,11 +18,9 @@ RUN apt-get update && apt-get install -y \
 RUN bash -c 'curl -fsSL https://deb.nodesource.com/setup_23.x | bash -' && \
     apt-get install -y nodejs
 
-# Copy both jetpack and dragonfly (build context is parent directory)
-COPY jetpack/ /workspace/jetpack/
-COPY dragonfly/ /workspace/dragonfly/
+# Copy source (build context is repo root, cargo fetches jetpack via git)
+COPY . /workspace/dragonfly/
 
-# Set working directory to dragonfly for build
 WORKDIR /workspace/dragonfly
 
 RUN npm install
