@@ -149,7 +149,6 @@ impl ServiceRunner {
         let dhcp_config = DhcpConfig::new(actual_ip)
             .with_mode(config.mode.clone())
             .with_tftp_server(actual_ip)
-            .with_boot_filename(&config.boot_filename_uefi)
             .with_http_port(self.config.http_port);
 
         // Create machine lookup wrapper
