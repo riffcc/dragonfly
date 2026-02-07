@@ -4,7 +4,7 @@
 //! to the new v0.1.0 Store trait.
 
 use dragonfly_common::{
-    BmcConfig, BmcType, Disk, HardwareInfo, Machine, MachineConfig, MachineIdentity,
+    BmcConfig, BmcType, Disk, HardwareInfo, InterfaceType, Machine, MachineConfig, MachineIdentity,
     MachineMetadata, MachineSource, MachineState, MachineStatus, NetworkInterface,
     WorkflowResult,
 };
@@ -65,6 +65,12 @@ pub struct NetworkInterfaceResponse {
     pub name: String,
     pub mac: String,
     pub speed_mbps: Option<u32>,
+    pub interface_type: dragonfly_common::InterfaceType,
+    pub members: Vec<String>,
+    pub ip_address: Option<String>,
+    pub active: Option<bool>,
+    pub bond_mode: Option<String>,
+    pub mtu: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -138,6 +144,12 @@ impl From<&NetworkInterface> for NetworkInterfaceResponse {
             name: n.name.clone(),
             mac: n.mac.clone(),
             speed_mbps: n.speed_mbps,
+            interface_type: n.interface_type.clone(),
+            members: n.members.clone(),
+            ip_address: n.ip_address.clone(),
+            active: n.active,
+            bond_mode: n.bond_mode.clone(),
+            mtu: n.mtu,
         }
     }
 }
@@ -299,6 +311,12 @@ impl From<NetworkInterfaceRequest> for NetworkInterface {
             name: n.name,
             mac: n.mac,
             speed_mbps: n.speed_mbps,
+            interface_type: Default::default(),
+            members: Vec::new(),
+            ip_address: None,
+            active: None,
+            bond_mode: None,
+            mtu: None,
         }
     }
 }
@@ -320,6 +338,7 @@ pub struct UpdateMachineRequest {
     pub network_id: Option<uuid::Uuid>,
     pub cpu_cores: Option<u32>,
     pub total_ram_bytes: Option<u64>,
+    pub primary_interface: Option<String>,
 }
 
 /// Snapshot an old value and mark a field as pending-apply.
@@ -395,6 +414,23 @@ pub fn apply_machine_update(machine: &mut Machine, req: UpdateMachineRequest) {
     if let Some(ram) = req.total_ram_bytes {
         machine.hardware.memory_bytes = Some(ram);
         machine.config.pending_apply = true;
+    }
+    if let Some(ref primary_interface) = req.primary_interface {
+        if primary_interface.is_empty() {
+            // Clear primary interface
+            machine.config.primary_interface = None;
+        } else {
+            // Validate: interface name must exist in hardware.network_interfaces
+            let valid = machine.hardware.network_interfaces.iter().any(|i| i.name == *primary_interface);
+            if valid {
+                machine.config.primary_interface = Some(primary_interface.clone());
+                // Also update identity.primary_mac to the selected interface's MAC
+                // This keeps PXE boot lookup fast (indexed primary_mac column)
+                if let Some(iface) = machine.hardware.network_interfaces.iter().find(|i| i.name == *primary_interface) {
+                    machine.identity.primary_mac = iface.mac.clone();
+                }
+            }
+        }
     }
 
     machine.metadata.updated_at = Utc::now();
@@ -472,8 +508,15 @@ pub fn machine_to_common(m: &Machine) -> CommonMachine {
 
     CommonMachine {
         id: m.id,
-        mac_address: m.identity.primary_mac.clone(),
-        ip_address: m.status.current_ip.clone().unwrap_or_default(),
+        mac_address: m.config.primary_interface.as_ref()
+            .and_then(|pi| m.hardware.network_interfaces.iter().find(|i| &i.name == pi))
+            .map(|i| i.mac.clone())
+            .unwrap_or_else(|| m.identity.primary_mac.clone()),
+        ip_address: m.config.primary_interface.as_ref()
+            .and_then(|pi| m.hardware.network_interfaces.iter().find(|i| &i.name == pi))
+            .and_then(|i| i.ip_address.clone())
+            .or_else(|| m.status.current_ip.clone())
+            .unwrap_or_default(),
         hostname: m.config.hostname.clone(),
         reported_hostname: m.config.reported_hostname.clone(),
         os_choice: m.config.os_choice.clone(),
@@ -540,6 +583,8 @@ pub fn machine_to_common(m: &Machine) -> CommonMachine {
         network_id: m.config.network_id,
         pending_apply: m.config.pending_apply,
         pending_fields: m.config.pending_fields.clone(),
+        network_interfaces: m.hardware.network_interfaces.clone(),
+        primary_interface: m.config.primary_interface.clone(),
     }
 }
 
@@ -594,6 +639,12 @@ pub fn machine_from_register_request(req: &CommonRegisterRequest) -> Machine {
             name: "eth0".to_string(), // Default name
             mac: req.mac_address.clone(),
             speed_mbps: None,
+            interface_type: Default::default(),
+            members: Vec::new(),
+            ip_address: None,
+            active: None,
+            bond_mode: None,
+            mtu: None,
         }],
         is_virtual: req.proxmox_vmid.is_some(), // Assume virtual if Proxmox VMID present
         virt_platform: if req.proxmox_vmid.is_some() { Some("proxmox".to_string()) } else { None },

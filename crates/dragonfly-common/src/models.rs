@@ -72,6 +72,12 @@ pub struct Machine {
     /// Which fields have been saved but not yet applied
     #[serde(default)]
     pub pending_fields: Vec<String>,
+    /// All network interfaces with topology info
+    #[serde(default)]
+    pub network_interfaces: Vec<crate::NetworkInterface>,
+    /// Designated primary interface name
+    #[serde(default)]
+    pub primary_interface: Option<String>,
 }
 
 /// Machine lifecycle status

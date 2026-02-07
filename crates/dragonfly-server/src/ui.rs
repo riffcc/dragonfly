@@ -431,6 +431,8 @@ fn create_demo_machine(
         network_id: None,
         pending_apply: false,
         pending_fields: vec![],
+        network_interfaces: vec![],
+        primary_interface: None,
     }
 }
 

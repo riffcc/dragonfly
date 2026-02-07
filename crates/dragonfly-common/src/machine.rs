@@ -320,10 +320,37 @@ pub struct Disk {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum InterfaceType {
+    Ether,
+    Bond,
+    Bridge,
+    Unknown,
+}
+
+impl Default for InterfaceType {
+    fn default() -> Self { Self::Ether }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct NetworkInterface {
     pub name: String,
     pub mac: String,
     pub speed_mbps: Option<u32>,
+    #[serde(default)]
+    pub interface_type: InterfaceType,
+    /// Bridge ports or bond slaves
+    #[serde(default)]
+    pub members: Vec<String>,
+    /// IP address with CIDR prefix, e.g. "10.0.0.1/24"
+    #[serde(default)]
+    pub ip_address: Option<String>,
+    #[serde(default)]
+    pub active: Option<bool>,
+    #[serde(default)]
+    pub bond_mode: Option<String>,
+    #[serde(default)]
+    pub mtu: Option<u32>,
 }
 
 // ============================================================================
@@ -404,6 +431,9 @@ pub struct MachineConfig {
     /// Which Network entity this machine belongs to
     #[serde(default)]
     pub network_id: Option<Uuid>,
+    /// Designated primary interface name (e.g. "enp0s31f6", "vmbr0")
+    #[serde(default)]
+    pub primary_interface: Option<String>,
     /// Settings saved but not yet applied to the host
     #[serde(default)]
     pub pending_apply: bool,
@@ -437,6 +467,7 @@ impl MachineConfig {
             static_ipv6: None,
             domain: None,
             network_id: None,
+            primary_interface: None,
             pending_apply: false,
             pending_fields: Vec::new(),
             pending_snapshot: None,
@@ -464,6 +495,7 @@ impl MachineConfig {
             static_ipv6: None,
             domain: None,
             network_id: None,
+            primary_interface: None,
             pending_apply: false,
             pending_fields: Vec::new(),
             pending_snapshot: None,
