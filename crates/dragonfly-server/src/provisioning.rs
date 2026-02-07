@@ -495,6 +495,9 @@ impl ProvisioningService {
                 size_bytes: d.size_bytes,
                 model: d.model.clone(),
                 serial: d.serial.clone(),
+                disk_type: None,
+                wearout: None,
+                health: None,
             }).collect(),
             gpus: info.gpus.clone(),
             network_interfaces: info.interfaces.iter()
@@ -527,6 +530,7 @@ impl ProvisioningService {
             current_ip: info.ip_address.clone(),
             current_workflow: None,
             last_workflow_result: None,
+            uptime_seconds: None,
         };
 
         machine
@@ -569,6 +573,9 @@ impl ProvisioningService {
                 size_bytes: d.size_bytes,
                 model: d.model.clone(),
                 serial: d.serial.clone(),
+                disk_type: None,
+                wearout: None,
+                health: None,
             }).collect();
         }
 

@@ -58,6 +58,14 @@ pub struct DiskResponse {
     pub device: String,
     pub size_gb: f64,
     pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub serial: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub disk_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wearout: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub health: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -134,6 +142,10 @@ impl From<&Disk> for DiskResponse {
             device: d.device.clone(),
             size_gb: d.size_bytes as f64 / (1000.0 * 1000.0 * 1000.0), // Using decimal GB
             model: d.model.clone(),
+            serial: d.serial.clone(),
+            disk_type: d.disk_type.clone(),
+            wearout: d.wearout,
+            health: d.health.clone(),
         }
     }
 }
@@ -301,6 +313,9 @@ impl From<DiskRequest> for Disk {
             size_bytes: d.size_bytes,
             model: d.model,
             serial: d.serial,
+            disk_type: None,
+            wearout: None,
+            health: None,
         }
     }
 }
@@ -527,6 +542,10 @@ pub fn machine_to_common(m: &Machine) -> CommonMachine {
             size_bytes: d.size_bytes,
             model: d.model.clone(),
             calculated_size: Some(format!("{:.1} GB", d.size_bytes as f64 / 1_000_000_000.0)),
+            serial: d.serial.clone(),
+            disk_type: d.disk_type.clone(),
+            wearout: d.wearout,
+            health: d.health.clone(),
         }).collect(),
         nameservers: m.config.nameservers.clone(),
         reported_nameservers: m.config.reported_nameservers.clone(),
@@ -585,6 +604,7 @@ pub fn machine_to_common(m: &Machine) -> CommonMachine {
         pending_fields: m.config.pending_fields.clone(),
         network_interfaces: m.hardware.network_interfaces.clone(),
         primary_interface: m.config.primary_interface.clone(),
+        uptime_seconds: m.status.uptime_seconds,
     }
 }
 
@@ -633,6 +653,9 @@ pub fn machine_from_register_request(req: &CommonRegisterRequest) -> Machine {
             size_bytes: d.size_bytes,
             model: d.model.clone(),
             serial: None,
+            disk_type: None,
+            wearout: None,
+            health: None,
         }).collect(),
         gpus: Vec::new(),
         network_interfaces: vec![NetworkInterface {

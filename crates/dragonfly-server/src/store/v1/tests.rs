@@ -643,12 +643,18 @@ async fn test_machine_with_full_hardware_info() {
                 size_bytes: 500 * 1000 * 1000 * 1000,
                 model: Some("Samsung 970 EVO".to_string()),
                 serial: Some("S1234567890".to_string()),
+                disk_type: Some("ssd".to_string()),
+                wearout: Some(95),
+                health: Some("PASSED".to_string()),
             },
             Disk {
                 device: "/dev/nvme0n1".to_string(),
                 size_bytes: 2 * 1000 * 1000 * 1000 * 1000,
                 model: Some("Intel P4510".to_string()),
                 serial: None,
+                disk_type: Some("nvme".to_string()),
+                wearout: None,
+                health: None,
             },
         ],
         network_interfaces: vec![

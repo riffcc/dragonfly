@@ -391,6 +391,10 @@ fn create_demo_machine(
         size_bytes: disk_size_gb.unwrap_or(500) * 1_073_741_824, // Convert GB to bytes
         model: Some(format!("Demo Disk {}", disk_size_gb.unwrap_or(500))),
         calculated_size: Some(format!("{} GB", disk_size_gb.unwrap_or(500))),
+        serial: None,
+        disk_type: Some("ssd".to_string()),
+        wearout: Some(98),
+        health: Some("PASSED".to_string()),
     };
 
     // Create the machine with the correct fields
@@ -433,6 +437,7 @@ fn create_demo_machine(
         pending_fields: vec![],
         network_interfaces: vec![],
         primary_interface: None,
+        uptime_seconds: None,
     }
 }
 

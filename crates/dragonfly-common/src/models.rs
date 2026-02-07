@@ -78,6 +78,9 @@ pub struct Machine {
     /// Designated primary interface name
     #[serde(default)]
     pub primary_interface: Option<String>,
+    /// Uptime in seconds (from Proxmox API or agent)
+    #[serde(default)]
+    pub uptime_seconds: Option<u64>,
 }
 
 /// Machine lifecycle status
@@ -199,6 +202,14 @@ pub struct DiskInfo {
     pub model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub calculated_size: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub serial: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub disk_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub wearout: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub health: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

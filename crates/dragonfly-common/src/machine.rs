@@ -205,6 +205,9 @@ pub struct MachineStatus {
     pub current_ip: Option<String>,
     pub current_workflow: Option<Uuid>,
     pub last_workflow_result: Option<WorkflowResult>,
+    /// Uptime in seconds, updated by sync daemon
+    #[serde(default)]
+    pub uptime_seconds: Option<u64>,
 }
 
 /// Machine lifecycle state
@@ -317,6 +320,15 @@ pub struct Disk {
     pub size_bytes: u64,
     pub model: Option<String>,
     pub serial: Option<String>,
+    /// "nvme", "ssd", "hdd"
+    #[serde(default)]
+    pub disk_type: Option<String>,
+    /// Wear level remaining (0-100, 100 = brand new)
+    #[serde(default)]
+    pub wearout: Option<u32>,
+    /// SMART health status (e.g. "PASSED")
+    #[serde(default)]
+    pub health: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
