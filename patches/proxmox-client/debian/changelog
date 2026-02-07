@@ -1,0 +1,133 @@
+rust-proxmox-client (1.0.1-1) trixie; urgency=medium
+
+  * map tls verification errors to a more telling error message so that users
+    are more likely to understand their (potential) cause.
+
+ -- Proxmox Support Team <support@proxmox.com>  Tue, 02 Dec 2025 16:49:42 +0100
+
+rust-proxmox-client (1.0.0-1) trixie; urgency=medium
+
+  * re-build for Debian Trixie based releases.
+
+ -- Proxmox Support Team <support@proxmox.com>  Fri, 30 May 2025 18:31:31 +0200
+
+rust-proxmox-client (0.5.3-1) bookworm; urgency=medium
+
+  * add query builder ApiPathBuilder
+
+  * doc fixes
+
+ -- Proxmox Support Team <support@proxmox.com>  Tue, 06 May 2025 13:54:25 +0200
+
+rust-proxmox-client (0.5.2-1) bookworm; urgency=medium
+
+  * add compatibility with HttpOnly cookies
+
+  * specify cookie names for authyentication headers where possible
+
+ -- Proxmox Support Team <support@proxmox.com>  Tue, 04 Mar 2025 15:00:20 +0100
+
+rust-proxmox-client (0.5.1-1) bookworm; urgency=medium
+
+  * use correct error for protocol errors instead of Error::Anyhow
+
+  * bump proxmox-http-client dependency to 0.9.4
+
+  * elide lifetimes where possible
+
+  * change Display of Error::Api to not duplicate the message
+
+ -- Proxmox Support Team <support@proxmox.com>  Thu, 09 Jan 2025 14:15:19 +0100
+
+rust-proxmox-client (0.5.0-1) bookworm; urgency=medium
+
+  * add generic `Client::request` trait method
+
+  * provide default impls for all the specialized Client trait methods to use
+    the generic `request` method
+
+  * add `Client::Body` as associated type to declare which body type is used
+    (hyper::Body for hyper based clients, ReadableStream for wasm on the
+    web...)
+
+  * add `Client::streaming_request` as a variant which returns the underlying
+    `Self::Body`
+
+ -- Proxmox Support Team <support@proxmox.com>  Wed, 04 Sep 2024 15:41:21 +0200
+
+rust-proxmox-client (0.4.1-1) bookworm; urgency=medium
+
+  * drop a lot of unused dependencies:
+    - base64
+    - once_cell
+    - percent_encoding
+    - regex
+    - serde_plain
+    - webauthn-rs
+    - proxmox-section-config
+    - proxmox-schema
+
+  * the 'webauthn' feature now only activates the 'webauthn' feature of
+    proxmox-login, so pulls webauthn-rs in *transitively*, but we do not
+    make explicit use of it
+
+ -- Proxmox Support Team <support@proxmox.com>  Wed, 14 Aug 2024 11:50:27 +0200
+
+rust-proxmox-client (0.4.0-1) bookworm; urgency=medium
+
+  * add 'perl_compat' member to Token struct
+
+ -- Proxmox Support Team <support@proxmox.com>  Tue, 13 Aug 2024 15:39:40 +0200
+
+rust-proxmox-client (0.3.1-1) bookworm; urgency=medium
+
+  * rebuild with proxmox-schema 3
+
+  * fix post_without_body actually using POST instead of PUT
+
+ -- Proxmox Support Team <support@proxmox.com>  Fri, 02 Feb 2024 14:05:22 +0100
+
+rust-proxmox-client (0.3.0-1) bookworm; urgency=medium
+
+  * add `post_without_body()` to HttpApiClient
+
+  * improve error handling in RawApiResponse handling
+
+ -- Proxmox Support Team <support@proxmox.com>  Mon, 16 Oct 2023 13:26:43 +0200
+
+rust-proxmox-client (0.2.3-1) bookworm; urgency=medium
+
+  * fix hyper client not setting content type header
+
+ -- Proxmox Support Team <support@proxmox.com>  Fri, 25 Aug 2023 08:57:51 +0200
+
+rust-proxmox-client (0.2.2-1) bookworm; urgency=medium
+
+  * fix parsing content types with charsets
+
+ -- Proxmox Support Team <support@proxmox.com>  Fri, 25 Aug 2023 08:36:55 +0200
+
+rust-proxmox-client (0.2.1-1) bookworm; urgency=medium
+
+  * expose `AuthenticationKind`
+
+  * add `set_authentication` method
+
+  * deprecate `use_api_token` method (superseded by `set_authentication`)
+
+  * add convenience helper to get a serialized ticket
+
+ -- Proxmox Support Team <support@proxmox.com>  Wed, 16 Aug 2023 14:31:59 +0200
+
+rust-proxmox-client (0.2.0-1) bookworm; urgency=medium
+
+  * drop nested client structs in favor of a HttpApiClient trait based method
+    for better wasm support
+
+ -- Proxmox Support Team <support@proxmox.com>  Wed, 09 Aug 2023 13:22:06 +0200
+
+rust-proxmox-client (0.1.0-1) bookworm; urgency=medium
+
+  * initial release
+
+ -- Proxmox Support Team <support@proxmox.com>  Tue, 01 Aug 2023 15:46:54 +0200

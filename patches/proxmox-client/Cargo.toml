@@ -1,0 +1,37 @@
+[package]
+name = "proxmox-client"
+description = "Base client for proxmox APIs for handling login and ticket renewal - patched for rustls"
+version = "1.0.5"
+edition = "2024"
+license = "AGPL-3.0-or-later"
+
+[dependencies]
+anyhow = "1"
+hex = "0.4"
+http-body-util = "0.1"
+http = "1"
+percent-encoding = "2"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# wasm-incompatible dependencies must stay optional
+log = { version = "0.4", optional = true }
+
+# TLS — rustls instead of openssl
+rustls = { version = "0.23", optional = true, default-features = false, features = ["std", "tls12", "ring"] }
+webpki-roots = { version = "0.26", optional = true }
+sha2 = { version = "0.10", optional = true }
+
+proxmox-login = { git = "https://github.com/proxmox/proxmox-rs", features = ["http"] }
+proxmox-http = { path = "../proxmox-http", optional = true, features = ["client"] }
+hyper = { version = "1", optional = true }
+proxmox-serde = { git = "https://github.com/proxmox/proxmox-rs", features = ["perl"] }
+
+[dev-dependencies]
+serde_plain = "1"
+
+[features]
+default = []
+hyper-client = ["dep:rustls", "dep:webpki-roots", "dep:sha2", "dep:hyper", "dep:proxmox-http", "dep:log"]
+perl-api-path-builder = []
+webauthn = ["proxmox-login/webauthn"]

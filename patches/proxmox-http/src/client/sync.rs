@@ -32,12 +32,6 @@ impl Client {
 
     fn agent(&self) -> Result<ureq::Agent, Error> {
         let mut builder = ureq::Agent::config_builder()
-            .tls_config(
-                ureq::tls::TlsConfig::builder()
-                    .provider(ureq::tls::TlsProvider::NativeTls)
-                    .root_certs(ureq::tls::RootCerts::PlatformVerifier)
-                    .build(),
-            )
             .user_agent(self.options.user_agent.as_deref().unwrap_or(concat!(
                 "proxmox-sync-http-client/",
                 env!("CARGO_PKG_VERSION")

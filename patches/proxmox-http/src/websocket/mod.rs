@@ -681,10 +681,10 @@ impl WebSocket {
 
         // we ignore extensions
 
-        let mut sha1 = openssl::sha::Sha1::new();
+        use sha1::Digest;
         let data = format!("{key}{MAGIC_WEBSOCKET_GUID}");
-        sha1.update(data.as_bytes());
-        let response_key = proxmox_base64::encode(sha1.finish());
+        let hash = sha1::Sha1::digest(data.as_bytes());
+        let response_key = proxmox_base64::encode(&hash[..]);
 
         let mut response = Response::builder()
             .status(StatusCode::SWITCHING_PROTOCOLS)

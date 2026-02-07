@@ -8,10 +8,10 @@ use http::Uri;
 use hyper_util::client::legacy::connect::dns::{GaiResolver, Name};
 use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::rt::TokioIo;
-use openssl::ssl::SslConnector;
+use rustls::ClientConfig;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
-use tokio_openssl::SslStream;
+use tokio_rustls::TlsConnector;
 
 use proxmox_rate_limiter::ShareableRateLimit;
 #[cfg(target_os = "linux")]
@@ -39,7 +39,7 @@ type SharedRateLimit = Arc<dyn ShareableRateLimit>;
 #[derive(Clone)]
 pub struct HttpsConnector<T = GaiResolver> {
     connector: HttpConnector<T>,
-    ssl_connector: Arc<SslConnector>,
+    tls_config: Arc<ClientConfig>,
     proxy: Option<ProxyConfig>,
     tcp_keepalive: u32,
     read_limiter: Option<SharedRateLimit>,
@@ -49,13 +49,13 @@ pub struct HttpsConnector<T = GaiResolver> {
 impl<T> HttpsConnector<T> {
     pub fn with_connector(
         mut connector: HttpConnector<T>,
-        ssl_connector: SslConnector,
+        tls_config: Arc<ClientConfig>,
         tcp_keepalive: u32,
     ) -> Self {
         connector.enforce_http(false);
         Self {
             connector,
-            ssl_connector: Arc::new(ssl_connector),
+            tls_config,
             proxy: None,
             tcp_keepalive,
             read_limiter: None,
@@ -77,13 +77,14 @@ impl<T> HttpsConnector<T> {
 
     async fn secure_stream<S: AsyncRead + AsyncWrite + Unpin>(
         tcp_stream: S,
-        ssl_connector: &SslConnector,
+        tls_config: &Arc<ClientConfig>,
         host: &str,
     ) -> Result<MaybeTlsStream<S>, Error> {
-        let config = ssl_connector.configure()?;
-        let mut conn: SslStream<S> = SslStream::new(config.into_ssl(host)?, tcp_stream)?;
-        Pin::new(&mut conn).connect().await?;
-        Ok(MaybeTlsStream::Secured(conn))
+        let connector = TlsConnector::from(Arc::clone(tls_config));
+        let server_name = rustls::pki_types::ServerName::try_from(host.to_owned())
+            .map_err(|_| format_err!("invalid DNS name: {}", host))?;
+        let tls_stream = connector.connect(server_name, tcp_stream).await?;
+        Ok(MaybeTlsStream::Secured(tls_stream))
     }
 
     fn parse_status_line(status_line: &str) -> Result<(), Error> {
@@ -155,7 +156,7 @@ where
 
     fn call(&mut self, dst: Uri) -> Self::Future {
         let mut connector = self.connector.clone();
-        let ssl_connector = Arc::clone(&self.ssl_connector);
+        let tls_config = Arc::clone(&self.tls_config);
         let is_https = dst.scheme() == Some(&http::uri::Scheme::HTTPS);
         let host = match dst.host() {
             Some(host) => host.to_owned(),
@@ -220,7 +221,7 @@ where
                     Self::parse_connect_response(&mut tcp_stream).await?;
 
                     if is_https {
-                        Self::secure_stream(tcp_stream, &ssl_connector, &host)
+                        Self::secure_stream(tcp_stream, &tls_config, &host)
                             .await
                             .map(TokioIo::new)
                     } else {
@@ -262,7 +263,7 @@ where
                     RateLimitedStream::with_limiter(tcp_stream, read_limiter, write_limiter);
 
                 if is_https {
-                    Self::secure_stream(tcp_stream, &ssl_connector, &host)
+                    Self::secure_stream(tcp_stream, &tls_config, &host)
                         .await
                         .map(TokioIo::new)
                 } else {

@@ -14,16 +14,17 @@ http-body = { version = "1", optional = true }
 http-body-util = { version = "0.1", optional = true }
 hyper = { version = "1", optional = true }
 hyper-util = { version = "0.1", optional = true, features = ["http2"] }
-native-tls = { version = "0.2", optional = true }
 nix = { version = "0.28", features = ["net"] }
-openssl = { version = "0.10", optional = true }
+rustls = { version = "0.23", optional = true, default-features = false, features = ["std", "tls12", "ring"] }
 serde_json = { version = "1", optional = true }
 sync_wrapper = { version = "1", optional = true }
 tokio = { version = "1", features = [], optional = true }
-tokio-openssl = { version = "0.6", optional = true }
+sha1 = { version = "0.10", optional = true }
+tokio-rustls = { version = "0.26", optional = true, default-features = false, features = ["tls12", "ring"] }
 tower-service = { version = "0.3", optional = true }
-ureq = { version = "3.0", features = ["native-tls"], optional = true, default-features = false }
+ureq = { version = "3.0", optional = true, default-features = false }
 url = { version = "2", optional = true }
+webpki-roots = { version = "0.26", optional = true }
 
 proxmox-async = { git = "https://github.com/proxmox/proxmox-rs", optional = true }
 proxmox-base64 = { git = "https://github.com/proxmox/proxmox-rs", optional = true }
@@ -64,11 +65,12 @@ client = [
     "dep:http-body",
     "dep:http-body-util",
     "dep:hyper-util",
-    "dep:openssl",
+    "dep:rustls",
     "dep:proxmox-compression",
     "dep:tokio",
-    "dep:tokio-openssl",
+    "dep:tokio-rustls",
     "dep:tower-service",
+    "dep:webpki-roots",
     "hyper?/client",
     "hyper?/http1",
     "hyper?/http2",
@@ -81,13 +83,13 @@ client = [
     "http-helpers",
     "rate-limited-stream",
 ]
-client-sync = ["client-trait", "http-helpers", "dep:ureq", "dep:native-tls"]
+client-sync = ["client-trait", "http-helpers", "dep:ureq"]
 client-trait = ["dep:http"]
 http-helpers = ["dep:http", "dep:proxmox-base64", "dep:proxmox-sys", "dep:serde_json", "dep:url"]
 websocket = [
     "dep:futures",
     "dep:http",
-    "dep:openssl",
+    "dep:sha1",
     "dep:proxmox-base64",
     "dep:proxmox-io",
     "dep:proxmox-lang",

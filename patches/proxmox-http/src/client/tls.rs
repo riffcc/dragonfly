@@ -6,7 +6,7 @@ use std::task::{Context, Poll};
 
 use hyper_util::client::legacy::connect::{Connected, Connection};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
-use tokio_openssl::SslStream;
+use tokio_rustls::client::TlsStream;
 
 /// Asynchronous stream, possibly encrypted and proxied
 ///
@@ -14,7 +14,7 @@ use tokio_openssl::SslStream;
 pub enum MaybeTlsStream<S> {
     Normal(S),
     Proxied(S),
-    Secured(SslStream<S>),
+    Secured(TlsStream<S>),
 }
 
 impl<S: AsyncRead + AsyncWrite + Unpin> AsyncRead for MaybeTlsStream<S> {
@@ -88,8 +88,9 @@ impl<S: Connection + AsyncRead + AsyncWrite + Unpin> Connection for MaybeTlsStre
             MaybeTlsStream::Normal(s) => s.connected(),
             MaybeTlsStream::Proxied(s) => s.connected().proxy(true),
             MaybeTlsStream::Secured(s) => {
-                let connected = s.get_ref().connected();
-                if s.ssl().selected_alpn_protocol() == Some(b"h2") {
+                let (inner, conn) = s.get_ref();
+                let connected = inner.connected();
+                if conn.alpn_protocol() == Some(b"h2") {
                     connected.negotiated_h2()
                 } else {
                     connected

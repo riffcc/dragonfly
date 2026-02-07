@@ -124,7 +124,6 @@ proxmox-schema = { git = "https://github.com/proxmox/proxmox-rs", features = ["a
 proxmox-http = { git = "https://github.com/proxmox/proxmox-rs" }
 proxmox-login = { git = "https://github.com/proxmox/proxmox-rs" }
 hyper = { version = "1", features = ["client", "http1", "http2"] }
-hyper-tls = { version = "0.6" }
 netscan = { version = "0.28" }
 netdev = { version = "0.26" }
 dns-lookup = "2.0"

@@ -1,5 +1,6 @@
 use anyhow::{bail, format_err, Error};
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use std::fmt::Display;
 
@@ -16,7 +17,7 @@ use hyper_util::client::legacy::connect::dns::GaiResolver;
 use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::client::legacy::Client as HyperClient;
 use hyper_util::rt::TokioExecutor;
-use openssl::ssl::{SslConnector, SslMethod};
+use rustls::ClientConfig;
 
 use crate::client::HttpsConnector;
 use crate::Body;
@@ -36,15 +37,23 @@ impl Client {
     }
 
     pub fn with_options(options: HttpOptions) -> Self {
-        let ssl_connector = SslConnector::builder(SslMethod::tls()).unwrap().build();
-        Self::with_ssl_connector(ssl_connector, options)
+        let tls_config = Arc::new(Self::default_tls_config());
+        Self::with_tls_config(tls_config, options)
     }
 
-    pub fn with_ssl_connector(ssl_connector: SslConnector, options: HttpOptions) -> Self {
+    fn default_tls_config() -> ClientConfig {
+        let root_store =
+            rustls::RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+        ClientConfig::builder()
+            .with_root_certificates(root_store)
+            .with_no_client_auth()
+    }
+
+    pub fn with_tls_config(tls_config: Arc<ClientConfig>, options: HttpOptions) -> Self {
         let connector = HttpConnector::new();
         let mut https = HttpsConnector::with_connector(
             connector,
-            ssl_connector,
+            tls_config,
             options.tcp_keepalive.unwrap_or(7200),
         );
         if let Some(ref proxy_config) = options.proxy_config {
