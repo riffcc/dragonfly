@@ -605,6 +605,7 @@ pub fn machine_to_common(m: &Machine) -> CommonMachine {
         network_interfaces: m.hardware.network_interfaces.clone(),
         primary_interface: m.config.primary_interface.clone(),
         uptime_seconds: m.status.uptime_seconds,
+        tags: m.config.tags.clone(),
     }
 }
 

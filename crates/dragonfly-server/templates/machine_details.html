@@ -224,11 +224,10 @@
 
     {# ===== TAGS (inline) ===== #}
     <div class="flex flex-wrap gap-2 mb-6">
-        <template x-if="machine.tags && machine.tags.length > 0">
-            <template x-for="tag in machine.tags" :key="tag.id || tag.name">
+        <template x-if="(machine.config?.tags || machine.tags || []).length > 0">
+            <template x-for="tag in (machine.config?.tags || machine.tags || [])" :key="tag">
                 <span class="inline-flex items-center gap-1.5 px-3 py-1.5 bg-gray-100 dark:bg-[#1a1a1a] border border-gray-200 dark:border-[#333] rounded-full text-sm text-gray-700 dark:text-gray-300">
-                    <span x-show="tag.emoji" x-text="tag.emoji" class="text-sm"></span>
-                    <span x-text="tag.name"></span>
+                    <span x-text="tag"></span>
                     {% if is_authenticated %}
                     <button @click="removeTag(tag)" class="text-gray-400 hover:text-red-500 ml-0.5 transition-colors">&times;</button>
                     {% endif %}

@@ -16,10 +16,14 @@
     padding: 3% 3.5%;
     display: flex;
     gap: 2cqi;
-    background: #111;
-    border: 2px solid #1a1a1a;
+    background: white;
+    border: 2px solid #e5e7eb;
     font-size: clamp(0.65rem, 3.2cqi, 1rem);
     overflow: visible;
+  }
+  .dark .node-card {
+    background: #111;
+    border-color: #1a1a1a;
   }
 
   .node-card:active {
@@ -73,9 +77,12 @@
   }
   .node-card .node-hostname {
     font-weight: 600;
-    color: white;
+    color: #111827;
     white-space: nowrap;
     font-size: 0.75rem;
+  }
+  .dark .node-card .node-hostname {
+    color: white;
   }
   .node-card .node-domain {
     font-weight: 400;
@@ -84,9 +91,12 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    color: #34d399;
+    color: #059669;
     font-size: 0.85em;
     padding-left: 3cqi;
+  }
+  .dark .node-card .node-ip {
+    color: #34d399;
   }
   .node-card .node-tag {
     padding: 0.5cqi 1.5cqi;
@@ -101,13 +111,16 @@
     display: flex;
     flex-direction: column;
     align-items: flex-end;
-    color: #444;
+    color: #9ca3af;
     font-size: 0.8em;
     font-weight: 500;
     padding-top: 0.5cqi;
     margin-left: 0.5cqi;
     justify-content: space-between;
     height: 100%;
+  }
+  .dark .node-card .node-hw {
+    color: #444;
   }
   .node-card .node-hw-badges {
     display: flex;
@@ -123,6 +136,9 @@
   .node-card .node-hw-num {
     text-align: right;
     min-width: 5cqi;
+    color: #111827;
+  }
+  .dark .node-card .node-hw-num {
     color: white;
   }
   .node-card .node-hw svg {
@@ -163,6 +179,16 @@
     flex-shrink: 0;
   }
   
+  .tag-default {
+    background: transparent;
+    border: 2px solid rgba(0, 0, 0, 0.4);
+    color: rgba(0, 0, 0, 0.7);
+  }
+  .dark .tag-default {
+    border-color: rgba(255, 255, 255, 0.6);
+    color: rgba(255, 255, 255, 0.8);
+  }
+
   .tag-card.drag-over {
     border-color: rgba(139, 92, 246, 0.7) !important;
     background-color: rgba(139, 92, 246, 0.1) !important;
@@ -171,17 +197,25 @@
 
   /* New Tag Card specific style */
   .new-tag-card {
-    border: 2px solid rgba(255, 255, 255, 0.6);
-    border-style: dashed;
+    border: 2px dashed rgba(0, 0, 0, 0.3);
     cursor: pointer;
     justify-content: center;
+    color: rgba(0, 0, 0, 0.6);
+  }
+  .dark .new-tag-card {
+    border-color: rgba(255, 255, 255, 0.6);
     color: rgba(255, 255, 255, 0.8);
   }
-  
+
   .new-tag-card.drag-over {
+    border-color: rgba(0, 0, 0, 0.6);
+    background-color: rgba(0, 0, 0, 0.03);
+    transform: scale(1.03);
+    box-shadow: 0 0 8px rgba(0, 0, 0, 0.1);
+  }
+  .dark .new-tag-card.drag-over {
     border-color: rgba(255, 255, 255, 0.9);
     background-color: rgba(255, 255, 255, 0.05);
-    transform: scale(1.03);
     box-shadow: 0 0 8px rgba(255, 255, 255, 0.2);
   }
 
@@ -280,28 +314,39 @@
     width: 1.75rem;
     height: 1.75rem;
     border-radius: 0.375rem;
-    color: #666;
+    color: #9ca3af;
     transition: all 0.15s ease;
   }
-  .sort-btn:hover { color: #a5b4fc; }
-  .sort-btn.active { color: #818cf8; }
+  .dark .sort-btn { color: #666; }
+  .sort-btn:hover { color: #6366f1; }
+  .dark .sort-btn:hover { color: #a5b4fc; }
+  .sort-btn.active { color: #4f46e5; }
+  .dark .sort-btn.active { color: #818cf8; }
   .sort-btn svg { width: 1rem; height: 1rem; }
 
   /* Search bar */
   .node-search {
-    background: #000;
-    border: 1.5px solid rgba(255, 255, 255, 0.8);
+    background: white;
+    border: 1.5px solid #d1d5db;
     border-radius: 9999px;
-    color: white;
+    color: #111827;
     font-size: 0.8rem;
     padding: 0.3rem 2rem 0.3rem 0.75rem;
     outline: none;
     transition: border-color 0.2s ease;
   }
+  .dark .node-search {
+    background: #000;
+    border-color: rgba(255, 255, 255, 0.8);
+    color: white;
+  }
   .node-search:focus {
     border-color: #818cf8;
   }
   .node-search::placeholder {
+    color: #9ca3af;
+  }
+  .dark .node-search::placeholder {
     color: #555;
   }
   
@@ -386,21 +431,36 @@
 
   /* Tag card hover - subtle brightening */
   .tag-card:not(.new-tag-card):not(.has-selected-nodes):hover {
+    border-color: rgba(0, 0, 0, 0.6);
+    color: black;
+  }
+  .dark .tag-card:not(.new-tag-card):not(.has-selected-nodes):hover {
     border-color: rgba(255, 255, 255, 0.9);
     color: white;
   }
 
   /* New tag card hover */
   .new-tag-card:hover {
+    border-color: rgba(0, 0, 0, 0.6);
+    color: black;
+  }
+  .dark .new-tag-card:hover {
     border-color: rgba(255, 255, 255, 0.9);
     color: white;
   }
 
-  /* Selected tag styles - when nodes with this tag are selected */
+  /* Any tag containing selected nodes */
   .tag-card.has-selected-nodes {
+    border-color: #4f46e5 !important;
+    color: #4338ca !important;
+    background-color: rgba(99, 102, 241, 0.08) !important;
+    box-shadow: 0 0 8px rgba(99, 102, 241, 0.2);
+  }
+  .dark .tag-card.has-selected-nodes {
     border-color: #6366f1 !important;
-    color: #a5b4fc !important;
-    box-shadow: 0 0 8px rgba(99, 102, 241, 0.3);
+    color: white !important;
+    background-color: rgba(99, 102, 241, 0.25) !important;
+    box-shadow: 0 0 12px rgba(99, 102, 241, 0.5);
   }
 </style>
 {% endblock %}
@@ -445,8 +505,7 @@
               :data-tag-name="tag"
               data-gamepad-focusable="true"
               data-gamepad-droptarget="true"
-              class="tag-card rounded-md"
-              style="background: transparent; border: 2px solid rgba(255, 255, 255, 0.6); color: rgba(255, 255, 255, 0.8);"
+              class="tag-card rounded-md tag-default"
               @dragover.prevent="dragOver($event, tag)"
               @dragleave.prevent="dragLeave($event)"
               @drop.prevent="drop($event, tag)"
@@ -454,6 +513,7 @@
               :class="{
                 'drag-over': currentDragOverTag === tag,
                 'cursor-pointer': true,
+                'active-tag': activeTag === tag,
                 'has-selected-nodes': hasSelectedNodes(tag)
               }"
             >
@@ -493,7 +553,7 @@
             x-show="!isCreatingTag"
           >
             <div class="flex items-center">
-              <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 mr-1" viewBox="0 0 20 20" fill="#34d399">
+              <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 mr-1 text-green-600 dark:text-green-400" viewBox="0 0 20 20" fill="currentColor">
                 <path fill-rule="evenodd" d="M10 5a1 1 0 011 1v3h3a1 1 0 110 2h-3v3a1 1 0 11-2 0v-3H6a1 1 0 110-2h3V6a1 1 0 011-1z" clip-rule="evenodd" />
               </svg>
               <span class="font-semibold">new tag</span>
@@ -646,7 +706,7 @@
                   <!-- Row 3: Tags (only if present) -->
                   <div class="node-row-indent" x-show="node.tags && node.tags.length > 0">
                     <template x-for="(tag, index) in node.tags || []" :key="index">
-                      <span class="node-tag bg-purple-900 text-purple-200" x-text="tag"></span>
+                      <span class="node-tag bg-purple-100 text-purple-700 dark:bg-purple-900 dark:text-purple-200" x-text="tag"></span>
                     </template>
                   </div>
                 </div>
@@ -690,7 +750,7 @@
       <div class="relative bg-white dark:bg-[#111] border border-gray-200 dark:border-[#1a1a1a] rounded-xl shadow-xl p-6 max-w-sm w-full mx-4">
         <h3 class="text-lg font-semibold text-gray-900 dark:text-white mb-2">Delete tag?</h3>
         <p class="text-sm text-gray-600 dark:text-gray-400 mb-4">
-          This will remove <span class="font-semibold text-white" x-text="deleteTargetTag"></span> from
+          This will remove <span class="font-semibold text-gray-900 dark:text-white" x-text="deleteTargetTag"></span> from
           <span class="font-semibold" x-text="(tagBuckets[deleteTargetTag]?.length || 0) + ' machine(s)'"></span>.
         </p>
         <div class="flex justify-end gap-3">
@@ -747,6 +807,7 @@
       pendingAssignNodeIds: null, // Node IDs waiting to be assigned to a new tag (from drag-to-new)
       showDeleteModal: false, // Whether the delete confirmation modal is visible
       deleteTargetTag: null, // Tag name pending deletion
+      activeTag: null, // The tag that was explicitly clicked (vs tags that just share selected nodes)
       refreshTrigger: 0, // Used to force UI refresh
       
       // Box select variables
@@ -1562,6 +1623,9 @@
       handleNodeClick(event, nodeId) {
         // Don't interfere with drag operations
         if (this.isDragging) return;
+
+        // Clear active tag since we're selecting nodes directly
+        this.activeTag = null;
         
         // Check if shift key is pressed for range selection
         if (event.shiftKey && this.lastClickedNodeId && this.selectedNodeIds.length > 0) {
@@ -2138,11 +2202,12 @@
         
         // Only clear if clicking directly on the container or grid background
         // (not on a node card or other UI element)
-        if (event.target === event.currentTarget || 
+        if (event.target === event.currentTarget ||
             (event.target.id === 'nodes-grid' || event.target.id === 'nodes-container')) {
           this.selectedNodeIds = [];
           this.currentNodeId = null;
           this.selectedNodeId = null;
+          this.activeTag = null;
           this.forceRefresh();
         }
       },
@@ -2151,7 +2216,19 @@
       selectAllNodesWithTag(event, tag) {
         // Get all node IDs for this tag from the tagBuckets object
         const nodeIds = this.tagBuckets[tag] || [];
-        
+
+        // Toggle: clicking the same tag again deselects it
+        if (this.activeTag === tag && !event.shiftKey) {
+          this.activeTag = null;
+          this.selectedNodeIds = [];
+          this.currentNodeId = null;
+          this.selectedNodeId = null;
+          this.forceRefresh();
+          return;
+        }
+
+        this.activeTag = tag;
+
         // If shift key is pressed, add to selection instead of replacing
         if (event.shiftKey) {
           // Add to existing selection

@@ -81,6 +81,9 @@ pub struct Machine {
     /// Uptime in seconds (from Proxmox API or agent)
     #[serde(default)]
     pub uptime_seconds: Option<u64>,
+    /// Tags assigned to this machine
+    #[serde(default)]
+    pub tags: Vec<String>,
 }
 
 /// Machine lifecycle status

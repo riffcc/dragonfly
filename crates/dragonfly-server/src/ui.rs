@@ -438,6 +438,7 @@ fn create_demo_machine(
         network_interfaces: vec![],
         primary_interface: None,
         uptime_seconds: None,
+        tags: vec![],
     }
 }
 
