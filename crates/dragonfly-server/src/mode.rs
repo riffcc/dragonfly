@@ -1083,8 +1083,11 @@ pub async fn configure_flight_mode(store: std::sync::Arc<dyn Store>) -> Result<(
                     debug!("Agent binary already at v{}", current_version);
                     return Ok::<(), anyhow::Error>(());
                 }
-                info!("Agent binary outdated (cached: v{}, need: v{}), re-downloading",
-                    cached_version.trim(), current_version);
+                info!(
+                    "Agent binary outdated (cached: v{}, need: v{}), re-downloading",
+                    cached_version.trim(),
+                    current_version
+                );
             } else {
                 info!("Agent binary exists but no version marker, re-downloading");
             }
@@ -1094,7 +1097,10 @@ pub async fn configure_flight_mode(store: std::sync::Arc<dyn Store>) -> Result<(
             "https://github.com/riffcc/dragonfly/releases/download/v{}/dragonfly-agent-linux-amd64",
             current_version
         );
-        info!("Downloading agent v{} from {}", current_version, download_url);
+        info!(
+            "Downloading agent v{} from {}",
+            current_version, download_url
+        );
 
         let client = reqwest::Client::new();
         let response = client.get(download_url).send().await?;
@@ -1106,7 +1112,11 @@ pub async fn configure_flight_mode(store: std::sync::Arc<dyn Store>) -> Result<(
             tokio::fs::set_permissions(dest, perms).await?;
             // Write version marker
             tokio::fs::write(version_file, current_version).await?;
-            info!("Agent binary v{} downloaded ({} bytes)", current_version, bytes.len());
+            info!(
+                "Agent binary v{} downloaded ({} bytes)",
+                current_version,
+                bytes.len()
+            );
             Ok(())
         } else {
             Err(anyhow!(
@@ -1129,8 +1139,11 @@ pub async fn configure_flight_mode(store: std::sync::Arc<dyn Store>) -> Result<(
                     debug!("Spark ELF already at v{}", current_version);
                     return Ok::<(), anyhow::Error>(());
                 }
-                info!("Spark ELF outdated (cached: v{}, need: v{}), re-downloading",
-                    cached_version.trim(), current_version);
+                info!(
+                    "Spark ELF outdated (cached: v{}, need: v{}), re-downloading",
+                    cached_version.trim(),
+                    current_version
+                );
             } else {
                 info!("Spark ELF exists but no version marker, re-downloading");
             }
@@ -1140,7 +1153,10 @@ pub async fn configure_flight_mode(store: std::sync::Arc<dyn Store>) -> Result<(
             "https://github.com/riffcc/dragonfly/releases/download/v{}/dragonfly-spark",
             current_version
         );
-        info!("Downloading Spark v{} from {}", current_version, download_url);
+        info!(
+            "Downloading Spark v{} from {}",
+            current_version, download_url
+        );
 
         let client = reqwest::Client::new();
         let response = client.get(&download_url).send().await?;
@@ -1151,10 +1167,18 @@ pub async fn configure_flight_mode(store: std::sync::Arc<dyn Store>) -> Result<(
             perms.set_mode(0o755);
             tokio::fs::set_permissions(dest, perms).await?;
             tokio::fs::write(version_file, current_version).await?;
-            info!("Spark ELF v{} downloaded ({} bytes)", current_version, bytes.len());
+            info!(
+                "Spark ELF v{} downloaded ({} bytes)",
+                current_version,
+                bytes.len()
+            );
             Ok(())
         } else {
-            warn!("Failed to download Spark: HTTP {} ({})", response.status(), download_url);
+            warn!(
+                "Failed to download Spark: HTTP {} ({})",
+                response.status(),
+                download_url
+            );
             // Non-fatal - Spark might not be needed if only using Mage
             Ok(())
         }
