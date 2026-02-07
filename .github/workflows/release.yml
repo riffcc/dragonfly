@@ -253,6 +253,9 @@ jobs:
           mkdir -p release
           for dir in artifacts/*/; do
             name=$(basename "$dir")
+            case "$name" in
+              dragonfly-static|dragonfly-templates|dragonfly-spark-iso) continue ;;
+            esac
             find "$dir" -type f -exec cp {} "release/$name" \;
           done
           ls -la release/
