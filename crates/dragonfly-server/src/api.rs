@@ -1486,36 +1486,25 @@ pub async fn ipxe_script(State(state): State<AppState>, Path(mac): Path<String>)
         }
     };
 
-    // Look up machine by MAC using v1 Store
+    // All machines boot into Mage (Dragonfly Agent) — the agent handles
+    // both discovery of new machines and re-provisioning of known ones.
     match state.store.list_machines().await {
         Ok(machines) => {
-            let found = machines
+            let known = machines
                 .iter()
-                .find(|m| m.identity.primary_mac == mac || m.identity.all_macs.contains(&mac));
-            if found.is_some() {
-                // Known machine: Chain to Dragonfly's OS installation hook script (hookos.ipxe)
-                info!("Known MAC {}, chaining to HookOS script", mac);
-                let script = format!("#!ipxe\nchain {}/ipxe/hookos.ipxe", base_url);
-                (
-                    StatusCode::OK,
-                    [(axum::http::header::CONTENT_TYPE, "text/plain")],
-                    script,
-                )
-                    .into_response()
+                .any(|m| m.identity.primary_mac == mac || m.identity.all_macs.contains(&mac));
+            if known {
+                info!("Known MAC {}, chaining to Dragonfly Agent", mac);
             } else {
-                // Unknown machine: Chain to the Dragonfly agent script
-                info!(
-                    "Unknown MAC {}, chaining to Dragonfly Agent iPXE script",
-                    mac
-                );
-                let script = format!("#!ipxe\nchain {}/ipxe/dragonfly-agent.ipxe", base_url);
-                (
-                    StatusCode::OK,
-                    [(axum::http::header::CONTENT_TYPE, "text/plain")],
-                    script,
-                )
-                    .into_response()
+                info!("Unknown MAC {}, chaining to Dragonfly Agent", mac);
             }
+            let script = format!("#!ipxe\nchain {}/ipxe/dragonfly-agent.ipxe", base_url);
+            (
+                StatusCode::OK,
+                [(axum::http::header::CONTENT_TYPE, "text/plain")],
+                script,
+            )
+                .into_response()
         }
         Err(e) => {
             error!("Store error while looking up MAC {}: {}", mac, e);

@@ -16,12 +16,15 @@ use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
 /// Known QCOW2 image sources that need conversion
-/// Maps URL patterns to cache names
+/// Maps URL patterns to friendly cache names
 const QCOW2_SOURCES: &[(&str, &str)] = &[
     // Ubuntu cloud images - direct QCOW2 .img files
     ("cloud-images.ubuntu.com/noble", "ubuntu-2404"),
     ("cloud-images.ubuntu.com/jammy", "ubuntu-2204"),
     ("cloud-images.ubuntu.com/focal", "ubuntu-2004"),
+    // Rocky Linux cloud images
+    ("dl.rockylinux.org/pub/rocky/10", "rocky-10"),
+    ("dl.rockylinux.org/pub/rocky/9", "rocky-9"),
 ];
 
 /// Image cache service
@@ -58,13 +61,31 @@ impl ImageCache {
         Ok(())
     }
 
-    /// Check if a URL needs QCOW2 conversion
-    pub fn needs_conversion(&self, url: &str) -> Option<&'static str> {
+    /// Check if a URL needs QCOW2 conversion.
+    /// Returns a cache name - either a known friendly name or one derived from the URL.
+    pub fn needs_conversion(&self, url: &str) -> Option<String> {
+        // Check known patterns first for friendly cache names
         for (pattern, cache_name) in QCOW2_SOURCES {
             if url.contains(pattern) {
-                return Some(cache_name);
+                return Some(cache_name.to_string());
             }
         }
+
+        // Auto-detect any .qcow2 URL
+        let lower = url.to_lowercase();
+        if lower.ends_with(".qcow2") || lower.ends_with(".qcow") {
+            // Derive cache name from the filename portion of the URL
+            let name = url
+                .rsplit('/')
+                .next()
+                .unwrap_or("unknown-qcow2")
+                .to_lowercase()
+                .replace(".qcow2", "")
+                .replace(".qcow", "")
+                .replace('.', "-");
+            return Some(name);
+        }
+
         None
     }
 
@@ -371,7 +392,7 @@ pub async fn rewrite_template_urls(
                 );
 
                 // Ensure image is cached (blocks if conversion needed)
-                let cached_url = cache.ensure_cached(&cfg.url, cache_name).await?;
+                let cached_url = cache.ensure_cached(&cfg.url, &cache_name).await?;
 
                 info!(
                     original_url = %cfg.url,
@@ -395,18 +416,32 @@ mod tests {
     fn test_needs_conversion() {
         let cache = ImageCache::new("/tmp/cache", "http://localhost:8080");
 
-        // Ubuntu URLs should need conversion
+        // Ubuntu URLs should need conversion (known patterns)
         assert_eq!(
             cache.needs_conversion(
                 "https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.tar.gz"
             ),
-            Some("ubuntu-2404")
+            Some("ubuntu-2404".to_string())
         );
         assert_eq!(
             cache.needs_conversion(
                 "https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64.tar.gz"
             ),
-            Some("ubuntu-2204")
+            Some("ubuntu-2204".to_string())
+        );
+
+        // Rocky Linux URLs should need conversion (known patterns)
+        assert_eq!(
+            cache.needs_conversion(
+                "https://dl.rockylinux.org/pub/rocky/10/images/x86_64/Rocky-10-GenericCloud-Base.latest.x86_64.qcow2"
+            ),
+            Some("rocky-10".to_string())
+        );
+
+        // Any .qcow2 URL should be auto-detected
+        assert_eq!(
+            cache.needs_conversion("https://example.com/my-image.qcow2"),
+            Some("my-image".to_string())
         );
 
         // Debian URLs should not need conversion (they provide raw)
