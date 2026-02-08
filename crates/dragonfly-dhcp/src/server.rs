@@ -308,6 +308,7 @@ impl DhcpServer {
             mac = %request.mac_address,
             msg_type = ?request.message_type,
             is_pxe = request.is_pxe_request(),
+            is_ipxe = request.is_ipxe,
             "Received DHCP request"
         );
 
