@@ -655,55 +655,56 @@ pub async fn run() -> anyhow::Result<()> {
             }
         });
 
-        // Verify/download Mage boot artifacts (x86_64 only)
-        if let Err(_) = crate::api::verify_mage_artifacts(&["x86_64"]) {
-            debug!("Downloading boot artifacts...");
-            if let Err(e) = crate::api::download_mage_artifacts("3.23", "x86_64").await {
-                return Err(anyhow!("Failed to download boot artifacts: {}", e));
-            }
-            crate::api::verify_mage_artifacts(&["x86_64"])
-                .map_err(|e| anyhow!("Boot artifact verification failed: {}", e))?;
-        }
-
-        // Download dragonfly-agent binary for x86_64 (needed for Mage apkovl)
-        let agent_dest = std::path::Path::new("/var/lib/dragonfly/mage/x86_64/dragonfly-agent");
-        if !agent_dest.exists() {
-            info!("Downloading dragonfly-agent binary...");
-            let download_url = format!(
-                "https://github.com/riffcc/dragonfly/releases/download/v{}/dragonfly-agent-linux-amd64",
-                env!("CARGO_PKG_VERSION")
-            );
-            let client = reqwest::Client::new();
-            match client.get(download_url).send().await {
-                Ok(response) if response.status().is_success() => {
-                    match response.bytes().await {
-                        Ok(bytes) => {
-                            if let Err(e) = tokio::fs::write(agent_dest, &bytes).await {
-                                warn!("Failed to write agent binary: {}", e);
-                            } else {
-                                // Make executable
-                                #[cfg(unix)]
-                                {
-                                    use std::os::unix::fs::PermissionsExt;
-                                    if let Ok(metadata) = tokio::fs::metadata(agent_dest).await {
-                                        let mut perms = metadata.permissions();
-                                        perms.set_mode(0o755);
-                                        let _ = tokio::fs::set_permissions(agent_dest, perms).await;
-                                    }
-                                }
-                                info!("Downloaded dragonfly-agent binary");
-                            }
-                        }
-                        Err(e) => warn!("Failed to read agent binary response: {}", e),
-                    }
+        // Download boot artifacts in background — don't block server startup
+        tokio::spawn(async move {
+            // Mage boot artifacts (x86_64)
+            if let Err(_) = crate::api::verify_mage_artifacts(&["x86_64"]) {
+                info!("Downloading Mage boot artifacts...");
+                if let Err(e) = crate::api::download_mage_artifacts("3.23", "x86_64").await {
+                    warn!("Failed to download Mage boot artifacts: {} — PXE boot may not work until next restart", e);
+                } else if let Err(e) = crate::api::verify_mage_artifacts(&["x86_64"]) {
+                    warn!("Mage boot artifact verification failed: {}", e);
+                } else {
+                    info!("Mage boot artifacts ready");
                 }
-                Ok(response) => warn!(
-                    "Failed to download agent binary: HTTP {}",
-                    response.status()
-                ),
-                Err(e) => warn!("Failed to download agent binary: {}", e),
             }
-        }
+
+            // Dragonfly agent binary (needed for Mage apkovl)
+            let agent_dest = std::path::Path::new("/var/lib/dragonfly/mage/x86_64/dragonfly-agent");
+            if !agent_dest.exists() {
+                info!("Downloading dragonfly-agent binary...");
+                let download_url = format!(
+                    "https://github.com/riffcc/dragonfly/releases/download/v{}/dragonfly-agent-linux-amd64",
+                    env!("CARGO_PKG_VERSION")
+                );
+                let client = reqwest::Client::new();
+                match client.get(download_url).send().await {
+                    Ok(response) if response.status().is_success() => {
+                        match response.bytes().await {
+                            Ok(bytes) => {
+                                if let Err(e) = tokio::fs::write(agent_dest, &bytes).await {
+                                    warn!("Failed to write agent binary: {}", e);
+                                } else {
+                                    #[cfg(unix)]
+                                    {
+                                        use std::os::unix::fs::PermissionsExt;
+                                        if let Ok(metadata) = tokio::fs::metadata(agent_dest).await {
+                                            let mut perms = metadata.permissions();
+                                            perms.set_mode(0o755);
+                                            let _ = tokio::fs::set_permissions(agent_dest, perms).await;
+                                        }
+                                    }
+                                    info!("Downloaded dragonfly-agent binary");
+                                }
+                            }
+                            Err(e) => warn!("Failed to read agent binary response: {}", e),
+                        }
+                    }
+                    Ok(response) => warn!("Failed to download agent binary: HTTP {}", response.status()),
+                    Err(e) => warn!("Failed to download agent binary: {}", e),
+                }
+            }
+        });
     }
 
     // --- Graceful Shutdown Setup ---
@@ -992,19 +993,16 @@ pub async fn run() -> anyhow::Result<()> {
             }
         });
 
-        // Download iPXE binaries (idempotent — skips if already present)
-        match api::download_ipxe_binaries().await {
-            Ok(_) => info!("iPXE binaries ready"),
-            Err(e) => warn!(
-                "Failed to download iPXE binaries: {} — PXE boot may not work",
-                e
-            ),
-        }
-
-        // Download Spark ELF (idempotent — skips if correct version already present)
-        if let Err(e) = download_spark_elf().await {
-            warn!("Failed to download Spark ELF: {} — bare metal discovery may not work", e);
-        }
+        // Download iPXE + Spark binaries in background — don't block server startup
+        tokio::spawn(async move {
+            match api::download_ipxe_binaries().await {
+                Ok(_) => info!("iPXE binaries ready"),
+                Err(e) => warn!("Failed to download iPXE binaries: {} — PXE boot may not work", e),
+            }
+            if let Err(e) = download_spark_elf().await {
+                warn!("Failed to download Spark ELF: {} — bare metal discovery may not work", e);
+            }
+        });
 
         start_network_services(&app_state, shutdown_rx.clone()).await;
     }

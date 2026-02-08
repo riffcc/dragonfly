@@ -102,6 +102,13 @@ jobs:
           name: dragonfly-templates
           path: crates/dragonfly-server/templates/
 
+      - name: Upload OS templates
+        if: matrix.name == 'linux-amd64'
+        uses: actions/upload-artifact@v4
+        with:
+          name: dragonfly-os-templates
+          path: os-templates/
+
       # ── Agent binary (linux only, static musl) ──
       - name: Build agent
         if: matrix.agent-target
@@ -128,7 +135,7 @@ jobs:
       - name: Install Spark build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y nasm grub-pc-bin xorriso mtools
+          sudo apt-get install -y nasm grub-pc-bin grub-efi-amd64-bin xorriso mtools
 
       - name: Build Spark
         working-directory: crates/dragonfly-spark
@@ -139,12 +146,47 @@ jobs:
             -Zbuild-std-features=compiler-builtins-mem \
             -Zjson-target-spec \
             --release
-          strip -o spark.elf target/x86_64-spark/release/dragonfly-spark
+
+          # spark-efi.elf: native x86_64 ELF (for EFI iPXE multiboot2)
+          strip -o spark-efi.elf target/x86_64-spark/release/dragonfly-spark
+
+          # spark.elf: converted to elf32-i386 (for BIOS iPXE multiboot2)
+          cp spark-efi.elf spark.elf
           objcopy -O elf32-i386 spark.elf spark.elf
 
+          # grub-spark.efi: GRUB EFI shim with embedded Spark (for EFI PXE boot)
+          cat > /tmp/grub-spark.cfg << 'GRUBCFG'
+          insmod multiboot2
+          insmod net
+          insmod efinet
+          insmod efi_gop
+          insmod efi_uga
+          insmod video
+          insmod video_fb
+          insmod all_video
+
+          set gfxpayload=1024x768x32,auto
+          net_bootp
+          set server=$net_default_server
+          set port=3000
+
+          multiboot2 /boot/spark.elf server=http://${server}:${port}
+          boot
+          GRUBCFG
+
+          grub-mkstandalone \
+            --format=x86_64-efi \
+            --output=grub-spark.efi \
+            --modules="multiboot2 net efinet efi_gop efi_uga video video_fb all_video normal echo" \
+            "boot/spark.elf=spark-efi.elf" \
+            "boot/grub/grub.cfg=/tmp/grub-spark.cfg" \
+            2>/dev/null
+
+          # ISO (for testing)
           mkdir -p iso/boot/grub
           cp spark.elf iso/boot/spark.bin
           cp spark.elf iso/boot/spark.elf
+          cp spark-efi.elf iso/boot/spark-efi.elf
           cat > iso/boot/grub/grub.cfg << 'GRUBEOF'
           set timeout=0
           set default=0
@@ -160,6 +202,18 @@ jobs:
         with:
           name: spark.elf
           path: crates/dragonfly-spark/spark.elf
+
+      - name: Upload spark-efi.elf
+        uses: actions/upload-artifact@v4
+        with:
+          name: spark-efi.elf
+          path: crates/dragonfly-spark/spark-efi.elf
+
+      - name: Upload grub-spark.efi
+        uses: actions/upload-artifact@v4
+        with:
+          name: grub-spark.efi
+          path: crates/dragonfly-spark/grub-spark.efi
 
       - name: Upload spark.iso
         uses: actions/upload-artifact@v4
@@ -204,6 +258,7 @@ jobs:
           # Static assets (with pre-built Tailwind CSS)
           cp -r artifacts/dragonfly-static static
           cp -r artifacts/dragonfly-templates templates
+          cp -r artifacts/dragonfly-os-templates os-templates
 
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
@@ -254,7 +309,7 @@ jobs:
           for dir in artifacts/*/; do
             name=$(basename "$dir")
             case "$name" in
-              dragonfly-static|dragonfly-templates|dragonfly-spark-iso) continue ;;
+              dragonfly-static|dragonfly-templates|dragonfly-os-templates|dragonfly-spark-iso) continue ;;
             esac
             find "$dir" -type f -exec cp {} "release/$name" \;
           done
