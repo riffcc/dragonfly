@@ -7,7 +7,7 @@
 //! after iPXE has run.
 //!
 //! Register interface:
-//!   BAR0 = I/O port pair (index at +0, value at +4, dword-spaced)
+//!   BAR0 = I/O port pair (index at +0, value at +1)
 //!   BAR1 = Framebuffer VRAM (linear, memory-mapped)
 
 use crate::framebuffer::{Framebuffer, FB};
@@ -19,9 +19,9 @@ const VMWARE_VENDOR: u16 = 0x15AD;
 /// VMware SVGA II device ID
 const SVGA_DEVICE: u16 = 0x0405;
 
-/// I/O port offsets from BAR0 (dword-spaced, not byte-spaced)
+/// I/O port offsets from BAR0
 const SVGA_INDEX_PORT: u16 = 0;
-const SVGA_VALUE_PORT: u16 = 4;
+const SVGA_VALUE_PORT: u16 = 1;
 
 /// SVGA II register indices
 const SVGA_REG_ID: u32 = 0;
@@ -36,8 +36,8 @@ const SVGA_REG_FB_OFFSET: u32 = 14;
 const SVGA_REG_VRAM_SIZE: u32 = 15;
 const SVGA_REG_FB_SIZE: u32 = 16;
 
-/// Version negotiation IDs
-const SVGA_ID_2: u32 = 0x90_0002;
+/// Version negotiation IDs — SVGA_MAGIC (0x900000) << 8 | version
+const SVGA_ID_2: u32 = 0x9000_0002;
 
 /// Target resolution
 const TARGET_WIDTH: u32 = 1024;
