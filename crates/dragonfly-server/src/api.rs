@@ -7897,13 +7897,21 @@ async fn update_network_handler(
     payload.id = id;
     payload.updated_at = chrono::Utc::now();
 
+    // Check if DHCP config changed (need old state before saving)
+    let old_net = state.store.get_network(id).await.ok().flatten();
+    let dhcp_changed = old_net.as_ref().is_some_and(|old| {
+        old.dhcp_enabled != payload.dhcp_enabled
+            || old.dhcp_mode != payload.dhcp_mode
+            || old.pool_start != payload.pool_start
+            || old.pool_end != payload.pool_end
+    });
+
     match state.store.put_network(&payload).await {
         Ok(()) => {
             let _ = state.event_manager.send("network_updated".to_string());
 
-            // If this network is the Full DHCP target, restart services so changes take effect
-            let is_full_target = is_full_dhcp_target_network(&state, id).await;
-            if is_full_target {
+            // Restart DHCP services if any DHCP-relevant field changed
+            if dhcp_changed {
                 crate::restart_network_services(&state).await;
             }
 
@@ -7920,38 +7928,11 @@ async fn update_network_handler(
     }
 }
 
-/// Check if a given network ID is the Full DHCP target
+/// Check if a given network has dhcp_mode "full" (needs service restart on change)
 async fn is_full_dhcp_target_network(state: &AppState, network_id: Uuid) -> bool {
-    // Check if we're in Full mode
-    let mode = state
-        .store
-        .get_setting("dhcp_mode")
-        .await
-        .ok()
-        .flatten()
-        .unwrap_or_default();
-    if mode != "full" {
-        return false;
-    }
-
-    // Check explicit target
-    if let Some(target_id) = state
-        .store
-        .get_setting("dhcp_full_network_id")
-        .await
-        .ok()
-        .flatten()
-    {
-        if let Ok(id) = target_id.parse::<Uuid>() {
-            return id == network_id;
-        }
-    }
-
-    // Fallback: check if this is the native network
     if let Ok(Some(net)) = state.store.get_network(network_id).await {
-        return net.is_native;
+        return net.dhcp_mode == "full";
     }
-
     false
 }
 

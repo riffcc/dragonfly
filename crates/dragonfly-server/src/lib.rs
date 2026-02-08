@@ -286,95 +286,87 @@ pub fn dhcp_mode_to_setting(mode: DhcpMode) -> &'static str {
     }
 }
 
-/// Build DhcpServiceConfig from settings store and Network entity
+/// Build DhcpServiceConfig from network entities.
+///
+/// DHCP mode is per-network. If any network has dhcp_mode "full", we use
+/// Full/Reservation mode and derive pool/gateway/subnet/dns from that network.
+/// Otherwise we pick the most permissive mode across all DHCP-enabled networks
+/// (flexible > selective).
 async fn build_dhcp_config_from_store(store: &Arc<dyn store::v1::Store>) -> DhcpServiceConfig {
-    let mode_str = store
-        .get_setting("dhcp_mode")
-        .await
-        .ok()
-        .flatten()
-        .unwrap_or_else(|| "flexible".to_string());
+    let networks = store.list_networks().await.unwrap_or_default();
+    let dhcp_networks: Vec<_> = networks.iter().filter(|n| n.dhcp_enabled).collect();
 
-    let mode = dhcp_mode_from_setting(&mode_str);
+    // Check for a Full-mode network first
+    let full_net = dhcp_networks.iter().find(|n| n.dhcp_mode == "full");
 
-    // For Full mode, derive pool/gateway/subnet/dns from the target Network entity
-    let (pool_range_start, pool_range_end, subnet_mask, gateway, dns_servers) =
-        if mode == DhcpMode::Reservation {
-            match find_full_dhcp_network(store).await {
-                Some(net) => {
-                    let pool_start = net
-                        .pool_start
-                        .as_deref()
-                        .and_then(|s| s.parse::<std::net::Ipv4Addr>().ok());
-                    let pool_end = net
-                        .pool_end
-                        .as_deref()
-                        .and_then(|s| s.parse::<std::net::Ipv4Addr>().ok());
-                    let mask = cidr_to_subnet_mask(&net.subnet);
-                    let gw = net
-                        .gateway
-                        .as_deref()
-                        .and_then(|s| s.parse::<std::net::Ipv4Addr>().ok());
-                    let mut dns: Vec<std::net::Ipv4Addr> = net
-                        .dns_servers
-                        .iter()
-                        .filter_map(|s| s.parse().ok())
-                        .collect();
-                    if dns.is_empty() {
-                        info!("No DNS servers configured on network '{}', using public defaults (1.1.1.1, 8.8.8.8)", net.name);
-                        dns = vec![
-                            std::net::Ipv4Addr::new(1, 1, 1, 1),
-                            std::net::Ipv4Addr::new(8, 8, 8, 8),
-                        ];
-                    }
-                    (pool_start, pool_end, mask, gw, dns)
-                }
-                None => {
-                    warn!("Full DHCP mode configured but no target network found");
-                    (None, None, None, None, Vec::new())
-                }
-            }
-        } else {
-            (None, None, None, None, Vec::new())
+    if let Some(net) = full_net {
+        let pool_start = net
+            .pool_start
+            .as_deref()
+            .and_then(|s| s.parse::<std::net::Ipv4Addr>().ok());
+        let pool_end = net
+            .pool_end
+            .as_deref()
+            .and_then(|s| s.parse::<std::net::Ipv4Addr>().ok());
+        let mask = cidr_to_subnet_mask(&net.subnet);
+        let gw = net
+            .gateway
+            .as_deref()
+            .and_then(|s| s.parse::<std::net::Ipv4Addr>().ok());
+        let mut dns: Vec<std::net::Ipv4Addr> = net
+            .dns_servers
+            .iter()
+            .filter_map(|s| s.parse().ok())
+            .collect();
+        if dns.is_empty() {
+            info!("No DNS servers configured on network '{}', using public defaults (1.1.1.1, 8.8.8.8)", net.name);
+            dns = vec![
+                std::net::Ipv4Addr::new(1, 1, 1, 1),
+                std::net::Ipv4Addr::new(8, 8, 8, 8),
+            ];
+        }
+
+        return DhcpServiceConfig {
+            mode: DhcpMode::Reservation,
+            boot_filename_bios: "undionly.kpxe".to_string(),
+            boot_filename_uefi: "ipxe.efi".to_string(),
+            http_boot_url: None,
+            pool_range_start: pool_start,
+            pool_range_end: pool_end,
+            subnet_mask: mask,
+            gateway: gw,
+            dns_servers: dns,
         };
+    }
+
+    // No full-mode network — pick most permissive mode
+    // flexible (AutoProxy) > selective (Proxy)
+    let has_flexible = dhcp_networks.iter().any(|n| n.dhcp_mode != "selective");
+    let mode = if has_flexible {
+        DhcpMode::AutoProxy
+    } else if !dhcp_networks.is_empty() {
+        DhcpMode::Proxy
+    } else {
+        // Fallback: read legacy global setting for migration
+        let mode_str = store
+            .get_setting("dhcp_mode")
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| "flexible".to_string());
+        dhcp_mode_from_setting(&mode_str)
+    };
 
     DhcpServiceConfig {
         mode,
         boot_filename_bios: "undionly.kpxe".to_string(),
         boot_filename_uefi: "ipxe.efi".to_string(),
         http_boot_url: None,
-        pool_range_start,
-        pool_range_end,
-        subnet_mask,
-        gateway,
-        dns_servers,
-    }
-}
-
-/// Find the network designated for Full DHCP mode.
-/// Priority: dhcp_full_network_id setting → native network → first network
-async fn find_full_dhcp_network(
-    store: &Arc<dyn store::v1::Store>,
-) -> Option<dragonfly_common::Network> {
-    // Check explicit setting first
-    if let Some(id_str) = store
-        .get_setting("dhcp_full_network_id")
-        .await
-        .ok()
-        .flatten()
-    {
-        if let Ok(id) = id_str.parse::<uuid::Uuid>() {
-            if let Ok(Some(net)) = store.get_network(id).await {
-                return Some(net);
-            }
-        }
-    }
-
-    // Fallback: find native network
-    if let Ok(networks) = store.list_networks().await {
-        networks.into_iter().find(|n| n.is_native)
-    } else {
-        None
+        pool_range_start: None,
+        pool_range_end: None,
+        subnet_mask: None,
+        gateway: None,
+        dns_servers: Vec::new(),
     }
 }
 

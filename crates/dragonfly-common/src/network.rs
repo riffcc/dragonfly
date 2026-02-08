@@ -27,6 +27,9 @@ pub struct Network {
     pub dhcp_enabled: bool,
     #[serde(default)]
     pub description: Option<String>,
+    /// DHCP mode for this network: "selective", "flexible", or "full"
+    #[serde(default = "default_dhcp_mode")]
+    pub dhcp_mode: String,
     /// DHCP pool range start (for Full DHCP mode)
     #[serde(default)]
     pub pool_start: Option<String>,
@@ -51,6 +54,10 @@ pub struct StaticLease {
     pub hostname: Option<String>,
 }
 
+fn default_dhcp_mode() -> String {
+    "flexible".to_string()
+}
+
 impl Network {
     pub fn new(name: String, subnet: String) -> Self {
         let now = Utc::now();
@@ -65,6 +72,7 @@ impl Network {
             is_native: false,
             dhcp_enabled: true,
             description: None,
+            dhcp_mode: "flexible".to_string(),
             pool_start: None,
             pool_end: None,
             reservations: Vec::new(),

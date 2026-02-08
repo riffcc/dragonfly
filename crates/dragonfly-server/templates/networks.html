@@ -43,11 +43,14 @@
                         <template x-if="net.is_native">
                             <span class="text-xs px-2 py-0.5 rounded-full bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400 font-medium">Native</span>
                         </template>
-                        <template x-if="net.dhcp_enabled && isFullDhcpTarget(net)">
-                            <span class="text-xs px-2 py-0.5 rounded-full bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400 font-medium">Full DHCP</span>
+                        <template x-if="net.dhcp_enabled && net.dhcp_mode === 'full'">
+                            <span class="text-xs px-2 py-0.5 rounded-full bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400 font-medium"><i class="fas fa-server mr-1"></i>Full DHCP</span>
                         </template>
-                        <template x-if="net.dhcp_enabled && !isFullDhcpTarget(net)">
-                            <span class="text-xs px-2 py-0.5 rounded-full bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400 font-medium">DHCP</span>
+                        <template x-if="net.dhcp_enabled && net.dhcp_mode === 'selective'">
+                            <span class="text-xs px-2 py-0.5 rounded-full bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400 font-medium"><i class="fas fa-filter mr-1"></i>Selective</span>
+                        </template>
+                        <template x-if="net.dhcp_enabled && (!net.dhcp_mode || net.dhcp_mode === 'flexible')">
+                            <span class="text-xs px-2 py-0.5 rounded-full bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400 font-medium"><i class="fas fa-handshake mr-1"></i>Flexible</span>
                         </template>
                         <template x-if="!net.dhcp_enabled">
                             <span class="text-xs px-2 py-0.5 rounded-full bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400 font-medium">Static</span>
@@ -182,14 +185,47 @@
                         DHCP enabled
                     </label>
                 </div>
-                <div x-show="form.dhcp_enabled" class="col-span-2">
+                <div x-show="form.dhcp_enabled" class="col-span-2" x-data="{
+                    open: false,
+                    modeOptions: [
+                        { value: 'selective', label: 'Selective', desc: 'Only reply to registered MACs', icon: 'fas fa-filter text-blue-500' },
+                        { value: 'flexible', label: 'Flexible', desc: 'Coexist with existing DHCP server', icon: 'fas fa-handshake text-green-500' },
+                        { value: 'full', label: 'Full', desc: 'Dragonfly provides full DHCP services', icon: 'fas fa-server text-orange-500' }
+                    ],
+                    get selectedOption() {
+                        return this.modeOptions.find(o => o.value === form.dhcp_mode) || this.modeOptions[1];
+                    },
+                    pick(value) {
+                        form.dhcp_mode = value;
+                        this.open = false;
+                    }
+                }" @click.away="open = false" class="col-span-2 relative">
                     <label class="block text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-1">DHCP Mode</label>
-                    <select x-model="form.dhcp_mode"
-                        class="w-full text-sm rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-[#1a1a1a] text-gray-900 dark:text-gray-100 px-3 py-2 focus:ring-2 focus:ring-purple-500 focus:border-transparent">
-                        <option value="selective">Selective — Only registered MACs</option>
-                        <option value="flexible">Flexible — Coexist with existing DHCP</option>
-                        <option value="full">Full — Dragonfly provides all DHCP</option>
-                    </select>
+                    <button type="button" @click="open = !open"
+                            class="w-full max-w-xs rounded-lg border border-purple-300 dark:border-purple-700 bg-transparent text-black dark:text-white text-sm px-3 py-2 focus:border-purple-500 focus:ring-1 focus:ring-purple-500 focus:outline-none flex items-center justify-between">
+                        <span class="flex items-center gap-2">
+                            <i class="w-4 flex-shrink-0 text-center" :class="selectedOption.icon"></i>
+                            <span x-text="selectedOption.label"></span>
+                        </span>
+                        <svg class="w-4 h-4 ml-2" :class="{ 'rotate-180': open }" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+                        </svg>
+                    </button>
+                    <div x-show="open" x-cloak x-transition
+                         class="absolute z-50 mt-1 w-72 rounded-lg border border-purple-300 dark:border-purple-700 bg-white dark:bg-gray-900 shadow-lg">
+                        <template x-for="option in modeOptions" :key="option.value">
+                            <a href="#" @click.prevent="pick(option.value)"
+                               class="block px-3 py-2 text-sm text-black dark:text-white hover:bg-purple-100 dark:hover:bg-purple-900/30 first:rounded-t-lg last:rounded-b-lg"
+                               :class="{ 'bg-purple-50 dark:bg-purple-900/20': form.dhcp_mode === option.value }">
+                                <div class="flex items-center gap-2">
+                                    <i class="w-4 flex-shrink-0 text-center" :class="option.icon"></i>
+                                    <span class="font-medium" x-text="option.label"></span>
+                                </div>
+                                <p class="ml-6 text-xs text-black/60 dark:text-white/60" x-text="option.desc"></p>
+                            </a>
+                        </template>
+                    </div>
+                    <p class="mt-1.5 text-xs text-black/70 dark:text-white/70" x-text="selectedOption.desc"></p>
                 </div>
                 <div x-show="form.dhcp_enabled && form.dhcp_mode === 'full'" class="col-span-2 grid grid-cols-2 gap-3 rounded-lg border border-orange-300 dark:border-orange-700 bg-orange-50/50 dark:bg-orange-900/10 p-3">
                     <div class="col-span-2 flex items-start gap-2">
@@ -468,8 +504,6 @@ function networksData() {
         showDiscardConfirm: false,
         saving: false,
         formError: '',
-        fullDhcpTargetId: '{{ dhcp_full_network_id|default("") }}',
-        dhcpMode: '{{ dhcp_mode|default("flexible") }}',
         leases: [],
         showAddReservation: false,
         newReservation: { mac: '', ip: '', hostname: '' },
@@ -482,7 +516,7 @@ function networksData() {
             domain: '',
             is_native: false,
             dhcp_enabled: true,
-            dhcp_mode: '{{ dhcp_mode|default("flexible") }}',
+            dhcp_mode: 'flexible',
             description: '',
             pool_start: '',
             pool_end: '',
@@ -493,9 +527,7 @@ function networksData() {
         },
 
         isFullDhcpTarget(net) {
-            if (this.dhcpMode !== 'full') return false;
-            if (this.fullDhcpTargetId) return net.id === this.fullDhcpTargetId;
-            return net.is_native;
+            return net.dhcp_enabled && net.dhcp_mode === 'full';
         },
 
         fetchNetworks() {
@@ -521,7 +553,7 @@ function networksData() {
             this.form = {
                 name: '', vlan_id: null, subnet: '', gateway: '',
                 dns_servers_str: '', domain: '', is_native: false,
-                dhcp_enabled: true, dhcp_mode: this.dhcpMode,
+                dhcp_enabled: true, dhcp_mode: 'flexible',
                 description: '', pool_start: '', pool_end: '',
             };
             this.formError = '';
@@ -538,7 +570,7 @@ function networksData() {
                 domain: net.domain || '',
                 is_native: net.is_native || false,
                 dhcp_enabled: net.dhcp_enabled !== false,
-                dhcp_mode: this.dhcpMode,
+                dhcp_mode: net.dhcp_mode || 'flexible',
                 description: net.description || '',
                 pool_start: net.pool_start || '',
                 pool_end: net.pool_end || '',
@@ -689,6 +721,7 @@ function networksData() {
                 domain: this.form.domain || null,
                 is_native: this.form.is_native,
                 dhcp_enabled: this.form.dhcp_enabled,
+                dhcp_mode: this.form.dhcp_mode,
                 description: this.form.description || null,
                 pool_start: this.form.pool_start || null,
                 pool_end: this.form.pool_end || null,
@@ -706,28 +739,7 @@ function networksData() {
                 if (!response.ok) throw new Error('Failed to save network');
                 return response.json();
             })
-            .then(async (savedNet) => {
-                // Save DHCP mode if it changed
-                if (this.form.dhcp_mode !== this.dhcpMode) {
-                    const params = new URLSearchParams();
-                    params.append('dhcp_mode', this.form.dhcp_mode);
-                    // When Full mode, set this network as the DHCP target
-                    if (this.form.dhcp_mode === 'full') {
-                        const netId = savedNet.id || (this.editingNetwork && this.editingNetwork.id);
-                        if (netId) params.append('dhcp_full_network_id', netId);
-                    }
-                    await fetch('/settings', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                        body: params.toString(),
-                        credentials: 'include',
-                        redirect: 'manual'
-                    });
-                    this.dhcpMode = this.form.dhcp_mode;
-                    if (this.form.dhcp_mode === 'full') {
-                        this.fullDhcpTargetId = savedNet.id || (this.editingNetwork && this.editingNetwork.id) || '';
-                    }
-                }
+            .then(savedNet => {
                 this.closeModal();
                 this.fetchNetworks();
                 if (window.showToast) {
