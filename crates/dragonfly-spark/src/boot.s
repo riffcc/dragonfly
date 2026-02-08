@@ -127,8 +127,21 @@ _entry:
     mov edi, eax    ; Will be first arg to _start (via RDI in 64-bit)
     mov esi, ebx    ; Will be second arg to _start (via RSI in 64-bit)
 
+    ; Save multiboot info to low memory (needed by vbe_setup_done for restore)
+    mov [SAVED_EDI_ADDR], edi
+    mov [SAVED_ESI_ADDR], esi
+
+    ; ========================================================================
+    ; Check if booted via Multiboot2 (GRUB) — if so, skip VBE BIOS setup.
+    ; On UEFI systems there is NO BIOS, so INT 10h VBE calls would crash.
+    ; GRUB already provides the framebuffer via the MB2 info structure.
+    ; ========================================================================
+    cmp eax, 0x36d76289     ; Multiboot2 magic?
+    je vbe_setup_done       ; Skip VBE — GRUB already set up framebuffer
+
     ; ========================================================================
     ; VBE Setup - Drop to real mode, set graphics mode, return to protected
+    ; Only runs on Multiboot1 (iPXE BIOS) where we have a real BIOS.
     ; At this point: 32-bit protected mode, paging disabled, A20 enabled
     ; ========================================================================
 
@@ -136,10 +149,6 @@ _entry:
     mov dx, 0x3F8
     mov al, 'V'
     out dx, al
-
-    ; Save multiboot info to low memory (we'll clobber EDI/ESI during VBE setup)
-    mov [SAVED_EDI_ADDR], edi
-    mov [SAVED_ESI_ADDR], esi
 
     ; Build GDT in low memory at GDT_RM_ADDR
     ; Entry 0: null
