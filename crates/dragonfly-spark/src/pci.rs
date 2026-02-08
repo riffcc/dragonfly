@@ -1,6 +1,8 @@
-//! PCI bus scanning
+//! PCI bus scanning — scan once at boot, look up from cache
 //!
-//! Enumerate PCI devices to find AHCI controllers
+//! All PCI device enumeration happens in `scan_all()`, called once during init.
+//! `find_device()`, `find_ahci_controller()`, and `scan_gpus()` all read from
+//! the cached device table — zero port I/O after the initial scan.
 
 use crate::serial;
 
@@ -32,7 +34,191 @@ impl PciDevice {
     pub fn function(&self) -> u8 {
         self.func
     }
+
+    const EMPTY: Self = PciDevice {
+        bus: 0, slot: 0, func: 0,
+        vendor_id: 0, device_id: 0,
+        class: 0, subclass: 0, prog_if: 0,
+        bar5: 0,
+    };
 }
+
+// --- Cached PCI device table ---
+
+const MAX_PCI_DEVICES: usize = 64;
+
+static mut PCI_DEVICES: [PciDevice; MAX_PCI_DEVICES] = [PciDevice::EMPTY; MAX_PCI_DEVICES];
+static mut PCI_DEVICE_COUNT: usize = 0;
+
+/// Scan entire PCI bus once and cache all devices.
+/// Call this once at boot before any driver init.
+pub fn scan_all() {
+    serial::println("PCI: Scanning bus...");
+    let mut count = 0usize;
+
+    for bus in 0..=255u8 {
+        for slot in 0..32u8 {
+            if !pci_device_exists(bus, slot, 0) {
+                continue;
+            }
+
+            let max_func = {
+                let header_type = pci_read8(bus, slot, 0, 0x0E);
+                if header_type & 0x80 != 0 { 8 } else { 1 }
+            };
+
+            for func in 0..max_func {
+                if func > 0 && !pci_device_exists(bus, slot, func) {
+                    continue;
+                }
+
+                let vid = pci_read16(bus, slot, func, 0x00);
+                let did = pci_read16(bus, slot, func, 0x02);
+                let class = pci_read8(bus, slot, func, 0x0B);
+                let subclass = pci_read8(bus, slot, func, 0x0A);
+                let prog_if = pci_read8(bus, slot, func, 0x09);
+                let bar5 = pci_read32(bus, slot, func, 0x24);
+
+                serial::print("PCI: ");
+                serial::print_dec(bus as u32);
+                serial::print(":");
+                serial::print_dec(slot as u32);
+                serial::print(".");
+                serial::print_dec(func as u32);
+                serial::print(" ");
+                serial::print_hex32(vid as u32);
+                serial::print(":");
+                serial::print_hex32(did as u32);
+                serial::print(" class=");
+                serial::print_hex32(class as u32);
+                serial::print(":");
+                serial::print_hex32(subclass as u32);
+                serial::println("");
+
+                if count < MAX_PCI_DEVICES {
+                    unsafe {
+                        PCI_DEVICES[count] = PciDevice {
+                            bus, slot, func,
+                            vendor_id: vid, device_id: did,
+                            class, subclass, prog_if,
+                            bar5,
+                        };
+                    }
+                    count += 1;
+                }
+            }
+        }
+    }
+
+    unsafe { PCI_DEVICE_COUNT = count; }
+
+    serial::print("PCI: Found ");
+    serial::print_dec(count as u32);
+    serial::println(" devices");
+}
+
+/// Find a PCI device by vendor and device ID (from cache)
+pub fn find_device(vendor_id: u16, device_id: u16) -> Option<PciDevice> {
+    let count = unsafe { PCI_DEVICE_COUNT };
+    for i in 0..count {
+        let dev = unsafe { PCI_DEVICES[i] };
+        if dev.vendor_id == vendor_id && dev.device_id == device_id {
+            return Some(dev);
+        }
+    }
+    None
+}
+
+/// Find AHCI controller: class 01h, subclass 06h, prog_if 01h (from cache)
+pub fn find_ahci_controller() -> Option<PciDevice> {
+    let count = unsafe { PCI_DEVICE_COUNT };
+    for i in 0..count {
+        let dev = unsafe { PCI_DEVICES[i] };
+        if dev.class == 0x01 && dev.subclass == 0x06 && dev.prog_if == 0x01 {
+            return Some(dev);
+        }
+    }
+    serial::println("PCI: No AHCI controller found");
+    None
+}
+
+// --- GPU detection (from cache) ---
+
+/// GPU detected via PCI class 0x03 scan
+#[derive(Clone, Copy)]
+pub struct GpuDetected {
+    pub vendor_id: u16,
+    pub device_id: u16,
+}
+
+const MAX_GPUS: usize = 4;
+static mut DETECTED_GPUS: [GpuDetected; MAX_GPUS] = [GpuDetected { vendor_id: 0, device_id: 0 }; MAX_GPUS];
+static mut GPU_COUNT: usize = 0;
+
+/// Detect GPUs from cached PCI scan results.
+/// Call after `scan_all()`.
+pub fn scan_gpus() {
+    let count = unsafe { PCI_DEVICE_COUNT };
+    let mut gpu_count = 0usize;
+
+    for i in 0..count {
+        let dev = unsafe { PCI_DEVICES[i] };
+        if dev.class == 0x03 && gpu_count < MAX_GPUS {
+            // Skip virtual display adapters (QEMU stdvga, bochs, etc.)
+            if dev.vendor_id == 0x1234 || dev.vendor_id == 0x1B36 {
+                continue;
+            }
+
+            unsafe {
+                DETECTED_GPUS[gpu_count] = GpuDetected {
+                    vendor_id: dev.vendor_id,
+                    device_id: dev.device_id,
+                };
+            }
+            gpu_count += 1;
+
+            serial::print("PCI: GPU found ");
+            serial::print_hex32(dev.vendor_id as u32);
+            serial::print(":");
+            serial::print_hex32(dev.device_id as u32);
+            serial::print(" (");
+            serial::print(gpu_vendor_name(dev.vendor_id));
+            serial::println(")");
+        }
+    }
+
+    unsafe { GPU_COUNT = gpu_count; }
+
+    if gpu_count == 0 {
+        serial::println("PCI: No discrete GPUs found");
+    }
+}
+
+/// Number of detected GPUs
+pub fn gpu_count() -> usize {
+    unsafe { GPU_COUNT }
+}
+
+/// Get detected GPU by index
+pub fn gpu_info(idx: usize) -> Option<GpuDetected> {
+    if idx < unsafe { GPU_COUNT } {
+        Some(unsafe { DETECTED_GPUS[idx] })
+    } else {
+        None
+    }
+}
+
+/// Map PCI vendor ID to human-readable GPU vendor name
+pub fn gpu_vendor_name(vendor_id: u16) -> &'static str {
+    match vendor_id {
+        0x10DE => "NVIDIA",
+        0x1002 => "AMD",
+        0x8086 => "Intel",
+        _ => "Unknown",
+    }
+}
+
+// --- Low-level PCI config space access ---
 
 /// Write 32-bit value to I/O port
 #[inline]
@@ -95,228 +281,6 @@ fn pci_device_exists(bus: u8, slot: u8, func: u8) -> bool {
     vendor != 0xFFFF
 }
 
-/// Scan PCI bus for AHCI controller (class 01h, subclass 06h)
-pub fn find_ahci_controller() -> Option<PciDevice> {
-    serial::println("PCI: Starting bus scan...");
-
-    for bus in 0..=255u8 {
-        for slot in 0..32u8 {
-            if !pci_device_exists(bus, slot, 0) {
-                continue;
-            }
-
-            let vendor = pci_read16(bus, slot, 0, 0x00);
-            let device = pci_read16(bus, slot, 0, 0x02);
-            let class = pci_read8(bus, slot, 0, 0x0B);
-            let subclass = pci_read8(bus, slot, 0, 0x0A);
-
-            serial::print("PCI: ");
-            serial::print_dec(bus as u32);
-            serial::print(":");
-            serial::print_dec(slot as u32);
-            serial::print(".0 - ");
-            serial::print_hex32(vendor as u32);
-            serial::print(":");
-            serial::print_hex32(device as u32);
-            serial::print(" class=");
-            serial::print_hex32(class as u32);
-            serial::print(":");
-            serial::print_hex32(subclass as u32);
-            serial::println("");
-
-            // Check function 0
-            if let Some(dev) = check_ahci_device(bus, slot, 0) {
-                return Some(dev);
-            }
-
-            // Check if multi-function device
-            let header_type = pci_read8(bus, slot, 0, 0x0E);
-            if header_type & 0x80 != 0 {
-                // Multi-function, check other functions
-                for func in 1..8u8 {
-                    if pci_device_exists(bus, slot, func) {
-                        if let Some(dev) = check_ahci_device(bus, slot, func) {
-                            return Some(dev);
-                        }
-                    }
-                }
-            }
-        }
-    }
-    serial::println("PCI: No AHCI controller found");
-    None
-}
-
-/// Check if a PCI device is an AHCI controller
-fn check_ahci_device(bus: u8, slot: u8, func: u8) -> Option<PciDevice> {
-    let class = pci_read8(bus, slot, func, 0x0B);
-    let subclass = pci_read8(bus, slot, func, 0x0A);
-    let prog_if = pci_read8(bus, slot, func, 0x09);
-
-    // AHCI: class 01 (mass storage), subclass 06 (SATA), prog_if 01 (AHCI)
-    if class == 0x01 && subclass == 0x06 && prog_if == 0x01 {
-        let vendor_id = pci_read16(bus, slot, func, 0x00);
-        let device_id = pci_read16(bus, slot, func, 0x02);
-        let bar5 = pci_read32(bus, slot, func, 0x24); // BAR5 = ABAR
-
-        return Some(PciDevice {
-            bus,
-            slot,
-            func,
-            vendor_id,
-            device_id,
-            class,
-            subclass,
-            prog_if,
-            bar5: bar5 & 0xFFFFFFF0, // Mask off lower bits
-        });
-    }
-
-    None
-}
-
-/// Find a PCI device by vendor and device ID
-pub fn find_device(vendor_id: u16, device_id: u16) -> Option<PciDevice> {
-    for bus in 0..=255u8 {
-        for slot in 0..32u8 {
-            for func in 0..8u8 {
-                if func > 0 && !pci_device_exists(bus, slot, 0) {
-                    break;
-                }
-                if !pci_device_exists(bus, slot, func) {
-                    continue;
-                }
-
-                let vid = pci_read16(bus, slot, func, 0x00);
-                let did = pci_read16(bus, slot, func, 0x02);
-
-                if vid == vendor_id && did == device_id {
-                    let class = pci_read8(bus, slot, func, 0x0B);
-                    let subclass = pci_read8(bus, slot, func, 0x0A);
-                    let prog_if = pci_read8(bus, slot, func, 0x09);
-                    let bar5 = pci_read32(bus, slot, func, 0x24);
-
-                    return Some(PciDevice {
-                        bus,
-                        slot,
-                        func,
-                        vendor_id: vid,
-                        device_id: did,
-                        class,
-                        subclass,
-                        prog_if,
-                        bar5,
-                    });
-                }
-
-                // Check multi-function only on func 0
-                if func == 0 {
-                    let header_type = pci_read8(bus, slot, 0, 0x0E);
-                    if header_type & 0x80 == 0 {
-                        break; // Not multi-function
-                    }
-                }
-            }
-        }
-    }
-    None
-}
-
-/// GPU detected via PCI class 0x03 scan
-#[derive(Clone, Copy)]
-pub struct GpuDetected {
-    pub vendor_id: u16,
-    pub device_id: u16,
-}
-
-/// Maximum number of GPUs we track
-const MAX_GPUS: usize = 4;
-
-/// Detected GPUs stored at boot
-static mut DETECTED_GPUS: [GpuDetected; MAX_GPUS] = [GpuDetected { vendor_id: 0, device_id: 0 }; MAX_GPUS];
-static mut GPU_COUNT: usize = 0;
-
-/// Scan PCI bus for display controllers (class 0x03) and store results.
-///
-/// Call once at boot. Results are accessible via `gpu_count()` and `gpu_info()`.
-pub fn scan_gpus() {
-    let mut count = 0usize;
-
-    for bus in 0..=255u8 {
-        for slot in 0..32u8 {
-            if !pci_device_exists(bus, slot, 0) {
-                continue;
-            }
-
-            let max_func = {
-                let header_type = pci_read8(bus, slot, 0, 0x0E);
-                if header_type & 0x80 != 0 { 8 } else { 1 }
-            };
-
-            for func in 0..max_func {
-                if func > 0 && !pci_device_exists(bus, slot, func) {
-                    continue;
-                }
-
-                let class = pci_read8(bus, slot, func, 0x0B);
-                if class == 0x03 && count < MAX_GPUS {
-                    let vid = pci_read16(bus, slot, func, 0x00);
-                    let did = pci_read16(bus, slot, func, 0x02);
-
-                    // Skip virtual display adapters (QEMU stdvga, bochs, etc.)
-                    // 0x1234 = QEMU/Bochs, 0x1B36 = Red Hat/QEMU
-                    if vid == 0x1234 || vid == 0x1B36 {
-                        continue;
-                    }
-
-                    unsafe {
-                        DETECTED_GPUS[count] = GpuDetected { vendor_id: vid, device_id: did };
-                    }
-                    count += 1;
-
-                    serial::print("PCI: GPU found ");
-                    serial::print_hex32(vid as u32);
-                    serial::print(":");
-                    serial::print_hex32(did as u32);
-                    serial::print(" (");
-                    serial::print(gpu_vendor_name(vid));
-                    serial::println(")");
-                }
-            }
-        }
-    }
-
-    unsafe { GPU_COUNT = count; }
-
-    if count == 0 {
-        serial::println("PCI: No discrete GPUs found");
-    }
-}
-
-/// Number of detected GPUs
-pub fn gpu_count() -> usize {
-    unsafe { GPU_COUNT }
-}
-
-/// Get detected GPU by index
-pub fn gpu_info(idx: usize) -> Option<GpuDetected> {
-    if idx < unsafe { GPU_COUNT } {
-        Some(unsafe { DETECTED_GPUS[idx] })
-    } else {
-        None
-    }
-}
-
-/// Map PCI vendor ID to human-readable GPU vendor name
-pub fn gpu_vendor_name(vendor_id: u16) -> &'static str {
-    match vendor_id {
-        0x10DE => "NVIDIA",
-        0x1002 => "AMD",
-        0x8086 => "Intel",
-        _ => "Unknown",
-    }
-}
-
 /// Read a BAR (Base Address Register) from a PCI device
 pub fn pci_read_bar(device: &PciDevice, bar_num: u8) -> u32 {
     let offset = 0x10 + (bar_num as u8 * 4);
@@ -370,7 +334,7 @@ fn pci_write16(bus: u8, slot: u8, func: u8, offset: u8, value: u16) {
     }
 }
 
-// ============== Public PCI config space access ==============
+// --- Public PCI config space access ---
 
 /// Read a 16-bit value from PCI config space (public API)
 pub fn config_read_word(bus: u8, device: u8, function: u8, offset: u8) -> u16 {

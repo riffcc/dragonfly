@@ -95,7 +95,8 @@ pub extern "C" fn _start(multiboot_magic: u32, multiboot_info: u32) -> ! {
     serial::print_dec(threads);
     serial::println(" threads");
 
-    // Scan for GPUs via PCI
+    // Scan PCI bus once (all subsequent find_device/find_ahci calls use cache)
+    pci::scan_all();
     pci::scan_gpus();
 
     // Parse command line and framebuffer based on multiboot version
