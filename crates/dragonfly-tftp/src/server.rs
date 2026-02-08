@@ -28,6 +28,12 @@ pub const DEFAULT_TIMEOUT: u8 = 5;
 /// Maximum retries
 pub const MAX_RETRIES: u32 = 5;
 
+/// Default window size (RFC 1350 single-block lockstep)
+pub const DEFAULT_WINDOW_SIZE: u16 = 1;
+
+/// Maximum window size we accept (RFC 7440 allows up to 65535)
+pub const MAX_WINDOW_SIZE: u16 = 64;
+
 /// Trait for providing files to the TFTP server
 #[async_trait]
 pub trait FileProvider: Send + Sync {
@@ -217,15 +223,23 @@ async fn handle_read_request(
 
     let timeout_secs = options.timeout.unwrap_or(DEFAULT_TIMEOUT);
 
+    let window_size = options
+        .windowsize
+        .map(|w| w.min(MAX_WINDOW_SIZE).max(1))
+        .unwrap_or(DEFAULT_WINDOW_SIZE);
+
     // Send OACK if client requested options — RFC 2347: only echo back
-    // options the client actually asked for. Strict PXE ROMs (VMware EFI)
-    // reject OACKs containing unsolicited options.
+    // options the client actually asked for AND that we support.
+    // RFC 7440: acknowledge windowsize for windowed transfers.
+    // If the client rejects our OACK, fall back to plain 512-byte transfers.
+    let mut block_size = block_size;
+    let mut window_size = window_size;
     if !options.is_empty() {
         let oack_options = TftpOptions {
             blksize: options.blksize.map(|_| block_size),
             tsize: options.tsize.map(|_| file_size),
             timeout: options.timeout,
-            windowsize: options.windowsize,
+            windowsize: options.windowsize.map(|_| window_size),
         };
 
         let oack = TftpPacket::oack(oack_options);
@@ -244,8 +258,18 @@ async fn handle_read_request(
                 match ack {
                     TftpPacket::Ack { block: 0 } => {}
                     TftpPacket::Error { code, message } => {
-                        warn!(client = %client, code = ?code, message = %message, "Client error");
-                        return Ok(());
+                        // Client rejected OACK — fall back to plain transfer
+                        // with default 512-byte blocks (RFC 1350 baseline).
+                        // Some firmware (Proxmox UEFI) won't retry, so we
+                        // must degrade gracefully instead of giving up.
+                        warn!(
+                            client = %client,
+                            code = ?code,
+                            message = %message,
+                            "Client rejected OACK, falling back to defaults"
+                        );
+                        block_size = DEFAULT_BLOCK_SIZE;
+                        window_size = DEFAULT_WINDOW_SIZE;
                     }
                     _ => {
                         return send_error_on(
@@ -278,39 +302,95 @@ async fn handle_read_request(
         size: Some(file_size),
     });
 
-    // Send file in blocks
+    // Send file using windowed transfer (RFC 7440)
+    //
+    // With windowsize=1 this is identical to classic RFC 1350 lockstep.
+    // With windowsize>1, we send N DATA blocks before waiting for an ACK
+    // of the last block in the window. On partial ACK (client missed a
+    // block), we retransmit from the block after the ACKed one. On timeout,
+    // we retransmit the entire window.
     let block_size_usize = block_size as usize;
+    let window_size_usize = window_size as usize;
     let mut block_num: u16 = 1;
     let mut offset: usize = 0;
     let timeout_duration = Duration::from_secs(timeout_secs as u64);
 
-    while offset < file_data.len() {
-        let end = (offset + block_size_usize).min(file_data.len());
-        let block_data = file_data.slice(offset..end);
-        let is_last = block_data.len() < block_size_usize;
+    if window_size > 1 {
+        debug!(
+            client = %client,
+            window_size = window_size,
+            block_size = block_size,
+            "Windowed transfer (RFC 7440)"
+        );
+    }
 
-        let data_packet = TftpPacket::data(block_num, block_data);
+    'transfer: while offset < file_data.len() {
+        let window_start_block = block_num;
+        let window_start_offset = offset;
+        let mut sent_count: u16 = 0;
+        let mut is_final_window = false;
 
-        // Send with retries
-        let mut retries = 0;
-        loop {
+        // Phase 1: Send a window of DATA blocks
+        for _ in 0..window_size_usize {
+            if offset >= file_data.len() {
+                break;
+            }
+            let end = (offset + block_size_usize).min(file_data.len());
+            let block_data = file_data.slice(offset..end);
+            let is_short = block_data.len() < block_size_usize;
+
+            let current_block = window_start_block.wrapping_add(sent_count);
+            let data_packet = TftpPacket::data(current_block, block_data);
             transfer_socket
                 .send_to(&data_packet.encode(), client)
                 .await
                 .map_err(TftpError::IoError)?;
 
-            // Wait for ACK
+            sent_count += 1;
+            offset = end;
+
+            if is_short {
+                is_final_window = true;
+                break;
+            }
+        }
+
+        let window_last_block = window_start_block.wrapping_add(sent_count - 1);
+
+        // Phase 2: Wait for ACK of last block in window
+        let mut retries = 0;
+        'ack: loop {
             let mut ack_buf = [0u8; 512];
             match timeout(timeout_duration, transfer_socket.recv_from(&mut ack_buf)).await {
                 Ok(Ok((len, _))) => {
                     let ack = TftpPacket::parse(&ack_buf[..len])?;
                     match ack {
-                        TftpPacket::Ack { block } if block == block_num => {
-                            break; // Success
+                        TftpPacket::Ack { block } if block == window_last_block => {
+                            // Full window acknowledged
+                            block_num = window_last_block.wrapping_add(1);
+                            break 'ack;
                         }
-                        TftpPacket::Ack { block } if block < block_num => {
-                            // Duplicate ACK, resend
-                            continue;
+                        TftpPacket::Ack { block } => {
+                            // Check if partial ACK within our window
+                            let acked_blocks =
+                                block.wrapping_sub(window_start_block).wrapping_add(1);
+                            if acked_blocks > 0 && acked_blocks < sent_count {
+                                // Partial ACK — client got some blocks, retransmit the rest
+                                let acked_usize = acked_blocks as usize;
+                                offset =
+                                    window_start_offset + (acked_usize * block_size_usize);
+                                block_num = block.wrapping_add(1);
+                                debug!(
+                                    client = %client,
+                                    acked = block,
+                                    expected = window_last_block,
+                                    "Partial window ACK, retransmitting from block {}",
+                                    block_num
+                                );
+                                break 'ack;
+                            }
+                            // Stale ACK from before this window — ignore
+                            continue 'ack;
                         }
                         TftpPacket::Error { code, message } => {
                             warn!(client = %client, code = ?code, message = %message, "Client error");
@@ -349,13 +429,22 @@ async fn handle_read_request(
                             filename: filename.to_string(),
                         });
                     }
-                    debug!(client = %client, block = block_num, retry = retries, "Timeout, retrying");
+                    // Retransmit entire window
+                    offset = window_start_offset;
+                    block_num = window_start_block;
+                    debug!(
+                        client = %client,
+                        window_start = window_start_block,
+                        retry = retries,
+                        "Window timeout, retransmitting"
+                    );
+                    break 'ack;
                 }
             }
         }
 
         // Report progress
-        let bytes_sent = end as u64;
+        let bytes_sent = offset as u64;
         let _ = event_sender.send(TftpEvent::TransferProgress {
             client,
             filename: filename.to_string(),
@@ -363,11 +452,8 @@ async fn handle_read_request(
             total_bytes: Some(file_size),
         });
 
-        offset = end;
-        block_num = block_num.wrapping_add(1);
-
-        if is_last {
-            break;
+        if is_final_window && offset >= file_data.len() {
+            break 'transfer;
         }
     }
 
