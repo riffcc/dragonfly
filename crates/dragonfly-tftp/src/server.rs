@@ -324,7 +324,7 @@ async fn handle_read_request(
         );
     }
 
-    'transfer: while offset < file_data.len() {
+    'transfer: loop {
         let window_start_block = block_num;
         let window_start_offset = offset;
         let mut sent_count: u16 = 0;
@@ -332,12 +332,9 @@ async fn handle_read_request(
 
         // Phase 1: Send a window of DATA blocks
         for _ in 0..window_size_usize {
-            if offset >= file_data.len() {
-                break;
-            }
             let end = (offset + block_size_usize).min(file_data.len());
             let block_data = file_data.slice(offset..end);
-            let is_short = block_data.len() < block_size_usize;
+            let is_last_block = block_data.len() < block_size_usize;
 
             let current_block = window_start_block.wrapping_add(sent_count);
             let data_packet = TftpPacket::data(current_block, block_data);
@@ -349,7 +346,9 @@ async fn handle_read_request(
             sent_count += 1;
             offset = end;
 
-            if is_short {
+            if is_last_block {
+                // Short block (or zero-length when file is exact multiple of block_size)
+                // signals end of transfer per RFC 1350
                 is_final_window = true;
                 break;
             }
@@ -452,7 +451,7 @@ async fn handle_read_request(
             total_bytes: Some(file_size),
         });
 
-        if is_final_window && offset >= file_data.len() {
+        if is_final_window {
             break 'transfer;
         }
     }
