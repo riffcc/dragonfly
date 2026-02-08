@@ -19,11 +19,11 @@ fi
 echo "Building..."
 cargo +nightly build --target x86_64-spark.json -Zbuild-std=core,alloc -Zbuild-std-features=compiler-builtins-mem -Zjson-target-spec --release
 
-# Strip and convert to ELF32 for iPXE multiboot compatibility
-# The code is 32-bit at entry; objcopy just fixes the ELF header so iPXE can load it
+# Strip for both BIOS (elf32) and EFI (original x86_64) iPXE variants
 echo ""
 echo "Finalizing..."
-strip -o spark.elf target/x86_64-spark/release/dragonfly-spark
+strip -o spark-efi.elf target/x86_64-spark/release/dragonfly-spark
+cp spark-efi.elf spark.elf
 objcopy -O elf32-i386 spark.elf spark.elf
 
 # Verify multiboot2
@@ -43,6 +43,7 @@ mkdir -p iso/boot/grub
 
 cp spark.elf iso/boot/spark.bin
 cp spark.elf iso/boot/spark.elf
+cp spark-efi.elf iso/boot/spark-efi.elf
 
 if [ ! -f iso/boot/grub/grub.cfg ]; then
     cat > iso/boot/grub/grub.cfg << 'EOF'
@@ -60,19 +61,22 @@ grub-mkrescue -o spark.iso iso 2>/dev/null
 
 echo ""
 echo "=== Build successful ==="
-ls -la spark.elf spark.iso
+ls -la spark.elf spark-efi.elf spark.iso
 echo ""
 SIZE_ELF=$(stat -c%s spark.elf)
+SIZE_EFI=$(stat -c%s spark-efi.elf)
 SIZE_ISO=$(stat -c%s spark.iso)
-echo "ELF: $SIZE_ELF bytes (~$(( SIZE_ELF / 1024 )) KB)"
-echo "ISO: $SIZE_ISO bytes (~$(( SIZE_ISO / 1024 / 1024 )) MB)"
+echo "ELF (BIOS): $SIZE_ELF bytes (~$(( SIZE_ELF / 1024 )) KB)"
+echo "ELF (EFI):  $SIZE_EFI bytes (~$(( SIZE_EFI / 1024 )) KB)"
+echo "ISO:        $SIZE_ISO bytes (~$(( SIZE_ISO / 1024 / 1024 )) MB)"
 
 # Install to Dragonfly server directory
 echo ""
 echo "Installing to /var/lib/dragonfly/..."
 sudo mkdir -p /var/lib/dragonfly
 sudo cp spark.elf /var/lib/dragonfly/spark.elf
-echo "✓ Installed spark.elf to /var/lib/dragonfly/spark.elf"
+sudo cp spark-efi.elf /var/lib/dragonfly/spark-efi.elf
+echo "✓ Installed spark.elf + spark-efi.elf to /var/lib/dragonfly/"
 
 echo ""
 echo "To test: qemu-system-x86_64 -cdrom spark.iso"

@@ -392,47 +392,48 @@ fn cidr_to_subnet_mask(subnet: &str) -> Option<std::net::Ipv4Addr> {
     Some(std::net::Ipv4Addr::from(mask))
 }
 
-/// Download Spark ELF kernel for bare metal discovery.
+/// Download a Spark ELF variant from GitHub releases.
 /// Idempotent — skips if the correct version is already present.
-async fn download_spark_elf() -> anyhow::Result<()> {
+async fn download_spark_variant(filename: &str) -> anyhow::Result<()> {
     use std::os::unix::fs::PermissionsExt;
 
-    let dest = "/var/lib/dragonfly/spark.elf";
-    let tmp_dest = "/var/lib/dragonfly/spark.elf.tmp";
-    let version_file = "/var/lib/dragonfly/spark.elf.version";
+    let dest = format!("/var/lib/dragonfly/{}", filename);
+    let tmp_dest = format!("/var/lib/dragonfly/{}.tmp", filename);
+    let version_file = format!("/var/lib/dragonfly/{}.version", filename);
     let current_version = env!("CARGO_PKG_VERSION");
 
     // Check if we already have the right version
-    if std::path::Path::new(dest).exists() {
-        if let Ok(cached_version) = tokio::fs::read_to_string(version_file).await {
+    if std::path::Path::new(&dest).exists() {
+        if let Ok(cached_version) = tokio::fs::read_to_string(&version_file).await {
             if cached_version.trim() == current_version {
-                debug!("Spark ELF already at v{}", current_version);
+                debug!("Spark {} already at v{}", filename, current_version);
                 return Ok(());
             }
             info!(
-                "Spark ELF outdated (cached: v{}, need: v{}), re-downloading",
+                "Spark {} outdated (cached: v{}, need: v{}), re-downloading",
+                filename,
                 cached_version.trim(),
                 current_version
             );
         } else {
-            info!("Spark ELF exists but no version marker, re-downloading");
+            info!("Spark {} exists but no version marker, re-downloading", filename);
         }
     } else {
-        info!("Spark ELF not found, downloading");
+        info!("Spark {} not found, downloading", filename);
     }
 
     let download_url = format!(
-        "https://github.com/riffcc/dragonfly/releases/download/v{}/spark.elf",
-        current_version
+        "https://github.com/riffcc/dragonfly/releases/download/v{}/{}",
+        current_version, filename
     );
-    info!("Downloading Spark v{} from {}", current_version, download_url);
+    info!("Downloading Spark {} v{} from {}", filename, current_version, download_url);
 
     let client = reqwest::Client::new();
     let response = client.get(&download_url).send().await
         .map_err(|e| anyhow!("Failed to connect to GitHub for Spark download: {}", e))?;
 
     if !response.status().is_success() {
-        warn!("Failed to download Spark: HTTP {} ({})", response.status(), download_url);
+        warn!("Failed to download Spark {}: HTTP {} ({})", filename, response.status(), download_url);
         return Ok(());
     }
 
@@ -441,20 +442,27 @@ async fn download_spark_elf() -> anyhow::Result<()> {
     // Validate: must be non-empty and start with ELF magic
     if bytes.len() < 4 || &bytes[..4] != b"\x7fELF" {
         warn!(
-            "Downloaded Spark is invalid ({} bytes, not an ELF file). Keeping existing copy.",
-            bytes.len()
+            "Downloaded Spark {} is invalid ({} bytes, not an ELF file). Keeping existing copy.",
+            filename, bytes.len()
         );
         return Ok(());
     }
 
     // Atomic write: download to temp, validate, then rename
-    tokio::fs::write(tmp_dest, &bytes).await?;
-    let mut perms = tokio::fs::metadata(tmp_dest).await?.permissions();
+    tokio::fs::write(&tmp_dest, &bytes).await?;
+    let mut perms = tokio::fs::metadata(&tmp_dest).await?.permissions();
     perms.set_mode(0o755);
-    tokio::fs::set_permissions(tmp_dest, perms).await?;
-    tokio::fs::rename(tmp_dest, dest).await?;
-    tokio::fs::write(version_file, current_version).await?;
-    info!("Spark ELF v{} downloaded ({} bytes)", current_version, bytes.len());
+    tokio::fs::set_permissions(&tmp_dest, perms).await?;
+    tokio::fs::rename(&tmp_dest, &dest).await?;
+    tokio::fs::write(&version_file, current_version).await?;
+    info!("Spark {} v{} downloaded ({} bytes)", filename, current_version, bytes.len());
+    Ok(())
+}
+
+/// Download both Spark ELF variants (BIOS elf32 + EFI x86_64)
+async fn download_spark_elf() -> anyhow::Result<()> {
+    download_spark_variant("spark.elf").await?;
+    download_spark_variant("spark-efi.elf").await?;
     Ok(())
 }
 
@@ -916,6 +924,7 @@ pub async fn run() -> anyhow::Result<()> {
         .route("/boot/{mac}", get(api::ipxe_script))
         // Spark ELF - bare metal discovery agent (loaded by GRUB via multiboot2)
         .route("/boot/spark.elf", get(api::serve_spark_elf))
+        .route("/boot/spark-efi.elf", get(api::serve_spark_efi_elf))
         // Memtest86+ binary for memory testing
         .route("/boot/memtest86plus.bin", get(api::serve_memtest))
         // PXELINUX bootloader files

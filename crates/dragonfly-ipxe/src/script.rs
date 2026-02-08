@@ -117,10 +117,14 @@ impl IpxeConfig {
         self
     }
 
-    fn spark(&self) -> String {
+    fn spark_bios(&self) -> String {
         self.spark_url
             .clone()
             .unwrap_or_else(|| format!("{}/boot/spark.elf", self.base_url))
+    }
+
+    fn spark_efi(&self) -> String {
+        format!("{}/boot/spark-efi.elf", self.base_url)
     }
 
     fn mage_kernel(&self) -> String {
@@ -241,13 +245,21 @@ shell
     /// Spark boots in text mode via iPXE multiboot (fast), then switches
     /// to VBE graphics mode itself using BIOS calls.
     pub fn spark_script(&self) -> String {
-        let spark = self.config.spark();
+        let spark_bios = self.config.spark_bios();
+        let spark_efi = self.config.spark_efi();
         let base = &self.config.base_url;
         format!(
             r#"#!ipxe
 # Dragonfly - Spark (bare-metal discovery)
-# Fast direct multiboot - Spark sets up VBE graphics itself
-kernel {spark} server={base}
+# EFI iPXE needs x86_64 ELF; BIOS iPXE needs elf32-i386
+iseq ${{platform}} efi && goto efi || goto bios
+
+:efi
+kernel {spark_efi} server={base}
+boot || goto failed
+
+:bios
+kernel {spark_bios} server={base}
 boot || goto failed
 
 :failed
@@ -499,8 +511,13 @@ mod tests {
 
         assert!(script.starts_with("#!ipxe"));
         assert!(script.contains("Spark"));
+        // BIOS path uses elf32 spark.elf
         assert!(script.contains("kernel http://192.168.1.1:8080/boot/spark.elf"));
+        // EFI path uses x86_64 spark-efi.elf
+        assert!(script.contains("kernel http://192.168.1.1:8080/boot/spark-efi.elf"));
         assert!(script.contains("server=http://192.168.1.1:8080"));
+        // Platform detection
+        assert!(script.contains("${platform}"));
         // No menu
         assert!(!script.contains("menu"));
     }

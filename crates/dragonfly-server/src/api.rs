@@ -4315,8 +4315,10 @@ pub async fn workflow_events_handler(
 // Spark Boot Agent
 // ============================================================================
 
-/// Spark ELF path - bare metal discovery agent
+/// Spark ELF path - bare metal discovery agent (elf32 for BIOS iPXE)
 const SPARK_ELF_PATH: &str = "/var/lib/dragonfly/spark.elf";
+/// Spark ELF path - x86_64 variant for EFI iPXE
+const SPARK_EFI_ELF_PATH: &str = "/var/lib/dragonfly/spark-efi.elf";
 
 /// Memtest86+ binary path
 const MEMTEST_PATH: &str = "/var/lib/dragonfly/boot/memtest86plus.bin";
@@ -4358,6 +4360,43 @@ pub async fn serve_spark_elf() -> Response {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("Failed to read Spark ELF: {}", e),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// Serve Spark ELF (x86_64) for EFI iPXE multiboot
+///
+/// EFI iPXE cannot load elf32-i386 binaries — it needs the original
+/// x86_64 ELF. Same kernel, different ELF header format.
+pub async fn serve_spark_efi_elf() -> Response {
+    let spark_path = std::path::Path::new(SPARK_EFI_ELF_PATH);
+
+    if !spark_path.exists() {
+        warn!("404 /boot/spark-efi.elf: File not found at {:?}", spark_path);
+        return (
+            StatusCode::NOT_FOUND,
+            "Spark EFI ELF not found. Copy spark-efi.elf to /var/lib/dragonfly/spark-efi.elf",
+        )
+            .into_response();
+    }
+
+    match tokio::fs::read(spark_path).await {
+        Ok(content) => {
+            info!("200 /boot/spark-efi.elf: Serving {} bytes", content.len());
+            (
+                StatusCode::OK,
+                [(axum::http::header::CONTENT_TYPE, "application/octet-stream")],
+                content,
+            )
+                .into_response()
+        }
+        Err(e) => {
+            error!("500 /boot/spark-efi.elf: Failed to read: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to read Spark EFI ELF: {}", e),
             )
                 .into_response()
         }
