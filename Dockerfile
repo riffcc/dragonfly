@@ -3,10 +3,8 @@ ARG TARGETARCH
 COPY dragonfly-${TARGETARCH} /usr/local/bin/dragonfly
 COPY static/ /opt/dragonfly/static/
 COPY templates/ /opt/dragonfly/templates/
-RUN chmod +x /usr/local/bin/dragonfly \
-    && apt-get update && apt-get install -y curl git \
-    && curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash \
-    && rm -rf /var/lib/apt/lists/*
-EXPOSE 3000
+RUN chmod +x /usr/local/bin/dragonfly
+VOLUME /var/lib/dragonfly
+EXPOSE 3000 67/udp 69/udp
 ENV DRAGONFLY_INSTALLED=true
-ENTRYPOINT ["dragonfly", "server"]
+ENTRYPOINT ["dragonfly", "serve"]

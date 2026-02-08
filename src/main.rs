@@ -162,7 +162,7 @@ async fn async_main(cli: Cli) -> Result<()> {
 
         // Serve command
         Some(Commands::Serve(_)) => {
-            if !is_installed() {
+            if !is_installed() && std::env::var("DRAGONFLY_INSTALLED").as_deref() != Ok("true") {
                 eprintln!("Dragonfly is not installed.");
                 eprintln!("Run 'dragonfly install' first, or use 'dragonfly demo' for demo mode.");
                 std::process::exit(1);

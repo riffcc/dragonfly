@@ -1,0 +1,13 @@
+services:
+  dragonfly:
+    image: ghcr.io/riffcc/dragonfly:latest
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    volumes:
+      - dragonfly-data:/var/lib/dragonfly
+    environment:
+      - RUST_LOG=info
+
+volumes:
+  dragonfly-data:
