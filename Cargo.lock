@@ -1683,7 +1683,7 @@ checksum = "1aaf95b3e5c8f23aa320147307562d361db0ae0d51242340f558153b4eb2439b"
 
 [[package]]
 name = "dragonfly"
-version = "0.3.0-alpha6"
+version = "0.3.0-alpha7"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -1853,7 +1853,7 @@ dependencies = [
 
 [[package]]
 name = "dragonfly-server"
-version = "0.3.0-alpha6"
+version = "0.3.0-alpha7"
 dependencies = [
  "aes-gcm",
  "anyhow",

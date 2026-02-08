@@ -41,7 +41,7 @@ pub async fn init_os_templates(store: Arc<dyn Store>) -> Result<()> {
     } else {
         warn!("No template directory found. Templates will be downloaded on demand.");
         // Fall back to downloading default templates
-        for template_name in &["ubuntu-2204", "ubuntu-2404", "debian-12", "debian-13"] {
+        for template_name in &["ubuntu-2204", "ubuntu-2404", "debian-12", "debian-13", "rocky-10", "proxmox"] {
             if let Err(e) = install_template_if_missing(store.clone(), template_name).await {
                 warn!("Failed to install {} template: {}", template_name, e);
             }
@@ -182,12 +182,7 @@ async fn install_template_from_download(store: Arc<dyn Store>, template_name: &s
 
 /// Download a template from GitHub
 async fn download_template(template_name: &str) -> Result<String> {
-    // Try native-provisioning branch first, then main
     let urls = [
-        format!(
-            "https://raw.githubusercontent.com/riffcc/dragonfly/refs/heads/native-provisioning/os-templates/{}.yml",
-            template_name
-        ),
         format!(
             "https://raw.githubusercontent.com/riffcc/dragonfly/refs/heads/main/os-templates/{}.yml",
             template_name
