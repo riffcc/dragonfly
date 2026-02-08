@@ -2,8 +2,7 @@ services:
   dragonfly:
     image: ghcr.io/riffcc/dragonfly:latest
     restart: unless-stopped
-    ports:
-      - "3000:3000"
+    network_mode: host
     volumes:
       - dragonfly-data:/var/lib/dragonfly
     environment:
