@@ -4319,6 +4319,8 @@ pub async fn workflow_events_handler(
 const SPARK_ELF_PATH: &str = "/var/lib/dragonfly/spark.elf";
 /// Spark ELF path - x86_64 variant for EFI iPXE
 const SPARK_EFI_ELF_PATH: &str = "/var/lib/dragonfly/spark-efi.elf";
+/// GRUB EFI shim - GRUB standalone with embedded Spark for EFI multiboot
+const GRUB_SPARK_EFI_PATH: &str = "/var/lib/dragonfly/grub-spark.efi";
 
 /// Memtest86+ binary path
 const MEMTEST_PATH: &str = "/var/lib/dragonfly/boot/memtest86plus.bin";
@@ -4397,6 +4399,44 @@ pub async fn serve_spark_efi_elf() -> Response {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("Failed to read Spark EFI ELF: {}", e),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// Serve GRUB EFI shim for EFI PXE multiboot
+///
+/// EFI iPXE can't do multiboot2. This standalone GRUB EFI binary has
+/// Spark embedded and boots it via multiboot2 after doing DHCP to
+/// discover the Dragonfly server address.
+pub async fn serve_grub_spark_efi() -> Response {
+    let path = std::path::Path::new(GRUB_SPARK_EFI_PATH);
+
+    if !path.exists() {
+        warn!("404 /boot/grub-spark.efi: File not found at {:?}", path);
+        return (
+            StatusCode::NOT_FOUND,
+            "GRUB Spark EFI not found. Build with: cd crates/dragonfly-spark && bash build.sh",
+        )
+            .into_response();
+    }
+
+    match tokio::fs::read(path).await {
+        Ok(content) => {
+            info!("200 /boot/grub-spark.efi: Serving {} bytes", content.len());
+            (
+                StatusCode::OK,
+                [(axum::http::header::CONTENT_TYPE, "application/octet-stream")],
+                content,
+            )
+                .into_response()
+        }
+        Err(e) => {
+            error!("500 /boot/grub-spark.efi: Failed to read: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to read GRUB Spark EFI: {}", e),
             )
                 .into_response()
         }

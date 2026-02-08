@@ -439,10 +439,13 @@ async fn download_spark_variant(filename: &str) -> anyhow::Result<()> {
 
     let bytes = response.bytes().await?;
 
-    // Validate: must be non-empty and start with ELF magic
-    if bytes.len() < 4 || &bytes[..4] != b"\x7fELF" {
+    // Validate: must be non-empty and start with known magic bytes
+    // ELF files start with \x7fELF, PE/COFF (EFI) files start with MZ
+    let valid_magic = bytes.len() >= 4
+        && (&bytes[..4] == b"\x7fELF" || &bytes[..2] == b"MZ");
+    if !valid_magic {
         warn!(
-            "Downloaded Spark {} is invalid ({} bytes, not an ELF file). Keeping existing copy.",
+            "Downloaded Spark {} is invalid ({} bytes, unrecognized format). Keeping existing copy.",
             filename, bytes.len()
         );
         return Ok(());
@@ -459,10 +462,11 @@ async fn download_spark_variant(filename: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Download both Spark ELF variants (BIOS elf32 + EFI x86_64)
+/// Download all Spark boot variants
 async fn download_spark_elf() -> anyhow::Result<()> {
     download_spark_variant("spark.elf").await?;
     download_spark_variant("spark-efi.elf").await?;
+    download_spark_variant("grub-spark.efi").await?;
     Ok(())
 }
 
@@ -925,6 +929,7 @@ pub async fn run() -> anyhow::Result<()> {
         // Spark ELF - bare metal discovery agent (loaded by GRUB via multiboot2)
         .route("/boot/spark.elf", get(api::serve_spark_elf))
         .route("/boot/spark-efi.elf", get(api::serve_spark_efi_elf))
+        .route("/boot/grub-spark.efi", get(api::serve_grub_spark_efi))
         // Memtest86+ binary for memory testing
         .route("/boot/memtest86plus.bin", get(api::serve_memtest))
         // PXELINUX bootloader files
