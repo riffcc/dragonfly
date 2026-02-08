@@ -182,9 +182,21 @@
                         DHCP enabled
                     </label>
                 </div>
-                <template x-if="editingNetwork && isFullDhcpTarget(editingNetwork)">
-                    <div class="col-span-2 grid grid-cols-2 gap-3 rounded-lg border border-orange-300 dark:border-orange-700 bg-orange-50/50 dark:bg-orange-900/10 p-3">
-                        <div class="col-span-2 text-xs font-medium text-orange-700 dark:text-orange-400 uppercase tracking-wider">Full DHCP Pool</div>
+                <div x-show="form.dhcp_enabled" class="col-span-2">
+                    <label class="block text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-1">DHCP Mode</label>
+                    <select x-model="form.dhcp_mode"
+                        class="w-full text-sm rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-[#1a1a1a] text-gray-900 dark:text-gray-100 px-3 py-2 focus:ring-2 focus:ring-purple-500 focus:border-transparent">
+                        <option value="selective">Selective — Only registered MACs</option>
+                        <option value="flexible">Flexible — Coexist with existing DHCP</option>
+                        <option value="full">Full — Dragonfly provides all DHCP</option>
+                    </select>
+                </div>
+                <div x-show="form.dhcp_enabled && form.dhcp_mode === 'full'" class="col-span-2 grid grid-cols-2 gap-3 rounded-lg border border-orange-300 dark:border-orange-700 bg-orange-50/50 dark:bg-orange-900/10 p-3">
+                    <div class="col-span-2 flex items-start gap-2">
+                        <i class="fas fa-exclamation-triangle text-orange-500 mt-0.5 text-xs"></i>
+                        <p class="text-xs text-orange-700 dark:text-orange-300">Dragonfly will act as the sole DHCP server. Ensure no other DHCP server is running.</p>
+                    </div>
+                    <div class="col-span-2 text-xs font-medium text-orange-700 dark:text-orange-400 uppercase tracking-wider">DHCP Pool</div>
                         <div>
                             <label class="block text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-1">Pool Start</label>
                             <input type="text" x-model="form.pool_start" placeholder="10.0.0.100"
@@ -195,8 +207,7 @@
                             <input type="text" x-model="form.pool_end" placeholder="10.0.0.200"
                                 class="w-full text-sm tech-mono rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-[#1a1a1a] text-gray-900 dark:text-gray-100 px-3 py-2 focus:ring-2 focus:ring-purple-500 focus:border-transparent">
                         </div>
-                    </div>
-                </template>
+                </div>
             </div>
             <div class="flex items-center mt-6 pt-4 border-t border-gray-200 dark:border-[#222]">
                 <template x-if="editingNetwork">
@@ -471,6 +482,7 @@ function networksData() {
             domain: '',
             is_native: false,
             dhcp_enabled: true,
+            dhcp_mode: '{{ dhcp_mode|default("flexible") }}',
             description: '',
             pool_start: '',
             pool_end: '',
@@ -509,7 +521,8 @@ function networksData() {
             this.form = {
                 name: '', vlan_id: null, subnet: '', gateway: '',
                 dns_servers_str: '', domain: '', is_native: false,
-                dhcp_enabled: true, description: '', pool_start: '', pool_end: '',
+                dhcp_enabled: true, dhcp_mode: this.dhcpMode,
+                description: '', pool_start: '', pool_end: '',
             };
             this.formError = '';
         },
@@ -525,6 +538,7 @@ function networksData() {
                 domain: net.domain || '',
                 is_native: net.is_native || false,
                 dhcp_enabled: net.dhcp_enabled !== false,
+                dhcp_mode: this.dhcpMode,
                 description: net.description || '',
                 pool_start: net.pool_start || '',
                 pool_end: net.pool_end || '',
@@ -692,7 +706,28 @@ function networksData() {
                 if (!response.ok) throw new Error('Failed to save network');
                 return response.json();
             })
-            .then(() => {
+            .then(async (savedNet) => {
+                // Save DHCP mode if it changed
+                if (this.form.dhcp_mode !== this.dhcpMode) {
+                    const params = new URLSearchParams();
+                    params.append('dhcp_mode', this.form.dhcp_mode);
+                    // When Full mode, set this network as the DHCP target
+                    if (this.form.dhcp_mode === 'full') {
+                        const netId = savedNet.id || (this.editingNetwork && this.editingNetwork.id);
+                        if (netId) params.append('dhcp_full_network_id', netId);
+                    }
+                    await fetch('/settings', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                        body: params.toString(),
+                        credentials: 'include',
+                        redirect: 'manual'
+                    });
+                    this.dhcpMode = this.form.dhcp_mode;
+                    if (this.form.dhcp_mode === 'full') {
+                        this.fullDhcpTargetId = savedNet.id || (this.editingNetwork && this.editingNetwork.id) || '';
+                    }
+                }
                 this.closeModal();
                 this.fetchNetworks();
                 if (window.showToast) {
