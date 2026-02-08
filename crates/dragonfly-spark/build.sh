@@ -46,6 +46,14 @@ if command -v grub-mkstandalone &> /dev/null; then
 insmod multiboot2
 insmod net
 insmod efinet
+insmod efi_gop
+insmod efi_uga
+insmod video
+insmod video_fb
+insmod all_video
+
+# Set framebuffer for Spark's graphical UI
+set gfxpayload=1024x768x32,auto
 
 # Get network config from EFI stack (inherits from iPXE/PXE)
 net_bootp
@@ -66,7 +74,7 @@ GRUBCFG
     grub-mkstandalone \
         --format=x86_64-efi \
         --output=grub-spark.efi \
-        --modules="multiboot2 net efinet normal echo" \
+        --modules="multiboot2 net efinet efi_gop efi_uga video video_fb all_video normal echo" \
         "boot/spark.elf=spark-efi.elf" \
         "boot/grub/grub.cfg=/tmp/grub-spark.cfg" \
         2>/dev/null
