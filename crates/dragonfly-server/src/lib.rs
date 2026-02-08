@@ -930,6 +930,8 @@ pub async fn run() -> anyhow::Result<()> {
         .route("/boot/spark.elf", get(api::serve_spark_elf))
         .route("/boot/spark-efi.elf", get(api::serve_spark_efi_elf))
         .route("/boot/grub-spark.efi", get(api::serve_grub_spark_efi))
+        // iPXE EFI binary for UEFI HTTP Boot (same file as TFTP, served over HTTP)
+        .route("/boot/ipxe.efi", get(api::serve_ipxe_efi))
         // Memtest86+ binary for memory testing
         .route("/boot/memtest86plus.bin", get(api::serve_memtest))
         // PXELINUX bootloader files

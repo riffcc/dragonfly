@@ -81,6 +81,9 @@ pub struct DhcpRequest {
     /// Is this an iPXE client? (checks user-class option)
     pub is_ipxe: bool,
 
+    /// Is this a UEFI HTTP Boot client? (vendor class "HTTPClient")
+    pub is_http_boot: bool,
+
     /// Transaction ID
     pub xid: u32,
 
@@ -154,6 +157,19 @@ impl DhcpRequest {
             })
             .unwrap_or(false);
 
+        // Check if UEFI HTTP Boot client (option 60 vendor class "HTTPClient")
+        let is_http_boot = message
+            .opts()
+            .get(OptionCode::ClassIdentifier)
+            .map(|opt| {
+                if let DhcpOption::ClassIdentifier(class) = opt {
+                    String::from_utf8_lossy(class).starts_with("HTTPClient")
+                } else {
+                    false
+                }
+            })
+            .unwrap_or(false);
+
         Ok(Self {
             xid: message.xid(),
             client_ip: message.ciaddr(),
@@ -164,10 +180,11 @@ impl DhcpRequest {
             client_arch,
             requested_ip,
             is_ipxe,
+            is_http_boot,
         })
     }
 
-    /// Check if this is a PXE boot request
+    /// Check if this is a PXE boot request (vendor class "PXEClient")
     pub fn is_pxe_request(&self) -> bool {
         // Check vendor class option 60 for "PXEClient"
         self.message
@@ -181,6 +198,11 @@ impl DhcpRequest {
                 }
             })
             .unwrap_or(false)
+    }
+
+    /// Check if this is any kind of network boot request (PXE or HTTP Boot)
+    pub fn is_boot_request(&self) -> bool {
+        self.is_pxe_request() || self.is_http_boot
     }
 }
 
@@ -324,6 +346,7 @@ impl DhcpResponseBuilder {
             }
 
             // Vendor class
+            let is_pxe_vendor = pxe.vendor_class.as_deref() == Some("PXEClient");
             if let Some(vendor) = pxe.vendor_class {
                 response
                     .opts_mut()
@@ -333,13 +356,15 @@ impl DhcpResponseBuilder {
             // PXE vendor options (Option 43) — tells PXE ROM to skip Boot Server
             // Discovery and use the filename from DHCP directly. Required for VMware
             // and other PXE ROMs that default to discovery mode without this.
-            // Format: sub-option 6 (PXE_DISCOVERY_CONTROL) = 0x08, then END (0xFF)
-            response
-                .opts_mut()
-                .insert(DhcpOption::VendorExtensions(vec![
-                    0x06, 0x01, 0x08, // Sub-option 6, length 1, value 8 (skip discovery)
-                    0xFF,             // END
-                ]));
+            // Only include for PXE clients, not HTTP Boot clients.
+            if is_pxe_vendor {
+                response
+                    .opts_mut()
+                    .insert(DhcpOption::VendorExtensions(vec![
+                        0x06, 0x01, 0x08, // Sub-option 6, length 1, value 8 (skip discovery)
+                        0xFF,             // END
+                    ]));
+            }
         }
 
         Ok(response)
@@ -419,6 +444,73 @@ mod tests {
         assert_eq!(response.opcode(), Opcode::BootReply);
         assert_eq!(response.xid(), 0x12345678);
         assert_eq!(response.yiaddr(), Ipv4Addr::new(192, 168, 1, 100));
+    }
+
+    #[test]
+    fn test_http_boot_detection() {
+        let mut discover = Message::default();
+        discover.set_opcode(Opcode::BootRequest);
+        discover.set_xid(0x11111111);
+        discover.set_chaddr(&[
+            0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        ]);
+        discover
+            .opts_mut()
+            .insert(DhcpOption::MessageType(MessageType::Discover));
+        discover.opts_mut().insert(DhcpOption::ClassIdentifier(
+            b"HTTPClient:Arch:00016".to_vec(),
+        ));
+
+        let bytes = encode_message(&discover);
+        let request = DhcpRequest::parse(&bytes).unwrap();
+
+        assert!(request.is_http_boot);
+        assert!(!request.is_pxe_request());
+        assert!(request.is_boot_request());
+    }
+
+    #[test]
+    fn test_pxe_is_boot_request() {
+        let mut discover = Message::default();
+        discover.set_opcode(Opcode::BootRequest);
+        discover.set_xid(0x22222222);
+        discover.set_chaddr(&[
+            0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        ]);
+        discover
+            .opts_mut()
+            .insert(DhcpOption::MessageType(MessageType::Discover));
+        discover.opts_mut().insert(DhcpOption::ClassIdentifier(
+            b"PXEClient:Arch:00007".to_vec(),
+        ));
+
+        let bytes = encode_message(&discover);
+        let request = DhcpRequest::parse(&bytes).unwrap();
+
+        assert!(!request.is_http_boot);
+        assert!(request.is_pxe_request());
+        assert!(request.is_boot_request());
+    }
+
+    #[test]
+    fn test_non_boot_request() {
+        let mut discover = Message::default();
+        discover.set_opcode(Opcode::BootRequest);
+        discover.set_xid(0x33333333);
+        discover.set_chaddr(&[
+            0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        ]);
+        discover
+            .opts_mut()
+            .insert(DhcpOption::MessageType(MessageType::Discover));
+        // No vendor class — regular DHCP client
+
+        let bytes = encode_message(&discover);
+        let request = DhcpRequest::parse(&bytes).unwrap();
+
+        assert!(!request.is_http_boot);
+        assert!(!request.is_pxe_request());
+        assert!(!request.is_boot_request());
     }
 
     #[test]

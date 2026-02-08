@@ -309,6 +309,7 @@ impl DhcpServer {
             msg_type = ?request.message_type,
             is_pxe = request.is_pxe_request(),
             is_ipxe = request.is_ipxe,
+            is_http_boot = request.is_http_boot,
             "Received DHCP request"
         );
 
@@ -316,7 +317,7 @@ impl DhcpServer {
         let _ = self.event_sender.send(DhcpEvent::Request {
             mac: request.mac_address.clone(),
             message_type: format!("{:?}", request.message_type),
-            is_pxe: request.is_pxe_request(),
+            is_pxe: request.is_boot_request(),
         });
 
         // Look up machine
@@ -471,8 +472,8 @@ impl DhcpServer {
         request: &DhcpRequest,
         machine: Option<&Machine>,
     ) -> Result<Option<(Vec<u8>, Option<Ipv4Addr>, String)>> {
-        // Only respond to PXE requests
-        if !request.is_pxe_request() {
+        // Only respond to boot requests (PXE or HTTP Boot)
+        if !request.is_boot_request() {
             return Ok(None);
         }
 
@@ -506,8 +507,8 @@ impl DhcpServer {
         request: &DhcpRequest,
         machine: Option<&Machine>,
     ) -> Result<Option<(Vec<u8>, Option<Ipv4Addr>, String)>> {
-        // Only respond to PXE requests
-        if !request.is_pxe_request() {
+        // Only respond to boot requests (PXE or HTTP Boot)
+        if !request.is_boot_request() {
             return Ok(None);
         }
 
@@ -537,9 +538,6 @@ impl DhcpServer {
         offered_ip: Ipv4Addr,
         machine: &Machine,
     ) -> Result<Vec<u8>> {
-        let is_uefi = request.client_arch.map(|a| a.is_uefi()).unwrap_or(false);
-        let arch = request.client_arch.and_then(|a| a.arch_string());
-
         let mut builder =
             DhcpResponseBuilder::new(request.clone(), MessageType::Offer, self.config.server_ip)
                 .with_offered_ip(offered_ip)
@@ -558,28 +556,12 @@ impl DhcpServer {
             builder = builder.with_dns_servers(self.config.dns_servers.clone());
         }
 
-        // Add PXE boot options if allowed
+        // Add PXE/HTTP Boot options if allowed
         // In Full mode, always include boot options — some PXE ROMs (VMware)
         // drop Option 60 on REQUEST after sending it on DISCOVER, so we can't
         // gate on is_pxe_request() alone.
-        if machine.allows_pxe() {
-            let pxe = if request.is_ipxe {
-                let script_url = self.config.ipxe_script_url.clone().unwrap_or_else(|| {
-                    format!(
-                        "http://{}:{}/boot/${{mac}}",
-                        self.config.server_ip, self.config.http_port
-                    )
-                });
-                PxeOptions {
-                    tftp_server: None,
-                    boot_filename: Some(script_url),
-                    vendor_class: Some("PXEClient".to_string()),
-                    boot_servers: vec![],
-                }
-            } else {
-                PxeOptions::from_config(&self.config, is_uefi, arch)
-            };
-            builder = builder.with_pxe_options(pxe);
+        if machine.allows_pxe() || request.is_http_boot {
+            builder = builder.with_pxe_options(self.build_boot_options(request));
         }
 
         builder.build_bytes()
@@ -592,9 +574,6 @@ impl DhcpServer {
         offered_ip: Ipv4Addr,
         machine: &Machine,
     ) -> Result<Vec<u8>> {
-        let is_uefi = request.client_arch.map(|a| a.is_uefi()).unwrap_or(false);
-        let arch = request.client_arch.and_then(|a| a.arch_string());
-
         let mut builder =
             DhcpResponseBuilder::new(request.clone(), MessageType::Ack, self.config.server_ip)
                 .with_offered_ip(offered_ip)
@@ -612,24 +591,8 @@ impl DhcpServer {
         }
 
         // Always include boot options in Full mode (see build_offer comment)
-        if machine.allows_pxe() {
-            let pxe = if request.is_ipxe {
-                let script_url = self.config.ipxe_script_url.clone().unwrap_or_else(|| {
-                    format!(
-                        "http://{}:{}/boot/${{mac}}",
-                        self.config.server_ip, self.config.http_port
-                    )
-                });
-                PxeOptions {
-                    tftp_server: None,
-                    boot_filename: Some(script_url),
-                    vendor_class: Some("PXEClient".to_string()),
-                    boot_servers: vec![],
-                }
-            } else {
-                PxeOptions::from_config(&self.config, is_uefi, arch)
-            };
-            builder = builder.with_pxe_options(pxe);
+        if machine.allows_pxe() || request.is_http_boot {
+            builder = builder.with_pxe_options(self.build_boot_options(request));
         }
 
         builder.build_bytes()
@@ -643,9 +606,6 @@ impl DhcpServer {
 
     /// Build a DHCP OFFER for a pool-allocated IP (no machine record needed)
     fn build_pool_offer(&self, request: &DhcpRequest, offered_ip: Ipv4Addr) -> Result<Vec<u8>> {
-        let is_uefi = request.client_arch.map(|a| a.is_uefi()).unwrap_or(false);
-        let arch = request.client_arch.and_then(|a| a.arch_string());
-
         let mut builder =
             DhcpResponseBuilder::new(request.clone(), MessageType::Offer, self.config.server_ip)
                 .with_offered_ip(offered_ip)
@@ -662,34 +622,13 @@ impl DhcpServer {
         // Always include boot options in Full mode for pool clients —
         // non-PXE clients simply ignore Option 66/67, and some PXE ROMs
         // (VMware) drop Option 60 on REQUEST after sending it on DISCOVER.
-        {
-            let pxe = if request.is_ipxe {
-                let script_url = self.config.ipxe_script_url.clone().unwrap_or_else(|| {
-                    format!(
-                        "http://{}:{}/boot/${{mac}}",
-                        self.config.server_ip, self.config.http_port
-                    )
-                });
-                PxeOptions {
-                    tftp_server: None,
-                    boot_filename: Some(script_url),
-                    vendor_class: Some("PXEClient".to_string()),
-                    boot_servers: vec![],
-                }
-            } else {
-                PxeOptions::from_config(&self.config, is_uefi, arch)
-            };
-            builder = builder.with_pxe_options(pxe);
-        }
+        builder = builder.with_pxe_options(self.build_boot_options(request));
 
         builder.build_bytes()
     }
 
     /// Build a DHCP ACK for a pool-allocated IP (no machine record needed)
     fn build_pool_ack(&self, request: &DhcpRequest, offered_ip: Ipv4Addr) -> Result<Vec<u8>> {
-        let is_uefi = request.client_arch.map(|a| a.is_uefi()).unwrap_or(false);
-        let arch = request.client_arch.and_then(|a| a.arch_string());
-
         let mut builder =
             DhcpResponseBuilder::new(request.clone(), MessageType::Ack, self.config.server_ip)
                 .with_offered_ip(offered_ip)
@@ -704,93 +643,79 @@ impl DhcpServer {
         }
 
         // Always include boot options (see build_pool_offer comment)
-        {
-            let pxe = if request.is_ipxe {
-                let script_url = self.config.ipxe_script_url.clone().unwrap_or_else(|| {
-                    format!(
-                        "http://{}:{}/boot/${{mac}}",
-                        self.config.server_ip, self.config.http_port
-                    )
-                });
-                PxeOptions {
-                    tftp_server: None,
-                    boot_filename: Some(script_url),
-                    vendor_class: Some("PXEClient".to_string()),
-                    boot_servers: vec![],
-                }
-            } else {
-                PxeOptions::from_config(&self.config, is_uefi, arch)
-            };
-            builder = builder.with_pxe_options(pxe);
-        }
+        builder = builder.with_pxe_options(self.build_boot_options(request));
 
         builder.build_bytes()
     }
 
-    /// Build a proxy DHCP offer (PXE options only)
+    /// Build a proxy DHCP offer (boot options only)
     fn build_proxy_offer(
         &self,
         request: &DhcpRequest,
         _machine: Option<&Machine>,
     ) -> Result<Vec<u8>> {
-        let is_uefi = request.client_arch.map(|a| a.is_uefi()).unwrap_or(false);
-        let arch = request.client_arch.and_then(|a| a.arch_string());
+        let pxe = self.build_boot_options(request);
 
         info!(
             mac = %request.mac_address,
             is_ipxe = %request.is_ipxe,
-            is_uefi = %is_uefi,
-            arch = ?arch,
+            is_http_boot = %request.is_http_boot,
+            boot_filename = ?pxe.boot_filename,
+            vendor_class = ?pxe.vendor_class,
             "Building PROXY_OFFER"
         );
-
-        // If this is an iPXE client, send the boot script URL instead of iPXE binary
-        let pxe = if request.is_ipxe {
-            if let Some(ref script_url) = self.config.ipxe_script_url {
-                info!(
-                    mac = %request.mac_address,
-                    script_url = %script_url,
-                    "iPXE client: sending configured boot script URL"
-                );
-                PxeOptions {
-                    tftp_server: None,
-                    boot_filename: Some(script_url.clone()),
-                    vendor_class: Some("PXEClient".to_string()),
-                    boot_servers: vec![],
-                }
-            } else {
-                // No script URL configured, use default based on server URL
-                let script_url = format!(
-                    "http://{}:{}/boot/{}",
-                    self.config.server_ip, self.config.http_port, request.mac_address
-                );
-                info!(
-                    mac = %request.mac_address,
-                    script_url = %script_url,
-                    "iPXE client: sending default boot script URL"
-                );
-                PxeOptions {
-                    tftp_server: None,
-                    boot_filename: Some(script_url),
-                    vendor_class: Some("PXEClient".to_string()),
-                    boot_servers: vec![],
-                }
-            }
-        } else {
-            // Standard PXE client - send iPXE binary via TFTP
-            let pxe = PxeOptions::from_config(&self.config, is_uefi, arch);
-            info!(
-                mac = %request.mac_address,
-                tftp_server = ?pxe.tftp_server,
-                boot_filename = ?pxe.boot_filename,
-                "PXE client: sending iPXE binary via TFTP"
-            );
-            pxe
-        };
 
         DhcpResponseBuilder::new(request.clone(), MessageType::Offer, self.config.server_ip)
             .with_pxe_options(pxe)
             .build_bytes()
+    }
+
+    /// Build appropriate PXE/HTTP Boot options based on client type.
+    ///
+    /// Three client types:
+    /// - iPXE client → HTTP URL for boot script (per-MAC)
+    /// - HTTP Boot client → HTTP URL for ipxe.efi binary (chainload into iPXE)
+    /// - Standard PXE client → TFTP filename for iPXE binary
+    fn build_boot_options(&self, request: &DhcpRequest) -> PxeOptions {
+        let is_uefi = request.client_arch.map(|a| a.is_uefi()).unwrap_or(false);
+        let arch = request.client_arch.and_then(|a| a.arch_string());
+
+        if request.is_ipxe {
+            // iPXE client: send boot script URL
+            let script_url = self.config.ipxe_script_url.clone().unwrap_or_else(|| {
+                format!(
+                    "http://{}:{}/boot/${{mac}}",
+                    self.config.server_ip, self.config.http_port
+                )
+            });
+            PxeOptions {
+                tftp_server: None,
+                boot_filename: Some(script_url),
+                vendor_class: Some("PXEClient".to_string()),
+                boot_servers: vec![],
+            }
+        } else if request.is_http_boot {
+            // UEFI HTTP Boot: serve ipxe.efi via HTTP URL
+            // The firmware downloads ipxe.efi over HTTP, then iPXE takes over
+            let ipxe_url = format!(
+                "http://{}:{}/boot/ipxe.efi",
+                self.config.server_ip, self.config.http_port
+            );
+            info!(
+                mac = %request.mac_address,
+                url = %ipxe_url,
+                "HTTP Boot client: sending iPXE EFI URL"
+            );
+            PxeOptions {
+                tftp_server: None,
+                boot_filename: Some(ipxe_url),
+                vendor_class: Some("HTTPClient".to_string()),
+                boot_servers: vec![],
+            }
+        } else {
+            // Standard PXE client: TFTP filename
+            PxeOptions::from_config(&self.config, is_uefi, arch)
+        }
     }
 
     /// Get gateway from machine config

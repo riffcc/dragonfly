@@ -4321,6 +4321,8 @@ const SPARK_ELF_PATH: &str = "/var/lib/dragonfly/spark.elf";
 const SPARK_EFI_ELF_PATH: &str = "/var/lib/dragonfly/spark-efi.elf";
 /// GRUB EFI shim - GRUB standalone with embedded Spark for EFI multiboot
 const GRUB_SPARK_EFI_PATH: &str = "/var/lib/dragonfly/grub-spark.efi";
+/// iPXE EFI binary - served via HTTP for UEFI HTTP Boot clients
+const IPXE_EFI_PATH: &str = "/var/lib/dragonfly/tftp/ipxe.efi";
 
 /// Memtest86+ binary path
 const MEMTEST_PATH: &str = "/var/lib/dragonfly/boot/memtest86plus.bin";
@@ -4437,6 +4439,45 @@ pub async fn serve_grub_spark_efi() -> Response {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("Failed to read GRUB Spark EFI: {}", e),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// Serve iPXE EFI binary over HTTP for UEFI HTTP Boot
+///
+/// UEFI HTTP Boot clients download iPXE via HTTP instead of TFTP.
+/// The DHCP server directs HTTPClient vendors to this URL.
+/// Once iPXE loads, it does its own DHCP exchange and follows
+/// the normal iPXE boot script flow.
+pub async fn serve_ipxe_efi() -> Response {
+    let path = std::path::Path::new(IPXE_EFI_PATH);
+
+    if !path.exists() {
+        warn!("404 /boot/ipxe.efi: File not found at {:?}", path);
+        return (
+            StatusCode::NOT_FOUND,
+            "iPXE EFI not found. It should be downloaded automatically at startup.",
+        )
+            .into_response();
+    }
+
+    match tokio::fs::read(path).await {
+        Ok(content) => {
+            info!("200 /boot/ipxe.efi: Serving {} bytes (HTTP Boot)", content.len());
+            (
+                StatusCode::OK,
+                [(axum::http::header::CONTENT_TYPE, "application/efi")],
+                content,
+            )
+                .into_response()
+        }
+        Err(e) => {
+            error!("500 /boot/ipxe.efi: Failed to read: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to read iPXE EFI: {}", e),
             )
                 .into_response()
         }
