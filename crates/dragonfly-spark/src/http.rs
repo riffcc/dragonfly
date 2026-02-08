@@ -321,6 +321,14 @@ fn build_checkin_json(
                     }
                 }
                 disk::DiskType::VirtioBlk => b"vda",
+                disk::DiskType::PvScsi { target, .. } => {
+                    match target {
+                        0 => b"sda",
+                        1 => b"sdb",
+                        2 => b"sdc",
+                        _ => b"sda",
+                    }
+                }
                 disk::DiskType::BiosDirect { .. } => b"sda",
             };
             write_bytes(buf, &mut pos, b"{\"name\":\"");
@@ -362,6 +370,7 @@ fn build_checkin_json(
                 disk::DiskType::VirtioScsi { .. } => b"\",\"device\":\"/dev/sda\"}",
                 disk::DiskType::Ahci { .. } => b"\",\"device\":\"/dev/sda\"}",
                 disk::DiskType::AtaPio => b"\",\"device\":\"/dev/sda\"}",
+                disk::DiskType::PvScsi { .. } => b"\",\"device\":\"/dev/sda\"}",
                 disk::DiskType::BiosDirect { .. } => b"\",\"device\":\"/dev/sda\"}",
             };
             write_bytes(buf, &mut pos, dev_path);

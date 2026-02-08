@@ -33,6 +33,7 @@ mod memory;
 mod menu;
 mod net;
 mod pci;
+mod pvscsi;
 mod serial;
 mod svga;
 mod ui;

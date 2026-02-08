@@ -58,6 +58,12 @@ pub fn boot_grub(os: &OsInfo) -> ! {
             serial::println("Chainload: VirtIO Block -> drive 0x80");
             0x80
         }
+        DiskType::PvScsi { target, .. } => {
+            serial::print("Chainload: PVSCSI target ");
+            serial::print_dec(target as u32);
+            serial::println(" -> drive 0x80");
+            0x80
+        }
         DiskType::BiosDirect { drive } => {
             serial::print("Chainload: BIOS direct drive 0x");
             serial::print_hex32(drive as u32);

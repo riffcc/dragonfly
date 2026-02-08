@@ -6,6 +6,7 @@
 use crate::bios::{inb, outb, insw, io_wait};
 use crate::serial;
 use crate::ahci;
+use crate::pvscsi;
 use crate::virtio;
 use crate::virtio_blk;
 
@@ -270,6 +271,8 @@ pub enum DiskType {
     VirtioScsi { target: u8, lun: u8 },
     /// VirtIO Block (VMs)
     VirtioBlk,
+    /// VMware PVSCSI (paravirtual SCSI)
+    PvScsi { target: u8, lun: u8 },
     /// BIOS INT 13h (direct, preserves BIOS state)
     BiosDirect { drive: u8 },
 }
@@ -281,6 +284,7 @@ pub enum DiskReader {
     VirtioBlk { ctrl: virtio_blk::VirtioBlk },
     AtaPio { drive: u8 },
     Ahci { ctrl: ahci::AhciController, port: u8 },
+    PvScsi { ctrl: pvscsi::PvScsi, target: u8, lun: u8 },
 }
 
 impl DiskReader {
@@ -290,6 +294,7 @@ impl DiskReader {
             DiskReader::VirtioBlk { ctrl } => ctrl.read_sector(lba, buffer),
             DiskReader::AtaPio { drive } => read_sector_ata(*drive, lba, buffer),
             DiskReader::Ahci { ctrl, port } => ctrl.read_sector(*port, lba as u64, buffer),
+            DiskReader::PvScsi { ctrl, target, lun } => ctrl.read_sector(*target, *lun, lba, buffer),
         }
     }
 
@@ -299,6 +304,7 @@ impl DiskReader {
             DiskReader::VirtioBlk { .. } => DiskType::VirtioBlk,
             DiskReader::AtaPio { .. } => DiskType::AtaPio,
             DiskReader::Ahci { port, .. } => DiskType::Ahci { port: *port },
+            DiskReader::PvScsi { target, lun, .. } => DiskType::PvScsi { target: *target, lun: *lun },
         }
     }
 }
@@ -497,6 +503,12 @@ pub fn scan_for_os() -> Option<&'static OsInfo> {
         return unsafe { Some(&*core::ptr::addr_of!(OS_INFO)) };
     }
 
+    // Try VMware PVSCSI (paravirtual SCSI)
+    if scan_pvscsi_into_static() {
+        serial::println("DBG: scan_for_os returning PVSCSI result");
+        return unsafe { Some(&*core::ptr::addr_of!(OS_INFO)) };
+    }
+
     // Try VirtIO SCSI (VMs)
     if scan_virtio_scsi_into_static() {
         serial::println("DBG: scan_for_os returning VirtIO SCSI result");
@@ -594,6 +606,37 @@ fn scan_ata_pio_into_static() -> bool {
             return false;
         }
     }
+
+    analyze_mbr_into_static(&mut reader)
+}
+
+/// Scan VMware PVSCSI and write directly to static storage
+fn scan_pvscsi_into_static() -> bool {
+    serial::println("Trying PVSCSI...");
+
+    let init_result = pvscsi::init();
+    if init_result.is_none() {
+        return false;
+    }
+    let (controller, target, lun) = init_result.unwrap();
+
+    // Record disk for checkin reporting
+    record_disk(DiskType::PvScsi { target, lun }, 0, b"VMware PVSCSI Disk", 18);
+
+    let mut reader = DiskReader::PvScsi { ctrl: controller, target, lun };
+
+    serial::print("PVSCSI: Reading MBR from target ");
+    serial::print_dec(target as u32);
+    serial::println("");
+
+    // Read MBR directly into static storage
+    unsafe {
+        if !reader.read_sector(0, &mut (*core::ptr::addr_of_mut!(OS_INFO)).mbr) {
+            serial::println("PVSCSI: MBR read failed");
+            return false;
+        }
+    }
+    serial::println("PVSCSI: MBR read OK");
 
     analyze_mbr_into_static(&mut reader)
 }
