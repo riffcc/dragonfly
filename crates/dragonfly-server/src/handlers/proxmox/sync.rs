@@ -97,6 +97,8 @@ async fn sync_proxmox_machines(
     > = std::collections::HashMap::new();
     // Node uptime: node_name → uptime_secs
     let mut node_uptimes: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
+    // Node online status: node_name → is_online
+    let mut node_online: std::collections::HashMap<String, bool> = std::collections::HashMap::new();
     // Track which nodes we successfully enumerated VMs/LXCs for.
     // Only prune machines from nodes where we got a confirmed successful API response.
     let mut nodes_with_successful_vm_enum: std::collections::HashSet<String> =
@@ -110,6 +112,8 @@ async fn sync_proxmox_machines(
             .and_then(|n| n.as_str())
             .ok_or_else(|| anyhow::anyhow!("Sync: Node missing 'node' field"))?;
         existing_node_names.insert(node_name.to_string());
+        let is_online = node.get("status").and_then(|s| s.as_str()).unwrap_or("online") == "online";
+        node_online.insert(node_name.to_string(), is_online);
         if let Some(uptime) = node.get("uptime").and_then(|u| u.as_u64()) {
             node_uptimes.insert(node_name.to_string(), uptime);
         }
@@ -340,18 +344,40 @@ async fn sync_proxmox_machines(
                         node, db_machine.id
                     );
                     machines_to_prune.push(db_machine.id);
-                } else if let Some(&uptime) = node_uptimes.get(node) {
-                    // Sync uptime for physical hosts
+                } else {
                     let mut machine = match state.store.get_machine(db_machine.id).await {
                         Ok(Some(m)) => m,
                         _ => continue,
                     };
-                    if machine.status.uptime_seconds != Some(uptime) {
-                        machine.status.uptime_seconds = Some(uptime);
+                    let mut changed = false;
+                    let is_online = node_online.get(node).copied().unwrap_or(true);
+
+                    // Update online/offline state
+                    if !is_online && !matches!(machine.status.state, MachineState::Offline) {
+                        info!("Sync: Node '{}' is OFFLINE (out of quorum)", node);
+                        machine.status.state = MachineState::Offline;
+                        changed = true;
+                    } else if is_online && matches!(machine.status.state, MachineState::Offline) {
+                        info!("Sync: Node '{}' is back ONLINE", node);
+                        machine.status.state = MachineState::ExistingOs {
+                            os_name: "Proxmox VE".to_string(),
+                        };
+                        changed = true;
+                    }
+
+                    // Sync uptime for online hosts
+                    if let Some(&uptime) = node_uptimes.get(node) {
+                        if machine.status.uptime_seconds != Some(uptime) {
+                            machine.status.uptime_seconds = Some(uptime);
+                            changed = true;
+                        }
+                    }
+
+                    if changed {
                         machine.status.last_seen = Some(chrono::Utc::now());
                         machine.metadata.updated_at = chrono::Utc::now();
                         if let Err(e) = state.store.put_machine(&machine).await {
-                            error!("Sync: Failed to save node '{}' uptime: {}", node, e);
+                            error!("Sync: Failed to save node '{}': {}", node, e);
                         } else {
                             updated_count += 1;
                         }

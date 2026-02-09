@@ -199,7 +199,7 @@ pub async fn generate_proxmox_tokens_with_credentials(
 
             // Update roles with proper permissions
             let role_permissions = [
-                ("DragonflyCreate", "VM.Allocate,VM.Config.Options,VM.Config.Disk,VM.Config.CPU,VM.Config.Memory,VM.Config.Network,VM.Config.HWType,VM.PowerMgmt,VM.Console,Datastore.AllocateSpace,Datastore.Audit,SDN.Use,Sys.Audit"),
+                ("DragonflyCreate", "VM.Allocate,VM.Audit,VM.Config.Options,VM.Config.Disk,VM.Config.CPU,VM.Config.Memory,VM.Config.Network,VM.Config.HWType,VM.PowerMgmt,VM.Console,Datastore.AllocateSpace,Datastore.Audit,SDN.Use,Sys.Audit"),
                 ("DragonflyVMConfig", "VM.Config.Options,VM.Config.Disk"),
                 (
                     "DragonflySync",

@@ -164,7 +164,7 @@ fn generate_ip_in_subnet(network_addr: Ipv4Addr, host_num: u32) -> Ipv4Addr {
 }
 
 /// Run Proxmox discovery and return the connect response.
-pub(super) async fn connect_proxmox_discover(
+pub async fn connect_proxmox_discover(
     state: &crate::AppState,
     host: &str,
     import_guests: bool,
@@ -269,8 +269,9 @@ pub(super) async fn discover_and_register_proxmox_vms(
         existing_machines.len()
     );
 
-    // Query /cluster/status for real corosync cluster name and node IPs
+    // Query /cluster/status for real corosync cluster name, node IPs, and online status
     let mut node_ip_map = std::collections::HashMap::<String, String>::new();
+    let mut node_online_map = std::collections::HashMap::<String, bool>::new();
     let mut real_cluster_name: Option<String> = None;
     if let Ok(cluster_status_resp) = client.get("/api2/json/cluster/status").await {
         if let Ok(cluster_val) =
@@ -290,8 +291,10 @@ pub(super) async fn discover_and_register_proxmox_vms(
                                 entry.get("name").and_then(|n| n.as_str()),
                                 entry.get("ip").and_then(|i| i.as_str()),
                             ) {
-                                info!("Cluster status: node '{}' has IP {}", name, ip);
+                                let online = entry.get("online").and_then(|o| o.as_u64()).unwrap_or(0) == 1;
+                                info!("Cluster status: node '{}' has IP {}, online={}", name, ip, online);
                                 node_ip_map.insert(name.to_string(), ip.to_string());
+                                node_online_map.insert(name.to_string(), online);
                             }
                         }
                         _ => {}
@@ -318,6 +321,32 @@ pub(super) async fn discover_and_register_proxmox_vms(
             .get(node_name)
             .cloned()
             .unwrap_or_else(|| "Unknown".to_string());
+
+        // Check if node is online — use cluster/status map first, fall back to nodes list
+        let node_status_str = node.get("status").and_then(|s| s.as_str()).unwrap_or("online");
+        let node_is_online = node_online_map.get(node_name).copied().unwrap_or(node_status_str == "online");
+
+        if !node_is_online {
+            info!("Node '{}' is OFFLINE (out of quorum), registering with Offline state", node_name);
+
+            // Try to update an existing machine rather than creating a new one
+            let existing_machines = state.store.list_machines().await.unwrap_or_default();
+            if let Some(existing) = existing_machines.iter().find(|m| {
+                matches!(m.metadata.source, dragonfly_common::machine::MachineSource::ProxmoxNode { .. })
+                    && m.config.hostname.as_deref() == Some(node_name)
+            }) {
+                let mut updated = existing.clone();
+                updated.status.state = dragonfly_common::MachineState::Offline;
+                if let Err(e) = state.store.put_machine(&updated).await {
+                    warn!("Failed to mark offline node '{}': {}", node_name, e);
+                } else {
+                    info!("Marked existing node '{}' as Offline", node_name);
+                }
+            } else {
+                warn!("Offline node '{}' has no prior registration — skipping (no NICs available)", node_name);
+            }
+            continue;
+        }
 
         let node_status_path = format!("/api2/json/nodes/{}/status", node_name);
         let mut host_hostname = node_name.to_string();
