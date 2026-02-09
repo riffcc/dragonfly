@@ -14,16 +14,20 @@
 //! - `seabios` - Configure SeaBIOS boot order via CMOS (QEMU/KVM)
 //! - `reboot` - Reboot the machine
 
+mod chroot;
 mod efibootmgr;
 mod image2disk;
+mod jetpack;
 mod kexec;
 mod partition;
 mod reboot;
 mod seabios;
 mod writefile;
 
+pub use chroot::{ChrootAction, chroot_path, is_chroot_active};
 pub use efibootmgr::EfibootmgrAction;
 pub use image2disk::Image2DiskAction;
+pub use jetpack::JetpackAction;
 pub use kexec::KexecAction;
 pub use partition::PartitionAction;
 pub use reboot::RebootAction;
@@ -34,8 +38,10 @@ use crate::ActionEngine;
 
 /// Register all native actions with the engine
 pub fn register_all(engine: &mut ActionEngine) {
+    engine.register(ChrootAction);
     engine.register(EfibootmgrAction);
     engine.register(Image2DiskAction);
+    engine.register(JetpackAction);
     engine.register(WriteFileAction);
     engine.register(KexecAction);
     engine.register(PartitionAction);

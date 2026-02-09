@@ -137,6 +137,10 @@ pub enum ActionStep {
     Seabios(SeabiosConfig),
     /// Reboot the machine
     Reboot(RebootConfig),
+    /// Activate or deactivate a chroot environment
+    Chroot(ChrootConfig),
+    /// Run Jetpack in pull mode (optionally inside active chroot)
+    Jetpack(JetpackConfig),
 }
 
 impl ActionStep {
@@ -150,6 +154,8 @@ impl ActionStep {
             ActionStep::Efibootmgr(_) => "efibootmgr",
             ActionStep::Seabios(_) => "seabios",
             ActionStep::Reboot(_) => "reboot",
+            ActionStep::Chroot(_) => "chroot",
+            ActionStep::Jetpack(_) => "jetpack",
         }
     }
 
@@ -163,6 +169,8 @@ impl ActionStep {
             ActionStep::Efibootmgr(cfg) => cfg.timeout,
             ActionStep::Seabios(cfg) => cfg.timeout,
             ActionStep::Reboot(cfg) => cfg.timeout,
+            ActionStep::Chroot(cfg) => cfg.timeout,
+            ActionStep::Jetpack(cfg) => cfg.timeout,
         }
     }
 
@@ -200,6 +208,13 @@ impl ActionStep {
             ActionStep::Efibootmgr(_) => Ok(()), // No validation needed
             ActionStep::Seabios(_) => Ok(()),    // No validation needed
             ActionStep::Reboot(_) => Ok(()),     // No validation needed
+            ActionStep::Chroot(_) => Ok(()),     // Teardown needs no params
+            ActionStep::Jetpack(cfg) => {
+                if cfg.url.is_empty() {
+                    return Err(CrdError::MissingField("jetpack.url".to_string()));
+                }
+                Ok(())
+            }
         }
     }
 
@@ -370,6 +385,43 @@ impl ActionStep {
             ActionStep::Reboot(cfg) => {
                 if let Some(delay) = cfg.delay {
                     env.insert("REBOOT_DELAY".to_string(), delay.to_string());
+                }
+            }
+            ActionStep::Chroot(cfg) => {
+                if cfg.teardown {
+                    env.insert("TEARDOWN".to_string(), "true".to_string());
+                } else {
+                    // Resolve disk and partition for mounting
+                    let disk = if cfg.disk == "auto" {
+                        hardware_disks
+                            .first()
+                            .cloned()
+                            .unwrap_or_else(|| "/dev/sda".to_string())
+                    } else {
+                        cfg.disk.clone()
+                    };
+
+                    let dest_disk = if let Some(part_num) = cfg.partition {
+                        format_partition(&disk, part_num)
+                    } else {
+                        format_partition(&disk, 1) // Default to partition 1
+                    };
+
+                    env.insert("DEST_DISK".to_string(), dest_disk);
+                    env.insert(
+                        "FS_TYPE".to_string(),
+                        cfg.fs_type.clone().unwrap_or_else(|| "ext4".to_string()),
+                    );
+                }
+            }
+            ActionStep::Jetpack(cfg) => {
+                // Substitute variables in URL
+                let url = cfg.url.replace("{{ server }}", server);
+                env.insert("PLAYBOOK_URL".to_string(), url);
+
+                if let Some(ref bin_url) = cfg.binary_url {
+                    let bin_url = bin_url.replace("{{ server }}", server);
+                    env.insert("JETPACK_BINARY_URL".to_string(), bin_url);
                 }
             }
         }
@@ -549,6 +601,45 @@ pub struct RebootConfig {
     pub timeout: Option<u64>,
 }
 
+/// Configuration for jetpack action
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct JetpackConfig {
+    /// URL to the playbook (HTTPS URL to .yml file, or git repo URL)
+    pub url: String,
+
+    /// URL to the Jetpack binary (defaults to latest GitHub release)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub binary_url: Option<String>,
+
+    /// Action timeout in seconds
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timeout: Option<u64>,
+}
+
+/// Configuration for chroot action
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct ChrootConfig {
+    /// Target disk device ("auto" to auto-detect)
+    #[serde(default = "default_disk")]
+    pub disk: String,
+
+    /// Partition number to mount as chroot root
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub partition: Option<u8>,
+
+    /// Filesystem type for mounting
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fs_type: Option<String>,
+
+    /// If true, tears down the active chroot instead of setting one up
+    #[serde(default)]
+    pub teardown: bool,
+
+    /// Action timeout in seconds
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timeout: Option<u64>,
+}
+
 fn default_true() -> bool {
     true
 }
@@ -569,6 +660,10 @@ pub mod actions {
     pub const SEABIOS: &str = "seabios";
     /// Reboot the machine
     pub const REBOOT: &str = "reboot";
+    /// Activate or deactivate a chroot environment
+    pub const CHROOT: &str = "chroot";
+    /// Run Jetpack in pull mode
+    pub const JETPACK: &str = "jetpack";
 }
 
 #[cfg(test)]
