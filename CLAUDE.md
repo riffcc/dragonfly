@@ -67,6 +67,7 @@ Flight and Swarm are equally capable for datacenter management. Swarm adds multi
 - **Use Palace Tools** - Use `pal test`, `pal build`, `pal run` for development workflows
 - **NEVER REVERT FILES** - Do NOT use `git checkout` or `git restore` to revert files unless explicitly asked
 - **PREFER NATIVE CRATES** - Strongly prefer native Rust crates over shelling out to external binaries. Do NOT shell out for data parsing (no lsblk, fdisk, tar for reading data). Shelling out is acceptable ONLY for system actions with no native alternative (e.g., `mdev -s` for device node refresh, `kexec` for kernel loading).
+- **GIT DEPENDENCIES MUST USE TAGS** - Never use `rev = "sha"` for git dependencies in Cargo.toml. Always use `tag = "vX.Y.Z"`. Individual commit SHAs are banned. Create a tag/release on the upstream repo first, then reference the tag.
 
 ## Quality Standards
 - Write comprehensive tests for all new features

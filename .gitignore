@@ -217,3 +217,5 @@ settings.json
 config/dragonfly.db
 
 tarpaulin-report.html
+crates/dragonfly-spark/iso/boot/spark-efi.elf
+crates/dragonfly-spark/spark-efi.elf
