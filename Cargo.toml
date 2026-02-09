@@ -32,7 +32,7 @@ thiserror = "1.0"
 tracing = "0.1"
 tracing-subscriber = "0.3"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
-jetpack = { git = "https://github.com/riffcc/jetpack", tag = "v0.3.5" }
+jetpack = { git = "https://github.com/riffcc/jetpack", tag = "v0.4.2" }
 ssh-key = { version = "0.6", features = ["ed25519", "rand_core", "std"] }
 
 [package]
@@ -126,6 +126,11 @@ inherits = "dev"
 
 [profile.android-dev]
 inherits = "dev"
+
+# Patch rqlite-rs to remove println spam (upstream has no fix)
+[patch.crates-io]
+rqlite-rs = { path = "crates/rqlite-rs" }
+rqlite-rs-core = { path = "crates/rqlite-rs-core" }
 
 # Patch proxmox crates for macOS compatibility
 [patch."https://github.com/proxmox/proxmox-rs"]

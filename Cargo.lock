@@ -3492,8 +3492,8 @@ checksum = "92ecc6618181def0457392ccd0ee51198e065e016d1d527a7ac1b6dc7c1f09d2"
 
 [[package]]
 name = "jetpack"
-version = "0.3.0"
-source = "git+https://github.com/riffcc/jetpack?tag=v0.3.5#8e50b838f9dc25f36ffdc7fb8cf7a00453930179"
+version = "0.4.0"
+source = "git+https://github.com/riffcc/jetpack?tag=v0.4.2#c4c1e8f887d1b055d6efb9120a64c427b8bd1810"
 dependencies = [
  "chrono",
  "expanduser",
@@ -5817,8 +5817,6 @@ dependencies = [
 [[package]]
 name = "rqlite-rs"
 version = "0.6.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c947c4b2a34b10e0e1a1ea79ce12345ce6c7818c99d8613846272e1d91e1ce9d"
 dependencies = [
  "base64 0.22.1",
  "reqwest 0.12.28",
@@ -5832,8 +5830,6 @@ dependencies = [
 [[package]]
 name = "rqlite-rs-core"
 version = "0.3.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "daf3449fa5df52296d10b69cc25d0a3fe596fdd98115a319a87eb31f319fb632"
 dependencies = [
  "serde",
  "serde_json",

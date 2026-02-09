@@ -1,26 +1,32 @@
 ---
-# Start rqlite on a cluster node.
+# Start rqlite with DNS-based automatic cluster discovery.
 #
-# Use with limit_hosts to target specific nodes.
-# Pass extra_vars: rqlite_join: "-join http://leader:4001" for joiners.
-# Leader gets no join argument (empty default).
+# All nodes start identically — no leader/joiner distinction needed.
+# rqlite resolves "rqlite.cluster" from /etc/hosts to find all peers,
+# then uses Raft consensus to elect a leader automatically.
+#
+# Variables (set via extra_vars):
+#   bootstrap_expect: number of nodes expected (e.g. "3")
 #
 # Idempotent — skips if rqlited is already running.
 
 - name: Start rqlite
   groups: [dragonfly_cluster]
-  defaults:
-    rqlite_join: ""
   tasks:
     - !shell
       name: Start rqlite daemon
       cmd: |
         if pgrep -x rqlited > /dev/null; then echo "Already running"; exit 0; fi
+        mkdir -p /var/lib/rqlite
         nohup /opt/rqlite/rqlited \
           -node-id {{jet_hostname_short}} \
           -http-addr 0.0.0.0:4001 \
+          -http-adv-addr {{jet_ssh_hostname}}:4001 \
           -raft-addr 0.0.0.0:4002 \
-          {{rqlite_join}} \
+          -raft-adv-addr {{jet_ssh_hostname}}:4002 \
+          -disco-mode dns \
+          -disco-config '{"name":"rqlite.cluster"}' \
+          -bootstrap-expect {{bootstrap_expect}} \
           /var/lib/rqlite > /var/log/rqlite.log 2>&1 &
         disown
     - !shell
@@ -31,4 +37,6 @@
           sleep 1
         done
         echo "rqlite did not become ready within 60s"
+        echo "=== last 30 lines of log ==="
+        tail -30 /var/log/rqlite.log
         exit 1

@@ -479,6 +479,75 @@ async fn ensure_proxmox_roles(client: &ProxmoxApiClient, state: &AppState) {
     }
 }
 
+/// Pre-flight IP availability scan.
+///
+/// Checks ARP table first (instant, no traffic), then sends a single ICMP
+/// ping to remaining IPs in parallel (1 second timeout). Returns the set
+/// of IPs that are already occupied.
+async fn scan_ips_occupied(ips: &[Ipv4Addr]) -> Vec<Ipv4Addr> {
+    // Phase 1: Read ARP table — instant, no network traffic
+    let mut arp_known: std::collections::HashSet<Ipv4Addr> = std::collections::HashSet::new();
+    if let Ok(arp_output) = tokio::process::Command::new("ip")
+        .args(["neigh", "show"])
+        .output()
+        .await
+    {
+        let stdout = String::from_utf8_lossy(&arp_output.stdout);
+        for line in stdout.lines() {
+            // Format: "10.7.1.1 dev eth0 lladdr aa:bb:cc:dd:ee:ff REACHABLE"
+            if let Some(ip_str) = line.split_whitespace().next() {
+                if let Ok(ip) = ip_str.parse::<Ipv4Addr>() {
+                    // Only count entries that are REACHABLE, STALE, or DELAY (not FAILED/INCOMPLETE)
+                    let upper = line.to_uppercase();
+                    if upper.contains("REACHABLE") || upper.contains("STALE") || upper.contains("DELAY") {
+                        arp_known.insert(ip);
+                    }
+                }
+            }
+        }
+    }
+
+    let mut occupied = Vec::new();
+    let mut need_ping = Vec::new();
+
+    for &ip in ips {
+        if arp_known.contains(&ip) {
+            info!("Pre-flight: {} is in ARP table (occupied)", ip);
+            occupied.push(ip);
+        } else {
+            need_ping.push(ip);
+        }
+    }
+
+    // Phase 2: Parallel ping with 1s timeout for IPs not in ARP
+    if !need_ping.is_empty() {
+        info!("Pre-flight: pinging {} IPs not found in ARP table", need_ping.len());
+        let mut handles = Vec::new();
+        for ip in need_ping {
+            handles.push(tokio::spawn(async move {
+                let result = tokio::process::Command::new("ping")
+                    .args(["-c", "1", "-W", "1", &ip.to_string()])
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status()
+                    .await;
+                match result {
+                    Ok(status) if status.success() => Some(ip),
+                    _ => None,
+                }
+            }));
+        }
+        for handle in handles {
+            if let Ok(Some(ip)) = handle.await {
+                info!("Pre-flight: {} responded to ping (occupied)", ip);
+                occupied.push(ip);
+            }
+        }
+    }
+
+    occupied
+}
+
 /// Scan all Proxmox nodes for LXCs with hostnames matching `dragonfly\d+`.
 /// Returns a map: hostname → ExistingContainer.
 async fn scan_existing_containers(
@@ -581,10 +650,11 @@ pub async fn build_cluster_plan(state: &AppState) -> Result<ClusterPlan> {
 
     let proxmox_nodes: Vec<_> = machines.iter()
         .filter(|m| matches!(m.metadata.source, dragonfly_common::machine::MachineSource::ProxmoxNode { .. }))
+        .filter(|m| !matches!(m.status.state, dragonfly_common::MachineState::Offline))
         .collect();
 
     if proxmox_nodes.is_empty() {
-        bail!("No Proxmox nodes found. Connect a Proxmox cluster first.");
+        bail!("No online Proxmox nodes found. All nodes may be offline, or no Proxmox cluster is connected.");
     }
 
     // 2. Get primary network for IP allocation
@@ -611,27 +681,89 @@ pub async fn build_cluster_plan(state: &AppState) -> Result<ClusterPlan> {
     // Ensure roles have the permissions we need (upgrades existing installations)
     ensure_proxmox_roles(&client, state).await;
 
-    // 4. Allocate IPs from the network pool
-    let base_ip: Ipv4Addr = gateway.parse()
+    // 4. Parse subnet for IP scanning
+    let gateway_ip: Ipv4Addr = gateway.parse()
         .context("Failed to parse gateway IP")?;
-    let base_octets = base_ip.octets();
-
-    // Start allocating from .150 offset by default, or from pool_start if set
-    let start_offset: u8 = if let Some(ref pool_start) = network.pool_start {
-        if let Ok(ip) = pool_start.parse::<Ipv4Addr>() {
-            ip.octets()[3]
-        } else {
-            150
-        }
-    } else {
-        150
-    };
+    let gateway_octets = gateway_ip.octets();
 
     // 5. Scan for existing containers by hostname (fixes duplicate VM bug)
     let node_names: Vec<&str> = proxmox_nodes.iter()
         .filter_map(|m| proxmox_node_name(&m.metadata.source))
         .collect();
     let existing = scan_existing_containers(&client, &node_names).await;
+
+    // Collect IPs already owned by our existing containers
+    let our_ips: std::collections::HashSet<Ipv4Addr> = existing.values()
+        .filter_map(|ec| ec.ip)
+        .collect();
+
+    // 5b. Scan subnet for occupied IPs, then find a contiguous free block
+    let needed = proxmox_nodes.len();
+    let new_needed = {
+        let mut count = 0usize;
+        for i in 0..needed {
+            let hostname = format!("dragonfly{:02}", i + 1);
+            if !existing.contains_key(&hostname) {
+                count += 1;
+            }
+        }
+        count
+    };
+
+    // Determine the scannable range from the subnet
+    // For /24: .2 to .254 (skip .0 network and .255 broadcast, and gateway)
+    let subnet_base = [gateway_octets[0], gateway_octets[1], gateway_octets[2], 0];
+    let scan_start: u8 = 2; // skip .0 (network) and .1 (common gateway)
+    let scan_end: u8 = 254; // skip .255 (broadcast)
+
+    let allocated_ips: Vec<Ipv4Addr> = if new_needed > 0 {
+        info!("Pre-flight: scanning subnet {}.{}.{}.0/{} for {} contiguous free IPs",
+            subnet_base[0], subnet_base[1], subnet_base[2], prefix, new_needed);
+
+        // Build full list of IPs to scan
+        let scan_range: Vec<Ipv4Addr> = (scan_start..=scan_end)
+            .map(|last| Ipv4Addr::new(subnet_base[0], subnet_base[1], subnet_base[2], last))
+            .filter(|ip| ip != &gateway_ip) // skip the gateway
+            .filter(|ip| !our_ips.contains(ip)) // skip our existing containers
+            .collect();
+
+        let occupied = scan_ips_occupied(&scan_range).await;
+        let occupied_set: std::collections::HashSet<Ipv4Addr> = occupied.into_iter().collect();
+
+        info!("Pre-flight: found {} occupied IPs in subnet (excluding {} owned containers)",
+            occupied_set.len(), our_ips.len());
+
+        // Find first contiguous block of `new_needed` free IPs
+        // Walk .2 to .254, skipping gateway and occupied
+        let mut block = Vec::new();
+        for last in scan_start..=scan_end {
+            let ip = Ipv4Addr::new(subnet_base[0], subnet_base[1], subnet_base[2], last);
+            if ip == gateway_ip || our_ips.contains(&ip) || occupied_set.contains(&ip) {
+                block.clear();
+                continue;
+            }
+            block.push(ip);
+            if block.len() == new_needed {
+                break;
+            }
+        }
+
+        if block.len() < new_needed {
+            bail!(
+                "Cannot find {} contiguous free IPs in subnet {}.{}.{}.0/{}. \
+                 Found only {} contiguous free IPs. Free up addresses or use a larger subnet.",
+                new_needed, subnet_base[0], subnet_base[1], subnet_base[2], prefix,
+                block.len()
+            );
+        }
+
+        info!("Pre-flight: allocated contiguous block {}-{} ({} IPs)",
+            block.first().unwrap(), block.last().unwrap(), block.len());
+        block
+    } else {
+        info!("Pre-flight: all containers already exist, no new IPs needed");
+        Vec::new()
+    };
 
     // Try to recover passwords from a previous plan
     let old_passwords: HashMap<String, String> = state.store
@@ -663,6 +795,7 @@ pub async fn build_cluster_plan(state: &AppState) -> Result<ClusterPlan> {
         0 // unused — all containers already exist
     };
     let mut vmid_counter = 0u32;
+    let mut alloc_idx = 0usize;
 
     // 6. Build per-node plans with per-node storage detection
     let mut nodes = Vec::new();
@@ -681,22 +814,25 @@ pub async fn build_cluster_plan(state: &AppState) -> Result<ClusterPlan> {
         let ostemplate = ensure_template(&client, node_name, &tmpl_storage).await
             .context(format!("Failed to ensure Debian template on node '{}'", node_name))?;
 
-        // Reuse existing container data or allocate new
+        // Reuse existing container data or allocate from scanned free block
         let (vmid, ip, is_existing) = if let Some(ec) = existing.get(&hostname) {
-            let ip = ec.ip.unwrap_or_else(|| Ipv4Addr::new(
-                base_octets[0], base_octets[1], base_octets[2],
-                start_offset.wrapping_add(i as u8),
-            ));
+            let ip = ec.ip.unwrap_or_else(|| {
+                // Fallback: take from allocated block if available
+                if let Some(&alloc_ip) = allocated_ips.get(alloc_idx) {
+                    alloc_idx += 1;
+                    alloc_ip
+                } else {
+                    Ipv4Addr::new(gateway_octets[0], gateway_octets[1], gateway_octets[2], 200 + i as u8)
+                }
+            });
             info!("Reusing existing container '{}' on '{}' (vmid={}, ip={})",
                 hostname, ec.node, ec.vmid, ip);
             (ec.vmid, ip, true)
         } else {
             let vmid = base_vmid + vmid_counter;
             vmid_counter += 1;
-            let ip = Ipv4Addr::new(
-                base_octets[0], base_octets[1], base_octets[2],
-                start_offset.wrapping_add(i as u8),
-            );
+            let ip = allocated_ips[alloc_idx];
+            alloc_idx += 1;
             (vmid, ip, false)
         };
 
@@ -1093,7 +1229,7 @@ fn build_jetpack_inventory(
                 node: Some(node.proxmox_node.clone()),
                 hostname: Some(node.hostname.clone()),
                 vmid: Some(node.vmid.to_string()),
-                memory: Some("512".to_string()),
+                memory: Some("1536".to_string()),
                 cores: Some("1".to_string()),
                 ostemplate: Some(node.ostemplate.clone()),
                 storage: Some(node.storage.clone()),
@@ -1126,17 +1262,23 @@ fn build_jetpack_inventory(
     Arc::new(RwLock::new(inventory))
 }
 
-/// Run a Jetpack playbook with the given inventory (sync, for use in spawn_blocking).
+// Embedded playbooks — baked into the binary at compile time.
+const PLAYBOOK_PROVISION: &str = include_str!("../../../playbooks/cluster/provision.yml");
+const PLAYBOOK_CONFIGURE: &str = include_str!("../../../playbooks/cluster/configure.yml");
+
+/// Run an inline Jetpack playbook (sync, for use in spawn_blocking).
 fn run_jetpack_playbook(
-    playbook_path: &str,
+    name: &str,
+    yaml: &str,
     inventory: &Arc<RwLock<jetpack::Inventory>>,
     password: &str,
     private_key_file: Option<&str>,
     limit_hosts: Option<Vec<String>>,
     extra_vars: Option<serde_yaml::Value>,
     output_handler: Option<Arc<dyn jetpack::OutputHandler>>,
+    async_mode: bool,
 ) -> std::result::Result<jetpack::PlaybookResult, jetpack::JetpackError> {
-    let mut builder = jetpack::run_playbook(playbook_path)
+    let mut builder = jetpack::run_inline(name, yaml)
         .ssh()
         .user("root")
         .with_inventory(Arc::clone(inventory));
@@ -1153,6 +1295,9 @@ fn run_jetpack_playbook(
     }
     if let Some(vars) = extra_vars {
         builder = builder.extra_vars(vars);
+    }
+    if async_mode {
+        builder = builder.async_mode();
     }
 
     if let Some(handler) = output_handler {
@@ -1234,8 +1379,7 @@ pub async fn deploy_cluster(state: AppState, mut plan: ClusterPlan) {
     }
 
     if is_aborted(&state) {
-        cleanup_deployment(&state, &plan, &created_indices).await;
-        emit_cluster_event(&state, -1, "aborted", "Deployment aborted");
+        emit_cluster_event(&state, -1, "aborted", "Deployment aborted — use Cleanup to remove containers, or Retry to continue");
         return;
     }
 
@@ -1306,8 +1450,7 @@ pub async fn deploy_cluster(state: AppState, mut plan: ClusterPlan) {
         management_pubkey.as_deref(),
     );
 
-    // Playbook directory
-    let playbook_dir = "/var/lib/dragonfly/playbooks/cluster";
+    // Playbooks are embedded in the binary — no external files needed.
 
     // Output handler for Jetpack provisioning lifecycle events → SSE
     let output_handler: Arc<dyn jetpack::OutputHandler> = Arc::new(ClusterOutputHandler {
@@ -1324,13 +1467,12 @@ pub async fn deploy_cluster(state: AppState, mut plan: ClusterPlan) {
         emit_cluster_event(&state, node.idx as i32, "creating", "Reusing existing container");
     }
 
-    let provision_playbook = format!("{}/provision.yml", playbook_dir);
     let inv_clone = Arc::clone(&inventory);
     let pw = cluster_password.clone();
     let oh = Arc::clone(&output_handler);
     let key_path = management_key_path.clone();
     let result = tokio::task::spawn_blocking(move || {
-        run_jetpack_playbook(&provision_playbook, &inv_clone, &pw, key_path.as_deref(), None, None, Some(oh))
+        run_jetpack_playbook("provision.yml", PLAYBOOK_PROVISION, &inv_clone, &pw, key_path.as_deref(), None, None, Some(oh), true)
     }).await;
 
     match result {
@@ -1360,6 +1502,15 @@ pub async fn deploy_cluster(state: AppState, mut plan: ClusterPlan) {
         }
     }
 
+    // Clear provision blocks — containers exist now, subsequent playbooks must not re-provision
+    {
+        let inv = inventory.read().unwrap();
+        for node in &plan.nodes {
+            let host = inv.get_host(&node.hostname);
+            host.write().unwrap().clear_provision();
+        }
+    }
+
     // Register all LXCs as Machine entries + DNS records
     for node in &plan.nodes {
         let mac = fetch_lxc_mac(&create_client, &node.proxmox_node, node.vmid).await;
@@ -1367,178 +1518,79 @@ pub async fn deploy_cluster(state: AppState, mut plan: ClusterPlan) {
     }
 
     if is_aborted(&state) {
-        cleanup_deployment(&state, &plan, &created_indices).await;
-        emit_cluster_event(&state, -1, "aborted", "Deployment aborted");
+        emit_cluster_event(&state, -1, "aborted", "Deployment aborted — use Cleanup to remove containers, or Retry to continue");
         return;
     }
 
-    // Phase C: Install rqlite via Jetpack (idempotent — skips if already installed)
-    emit_cluster_event(&state, -1, "installing", "Installing rqlite...");
+    // Phase C+D: Install, configure, and form cluster via async Jetpack
+    //
+    // Single playbook (configure.yml) runs all nodes in parallel:
+    //   1. Install rqlite binary (independent per host)
+    //   2. Write /etc/hosts for DNS discovery (independent per host)
+    //   3. !wait_for_others barrier — all hosts must have /etc/hosts before starting
+    //   4. Start rqlite with DNS discovery (all simultaneously)
+    //   5. Wait for rqlite readiness
+    //
+    // Async mode means each host races through steps 1-2 as fast as it can,
+    // then waits at the barrier for slower hosts to catch up.
+    emit_cluster_event(&state, -1, "installing", "Installing and configuring rqlite (async)...");
     for node in &plan.nodes {
         emit_cluster_event(&state, node.idx as i32, "installing", "Installing rqlite...");
     }
 
-    let install_playbook = format!("{}/install.yml", playbook_dir);
+    // Build extra vars for the unified playbook
+    let hosts_entries: String = plan.nodes.iter()
+        .map(|n| format!("{} rqlite.cluster", n.ip))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let configure_vars = serde_yaml::Value::Mapping({
+        let mut m = serde_yaml::Mapping::new();
+        m.insert(
+            serde_yaml::Value::String("cluster_hosts_entries".into()),
+            serde_yaml::Value::String(hosts_entries),
+        );
+        m.insert(
+            serde_yaml::Value::String("bootstrap_expect".into()),
+            serde_yaml::Value::String(plan.nodes.len().to_string()),
+        );
+        m
+    });
+
     let inv_clone = Arc::clone(&inventory);
     let pw = cluster_password.clone();
     let oh = Arc::clone(&output_handler);
     let key_path = management_key_path.clone();
     let result = tokio::task::spawn_blocking(move || {
-        run_jetpack_playbook(&install_playbook, &inv_clone, &pw, key_path.as_deref(), None, None, Some(oh))
+        run_jetpack_playbook("configure.yml", PLAYBOOK_CONFIGURE, &inv_clone, &pw, key_path.as_deref(), None, Some(configure_vars), Some(oh), true)
     }).await;
 
     match result {
         Ok(Ok(r)) if r.success => {
-            info!("rqlite installation complete ({} hosts)", r.hosts_processed);
+            info!("rqlite cluster configured and formed via async Jetpack ({} nodes)", r.hosts_processed);
+            for node in &plan.nodes {
+                emit_cluster_event(&state, node.idx as i32, "healthy", "Healthy");
+            }
         }
-        Ok(Ok(_)) | Ok(Err(_)) => {
-            let msg = "rqlite installation failed";
-            error!("{}", msg);
-            emit_cluster_event(&state, -1, "error", msg);
-            cleanup_deployment(&state, &plan, &created_indices).await;
+        Ok(Ok(r)) => {
+            error!("Cluster configuration failed: hosts_processed={}, success={}", r.hosts_processed, r.success);
+            emit_cluster_event(&state, -1, "error", "Cluster configuration failed");
+            return;
+        }
+        Ok(Err(e)) => {
+            error!("Cluster configuration error: {}", e);
+            emit_cluster_event(&state, -1, "error", &format!("Cluster configuration error: {}", e));
             return;
         }
         Err(e) => {
-            error!("Install task panicked: {}", e);
-            emit_cluster_event(&state, -1, "error", "Install task panicked");
-            cleanup_deployment(&state, &plan, &created_indices).await;
+            error!("Cluster configuration task panicked: {}", e);
+            emit_cluster_event(&state, -1, "error", "Cluster configuration task panicked");
             return;
         }
     }
 
     if is_aborted(&state) {
-        cleanup_deployment(&state, &plan, &created_indices).await;
-        emit_cluster_event(&state, -1, "aborted", "Deployment aborted");
-        return;
-    }
-
-    // Phase D: Cluster formation via Jetpack
-    emit_cluster_event(&state, -1, "clustering", "Forming rqlite cluster...");
-
-    let leader = &plan.nodes[0]; // First core node is leader
-    let leader_ip = leader.ip;
-    let start_playbook = format!("{}/start-rqlite.yml", playbook_dir);
-
-    // D1: Start leader (no join address)
-    emit_cluster_event(&state, leader.idx as i32, "initialising", "Starting leader...");
-    {
-        let inv_clone = Arc::clone(&inventory);
-        let pw = cluster_password.clone();
-        let pb = start_playbook.clone();
-        let leader_host = leader.hostname.clone();
-        let oh = Arc::clone(&output_handler);
-        let key_path = management_key_path.clone();
-        let result = tokio::task::spawn_blocking(move || {
-            run_jetpack_playbook(&pb, &inv_clone, &pw, key_path.as_deref(), Some(vec![leader_host]), None, Some(oh))
-        }).await;
-
-        match result {
-            Ok(Ok(r)) if r.success => {
-                info!("rqlite leader started on {}", leader.hostname);
-                emit_cluster_event(&state, leader.idx as i32, "healthy", "Healthy (Leader)");
-            }
-            _ => {
-                error!("Failed to start rqlite leader");
-                emit_cluster_event(&state, -1, "error", "Leader start failed");
-                cleanup_deployment(&state, &plan, &created_indices).await;
-                return;
-            }
-        }
-    }
-
-    // D2: Join core nodes (sequential — avoids Raft election conflicts)
-    let other_cores: Vec<_> = plan.nodes.iter()
-        .filter(|n| n.role == "core" && n.idx != leader.idx)
-        .collect();
-
-    for node in &other_cores {
-        emit_cluster_event(&state, node.idx as i32, "initialising", "Joining cluster...");
-
-        let join_vars = serde_yaml::Value::Mapping({
-            let mut m = serde_yaml::Mapping::new();
-            m.insert(
-                serde_yaml::Value::String("rqlite_join".into()),
-                serde_yaml::Value::String(format!("-join http://{}:4001", leader_ip)),
-            );
-            m
-        });
-
-        let inv_clone = Arc::clone(&inventory);
-        let pw = cluster_password.clone();
-        let pb = start_playbook.clone();
-        let host = node.hostname.clone();
-        let oh = Arc::clone(&output_handler);
-        let key_path = management_key_path.clone();
-        let result = tokio::task::spawn_blocking(move || {
-            run_jetpack_playbook(&pb, &inv_clone, &pw, key_path.as_deref(), Some(vec![host]), Some(join_vars), Some(oh))
-        }).await;
-
-        match result {
-            Ok(Ok(r)) if r.success => {
-                info!("Core node {} joined cluster", node.hostname);
-                emit_cluster_event(&state, node.idx as i32, "healthy", "Healthy");
-            }
-            _ => {
-                warn!("Core node {} failed to join (continuing)", node.hostname);
-                emit_cluster_event(&state, node.idx as i32, "error", "Join failed");
-            }
-        }
-    }
-
-    // D3: Join replica nodes (parallel)
-    let replicas: Vec<_> = plan.nodes.iter()
-        .filter(|n| n.role == "replica")
-        .collect();
-
-    if !replicas.is_empty() {
-        let mut replica_handles = Vec::new();
-        for node in &replicas {
-            let inv_clone = Arc::clone(&inventory);
-            let pw = cluster_password.clone();
-            let pb = start_playbook.clone();
-            let host = node.hostname.clone();
-            let idx = node.idx;
-            let lip = leader_ip;
-            let oh = Arc::clone(&output_handler);
-            let key_path = management_key_path.clone();
-
-            replica_handles.push(tokio::spawn(async move {
-                let join_vars = serde_yaml::Value::Mapping({
-                    let mut m = serde_yaml::Mapping::new();
-                    m.insert(
-                        serde_yaml::Value::String("rqlite_join".into()),
-                        serde_yaml::Value::String(format!("-join http://{}:4001", lip)),
-                    );
-                    m
-                });
-
-                let result = tokio::task::spawn_blocking(move || {
-                    run_jetpack_playbook(&pb, &inv_clone, &pw, key_path.as_deref(), Some(vec![host]), Some(join_vars), Some(oh))
-                }).await;
-
-                (idx, result)
-            }));
-        }
-
-        for handle in replica_handles {
-            match handle.await {
-                Ok((idx, Ok(Ok(r)))) if r.success => {
-                    emit_cluster_event(&state, idx as i32, "healthy", "Healthy");
-                }
-                Ok((idx, _)) => {
-                    warn!("Replica {} failed to join (non-fatal)", idx);
-                    emit_cluster_event(&state, idx as i32, "error", "Join failed");
-                }
-                Err(e) => {
-                    warn!("Replica task panicked: {}", e);
-                }
-            }
-        }
-    }
-
-    if is_aborted(&state) {
-        cleanup_deployment(&state, &plan, &created_indices).await;
-        emit_cluster_event(&state, -1, "aborted", "Deployment aborted");
+        emit_cluster_event(&state, -1, "aborted", "Deployment aborted — use Cleanup to remove containers, or Retry to continue");
         return;
     }
 
@@ -1548,10 +1600,14 @@ pub async fn deploy_cluster(state: AppState, mut plan: ClusterPlan) {
         emit_cluster_event(&state, node.idx as i32, "synchronising", "Syncing data...");
     }
 
-    let rqlite_url = format!("http://{}:4001", leader_ip);
-    match ha::enable_ha_remote(&state, &rqlite_url).await {
+    // Build full cluster topology for failover-aware HA
+    let ha_nodes: Vec<ha::HaNode> = plan.nodes.iter().map(|n| ha::HaNode {
+        host: format!("{}:4001", n.ip),
+        role: n.role.clone(),
+    }).collect();
+    match ha::enable_ha_remote(&state, &ha_nodes).await {
         Ok(()) => {
-            info!("HA mode enabled with remote rqlite cluster at {}", rqlite_url);
+            info!("HA mode enabled with remote rqlite cluster ({} nodes)", ha_nodes.len());
             for node in &plan.nodes {
                 emit_cluster_event(&state, node.idx as i32, "healthy", "Healthy");
             }
@@ -1579,10 +1635,21 @@ pub async fn dissolve_cluster(state: &AppState) -> Result<()> {
     emit_cluster_event(state, -1, "dissolving", "Dissolving cluster...");
 
     // Step 1: Migrate rqlite → SQLite (use existing ha.rs logic)
-    let leader = &plan.nodes[0];
-    let rqlite_url = format!("http://{}:4001", leader.ip);
+    // Connect with full cluster topology for failover resilience
+    let hosts: Vec<String> = {
+        let mut cores: Vec<String> = plan.nodes.iter()
+            .filter(|n| n.role == "core")
+            .map(|n| format!("{}:4001", n.ip))
+            .collect();
+        let replicas: Vec<String> = plan.nodes.iter()
+            .filter(|n| n.role != "core")
+            .map(|n| format!("{}:4001", n.ip))
+            .collect();
+        cores.extend(replicas);
+        cores
+    };
 
-    let rqlite_store = RqliteStore::open(&rqlite_url).await
+    let rqlite_store = RqliteStore::open_cluster(&hosts).await
         .map_err(|e| anyhow::anyhow!("Failed to connect to rqlite for migration: {}", e))?;
 
     let sqlite_path = "/var/lib/dragonfly/dragonfly.sqlite3";

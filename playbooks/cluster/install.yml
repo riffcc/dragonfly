@@ -8,9 +8,9 @@
   groups: [dragonfly_cluster]
   tasks:
     - !apt
-      name: Install dependencies
-      packages: [curl]
-      update_cache: true
+      name: Install curl
+      package: curl
+      update: true
     - !shell
       name: Install rqlite
       cmd: |

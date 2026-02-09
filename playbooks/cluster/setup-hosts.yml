@@ -1,0 +1,22 @@
+---
+# Configure /etc/hosts for rqlite DNS-based cluster discovery.
+#
+# Each node gets entries for all cluster members under the discovery hostname.
+# rqlite's -disco-mode=dns resolves this to find all peers.
+#
+# Variables (set via extra_vars):
+#   cluster_hosts_entries: multiline string of "IP HOSTNAME" entries
+
+- name: Configure cluster DNS discovery
+  groups: [dragonfly_cluster]
+  tasks:
+    - !shell
+      name: Write cluster host entries
+      cmd: |
+        if grep -q "rqlite.cluster" /etc/hosts; then
+          sed -i '/rqlite\.cluster/d' /etc/hosts
+        fi
+        cat >> /etc/hosts <<'ENTRIES'
+        {{cluster_hosts_entries}}
+        ENTRIES
+        echo "Cluster DNS entries configured"

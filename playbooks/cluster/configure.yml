@@ -1,0 +1,71 @@
+---
+# Configure rqlite cluster nodes — async-friendly with barriers.
+#
+# Designed for Jetpack async mode: each host races through install and
+# DNS config independently, then ALL hosts synchronise at a barrier
+# before starting rqlite (so every node has the full /etc/hosts).
+#
+# Variables (set via extra_vars):
+#   cluster_hosts_entries: multiline "IP rqlite.cluster" entries
+#   bootstrap_expect: number of nodes expected (e.g. "10")
+
+- name: Configure rqlite cluster
+  groups: [dragonfly_cluster]
+  tasks:
+    # Phase 1: Install rqlite binary (independent per host)
+    - !apt
+      name: Install curl
+      package: curl
+      update: true
+    - !shell
+      name: Install rqlite
+      cmd: |
+        if [ -x /opt/rqlite/rqlited ]; then echo "Already installed"; exit 0; fi
+        mkdir -p /opt/rqlite &&
+        curl -sL https://github.com/rqlite/rqlite/releases/download/v8.36.6/rqlite-v8.36.6-linux-amd64.tar.gz |
+        tar xzf - -C /opt/rqlite --strip-components=1
+
+    # Phase 2: Write /etc/hosts for DNS discovery (independent per host)
+    - !shell
+      name: Write cluster host entries
+      cmd: |
+        if grep -q "rqlite.cluster" /etc/hosts; then
+          sed -i '/rqlite\.cluster/d' /etc/hosts
+        fi
+        cat >> /etc/hosts <<'ENTRIES'
+        {{cluster_hosts_entries}}
+        ENTRIES
+        echo "Cluster DNS entries configured"
+
+    # Barrier: all hosts must have /etc/hosts before starting rqlite
+    - !wait_for_others
+      name: All nodes configured
+
+    # Phase 3: Start rqlite with DNS discovery (all at once)
+    - !shell
+      name: Start rqlite daemon
+      cmd: |
+        if pgrep -x rqlited > /dev/null; then echo "Already running"; exit 0; fi
+        mkdir -p /var/lib/rqlite
+        nohup /opt/rqlite/rqlited \
+          -node-id {{jet_hostname_short}} \
+          -http-addr 0.0.0.0:4001 \
+          -http-adv-addr {{jet_ssh_hostname}}:4001 \
+          -raft-addr 0.0.0.0:4002 \
+          -raft-adv-addr {{jet_ssh_hostname}}:4002 \
+          -disco-mode dns \
+          -disco-config '{"name":"rqlite.cluster"}' \
+          -bootstrap-expect {{bootstrap_expect}} \
+          /var/lib/rqlite > /var/log/rqlite.log 2>&1 &
+        disown
+    - !shell
+      name: Wait for rqlite ready
+      cmd: |
+        for i in $(seq 1 60); do
+          if curl -sf http://127.0.0.1:4001/readyz 2>/dev/null; then exit 0; fi
+          sleep 1
+        done
+        echo "rqlite did not become ready within 60s"
+        echo "=== last 30 lines of log ==="
+        tail -30 /var/log/rqlite.log
+        exit 1
