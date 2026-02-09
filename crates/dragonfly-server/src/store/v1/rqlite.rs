@@ -50,6 +50,40 @@ impl RqliteStore {
         Ok(store)
     }
 
+    /// Connect to a rqlite cluster with topology-aware failover.
+    ///
+    /// Accepts hosts ordered by priority (core nodes first, then replicas).
+    /// Uses the Priority fallback strategy so that on leader failure, core nodes
+    /// are tried before replicas — only core nodes can become the new leader.
+    ///
+    /// Persistence is enabled: once a working node is found, subsequent requests
+    /// stick to it until it fails.
+    pub async fn open_cluster(hosts: &[String]) -> Result<Self> {
+        if hosts.is_empty() {
+            return Err(StoreError::Database("No rqlite hosts provided".to_string()));
+        }
+
+        let mut builder = RqliteClientBuilder::new();
+        for host in hosts {
+            builder = builder.known_host(host);
+        }
+
+        // Priority strategy: try hosts in the order given (cores first, replicas last)
+        let priority = rqlite_rs::fallback::Priority::new(hosts.to_vec());
+        builder = builder
+            .fallback_strategy(priority)
+            .fallback_persistence(true);
+
+        let client = builder.build()
+            .map_err(|e| StoreError::Database(format!("rqlite client build error: {}", e)))?;
+
+        let base_url = format!("http://{}", hosts[0]);
+        let store = Self { client, base_url };
+        store.create_tables().await?;
+        info!("rqlite cluster store connected ({} nodes)", hosts.len());
+        Ok(store)
+    }
+
     /// Return the base URL of the rqlite node
     pub fn base_url(&self) -> &str {
         &self.base_url

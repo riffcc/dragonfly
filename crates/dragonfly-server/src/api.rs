@@ -8429,10 +8429,17 @@ async fn ha_disable_handler(
         }
     } else {
         // Legacy single-node HA disable
-        let rqlite_url = crate::ha::read_ha_url()
-            .unwrap_or_else(|| state.ha_manager.rqlite_url());
-
-        let rqlite_store = match crate::store::v1::RqliteStore::open(&rqlite_url).await {
+        let rqlite_store = match crate::ha::read_ha_config() {
+            Some(config) => {
+                let hosts = config.hosts_by_priority();
+                crate::store::v1::RqliteStore::open_cluster(&hosts).await
+            }
+            None => {
+                let url = state.ha_manager.rqlite_url();
+                crate::store::v1::RqliteStore::open(&url).await
+            }
+        };
+        let rqlite_store = match rqlite_store {
             Ok(s) => s,
             Err(e) => {
                 return (
@@ -8479,13 +8486,27 @@ async fn cluster_create_handler(
             .into_response();
     }
 
-    // Prevent concurrent deployments
+    // If a deployment is already running, signal it to abort and wait for it to finish.
+    // This enables retry: the idempotent design means the next run picks up where it left off.
     if state.cluster_deploying.load(std::sync::atomic::Ordering::Relaxed) {
-        return (
-            StatusCode::CONFLICT,
-            Json(json!({"error": "A cluster deployment is already in progress"})),
-        )
-            .into_response();
+        info!("Retry requested — signalling current deployment to abort");
+        state.cluster_abort.store(true, std::sync::atomic::Ordering::Relaxed);
+        // Wait for the current deployment task to finish (DeployGuard clears the flag on drop)
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+        loop {
+            if !state.cluster_deploying.load(std::sync::atomic::Ordering::Relaxed) {
+                break;
+            }
+            if std::time::Instant::now() > deadline {
+                return (
+                    StatusCode::CONFLICT,
+                    Json(json!({"error": "Timed out waiting for previous deployment to stop"})),
+                )
+                    .into_response();
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        info!("Previous deployment finished, starting retry");
     }
 
     // Mark deploying immediately so status endpoint reflects it
@@ -8736,7 +8757,7 @@ async fn dev_mode_toggle_handler(
     use crate::TemplateEnv;
 
     if request.enabled {
-        let template_path = match request.template_path {
+        let raw_path = match request.template_path {
             Some(ref p) if !p.is_empty() => p.clone(),
             _ => return Json(json!({
                 "success": false,
@@ -8745,11 +8766,42 @@ async fn dev_mode_toggle_handler(
         };
 
         // Validate path exists
-        if !std::path::Path::new(&template_path).exists() {
+        let raw = std::path::Path::new(&raw_path);
+        if !raw.exists() {
             return Json(json!({
                 "success": false,
-                "message": format!("Template path does not exist: {}", template_path),
+                "message": format!("Path does not exist: {}", raw_path),
             }));
+        }
+
+        // Resolve the templates directory:
+        // 1. If the path already contains templates directly (has base.html), use as-is
+        // 2. If the path is a git checkout root, look for crates/dragonfly-server/templates/
+        // 3. Otherwise, fail with a helpful message
+        let template_path = if raw.join("base.html").exists() {
+            raw_path.clone()
+        } else if raw.join("crates/dragonfly-server/templates/base.html").exists() {
+            raw.join("crates/dragonfly-server/templates").to_string_lossy().to_string()
+        } else {
+            return Json(json!({
+                "success": false,
+                "message": format!(
+                    "No templates found at '{}'. Provide either a Dragonfly git checkout root or the templates directory directly.",
+                    raw_path
+                ),
+            }));
+        };
+
+        // Safety check: verify essential templates exist
+        let essential = ["base.html", "login.html", "settings.html", "index.html"];
+        let tp = std::path::Path::new(&template_path);
+        for name in &essential {
+            if !tp.join(name).exists() {
+                return Json(json!({
+                    "success": false,
+                    "message": format!("Missing essential template '{}' in {}", name, template_path),
+                }));
+            }
         }
 
         // Create a reloading environment pointing to disk
@@ -8898,6 +8950,8 @@ struct AddCredentialRequest {
     port: Option<i32>,
     #[serde(default)]
     skip_tls_verify: Option<bool>,
+    #[serde(default)]
+    import_guests: Option<bool>,
 }
 
 /// POST /api/credentials/add — add or generate a credential by command string
@@ -8955,13 +9009,36 @@ async fn credentials_add_handler(
             skip_tls_verify: skip_tls,
         };
 
+        let import_guests = request.import_guests.unwrap_or(false);
+
         match crate::handlers::proxmox::generate_proxmox_tokens_with_credentials(&token_request).await {
             Ok(token_set) => {
                 match crate::handlers::proxmox::save_proxmox_tokens(&state, token_set).await {
-                    Ok(_) => Json(json!({
-                        "success": true,
-                        "message": format!("Connected to Proxmox as {}", username),
-                    })),
+                    Ok(_) => {
+                        // Run discovery to import nodes (and guests if requested)
+                        let (_, discover_json) = crate::handlers::proxmox::connect_proxmox_discover(
+                            &state, &host, import_guests, false,
+                        ).await;
+                        let discover_data = discover_json.0;
+                        let import_info = discover_data.get("import_result")
+                            .and_then(|r| r.as_object());
+                        let nodes = import_info
+                            .and_then(|r| r.get("imported_nodes"))
+                            .and_then(|n| n.as_u64())
+                            .unwrap_or(0);
+                        let guests = import_info
+                            .and_then(|r| r.get("imported_guests"))
+                            .and_then(|n| n.as_u64())
+                            .unwrap_or(0);
+                        let mut msg = format!("Connected to Proxmox as {}. Discovered {} nodes", username, nodes);
+                        if import_guests && guests > 0 {
+                            msg.push_str(&format!(", {} guests imported", guests));
+                        }
+                        Json(json!({
+                            "success": true,
+                            "message": msg,
+                        }))
+                    }
                     Err(e) => Json(json!({
                         "success": false,
                         "message": format!("Tokens created but failed to save: {}", e),

@@ -23,8 +23,12 @@ pub async fn create_test_app_state() -> AppState {
     // Create event manager (it creates its own broadcast channel internally)
     let event_manager = Arc::new(EventManager::new());
 
-    // Create in-memory v1 store
-    let store: Arc<dyn crate::store::v1::Store> = Arc::new(MemoryStore::new());
+    // Create in-memory v1 store, wrapped in StoreProxy for hot-swap support.
+    // Both store (dyn Store) and store_proxy (StoreProxy) share the same allocation.
+    let store_proxy = Arc::new(crate::store::v1::StoreProxy::new(
+        Arc::new(MemoryStore::new()) as Arc<dyn crate::store::v1::Store>,
+    ));
+    let store: Arc<dyn crate::store::v1::Store> = store_proxy.clone();
 
     // Create minimal settings
     let settings = Settings::default();
@@ -45,6 +49,7 @@ pub async fn create_test_app_state() -> AppState {
         shutdown_tx,
         shutdown_rx,
         template_env,
+        dev_template_path: Arc::new(std::sync::RwLock::new(None)),
         is_installed: false,
         is_demo_mode: true,
         is_installation_server: false,
@@ -52,6 +57,7 @@ pub async fn create_test_app_state() -> AppState {
         tokens: Arc::new(Mutex::new(HashMap::new())),
         provisioning: None,
         store,
+        store_proxy,
         network_services_started: Arc::new(AtomicBool::new(false)),
         image_cache,
         services_shutdown_tx: Arc::new(Mutex::new(None)),

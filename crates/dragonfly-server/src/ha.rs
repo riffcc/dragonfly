@@ -43,6 +43,43 @@ const RQLITE_HTTP_PORT: u16 = 4001;
 /// Default rqlite Raft port
 const RQLITE_RAFT_PORT: u16 = 4002;
 
+/// Cluster topology stored in the HA flag file.
+///
+/// Contains all rqlite nodes with their roles (core vs replica).
+/// Core nodes are tried first during failover since only they can become leader.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HaConfig {
+    pub nodes: Vec<HaNode>,
+}
+
+/// A node in the HA cluster topology.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HaNode {
+    /// Host in "ip:port" format (e.g. "10.7.1.80:4001")
+    pub host: String,
+    /// Role: "core" or "replica"
+    pub role: String,
+}
+
+impl HaConfig {
+    /// Return hosts ordered by priority: core nodes first, then replicas.
+    /// This ensures failover tries nodes that can become leader before replicas.
+    pub fn hosts_by_priority(&self) -> Vec<String> {
+        let mut result = Vec::with_capacity(self.nodes.len());
+        for n in &self.nodes {
+            if n.role == "core" {
+                result.push(n.host.clone());
+            }
+        }
+        for n in &self.nodes {
+            if n.role != "core" {
+                result.push(n.host.clone());
+            }
+        }
+        result
+    }
+}
+
 /// HA cluster state
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HaStatus {
@@ -310,7 +347,7 @@ impl HaManager {
             .context("Failed to connect to rqlite store")?;
 
         // Step 4: Migrate data from SQLite
-        migrate_sqlite_to_rqlite(sqlite_store, &rqlite_store).await?;
+        migrate_to_rqlite(sqlite_store, &rqlite_store).await?;
 
         // Step 5: Write HA flag file
         fs::write(HA_FLAG_FILE, self.node_id.as_bytes()).await?;
@@ -345,12 +382,15 @@ impl HaManager {
     }
 }
 
-/// Migrate all data from SQLite store to rqlite store
-pub async fn migrate_sqlite_to_rqlite(
-    src: &SqliteStore,
+/// Migrate all data from any store to rqlite store.
+///
+/// Accepts `&dyn Store` so the caller can pass the live store (StoreProxy)
+/// instead of a fresh SqliteStore — avoids WAL visibility issues.
+pub async fn migrate_to_rqlite(
+    src: &dyn Store,
     dst: &RqliteStore,
 ) -> Result<()> {
-    info!("Migrating data from SQLite to rqlite...");
+    info!("Migrating data to rqlite...");
 
     // Migrate settings
     let settings = src.list_settings("").await
@@ -418,47 +458,81 @@ pub async fn migrate_sqlite_to_rqlite(
     Ok(())
 }
 
-/// Read the rqlite cluster URL from the HA flag file.
+/// Read the HA cluster topology from the flag file.
+///
+/// Supports two formats:
+/// - **New (JSON):** `{"nodes":[{"host":"10.7.1.80:4001","role":"core"},...]}`
+/// - **Legacy (single URL):** `http://10.7.1.42:4001` — converted to a single-node HaConfig
 ///
 /// Returns `None` if the file doesn't exist or is empty (local rqlite).
-/// Returns `Some(url)` if the file contains a remote cluster URL.
-pub fn read_ha_url() -> Option<String> {
+pub fn read_ha_config() -> Option<HaConfig> {
     let content = std::fs::read_to_string(HA_FLAG_FILE).ok()?;
     let trimmed = content.trim();
-    if trimmed.is_empty() || !trimmed.starts_with("http") {
-        None
-    } else {
-        Some(trimmed.to_string())
+    if trimmed.is_empty() {
+        return None;
     }
+    // Try JSON first (new topology format)
+    if let Ok(config) = serde_json::from_str::<HaConfig>(trimmed) {
+        if !config.nodes.is_empty() {
+            return Some(config);
+        }
+    }
+    // Fall back to single URL (legacy format)
+    if trimmed.starts_with("http") {
+        let host = trimmed
+            .strip_prefix("http://")
+            .or_else(|| trimmed.strip_prefix("https://"))
+            .unwrap_or(trimmed);
+        return Some(HaConfig {
+            nodes: vec![HaNode {
+                host: host.to_string(),
+                role: "core".to_string(),
+            }],
+        });
+    }
+    None
 }
 
 /// Enable HA mode with a remote rqlite cluster (deployed via LXCs).
 ///
 /// This is called by the cluster orchestrator after rqlite is running.
-/// It migrates data from the current SQLite store to the remote rqlite cluster,
-/// then writes the cluster URL to the HA flag file.
+/// It migrates data from the current LIVE store to the remote rqlite cluster,
+/// then writes the full cluster topology to the HA flag file.
+///
+/// Uses the live store (state.store) for migration, NOT a fresh SqliteStore.
+/// A fresh SqliteStore::open() may miss recent WAL writes (like cluster_plan),
+/// but the live store sees everything.
 pub async fn enable_ha_remote(
-    _state: &crate::AppState,
-    rqlite_url: &str,
+    state: &crate::AppState,
+    ha_nodes: &[HaNode],
 ) -> anyhow::Result<()> {
-    info!("Enabling HA with remote rqlite cluster at {}", rqlite_url);
+    let config = HaConfig { nodes: ha_nodes.to_vec() };
+    let hosts = config.hosts_by_priority();
+    info!("Enabling HA with remote rqlite cluster ({} nodes, {} cores)",
+        ha_nodes.len(),
+        ha_nodes.iter().filter(|n| n.role == "core").count());
 
-    // Connect to the remote rqlite cluster
-    let rqlite_store = RqliteStore::open(rqlite_url).await
+    // Connect to the remote rqlite cluster with full topology failover
+    let rqlite_store = RqliteStore::open_cluster(&hosts).await
         .map_err(|e| anyhow::anyhow!("Failed to connect to rqlite: {}", e))?;
 
-    // Open a read connection to the current SQLite store for migration
-    let sqlite_path = "/var/lib/dragonfly/dragonfly.sqlite3";
-    let sqlite_store = SqliteStore::open(sqlite_path).await
-        .map_err(|e| anyhow::anyhow!("Failed to open SQLite: {}", e))?;
+    // Migrate from the LIVE store directly to rqlite.
+    // Using state.store (the StoreProxy → SQLite) instead of a fresh SqliteStore
+    // guarantees we see ALL data, including recent WAL writes like cluster_plan.
+    migrate_to_rqlite(state.store.as_ref(), &rqlite_store).await?;
 
-    // Migrate data
-    migrate_sqlite_to_rqlite(&sqlite_store, &rqlite_store).await?;
+    // Write the full cluster topology as JSON to the HA flag file
+    let config_json = serde_json::to_string(&config)
+        .map_err(|e| anyhow::anyhow!("Failed to serialize HA config: {}", e))?;
+    fs::write(HA_FLAG_FILE, config_json.as_bytes()).await?;
 
-    // Write the remote URL to the HA flag file
-    fs::write(HA_FLAG_FILE, rqlite_url.as_bytes()).await?;
+    // Hot-swap the running store from SQLite → rqlite.
+    // All subsequent reads/writes go through the rqlite cluster immediately,
+    // no server restart required.
+    let rqlite_arc: std::sync::Arc<dyn crate::store::v1::Store> = std::sync::Arc::new(rqlite_store);
+    state.store_proxy.swap(rqlite_arc);
+    info!("HA mode enabled — store hot-swapped to rqlite cluster");
 
-    info!("HA mode enabled with remote cluster at {}", rqlite_url);
     Ok(())
 }
 

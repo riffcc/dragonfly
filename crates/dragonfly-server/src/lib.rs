@@ -259,8 +259,12 @@ pub struct AppState {
     pub tokens: Arc<Mutex<std::collections::HashMap<String, String>>>,
     // Native provisioning service (optional - None uses legacy behavior)
     pub provisioning: Option<Arc<provisioning::ProvisioningService>>,
-    // Unified v0.1.0 storage backend for machines, workflows, templates, settings
+    // Unified v0.1.0 storage backend for machines, workflows, templates, settings.
+    // Points to a StoreProxy behind the dyn — see store_proxy for hot-swap.
     pub store: Arc<dyn store::v1::Store>,
+    // Handle to the StoreProxy for hot-swapping the backend (same allocation as `store`).
+    // HA migration calls store_proxy.swap() to switch SQLite → rqlite live.
+    pub(crate) store_proxy: Arc<store::v1::StoreProxy>,
     // Track if network services (DHCP/TFTP) are running
     pub network_services_started: Arc<AtomicBool>,
     // Image cache for JIT QCOW2 conversion
@@ -633,43 +637,56 @@ pub async fn run() -> anyhow::Result<()> {
     // Initialize storage: check HA flag for rqlite cluster, otherwise SQLite
     const SQLITE_PATH: &str = "/var/lib/dragonfly/dragonfly.sqlite3";
 
-    let (store, db_pool): (Arc<dyn store::v1::Store>, _) = if ha::HaManager::is_ha_enabled() {
-        if let Some(rqlite_url) = ha::read_ha_url() {
-            info!("HA mode enabled — connecting to rqlite cluster at {}", rqlite_url);
-            match store::v1::RqliteStore::open(&rqlite_url).await {
-                Ok(rqlite_store) => {
-                    info!("Connected to rqlite cluster");
-                    // Still need SQLite pool for session store
-                    let sqlite_store = store::v1::SqliteStore::open(SQLITE_PATH)
-                        .await
-                        .map_err(|e| anyhow!("Failed to open SQLite for sessions: {}", e))?;
-                    let pool = sqlite_store.pool().clone();
-                    (Arc::new(rqlite_store), pool)
+    // Build the store + proxy pair. Both `store` (Arc<dyn Store>) and `store_proxy`
+    // (Arc<StoreProxy>) point to the same StoreProxy allocation. The proxy delegates
+    // all Store methods to its inner store, and .swap() hot-swaps the backend.
+    let (store, store_proxy, db_pool): (Arc<dyn store::v1::Store>, Arc<store::v1::StoreProxy>, _) = {
+        let (inner_store, pool): (Arc<dyn store::v1::Store>, _) = if ha::HaManager::is_ha_enabled() {
+            if let Some(ha_config) = ha::read_ha_config() {
+                let hosts = ha_config.hosts_by_priority();
+                let core_count = ha_config.nodes.iter().filter(|n| n.role == "core").count();
+                info!("HA mode enabled — connecting to rqlite cluster ({} nodes, {} cores)",
+                    hosts.len(), core_count);
+                match store::v1::RqliteStore::open_cluster(&hosts).await {
+                    Ok(rqlite_store) => {
+                        info!("Connected to rqlite cluster with failover");
+                        // Still need SQLite pool for session store
+                        let sqlite_store = store::v1::SqliteStore::open(SQLITE_PATH)
+                            .await
+                            .map_err(|e| anyhow!("Failed to open SQLite for sessions: {}", e))?;
+                        let pool = sqlite_store.pool().clone();
+                        (Arc::new(rqlite_store), pool)
+                    }
+                    Err(e) => {
+                        warn!("Failed to connect to rqlite cluster: {} — falling back to SQLite", e);
+                        let sqlite_store = store::v1::SqliteStore::open(SQLITE_PATH)
+                            .await
+                            .map_err(|e| anyhow!("Failed to open SQLite store: {}", e))?;
+                        let pool = sqlite_store.pool().clone();
+                        (Arc::new(sqlite_store), pool)
+                    }
                 }
-                Err(e) => {
-                    warn!("Failed to connect to rqlite cluster: {} — falling back to SQLite", e);
-                    let sqlite_store = store::v1::SqliteStore::open(SQLITE_PATH)
-                        .await
-                        .map_err(|e| anyhow!("Failed to open SQLite store: {}", e))?;
-                    let pool = sqlite_store.pool().clone();
-                    (Arc::new(sqlite_store), pool)
-                }
+            } else {
+                // HA flag exists but no URL — local rqlite (legacy behavior)
+                info!("HA mode enabled (local) — using SQLite with local rqlite pending");
+                let sqlite_store = store::v1::SqliteStore::open(SQLITE_PATH)
+                    .await
+                    .map_err(|e| anyhow!("Failed to open SQLite store: {}", e))?;
+                let pool = sqlite_store.pool().clone();
+                (Arc::new(sqlite_store), pool)
             }
         } else {
-            // HA flag exists but no URL — local rqlite (legacy behavior)
-            info!("HA mode enabled (local) — using SQLite with local rqlite pending");
             let sqlite_store = store::v1::SqliteStore::open(SQLITE_PATH)
                 .await
                 .map_err(|e| anyhow!("Failed to open SQLite store: {}", e))?;
             let pool = sqlite_store.pool().clone();
             (Arc::new(sqlite_store), pool)
-        }
-    } else {
-        let sqlite_store = store::v1::SqliteStore::open(SQLITE_PATH)
-            .await
-            .map_err(|e| anyhow!("Failed to open SQLite store: {}", e))?;
-        let pool = sqlite_store.pool().clone();
-        (Arc::new(sqlite_store), pool)
+        };
+        // Wrap in StoreProxy for hot-swap support (HA migration).
+        // Both store (dyn Store) and store_proxy (StoreProxy) share the same allocation.
+        let proxy = Arc::new(store::v1::StoreProxy::new(inner_store));
+        let dyn_store: Arc<dyn store::v1::Store> = proxy.clone();
+        (dyn_store, proxy, pool)
     };
 
     // --- Auto-configure Flight mode ---
@@ -925,8 +942,9 @@ pub async fn run() -> anyhow::Result<()> {
         tokens: Arc::new(Mutex::new(std::collections::HashMap::new())),
         // Native provisioning service (if enabled)
         provisioning: provisioning_service.clone(),
-        // Unified v0.1.0 storage backend
+        // Unified v0.1.0 storage backend (dyn Store → StoreProxy)
         store,
+        store_proxy,
         // Track if network services (DHCP/TFTP) are running
         network_services_started: Arc::new(AtomicBool::new(false)),
         // Image cache for JIT QCOW2 conversion
