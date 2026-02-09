@@ -9,6 +9,8 @@
 # will likely look very different (and much more reasonable).
 # See Cargo.toml.orig for the original contents.
 
+[workspace]
+
 [package]
 edition = "2021"
 rust-version = "1.81.0"
