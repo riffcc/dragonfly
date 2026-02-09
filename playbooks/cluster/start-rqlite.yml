@@ -1,0 +1,34 @@
+---
+# Start rqlite on a cluster node.
+#
+# Use with limit_hosts to target specific nodes.
+# Pass extra_vars: rqlite_join: "-join http://leader:4001" for joiners.
+# Leader gets no join argument (empty default).
+#
+# Idempotent — skips if rqlited is already running.
+
+- name: Start rqlite
+  groups: [dragonfly_cluster]
+  defaults:
+    rqlite_join: ""
+  tasks:
+    - !shell
+      name: Start rqlite daemon
+      cmd: |
+        if pgrep -x rqlited > /dev/null; then echo "Already running"; exit 0; fi
+        nohup /opt/rqlite/rqlited \
+          -node-id {{jet_hostname_short}} \
+          -http-addr 0.0.0.0:4001 \
+          -raft-addr 0.0.0.0:4002 \
+          {{rqlite_join}} \
+          /var/lib/rqlite > /var/log/rqlite.log 2>&1 &
+        disown
+    - !shell
+      name: Wait for rqlite ready
+      cmd: |
+        for i in $(seq 1 60); do
+          if curl -sf http://127.0.0.1:4001/readyz 2>/dev/null; then exit 0; fi
+          sleep 1
+        done
+        echo "rqlite did not become ready within 60s"
+        exit 1

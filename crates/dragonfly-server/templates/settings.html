@@ -124,6 +124,36 @@
                         ISO Images
                     </button>
 
+                    <button type="button" @click="activeTab = 'ha'"
+                            :class="activeTab === 'ha' ? 'bg-purple-600 text-white' : 'text-black dark:text-white hover:bg-purple-100 dark:hover:bg-purple-900/30'"
+                            class="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition-colors">
+                        <!-- Lucide "boxes" icon -->
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M2.97 12.92A2 2 0 0 0 2 14.63v3.24a2 2 0 0 0 .97 1.71l3 1.8a2 2 0 0 0 2.06 0L12 19v-5.5l-5-3-4.03 2.42Z"/>
+                            <path d="m7 16.5-4.74-2.85"/>
+                            <path d="m7 16.5 5-3"/>
+                            <path d="M7 16.5v5.17"/>
+                            <path d="M12 13.5V19l3.97 2.38a2 2 0 0 0 2.06 0l3-1.8a2 2 0 0 0 .97-1.71v-3.24a2 2 0 0 0-.97-1.71L17 10.5l-5 3Z"/>
+                            <path d="m17 16.5-5-3"/>
+                            <path d="m17 16.5 4.74-2.85"/>
+                            <path d="M17 16.5v5.17"/>
+                            <path d="M7.97 4.42A2 2 0 0 0 7 6.13v4.37l5 3 5-3V6.13a2 2 0 0 0-.97-1.71l-3-1.8a2 2 0 0 0-2.06 0l-3 1.8Z"/>
+                            <path d="M12 8 7.26 5.15"/>
+                            <path d="m12 8 4.74-2.85"/>
+                            <path d="M12 13.5V8"/>
+                        </svg>
+                        High Availability
+                    </button>
+
+                    <button type="button" @click="activeTab = 'maintenance'"
+                            :class="activeTab === 'maintenance' ? 'bg-purple-600 text-white' : 'text-black dark:text-white hover:bg-purple-100 dark:hover:bg-purple-900/30'"
+                            class="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition-colors">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>
+                        </svg>
+                        Maintenance
+                    </button>
+
                     <button type="button" @click="activeTab = 'license'"
                             :class="activeTab === 'license' ? 'bg-purple-600 text-white' : 'text-black dark:text-white hover:bg-purple-100 dark:hover:bg-purple-900/30'"
                             class="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition-colors">
@@ -807,193 +837,121 @@
 
                         <!-- Credentials Tab -->
                         <div x-show="activeTab === 'credentials'" x-cloak x-data="credentialsPanel()">
-                            <h3 class="text-base font-semibold text-black dark:text-white mb-2">Credentials</h3>
-                            <p class="text-sm text-black/70 dark:text-white/70 mb-6">Connect to Proxmox to enable machine power control, VM creation, and synchronization.</p>
+                            <div class="flex items-center justify-between mb-1.5">
+                                <label class="block text-sm font-medium text-black dark:text-white">Credentials</label>
+                            </div>
 
-                            <div class="space-y-6">
-                                <!-- Connection Status -->
-                                <div class="border rounded-lg p-4" :class="status.configured ? 'border-green-500/50 bg-green-50 dark:bg-green-950/20' : 'border-purple-300 dark:border-purple-700/50'">
-                                    <div class="flex items-center gap-3">
-                                        <div class="w-3 h-3 rounded-full" :class="status.configured ? 'bg-green-500' : 'bg-gray-500'"></div>
-                                        <div>
-                                            <template x-if="status.configured">
-                                                <div>
-                                                    <span class="text-sm font-medium text-black dark:text-white" x-text="'Connected to ' + status.host + ':' + status.port"></span>
-                                                    <span class="text-xs text-black/50 dark:text-white/50 ml-2" x-text="'as ' + status.username"></span>
-                                                </div>
-                                            </template>
-                                            <template x-if="!status.configured">
-                                                <span class="text-sm text-black/70 dark:text-white/70">Not configured</span>
-                                            </template>
-                                        </div>
-                                    </div>
+                            <!-- Unified credentials container — chiclets + freeform input -->
+                            <div class="w-full min-h-[120px] rounded-lg border border-purple-300 dark:border-purple-700 bg-transparent p-2 focus-within:border-purple-500 focus-within:ring-1 focus-within:ring-purple-500">
+                                <!-- Loading -->
+                                <div x-show="loading" class="flex items-center gap-2 text-sm text-black/50 dark:text-white/50 mb-2">
+                                    <svg class="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" class="opacity-25"/><path fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" class="opacity-75"/></svg>
+                                    Loading...
+                                </div>
 
-                                    <!-- Token status badges -->
-                                    <template x-if="status.configured">
-                                        <div class="flex flex-wrap gap-2 mt-3 ml-6">
-                                            <span class="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full" :class="status.has_power_token ? 'bg-green-100 text-green-700 dark:bg-green-900/50 dark:text-green-300' : 'bg-red-100 text-red-700 dark:bg-red-900/50 dark:text-red-300'">
-                                                <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 20 20"><path x-show="status.has_power_token" fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/><path x-show="!status.has_power_token" fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd"/></svg>
-                                                Power
-                                            </span>
-                                            <span class="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full" :class="status.has_create_token ? 'bg-green-100 text-green-700 dark:bg-green-900/50 dark:text-green-300' : 'bg-red-100 text-red-700 dark:bg-red-900/50 dark:text-red-300'">
-                                                <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 20 20"><path x-show="status.has_create_token" fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/><path x-show="!status.has_create_token" fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd"/></svg>
-                                                Create
-                                            </span>
-                                            <span class="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full" :class="status.has_config_token ? 'bg-green-100 text-green-700 dark:bg-green-900/50 dark:text-green-300' : 'bg-red-100 text-red-700 dark:bg-red-900/50 dark:text-red-300'">
-                                                <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 20 20"><path x-show="status.has_config_token" fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/><path x-show="!status.has_config_token" fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd"/></svg>
-                                                Config
-                                            </span>
-                                            <span class="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full" :class="status.has_sync_token ? 'bg-green-100 text-green-700 dark:bg-green-900/50 dark:text-green-300' : 'bg-red-100 text-red-700 dark:bg-red-900/50 dark:text-red-300'">
-                                                <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 20 20"><path x-show="status.has_sync_token" fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/><path x-show="!status.has_sync_token" fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd"/></svg>
-                                                Sync
-                                            </span>
+                                <!-- Credential chiclets -->
+                                <div x-show="credentials.length > 0" class="flex flex-wrap gap-2 mb-2">
+                                    <template x-for="cred in credentials" :key="cred.id">
+                                        <div class="group relative inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs font-mono border transition-all"
+                                             :class="chipColor(cred.credential_type)"
+                                             :title="cred.detail">
+                                            <!-- Type icon -->
+                                            <span x-html="chipIcon(cred.credential_type)" class="flex-shrink-0"></span>
+                                            <!-- Label -->
+                                            <span x-text="cred.label"></span>
+                                            <!-- Detail -->
+                                            <span class="opacity-60" x-text="cred.detail"></span>
+                                            <!-- Status dot -->
+                                            <div class="w-1.5 h-1.5 rounded-full flex-shrink-0"
+                                                 :class="cred.status === 'active' ? 'bg-green-500' : cred.status === 'partial' ? 'bg-yellow-500' : 'bg-gray-400'"></div>
+                                            <!-- Rotate button -->
+                                            <button x-show="cred.rotatable" type="button" @click="rotateCredential(cred)"
+                                                    class="opacity-50 hover:opacity-100 transition-opacity text-current" title="Rotate">
+                                                <svg class="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M1 4v6h6"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>
+                                            </button>
+                                            <!-- Remove button -->
+                                            <button x-show="cred.deletable" type="button" @click="confirmDelete(cred)"
+                                                    class="text-gray-500 dark:text-gray-400 hover:text-red-600 dark:hover:text-red-400 transition-colors" title="Remove">
+                                                <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M18 6L6 18M6 6l12 12"/></svg>
+                                            </button>
                                         </div>
                                     </template>
                                 </div>
 
-                                <!-- Mode Toggle -->
-                                <div class="flex gap-2">
-                                    <button type="button" @click="mode = 'login'" :class="mode === 'login' ? 'bg-purple-600 text-white' : 'text-black/70 dark:text-white/70 border border-purple-300 dark:border-purple-700 hover:bg-purple-100 dark:hover:bg-purple-900/30'" class="px-3 py-1.5 text-xs font-medium rounded-lg transition-colors">
-                                        Login to Create Tokens
-                                    </button>
-                                    <button type="button" @click="mode = 'token'" :class="mode === 'token' ? 'bg-purple-600 text-white' : 'text-black/70 dark:text-white/70 border border-purple-300 dark:border-purple-700 hover:bg-purple-100 dark:hover:bg-purple-900/30'" class="px-3 py-1.5 text-xs font-medium rounded-lg transition-colors">
-                                        Paste API Token
-                                    </button>
-                                </div>
+                                <!-- Freeform command input -->
+                                <input type="text" x-ref="credInput" :value="commandDisplay"
+                                       @input="onCommandInput($event)"
+                                       @keydown.enter="addByCommand()"
+                                       placeholder="proxmox:user:pass  |  ssh-keygen cluster  |  ssh-keygen machine"
+                                       class="w-full bg-transparent text-black dark:text-white text-sm font-mono focus:outline-none placeholder:text-black/40 dark:placeholder:text-white/40 px-1 py-1"
+                                       :disabled="addLoading">
+                            </div>
+                            <p class="mt-1.5 text-xs text-black/70 dark:text-white/70">
+                                Type <code class="bg-gray-200 dark:bg-gray-700 px-1 rounded">proxmox:user:pass</code> to connect Proxmox,
+                                <code class="bg-gray-200 dark:bg-gray-700 px-1 rounded">ssh-keygen cluster</code> or
+                                <code class="bg-gray-200 dark:bg-gray-700 px-1 rounded">ssh-keygen machine</code> to generate keys.
+                            </p>
 
-                                <!-- Login Mode -->
-                                <div x-show="mode === 'login'" class="space-y-4">
-                                    <div class="grid grid-cols-2 gap-4">
-                                        <div>
-                                            <label class="block text-xs font-medium text-black dark:text-white mb-1.5">Host</label>
-                                            <input type="text" x-model="form.host" placeholder="10.7.1.1 or proxmox.local"
-                                                   class="w-full rounded-lg border border-purple-300 dark:border-purple-700 bg-transparent text-black dark:text-white text-sm px-3 py-2 focus:border-purple-500 focus:ring-1 focus:ring-purple-500 focus:outline-none placeholder:text-black/40 dark:placeholder:text-white/40">
-                                        </div>
-                                        <div>
-                                            <label class="block text-xs font-medium text-black dark:text-white mb-1.5">Port</label>
-                                            <input type="number" x-model="form.port" placeholder="8006"
-                                                   class="w-full rounded-lg border border-purple-300 dark:border-purple-700 bg-transparent text-black dark:text-white text-sm px-3 py-2 focus:border-purple-500 focus:ring-1 focus:ring-purple-500 focus:outline-none placeholder:text-black/40 dark:placeholder:text-white/40">
-                                        </div>
+                            <!-- Error display -->
+                            <div x-show="addError" class="mt-3 p-3 rounded-lg bg-red-50 dark:bg-red-950/30 border border-red-300 dark:border-red-700 text-sm text-red-700 dark:text-red-300" x-text="addError"></div>
+
+                            <!-- Proxmox Connection Form (slides open when proxmox: command needs host/port/tls details) -->
+                            <div x-show="showProxmoxForm" x-collapse class="mt-3 p-4 rounded-lg border border-orange-300 dark:border-orange-700/50 bg-orange-50/30 dark:bg-orange-950/10 space-y-3">
+                                <p class="text-xs font-medium text-orange-700 dark:text-orange-300">Proxmox Connection Details</p>
+                                <div class="grid grid-cols-2 gap-3">
+                                    <div>
+                                        <label class="block text-xs font-medium text-black dark:text-white mb-1">Host</label>
+                                        <input type="text" x-model="proxmoxForm.host" placeholder="10.7.1.1"
+                                               class="w-full rounded-lg border border-orange-300 dark:border-orange-700 bg-transparent text-black dark:text-white text-sm px-3 py-1.5 focus:border-orange-500 focus:ring-1 focus:ring-orange-500 focus:outline-none">
                                     </div>
-                                    <div class="grid grid-cols-2 gap-4">
-                                        <div>
-                                            <label class="block text-xs font-medium text-black dark:text-white mb-1.5">Username</label>
-                                            <input type="text" x-model="form.username" placeholder="root@pam"
-                                                   class="w-full rounded-lg border border-purple-300 dark:border-purple-700 bg-transparent text-black dark:text-white text-sm px-3 py-2 focus:border-purple-500 focus:ring-1 focus:ring-purple-500 focus:outline-none placeholder:text-black/40 dark:placeholder:text-white/40">
+                                    <div>
+                                        <label class="block text-xs font-medium text-black dark:text-white mb-1">Port</label>
+                                        <input type="number" x-model="proxmoxForm.port" placeholder="8006"
+                                               class="w-full rounded-lg border border-orange-300 dark:border-orange-700 bg-transparent text-black dark:text-white text-sm px-3 py-1.5 focus:border-orange-500 focus:ring-1 focus:ring-orange-500 focus:outline-none">
+                                    </div>
+                                </div>
+                                <div class="flex items-center gap-2">
+                                    <input type="checkbox" x-model="proxmoxForm.skip_tls_verify" id="cred-skip-tls" class="rounded border-orange-300 bg-transparent text-orange-600 focus:ring-orange-500">
+                                    <label for="cred-skip-tls" class="text-xs text-black/70 dark:text-white/70">Skip TLS verification</label>
+                                </div>
+                                <button type="button" @click="addProxmox()" :disabled="addLoading || !proxmoxForm.host"
+                                        class="w-full px-4 py-2 text-sm font-medium text-white bg-orange-600 hover:bg-orange-700 disabled:opacity-50 rounded-lg transition-colors flex items-center justify-center gap-2">
+                                    <svg x-show="addLoading" class="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" class="opacity-25"/><path fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" class="opacity-75"/></svg>
+                                    <span x-text="addLoading ? 'Connecting...' : 'Connect & Create Tokens'"></span>
+                                </button>
+                            </div>
+
+                            <!-- Delete Confirmation Modal -->
+                            <div x-show="showDeleteModal" x-cloak class="fixed inset-0 z-50 flex items-center justify-center" @click.self="showDeleteModal = false">
+                                <div class="fixed inset-0 bg-black/50"></div>
+                                <div class="relative bg-white dark:bg-gray-900 rounded-xl border border-red-500 dark:border-red-700 shadow-xl p-6 w-full max-w-md mx-4" @click.stop>
+                                    <div class="flex items-center gap-3 mb-4">
+                                        <div class="flex h-10 w-10 items-center justify-center rounded-full bg-red-100 dark:bg-red-900/40">
+                                            <svg class="w-5 h-5 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                                            </svg>
                                         </div>
-                                        <div>
-                                            <label class="block text-xs font-medium text-black dark:text-white mb-1.5">Password</label>
-                                            <input type="password" x-model="form.password" placeholder="Password"
-                                                   class="w-full rounded-lg border border-purple-300 dark:border-purple-700 bg-transparent text-black dark:text-white text-sm px-3 py-2 focus:border-purple-500 focus:ring-1 focus:ring-purple-500 focus:outline-none placeholder:text-black/40 dark:placeholder:text-white/40">
-                                        </div>
+                                        <h3 class="text-lg font-semibold text-black dark:text-white">Remove Credential</h3>
                                     </div>
-                                    <div class="flex items-center gap-2">
-                                        <input type="checkbox" x-model="form.skip_tls_verify" id="skip-tls" class="rounded border-purple-300 dark:border-purple-700 bg-transparent text-purple-600 focus:ring-purple-500">
-                                        <label for="skip-tls" class="text-xs text-black/70 dark:text-white/70">Skip TLS verification (self-signed certificates)</label>
-                                    </div>
-                                    <div class="flex items-center gap-2">
-                                        <input type="checkbox" x-model="form.import_guests" id="import-guests"
-                                               @change="if (form.import_guests && !importDangerAccepted) { form.import_guests = false; importDangerModal = true; }"
-                                               class="rounded border-yellow-600 bg-transparent text-yellow-500 focus:ring-yellow-500">
-                                        <label for="import-guests" class="text-xs text-yellow-600 dark:text-yellow-400/90">(Experimental) Import Proxmox guests</label>
-                                    </div>
-                                    <div class="flex items-center gap-3">
-                                        <button type="button" @click="connectAndCreateTokens()" :disabled="connecting"
-                                                class="px-4 py-2 text-sm font-medium text-white bg-purple-600 hover:bg-purple-700 disabled:opacity-50 rounded-lg transition-colors">
-                                            <span x-show="!connecting">Connect & Create Tokens</span>
-                                            <span x-show="connecting">Connecting...</span>
+                                    <p class="text-sm text-gray-600 dark:text-gray-300 mb-4">
+                                        Type <strong class="text-red-600 dark:text-red-400" x-text="deleteTarget?.label"></strong> to confirm removal.
+                                    </p>
+                                    <input type="text" x-model="deleteConfirmText" :placeholder="deleteTarget?.label"
+                                           class="w-full rounded-lg border border-red-300 dark:border-red-700 bg-transparent text-black dark:text-white text-sm px-3 py-2 focus:border-red-500 focus:ring-1 focus:ring-red-500 focus:outline-none mb-3">
+                                    <label class="flex items-center gap-2 text-xs text-black/70 dark:text-white/70 mb-4">
+                                        <input type="checkbox" x-model="deleteCleanup" class="rounded border-red-300 bg-transparent text-red-600 focus:ring-red-500">
+                                        Also remove from remote machines (cleanup)
+                                    </label>
+                                    <div class="flex gap-3">
+                                        <button type="button" @click="showDeleteModal = false"
+                                                class="flex-1 px-4 py-2 text-sm font-medium text-black/70 dark:text-white/70 border border-gray-300 dark:border-gray-600 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg">
+                                            Cancel
                                         </button>
-                                        <span x-show="error" class="text-xs text-red-600 dark:text-red-400" x-text="error"></span>
-                                    </div>
-                                </div>
-
-                                <!-- Import Guests Danger Modal -->
-                                <div x-show="importDangerModal" x-cloak class="fixed inset-0 z-50 overflow-y-auto">
-                                    <div class="fixed inset-0 bg-black/50" @click="importDangerModal = false"></div>
-                                    <div class="flex min-h-full items-center justify-center p-4">
-                                        <div class="relative bg-white dark:bg-gray-900 rounded-lg p-6 max-w-md shadow-xl border border-yellow-600/50" @click.stop>
-                                            <div class="flex items-center gap-3 mb-4">
-                                                <div class="flex h-10 w-10 items-center justify-center rounded-full bg-yellow-100 dark:bg-yellow-900/40">
-                                                    <svg class="w-5 h-5 text-yellow-500 dark:text-yellow-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z" />
-                                                    </svg>
-                                                </div>
-                                                <h3 class="text-lg font-semibold text-black dark:text-white">Experimental Feature</h3>
-                                            </div>
-                                            <p class="text-sm text-gray-600 dark:text-gray-300 mb-3">
-                                                This will import all VMs and LXC containers from your Proxmox cluster into Dragonfly. This feature is <strong class="text-yellow-600 dark:text-yellow-400">experimental</strong>.
-                                            </p>
-                                            <ul class="text-xs text-gray-500 dark:text-gray-400 mb-4 space-y-1 list-disc list-inside">
-                                                <li>Existing machines with the same MAC address will be updated</li>
-                                                <li>Guest agent data is used when available for IP detection</li>
-                                                <li>Do not use this with production clusters you care about</li>
-                                            </ul>
-                                            <div class="flex gap-3">
-                                                <button type="button" @click="importDangerModal = false"
-                                                    class="flex-1 px-4 py-2 text-sm font-medium text-black/70 dark:text-white/70 border border-gray-300 dark:border-gray-600 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg">
-                                                    Cancel
-                                                </button>
-                                                <button type="button" @click="importDangerAccepted = true; form.import_guests = true; importDangerModal = false"
-                                                    class="flex-1 px-4 py-2 text-sm font-medium text-white bg-yellow-600 hover:bg-yellow-700 rounded-lg">
-                                                    I understand, enable import
-                                                </button>
-                                            </div>
-                                        </div>
-                                    </div>
-                                </div>
-
-                                <!-- Token Mode -->
-                                <div x-show="mode === 'token'" class="space-y-4">
-                                    <div class="grid grid-cols-2 gap-4">
-                                        <div>
-                                            <label class="block text-xs font-medium text-black dark:text-white mb-1.5">Host</label>
-                                            <input type="text" x-model="form.host" placeholder="10.7.1.1 or proxmox.local"
-                                                   class="w-full rounded-lg border border-purple-300 dark:border-purple-700 bg-transparent text-black dark:text-white text-sm px-3 py-2 focus:border-purple-500 focus:ring-1 focus:ring-purple-500 focus:outline-none placeholder:text-black/40 dark:placeholder:text-white/40">
-                                        </div>
-                                        <div>
-                                            <label class="block text-xs font-medium text-black dark:text-white mb-1.5">Port</label>
-                                            <input type="number" x-model="form.port" placeholder="8006"
-                                                   class="w-full rounded-lg border border-purple-300 dark:border-purple-700 bg-transparent text-black dark:text-white text-sm px-3 py-2 focus:border-purple-500 focus:ring-1 focus:ring-purple-500 focus:outline-none placeholder:text-black/40 dark:placeholder:text-white/40">
-                                        </div>
-                                    </div>
-                                    <p class="text-xs text-black/50 dark:text-white/50">Paste a Proxmox API token for each capability you want to enable. Create tokens in Proxmox under Datacenter &rarr; Permissions &rarr; API Tokens.</p>
-                                    <div class="space-y-3">
-                                        <div>
-                                            <label class="block text-xs font-medium text-black dark:text-white mb-1">Power Token <span class="text-black/40 dark:text-white/40">(start, stop, reboot)</span></label>
-                                            <div class="flex gap-2">
-                                                <input type="text" x-model="tokens.power" placeholder="user@pam!token-name=secret-value"
-                                                       class="flex-1 rounded-lg border border-purple-300 dark:border-purple-700 bg-transparent text-black dark:text-white text-sm px-3 py-2 font-mono focus:border-purple-500 focus:ring-1 focus:ring-purple-500 focus:outline-none placeholder:text-black/30 dark:placeholder:text-white/30">
-                                                <button type="button" @click="saveToken('power', tokens.power)" class="px-3 py-2 text-xs font-medium text-white bg-purple-600 hover:bg-purple-700 rounded-lg transition-colors">Save</button>
-                                            </div>
-                                        </div>
-                                        <div>
-                                            <label class="block text-xs font-medium text-black dark:text-white mb-1">Create Token <span class="text-black/40 dark:text-white/40">(create/delete VMs)</span></label>
-                                            <div class="flex gap-2">
-                                                <input type="text" x-model="tokens.create" placeholder="user@pam!token-name=secret-value"
-                                                       class="flex-1 rounded-lg border border-purple-300 dark:border-purple-700 bg-transparent text-black dark:text-white text-sm px-3 py-2 font-mono focus:border-purple-500 focus:ring-1 focus:ring-purple-500 focus:outline-none placeholder:text-black/30 dark:placeholder:text-white/30">
-                                                <button type="button" @click="saveToken('create', tokens.create)" class="px-3 py-2 text-xs font-medium text-white bg-purple-600 hover:bg-purple-700 rounded-lg transition-colors">Save</button>
-                                            </div>
-                                        </div>
-                                        <div>
-                                            <label class="block text-xs font-medium text-black dark:text-white mb-1">Config Token <span class="text-black/40 dark:text-white/40">(VM configuration)</span></label>
-                                            <div class="flex gap-2">
-                                                <input type="text" x-model="tokens.config" placeholder="user@pam!token-name=secret-value"
-                                                       class="flex-1 rounded-lg border border-purple-300 dark:border-purple-700 bg-transparent text-black dark:text-white text-sm px-3 py-2 font-mono focus:border-purple-500 focus:ring-1 focus:ring-purple-500 focus:outline-none placeholder:text-black/30 dark:placeholder:text-white/30">
-                                                <button type="button" @click="saveToken('config', tokens.config)" class="px-3 py-2 text-xs font-medium text-white bg-purple-600 hover:bg-purple-700 rounded-lg transition-colors">Save</button>
-                                            </div>
-                                        </div>
-                                        <div>
-                                            <label class="block text-xs font-medium text-black dark:text-white mb-1">Sync Token <span class="text-black/40 dark:text-white/40">(audit/monitoring)</span></label>
-                                            <div class="flex gap-2">
-                                                <input type="text" x-model="tokens.sync" placeholder="user@pam!token-name=secret-value"
-                                                       class="flex-1 rounded-lg border border-purple-300 dark:border-purple-700 bg-transparent text-black dark:text-white text-sm px-3 py-2 font-mono focus:border-purple-500 focus:ring-1 focus:ring-purple-500 focus:outline-none placeholder:text-black/30 dark:placeholder:text-white/30">
-                                                <button type="button" @click="saveToken('sync', tokens.sync)" class="px-3 py-2 text-xs font-medium text-white bg-purple-600 hover:bg-purple-700 rounded-lg transition-colors">Save</button>
-                                            </div>
-                                        </div>
-                                    </div>
-                                    <div class="flex items-center gap-2">
-                                        <input type="checkbox" x-model="form.skip_tls_verify" id="skip-tls-token" class="rounded border-purple-300 dark:border-purple-700 bg-transparent text-purple-600 focus:ring-purple-500">
-                                        <label for="skip-tls-token" class="text-xs text-black/70 dark:text-white/70">Skip TLS verification</label>
+                                        <button type="button" @click="executeDelete()" :disabled="!deleteReady || deleting"
+                                                class="flex-1 px-4 py-2 text-sm font-medium text-white bg-red-600 hover:bg-red-700 disabled:opacity-50 rounded-lg transition-colors flex items-center justify-center gap-2">
+                                            <svg x-show="deleting" class="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" class="opacity-25"/><path fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" class="opacity-75"/></svg>
+                                            Remove
+                                        </button>
                                     </div>
                                 </div>
                             </div>
@@ -1057,6 +1015,389 @@
                             </div>
                         </div>
 
+                        <!-- High Availability Tab -->
+                        <div x-show="activeTab === 'ha'" x-cloak x-init="loadHaStatus()">
+
+                            <style>
+                                .ha-node-card {
+                                    transition: all 0.6s cubic-bezier(0.4, 0, 0.2, 1);
+                                    position: relative;
+                                    overflow: visible;
+                                }
+                                .ha-pulse {
+                                    width: 8px; height: 8px; border-radius: 50%;
+                                    animation: pulse-glow 2s ease-in-out infinite;
+                                }
+                                @keyframes pulse-glow {
+                                    0%, 100% { box-shadow: 0 0 4px 1px var(--pulse-color, rgba(34,197,94,0.5)); opacity: 1; }
+                                    50% { box-shadow: 0 0 8px 3px var(--pulse-color, rgba(34,197,94,0.7)); opacity: 0.85; }
+                                }
+                                .ha-tooltip {
+                                    visibility: hidden; opacity: 0;
+                                    position: absolute; bottom: calc(100% + 8px); left: 50%;
+                                    transform: translateX(-50%); z-index: 50;
+                                    padding: 6px 10px; border-radius: 6px;
+                                    font-size: 11px; line-height: 1.4; pointer-events: none;
+                                    transition: opacity 0.15s, visibility 0.15s;
+                                    max-width: 260px; white-space: normal; text-align: center;
+                                }
+                                .ha-node-card:hover .ha-tooltip { visibility: visible; opacity: 1; }
+
+                                /* === Marching ants via SVG rect — follows border-radius === */
+                                .ha-state-creating,
+                                .ha-state-installing,
+                                .ha-state-initialising,
+                                .ha-state-synchronising,
+                                .ha-state-out_of_sync,
+                                .ha-state-unhealthy { border: none !important; }
+
+                                .ha-border-svg {
+                                    position: absolute;
+                                    inset: 0;
+                                    width: 100%;
+                                    height: 100%;
+                                    pointer-events: none;
+                                    z-index: 1;
+                                    overflow: visible;
+                                }
+                                .ha-border-svg rect {
+                                    fill: none;
+                                    x: 1.5px;
+                                    y: 1.5px;
+                                    width: calc(100% - 3px);
+                                    height: calc(100% - 3px);
+                                    rx: 12px;
+                                }
+
+                                /* Creating: amber, thick 3px, fast 0.35s, short dashes */
+                                .ha-state-creating .ha-border-svg rect {
+                                    stroke: #f59e0b;
+                                    stroke-width: 3;
+                                    stroke-dasharray: 6 6;
+                                    animation: march-svg 0.7s linear infinite;
+                                }
+
+                                /* Installing: blue, 2.5px, steady 1.2s, medium dashes */
+                                .ha-state-installing .ha-border-svg rect {
+                                    stroke: #3b82f6;
+                                    stroke-width: 2.5;
+                                    stroke-dasharray: 10 6;
+                                    animation: march-svg 1.2s linear infinite;
+                                }
+
+                                /* Initialising: cyan, 2px, flowing 2s, long dashes */
+                                .ha-state-initialising .ha-border-svg rect {
+                                    stroke: #06b6d4;
+                                    stroke-width: 2;
+                                    stroke-dasharray: 16 8;
+                                    animation: march-svg 2s linear infinite;
+                                }
+
+                                /* Synchronising: violet, 2px, smooth reverse 1s, medium dashes */
+                                .ha-state-synchronising .ha-border-svg rect {
+                                    stroke: #8b5cf6;
+                                    stroke-width: 2;
+                                    stroke-dasharray: 10 6;
+                                    animation: march-svg 1s linear infinite reverse;
+                                }
+
+                                /* Out of sync: amber, 2px, alternating 1.6s, choppy dashes */
+                                .ha-state-out_of_sync .ha-border-svg rect {
+                                    stroke: #eab308;
+                                    stroke-width: 2;
+                                    stroke-dasharray: 6 6;
+                                    animation: march-svg 1.6s ease-in-out infinite alternate;
+                                }
+
+                                /* Unhealthy: red, 2.5px, frantic 0.5s, short dashes */
+                                .ha-state-unhealthy .ha-border-svg rect {
+                                    stroke: #ef4444;
+                                    stroke-width: 2.5;
+                                    stroke-dasharray: 6 6;
+                                    animation: march-svg 0.5s linear infinite;
+                                }
+
+                                /* Single keyframe: offset by total dash+gap to loop seamlessly */
+                                @keyframes march-svg {
+                                    to { stroke-dashoffset: -24; }
+                                }
+
+                                /* === Healthy: solid SVG border with breathing glow === */
+                                .ha-state-healthy .ha-border-svg rect {
+                                    stroke: var(--node-color, #22c55e);
+                                    stroke-width: 2;
+                                    stroke-dasharray: none;
+                                }
+                                .ha-state-healthy::after {
+                                    content: '';
+                                    position: absolute;
+                                    inset: -2px;
+                                    border-radius: inherit;
+                                    pointer-events: none;
+                                    z-index: -1;
+                                    box-shadow: 0 0 20px 0 var(--node-color, #22c55e), 0 0 40px -4px var(--node-color, #22c55e);
+                                    animation: healthy-breathe 3s ease-in-out infinite;
+                                }
+                                @keyframes healthy-breathe {
+                                    0%, 100% { opacity: 0.3; }
+                                    50% { opacity: 0.7; }
+                                }
+
+                                /* === Failed: static gray dashes via SVG === */
+                                .ha-state-failed .ha-border-svg rect {
+                                    stroke: #6b7280;
+                                    stroke-width: 2;
+                                    stroke-dasharray: 6 6;
+                                }
+                                .ha-state-failed { opacity: 0.6; }
+
+                                /* === Empty: dashed blueprint border via SVG === */
+                                .ha-state-empty .ha-border-svg rect {
+                                    stroke: var(--node-color, rgba(34, 197, 94, 0.3));
+                                    stroke-width: 2;
+                                    stroke-dasharray: 8 6;
+                                }
+                            </style>
+
+                            <!-- ===== ICON: Globe → Arrow → Boxes transition ===== -->
+                            <style>
+                                @keyframes nudge-right {
+                                    0%, 100% { transform: translateX(0); opacity: 0.7; }
+                                    50% { transform: translateX(4px); opacity: 1; }
+                                }
+                                .ha-arrow-pulse { animation: nudge-right 1.5s ease-in-out infinite; }
+                            </style>
+                            <div class="flex justify-center pt-5 mb-3">
+                                <div class="flex items-center justify-center gap-2">
+                                    <!-- Globe + Arrow: slides left and fades when HA becomes active -->
+                                    <div class="flex items-center gap-2 transition-all duration-1000 ease-in-out overflow-hidden"
+                                         :class="haEnabled ? 'max-w-0 opacity-0' : haCreating ? 'max-w-[6rem] opacity-100' : 'max-w-[3rem] opacity-100'">
+                                        <!-- Globe -->
+                                        <svg xmlns="http://www.w3.org/2000/svg" class="h-10 w-10 shrink-0 text-black dark:text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+                                            <path stroke-linecap="round" stroke-linejoin="round" d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9" />
+                                        </svg>
+                                        <!-- Right arrow — pulses rightward during deployment -->
+                                        <svg x-show="haCreating" x-cloak xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 shrink-0 text-black dark:text-white ha-arrow-pulse" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                            <path d="M5 12h14"/><path d="m12 5 7 7-7 7"/>
+                                        </svg>
+                                    </div>
+                                    <!-- Boxes — appears during deploy, stays for HA -->
+                                    <div class="transition-all duration-700 ease-out overflow-hidden"
+                                         :class="haCreating || haEnabled ? 'max-w-[3rem] opacity-100 scale-100' : 'max-w-0 opacity-0 scale-75'">
+                                        <svg xmlns="http://www.w3.org/2000/svg" class="h-10 w-10 shrink-0 text-black dark:text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                            <path d="M2.97 12.92A2 2 0 0 0 2 14.63v3.24a2 2 0 0 0 .97 1.71l3 1.8a2 2 0 0 0 2.06 0L12 19v-5.5l-5-3-4.03 2.42Z"/>
+                                            <path d="m7 16.5-4.74-2.85"/><path d="m7 16.5 5-3"/><path d="M7 16.5v5.17"/>
+                                            <path d="M12 13.5V19l3.97 2.38a2 2 0 0 0 2.06 0l3-1.8a2 2 0 0 0 .97-1.71v-3.24a2 2 0 0 0-.97-1.71L17 10.5l-5 3Z"/>
+                                            <path d="m17 16.5-5-3"/><path d="m17 16.5 4.74-2.85"/><path d="M17 16.5v5.17"/>
+                                            <path d="M7.97 4.42A2 2 0 0 0 7 6.13v4.37l5 3 5-3V6.13a2 2 0 0 0-.97-1.71l-3-1.8a2 2 0 0 0-2.06 0l-3 1.8Z"/>
+                                            <path d="M12 8 7.26 5.15"/><path d="m12 8 4.74-2.85"/><path d="M12 13.5V8"/>
+                                        </svg>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- ===== STANDALONE STATE ===== -->
+                            <div x-show="!haEnabled"
+                                 x-transition:leave="transition ease-in duration-500"
+                                 x-transition:leave-start="opacity-100"
+                                 x-transition:leave-end="opacity-0">
+                                <div class="flex flex-col items-center text-center pb-5">
+                                    <h3 class="text-lg font-semibold text-black dark:text-white mb-2"
+                                        x-text="haCreating ? 'Moving Dragonfly to high availability' : 'Running Standalone'"></h3>
+                                    <p class="text-sm text-black/50 dark:text-white/50 max-w-sm mb-6 leading-relaxed"
+                                        x-text="haCreating ? 'Deploying across your Proxmox cluster...' : 'Deploy Dragonfly across your Proxmox cluster for fault tolerance and local-speed provisioning.'"></p>
+
+                                    <!-- No Proxmox and not deploying: disabled button + hint -->
+                                    <div x-show="!haProxmoxConnected && !haCreating">
+                                        <button type="button" disabled
+                                                class="px-6 py-3 rounded-lg border-2 border-dashed border-gray-300/50 dark:border-gray-600/50 bg-transparent text-gray-400 dark:text-gray-500 font-semibold text-sm cursor-not-allowed flex items-center gap-2 mx-auto">
+                                            <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 text-gray-400 dark:text-gray-600" viewBox="0 0 20 20" fill="currentColor">
+                                                <path fill-rule="evenodd" d="M10 5a1 1 0 011 1v3h3a1 1 0 110 2h-3v3a1 1 0 11-2 0v-3H6a1 1 0 110-2h3V6a1 1 0 011-1z" clip-rule="evenodd" />
+                                            </svg>
+                                            Create Cluster
+                                        </button>
+                                        <p class="mt-3 text-xs text-black/30 dark:text-white/30">
+                                            <a href="/settings/credentials" class="underline hover:text-emerald-500 dark:hover:text-emerald-400 transition-colors">Connect a Proxmox cluster</a> to enable HA deployment.
+                                        </p>
+                                    </div>
+
+                                    <!-- Unified control button: Create → Deploying... → Abort on hover -->
+                                    <div x-show="haProxmoxConnected || haCreating" class="flex items-center justify-center">
+                                        <button type="button"
+                                                @click="haCreating ? abortCluster() : createCluster()"
+                                                @mouseenter="hoverAbort = true"
+                                                @mouseleave="hoverAbort = false"
+                                                :disabled="haEnabling && !haCreating"
+                                                :class="[
+                                                    haCreating && (hoverAbort || /failed|incomplete/i.test(haDeployButtonText))
+                                                        ? 'border-red-400/80 text-red-500 dark:text-red-400 hover:bg-red-500/10'
+                                                        : haCreating
+                                                            ? 'border-emerald-400/60 dark:border-emerald-500/50 text-emerald-600 dark:text-emerald-400'
+                                                            : 'border-dashed border-black/30 dark:border-white/80 text-black/60 dark:text-white hover:border-black/50 dark:hover:border-white hover:bg-black/[0.02] dark:hover:bg-white/[0.06] hover:scale-[1.02]',
+                                                    haEnabling && !haCreating ? 'opacity-50 cursor-wait' : ''
+                                                ]"
+                                                class="px-6 py-3 rounded-lg border-2 bg-transparent font-semibold text-sm transition-all duration-200 flex items-center gap-2">
+                                            <!-- Icon: plus (idle), spinner (deploying), X (hover-abort) -->
+                                            <svg x-show="!haCreating" xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 text-green-600 dark:text-green-400" viewBox="0 0 20 20" fill="currentColor">
+                                                <path fill-rule="evenodd" d="M10 5a1 1 0 011 1v3h3a1 1 0 110 2h-3v3a1 1 0 11-2 0v-3H6a1 1 0 110-2h3V6a1 1 0 011-1z" clip-rule="evenodd" />
+                                            </svg>
+                                            <svg x-show="haCreating && !hoverAbort && !/failed|incomplete/i.test(haDeployButtonText)" x-cloak class="h-4 w-4 animate-spin" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                            </svg>
+                                            <svg x-show="haCreating && (hoverAbort || /failed|incomplete/i.test(haDeployButtonText))" x-cloak xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+                                                <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clip-rule="evenodd" />
+                                            </svg>
+                                            <span x-text="haCreating && hoverAbort ? 'Abort Deployment' : haCreating ? haDeployButtonText : 'Create Cluster'"></span>
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Sizzle reel: below Create Cluster, above the preview -->
+                            <div class="flex justify-center items-center gap-6 text-[11px] text-black/35 dark:text-white/35 mb-4 mt-4">
+                                <div class="flex items-center gap-1.5">
+                                    <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                                        <path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+                                    </svg>
+                                    Fault tolerant
+                                </div>
+                                <div class="flex items-center gap-1.5">
+                                    <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                                        <path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                                    </svg>
+                                    Auto-failover
+                                </div>
+                                <div class="flex items-center gap-1.5">
+                                    <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                                        <path stroke-linecap="round" stroke-linejoin="round" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" />
+                                    </svg>
+                                    Raft consensus
+                                </div>
+                            </div>
+
+                            <!-- ===== CARDS: blueprint (standalone+proxmox) or live (clustered) ===== -->
+                            <div x-show="haProxmoxConnected || haEnabled">
+
+                                <!-- Node cards grid -->
+                                <div class="grid gap-3 mb-6 p-1" :style="'grid-template-columns: repeat(' + Math.min(haNodes.length, 4) + ', minmax(0, 1fr))'">
+                                    <template x-for="(node, idx) in haNodes" :key="idx">
+                                        <div class="ha-node-card rounded-xl p-4 flex flex-col items-center justify-center text-center"
+                                             :class="'ha-state-' + (node.status || 'empty')"
+                                             :style="(() => {
+                                                 const isCore = idx < 3;
+                                                 const roleColor = isCore ? '#22c55e' : '#a855f7';
+                                                 const styles = {
+                                                     creating:      '--node-color: #f59e0b; background: linear-gradient(to bottom, rgba(245,158,11,0.06), transparent); box-shadow: 0 0 16px -4px rgba(245,158,11,0.15);',
+                                                     installing:    '--node-color: #3b82f6; background: linear-gradient(to bottom, rgba(59,130,246,0.06), transparent); box-shadow: 0 0 16px -4px rgba(59,130,246,0.15);',
+                                                     initialising:  '--node-color: #06b6d4; background: linear-gradient(to bottom, rgba(6,182,212,0.06), transparent); box-shadow: 0 0 16px -4px rgba(6,182,212,0.15);',
+                                                     synchronising: '--node-color: #8b5cf6; background: linear-gradient(to bottom, rgba(139,92,246,0.06), transparent); box-shadow: 0 0 16px -4px rgba(139,92,246,0.15);',
+                                                     healthy:       '--node-color: ' + roleColor + '; background: linear-gradient(to bottom, ' + roleColor + '12, transparent);',
+                                                     out_of_sync:   '--node-color: #eab308; background: linear-gradient(to bottom, rgba(234,179,8,0.06), transparent); box-shadow: 0 0 16px -4px rgba(234,179,8,0.15);',
+                                                     unhealthy:     '--node-color: #ef4444; background: linear-gradient(to bottom, rgba(239,68,68,0.08), transparent); box-shadow: 0 0 16px -4px rgba(239,68,68,0.2);',
+                                                     failed:        '',
+                                                     empty:         '--node-color: ' + roleColor + '50;',
+                                                 };
+                                                 return styles[node.status] || styles.empty;
+                                             })()">
+
+                                            <!-- SVG border that follows rounded corners -->
+                                            <svg class="ha-border-svg"><rect/></svg>
+
+                                            <!-- Tooltip -->
+                                            <div class="ha-tooltip bg-gray-900 dark:bg-gray-100 text-white dark:text-gray-900"
+                                                 x-text="idx < 3
+                                                     ? 'Participates in cluster decisions. Your data is safe as long as 2 of 3 core nodes are healthy.'
+                                                     : 'Local cache for fast provisioning. Can be rebuilt automatically if lost.'"></div>
+
+                                            <!-- Node name -->
+                                            <span class="text-lg font-bold uppercase tracking-wide mb-1 transition-all duration-500"
+                                                  :class="node.status === 'healthy'
+                                                      ? (idx < 3 ? 'text-emerald-600 dark:text-emerald-400' : 'text-purple-600 dark:text-purple-400')
+                                                      : 'text-black/70 dark:text-white/70'"
+                                                  x-text="node.status === 'healthy' && node.hostname ? node.hostname : (node.host || node.id || ('node-' + (idx + 1)))"></span>
+
+                                            <!-- Core / Replica badge -->
+                                            <span class="text-sm font-semibold uppercase tracking-wider mb-2"
+                                                  :class="idx < 3
+                                                      ? 'text-emerald-600 dark:text-emerald-400'
+                                                      : 'text-purple-500 dark:text-purple-400'"
+                                                  x-text="idx < 3 ? 'Core' : 'Replica'"></span>
+
+                                            <!-- Deploying states: creating, installing, initialising, synchronising -->
+                                            <div x-show="['creating', 'installing', 'initialising', 'synchronising'].includes(node.status)">
+                                                <p class="text-[10px] font-semibold uppercase tracking-wider mb-0.5"
+                                                   :class="{
+                                                       'text-amber-500': node.status === 'creating',
+                                                       'text-blue-500': node.status === 'installing',
+                                                       'text-cyan-500': node.status === 'initialising',
+                                                       'text-violet-500': node.status === 'synchronising',
+                                                   }"
+                                                   x-text="{ creating: 'Creating', installing: 'Installing', initialising: 'Initialising', synchronising: 'Synchronising' }[node.status]"></p>
+                                                <p class="text-[10px] text-black/40 dark:text-white/40" x-text="node.deployStatus || '...'"></p>
+                                            </div>
+
+                                            <!-- Healthy node info -->
+                                            <div x-show="node.status === 'healthy'" class="flex-1 flex flex-col items-center justify-center gap-1">
+                                                <p class="text-[11px] text-black/50 dark:text-white/50 font-mono" x-text="node.addr"></p>
+                                                <span x-show="node.is_leader"
+                                                      class="inline-block px-2 py-0.5 text-[8px] font-bold uppercase tracking-wider rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
+                                                    Leader
+                                                </span>
+                                                <p class="text-[10px] text-emerald-600 dark:text-emerald-400 font-medium">Healthy</p>
+                                            </div>
+
+                                            <!-- Problem states: unhealthy, failed, out of sync -->
+                                            <div x-show="['unhealthy', 'failed', 'out_of_sync'].includes(node.status)" class="flex-1 flex flex-col items-center justify-center gap-1">
+                                                <p class="text-[10px] font-medium"
+                                                   :class="{
+                                                       'text-red-500/70 dark:text-red-400/70': node.status === 'unhealthy' || node.status === 'failed',
+                                                       'text-amber-500/70 dark:text-amber-400/70': node.status === 'out_of_sync',
+                                                   }"
+                                                   x-text="{ unhealthy: 'Unhealthy', failed: 'Failed', out_of_sync: 'Out of Sync' }[node.status]"></p>
+                                                <p class="text-[10px] text-black/30 dark:text-white/30" x-text="node.deployStatus || ''"></p>
+                                            </div>
+
+                                            <!-- Empty blueprint -->
+                                            <div x-show="node.status === 'empty'">
+                                                <p class="text-[11px] text-black/25 dark:text-white/25 font-mono" x-text="node.addr || ''"></p>
+                                            </div>
+                                        </div>
+                                    </template>
+                                </div>
+
+                                <!-- Cluster health (when active) -->
+                                <div x-show="haEnabled && !haCreating" class="flex items-center justify-center gap-3 mb-2">
+                                    <div class="flex items-center gap-2">
+                                        <div class="w-2 h-2 rounded-full"
+                                             :class="haNodes.filter(n => n.status === 'healthy').length >= 2 ? 'bg-emerald-500' : haNodes.filter(n => n.status === 'healthy').length >= 1 ? 'bg-amber-500' : 'bg-red-500'"></div>
+                                        <span class="text-xs font-medium"
+                                              :class="haNodes.filter(n => n.status === 'healthy').length >= 2 ? 'text-emerald-600 dark:text-emerald-400' : haNodes.filter(n => n.status === 'healthy').length >= 1 ? 'text-amber-600 dark:text-amber-400' : 'text-red-600 dark:text-red-400'"
+                                              x-text="haNodes.filter(n => n.status === 'healthy').length + ' of ' + haNodes.length + ' nodes online'"></span>
+                                    </div>
+                                </div>
+
+                                <!-- Dissolve cluster (when active) -->
+                                <div x-show="haEnabled && !haCreating" class="mt-6 pt-5 border-t border-gray-200/50 dark:border-gray-700/30">
+                                    <div class="flex items-center justify-between">
+                                        <div>
+                                            <p class="text-xs font-medium text-black/40 dark:text-white/40">Dissolve Cluster</p>
+                                            <p class="text-[11px] text-black/25 dark:text-white/25">Convert back to standalone. Data is preserved.</p>
+                                        </div>
+                                        <button type="button" @click="dissolveCluster()"
+                                                :disabled="haDisabling"
+                                                class="px-4 py-2 text-xs font-medium rounded-lg border border-red-300/50 dark:border-red-700/50 text-red-500/70 dark:text-red-400/70 hover:border-red-400 dark:hover:border-red-600 hover:text-red-600 dark:hover:text-red-400 hover:bg-red-50/50 dark:hover:bg-red-900/10 disabled:opacity-50 disabled:cursor-wait transition-all flex items-center gap-2">
+                                            <svg x-show="haDisabling" class="animate-spin h-3 w-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+                                            </svg>
+                                            <span x-text="haDisabling ? 'Dissolving...' : 'Dissolve'"></span>
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
                         <div x-show="activeTab === 'license'" x-cloak>
                             <h3 class="text-base font-semibold text-black dark:text-white mb-2">License</h3>
                             <p class="text-sm text-black/70 dark:text-white/70 mb-6">Dragonfly is open source software.</p>
@@ -1115,6 +1456,101 @@
                                         </button>
                                     </div>
                                 </div>
+
+                                <!-- Credits & Acknowledgements -->
+                                <div class="border-t border-purple-500/30 dark:border-purple-700/50 pt-6">
+                                    <h4 class="text-sm font-medium text-black dark:text-white mb-3">Credits & Acknowledgements</h4>
+                                    <p class="text-xs leading-relaxed text-black/70 dark:text-white/70 mb-3">
+                                        <span class="font-semibold text-black dark:text-white">Built with</span>
+                                        <a href="https://www.rust-lang.org/" class="text-purple-600 dark:text-purple-400 hover:underline" target="_blank">Rust</a> systems language,
+                                        <a href="https://github.com/tokio-rs/axum" class="text-purple-600 dark:text-purple-400 hover:underline" target="_blank">Axum</a> web framework,
+                                        <a href="https://github.com/mitsuhiko/minijinja" class="text-purple-600 dark:text-purple-400 hover:underline" target="_blank">MiniJinja</a> template engine,
+                                        <a href="https://tailwindcss.com/" class="text-purple-600 dark:text-purple-400 hover:underline" target="_blank">Tailwind CSS</a> styling,
+                                        <a href="https://alpinejs.dev/" class="text-purple-600 dark:text-purple-400 hover:underline" target="_blank">Alpine.js</a> reactivity,
+                                        <a href="https://lucide.dev/" class="text-purple-600 dark:text-purple-400 hover:underline" target="_blank">Lucide</a> icons,
+                                        <a href="https://github.com/launchbadge/sqlx" class="text-purple-600 dark:text-purple-400 hover:underline" target="_blank">SQLx</a> database,
+                                        <a href="https://github.com/kube-rs/kube" class="text-purple-600 dark:text-purple-400 hover:underline" target="_blank">kube-rs</a> Kubernetes client,
+                                        <a href="https://github.com/rustls/rustls" class="text-purple-600 dark:text-purple-400 hover:underline" target="_blank">Rustls</a> TLS,
+                                        <a href="https://hickory-dns.org/" class="text-purple-600 dark:text-purple-400 hover:underline" target="_blank">Hickory DNS</a> DNS resolver.
+                                    </p>
+                                    <p class="text-xs leading-relaxed text-black/70 dark:text-white/70 mb-3">
+                                        <span class="font-semibold text-black dark:text-white">Inspired by</span>
+                                        <a href="https://tinkerbell.org/" class="text-purple-600 dark:text-purple-400 hover:underline" target="_blank">Tinkerbell</a> bare metal provisioning concepts,
+                                        <a href="https://www.proxmox.com/" class="text-purple-600 dark:text-purple-400 hover:underline" target="_blank">Proxmox VE</a> virtualization platform API,
+                                        <a href="https://github.com/beryju/gravity" class="text-purple-600 dark:text-purple-400 hover:underline" target="_blank">Gravity</a> DNS server.
+                                    </p>
+                                    <p class="text-xs leading-relaxed text-black/70 dark:text-white/70 mb-3">
+                                        <span class="font-semibold text-black dark:text-white">Deployed & relied upon</span>
+                                        <a href="https://moosefs.com/" class="text-purple-600 dark:text-purple-400 hover:underline" target="_blank">MooseFS</a> distributed storage,
+                                        <a href="https://checkmk.com/" class="text-purple-600 dark:text-purple-400 hover:underline" target="_blank">CheckMK</a> monitoring,
+                                        <a href="https://www.proxmox.com/" class="text-purple-600 dark:text-purple-400 hover:underline" target="_blank">Proxmox VE</a> hypervisor,
+                                        <a href="https://k3s.io/" class="text-purple-600 dark:text-purple-400 hover:underline" target="_blank">K3s</a> lightweight Kubernetes,
+                                        <a href="https://ipxe.org/" class="text-purple-600 dark:text-purple-400 hover:underline" target="_blank">iPXE</a> network boot firmware,
+                                        <a href="https://www.debian.org/" class="text-purple-600 dark:text-purple-400 hover:underline" target="_blank">Debian</a> the universal operating system,
+                                        <a href="https://ubuntu.com/" class="text-purple-600 dark:text-purple-400 hover:underline" target="_blank">Ubuntu</a> Linux for human beings,
+                                        <a href="https://rockylinux.org/" class="text-purple-600 dark:text-purple-400 hover:underline" target="_blank">Rocky Linux</a> enterprise Linux.
+                                    </p>
+                                    <p class="text-xs text-black/40 dark:text-white/40">
+                                        Dragonfly is built by <a href="https://riff.cc" class="text-purple-600 dark:text-purple-400 hover:underline" target="_blank">Riff.CC</a>.
+                                        Thank you to every open source contributor whose work makes this possible.
+                                    </p>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Maintenance Tab -->
+                        <div x-show="activeTab === 'maintenance'" x-cloak x-data="maintenancePanel()">
+                            <h3 class="text-base font-semibold text-black dark:text-white mb-2">Maintenance</h3>
+                            <p class="text-sm text-black/70 dark:text-white/70 mb-6">System maintenance and development tools.</p>
+
+                            <div class="space-y-6">
+                                <!-- Developer Mode -->
+                                <div class="border rounded-lg p-5" :class="devMode ? 'border-yellow-500/50 bg-yellow-50/50 dark:bg-yellow-950/20' : 'border-purple-300 dark:border-purple-700/50'">
+                                    <div class="flex items-center justify-between mb-4">
+                                        <div class="flex items-center gap-3">
+                                            <div class="w-10 h-10 rounded-lg flex items-center justify-center"
+                                                 :class="devMode ? 'bg-yellow-100 dark:bg-yellow-900/50' : 'bg-gray-100 dark:bg-gray-800'">
+                                                <svg class="w-5 h-5" :class="devMode ? 'text-yellow-600 dark:text-yellow-400' : 'text-gray-500'" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                                                    <path stroke-linecap="round" stroke-linejoin="round" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4"/>
+                                                </svg>
+                                            </div>
+                                            <div>
+                                                <h4 class="text-sm font-semibold text-black dark:text-white">Developer Mode</h4>
+                                                <p class="text-xs" :class="devMode ? 'text-yellow-600 dark:text-yellow-400' : 'text-black/50 dark:text-white/50'" x-text="devMode ? 'Active — templates loaded from disk' : 'Inactive — templates embedded in binary'"></p>
+                                            </div>
+                                        </div>
+                                        <div class="w-3 h-3 rounded-full" :class="devMode ? 'bg-yellow-500' : 'bg-gray-400'"></div>
+                                    </div>
+
+                                    <p class="text-xs text-black/60 dark:text-white/60 mb-4 leading-relaxed">
+                                        Developer Mode loads templates from a directory on disk instead of the embedded binary.
+                                        This enables live editing of templates without rebuilding. Switches seamlessly without restarting.
+                                    </p>
+
+                                    <div class="space-y-3">
+                                        <div>
+                                            <label class="block text-xs font-medium text-black dark:text-white mb-1">Template Path</label>
+                                            <input type="text" x-model="devTemplatePath"
+                                                   placeholder="/path/to/dragonfly/crates/dragonfly-server/templates"
+                                                   class="w-full rounded-lg border bg-transparent text-black dark:text-white text-sm px-3 py-2 font-mono focus:ring-1 focus:outline-none"
+                                                   :class="devMode ? 'border-yellow-400 dark:border-yellow-700 focus:border-yellow-500 focus:ring-yellow-500' : 'border-purple-300 dark:border-purple-700 focus:border-purple-500 focus:ring-purple-500'"
+                                                   :disabled="loading">
+                                        </div>
+
+                                        <div class="flex items-center gap-3">
+                                            <button type="button" @click="toggleDevMode()" :disabled="loading"
+                                                    class="px-4 py-2 text-sm font-medium rounded-lg transition-colors disabled:opacity-50 flex items-center gap-2"
+                                                    :class="devMode
+                                                        ? 'bg-gray-600 text-white hover:bg-gray-700'
+                                                        : 'bg-yellow-600 text-white hover:bg-yellow-700'">
+                                                <svg x-show="loading" class="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" class="opacity-25"/><path fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" class="opacity-75"/></svg>
+                                                <span x-text="loading ? 'Switching...' : (devMode ? 'Disable Developer Mode' : 'Enable Developer Mode')"></span>
+                                            </button>
+                                            <span x-show="error" class="text-xs text-red-600 dark:text-red-400" x-text="error"></span>
+                                        </div>
+                                    </div>
+                                </div>
+
                             </div>
                         </div>
                         {% endif %}
@@ -1655,7 +2091,7 @@
     }
 
     function settingsPanel() {
-        const validTabs = ['general', 'users', 'security', 'provisioning', 'credentials', 'iso-images', 'license'];
+        const validTabs = ['general', 'users', 'security', 'provisioning', 'credentials', 'iso-images', 'ha', 'maintenance', 'license'];
 
         return {
             activeTab: '{{ active_tab }}',
@@ -1665,6 +2101,18 @@
             autoEnrollWithSpark: false,
             autoEnrollSaving: false,
 
+            // HA state
+            haEnabled: false,
+            haCreating: false,
+            haCreateStep: '',
+            haEnabling: false,
+            haDisabling: false,
+            hoverAbort: false,
+            haDeployButtonText: 'Deploying...',
+            haProxmoxConnected: false,
+            haProxmoxHosts: [],
+            haStatus: { rqlite_running: false, nodes: [], leader: null },
+            haNodes: [],
             // User management state
             users: [],
             addUserModal: false,
@@ -1685,6 +2133,7 @@
                 this.$watch('activeTab', (tab) => {
                     const path = tab === 'general' ? '/settings' : '/settings/' + tab;
                     history.pushState(null, '', path);
+                    if (tab === 'ha') this.loadHaStatus();
                 });
 
                 // Back/forward button support
@@ -1731,6 +2180,496 @@
                     this.autoEnrollWithSpark = !this.autoEnrollWithSpark;
                 } finally {
                     this.autoEnrollSaving = false;
+                }
+            },
+
+            // Color for each node: first 3 = green (core), rest = purple (replica)
+            haNodeColor(idx) {
+                return idx < 3 ? '#22c55e' : '#a855f7';
+            },
+
+            async loadHaStatus() {
+                // Fetch Proxmox status + hosts + HA status + cluster plan in parallel
+                const [haRes, pxRes, machinesRes, clusterRes] = await Promise.allSettled([
+                    fetch('/api/ha/status', { credentials: 'include' }),
+                    fetch('/api/proxmox/status', { credentials: 'include' }),
+                    fetch('/api/machines', { credentials: 'include' }),
+                    fetch('/api/cluster/status', { credentials: 'include' }),
+                ]);
+
+                // Proxmox connectivity
+                if (pxRes.status === 'fulfilled' && pxRes.value.ok) {
+                    const px = await pxRes.value.json();
+                    this.haProxmoxConnected = px.configured === true;
+                }
+
+                // Proxmox hosts from machines list
+                if (machinesRes.status === 'fulfilled' && machinesRes.value.ok) {
+                    const machines = await machinesRes.value.json();
+                    this.haProxmoxHosts = machines.filter(m => m.is_proxmox_host);
+                    // Build node cards from Proxmox hosts (when not yet clustered)
+                    if (!this.haEnabled) {
+                        this.haNodes = this.haProxmoxHosts.map((h, i) => ({
+                            status: 'empty',
+                            id: null,
+                            host: h.hostname || h.memorable_name || h.primary_mac,
+                            addr: h.current_ip || null,
+                            is_leader: false,
+                        }));
+                    }
+                }
+
+                // HA cluster status
+                if (haRes.status === 'fulfilled' && haRes.value.ok) {
+                    this.haStatus = await haRes.value.json();
+                    this.haEnabled = this.haStatus.enabled;
+                    if (this.haEnabled && this.haStatus.nodes && this.haStatus.nodes.length > 0) {
+                        // Rebuild node cards from actual cluster state
+                        this.haNodes = this.haStatus.nodes.map((n, i) => ({
+                            status: 'healthy',
+                            id: n.id,
+                            host: n.id || ('node-' + (i + 1)),
+                            addr: n.addr,
+                            is_leader: n.is_leader,
+                        }));
+                    } else if (this.haEnabled && this.haStatus.rqlite_running) {
+                        // Single-node bootstrap
+                        this.haNodes = [{
+                            status: 'healthy',
+                            id: this.haStatus.node_id || 'dragonfly-01',
+                            host: this.haStatus.node_id || 'dragonfly-01',
+                            addr: this.haStatus.http_addr || '127.0.0.1:4001',
+                            is_leader: true,
+                        }];
+                    }
+                }
+
+                // Rule 425: Detect in-progress or stuck deployments on page load.
+                // If a cluster plan exists but HA isn't enabled, we're mid-deploy
+                // (or the deploy failed). Reconnect SSE and show abort button.
+                if (clusterRes.status === 'fulfilled' && clusterRes.value.ok) {
+                    const cluster = await clusterRes.value.json();
+                    if (cluster.deploying) {
+                        // Deployment is in progress — reconnect
+                        this.haCreating = true;
+                        // Map server phases to UI status for reconnection
+                        const phaseToStatus = {
+                            creating: 'creating', ssh_wait: 'creating',
+                            template: 'creating', starting: 'creating',
+                            installing: 'installing',
+                            initialising: 'initialising', clustering: 'initialising',
+                            synchronising: 'synchronising', migrating: 'synchronising',
+                            healthy: 'healthy',
+                            error: 'unhealthy', aborting: 'failed',
+                        };
+                        // Map server phases to button text
+                        const phaseToButton = {
+                            starting: 'Starting...', template: 'Preparing templates...',
+                            creating: 'Creating containers...', ssh_wait: 'Waiting for SSH...',
+                            installing: 'Installing rqlite...', clustering: 'Forming cluster...',
+                            initialising: 'Initializing nodes...', migrating: 'Migrating data...',
+                            synchronising: 'Synchronizing...',
+                        };
+                        const globalPhase = cluster.phase || '';
+                        this.haDeployButtonText = cluster.nodes.length > 0
+                            ? (phaseToButton[globalPhase] || 'Deploying...')
+                            : 'Planning...';
+                        if (cluster.nodes.length > 0) {
+                            this.haNodes = cluster.nodes.map((n, i) => {
+                                // Per-node phase takes priority, then fall back to global phase
+                                const nodePhase = n.phase || globalPhase || 'creating';
+                                return {
+                                    status: phaseToStatus[nodePhase] || 'creating',
+                                    id: n.hostname,
+                                    host: n.proxmox_node,
+                                    hostname: n.hostname,
+                                    addr: n.ip,
+                                    is_leader: i === 0,
+                                    deployStatus: 'Reconnecting...',
+                                    role: n.role,
+                                };
+                            });
+                        }
+                        // If no nodes yet (still planning), the 'planned' SSE event will populate them
+
+                        // Subscribe to SSE for live updates
+                        const evtSource = new EventSource('/api/events');
+                        this._clusterEvtSource = evtSource;
+
+                        evtSource.addEventListener('cluster', (e) => {
+                            try {
+                                const data = JSON.parse(e.data);
+
+                                // Provisioning lifecycle events from Jetpack OutputHandler
+                                if (data.type === 'cluster_provision') {
+                                    const nodeIdx = this.haNodes.findIndex(n => n.hostname === data.host || n.id === data.host);
+                                    if (nodeIdx >= 0) {
+                                        const msgMap = {
+                                            created: 'Container created',
+                                            exists: 'Container exists',
+                                            ssh_wait: `Waiting for SSH on ${data.ip}...`,
+                                            ssh_ready: `SSH ready (${data.elapsed}s)`,
+                                            destroyed: 'Destroyed',
+                                        };
+                                        this.haNodes[nodeIdx] = {
+                                            ...this.haNodes[nodeIdx],
+                                            deployStatus: msgMap[data.event] || data.event,
+                                        };
+                                        this.haNodes = [...this.haNodes];
+                                    }
+                                    return;
+                                }
+
+                                // Plan ready — populate node cards (in case we reconnected during planning)
+                                if (data.phase === 'planned' && data.nodes) {
+                                    this.haNodes = data.nodes.map((n, i) => ({
+                                        status: 'creating',
+                                        id: n.hostname,
+                                        host: n.proxmox_node,
+                                        hostname: n.hostname,
+                                        addr: n.ip,
+                                        is_leader: i === 0,
+                                        deployStatus: 'Queued...',
+                                        role: n.role,
+                                    }));
+                                    return;
+                                }
+
+                                const phaseMap = {
+                                    creating: 'creating', ssh_wait: 'creating',
+                                    installing: 'installing',
+                                    initialising: 'initialising',
+                                    synchronising: 'synchronising',
+                                    healthy: 'healthy',
+                                    error: 'unhealthy',
+                                    aborting: 'failed',
+                                };
+
+                                if (data.idx >= 0 && data.idx < this.haNodes.length) {
+                                    this.haNodes[data.idx] = {
+                                        ...this.haNodes[data.idx],
+                                        deployStatus: data.msg,
+                                        status: phaseMap[data.phase] || this.haNodes[data.idx].status,
+                                    };
+                                    this.haNodes = [...this.haNodes];
+                                }
+
+                                if (data.idx === -1 || data.idx === undefined) {
+                                    const globalMap = {
+                                        starting: 'creating', template: 'creating', creating: 'creating',
+                                        ssh_wait: 'creating', installing: 'installing',
+                                        clustering: 'initialising', migrating: 'synchronising',
+                                    };
+                                    const buttonTextMap = {
+                                        starting: 'Starting...', template: 'Preparing templates...',
+                                        creating: 'Creating containers...', ssh_wait: 'Waiting for SSH...',
+                                        installing: 'Installing rqlite...', clustering: 'Forming cluster...',
+                                        initialising: 'Initializing nodes...', migrating: 'Migrating data...',
+                                        synchronising: 'Synchronizing...',
+                                    };
+                                    if (buttonTextMap[data.phase]) {
+                                        this.haDeployButtonText = buttonTextMap[data.phase];
+                                    }
+                                    const gs = globalMap[data.phase];
+                                    if (gs) {
+                                        this.haNodes = this.haNodes.map(n =>
+                                            !['healthy', 'unhealthy', 'failed'].includes(n.status)
+                                                ? { ...n, status: gs, deployStatus: data.msg }
+                                                : n
+                                        );
+                                    }
+                                }
+
+                                if (data.phase === 'complete') {
+                                    this.haEnabled = true;
+                                    this.haCreating = false;
+                                    this.haDeployButtonText = 'Deploying...';
+                                    evtSource.close();
+                                    this._clusterEvtSource = null;
+                                    showToast('Cluster deployment complete', 'success');
+                                    this.loadHaStatus();
+                                }
+
+                                if (data.phase === 'aborted') {
+                                    this.haCreating = false;
+                                    this.haDeployButtonText = 'Deploying...';
+                                    evtSource.close();
+                                    this._clusterEvtSource = null;
+                                    showToast('Cluster deployment aborted', 'warning');
+                                    this.haNodes = this.haNodes.map(n => ({
+                                        ...n, status: 'empty', deployStatus: null,
+                                    }));
+                                }
+
+                                if (data.phase === 'error' && (data.idx === -1 || data.idx === undefined)) {
+                                    evtSource.close();
+                                    this._clusterEvtSource = null;
+                                    this.haDeployButtonText = 'Deployment failed';
+                                    showToast('Cluster deployment failed: ' + data.msg, 'error');
+                                    this.haNodes = this.haNodes.map(n =>
+                                        n.status !== 'healthy' ? { ...n, status: 'failed', deployStatus: data.msg } : n
+                                    );
+                                    // Button stays visible with "Deployment failed" — hover to abort
+                                }
+                            } catch (err) {
+                                console.debug('SSE parse skip:', err);
+                            }
+                        });
+                    } else if (cluster.deployed && !cluster.deploying && !this.haEnabled) {
+                        // Stale plan — deployment finished but HA never activated (or was cleaned up).
+                        // Show unified button in "failed" state — hover reveals abort.
+                        // Use per-node phases to show which nodes succeeded.
+                        this.haCreating = true;
+                        this.haDeployButtonText = 'Deployment incomplete';
+                        if (cluster.nodes.length > 0) {
+                            this.haNodes = cluster.nodes.map((n, i) => {
+                                const nodePhase = n.phase || '';
+                                const status = nodePhase === 'healthy' ? 'healthy' : 'failed';
+                                return {
+                                    status,
+                                    id: n.hostname,
+                                    host: n.proxmox_node,
+                                    hostname: n.hostname,
+                                    addr: n.ip,
+                                    is_leader: i === 0,
+                                    deployStatus: status === 'healthy' ? 'Healthy' : 'Deployment incomplete — hover button to abort',
+                                    role: n.role,
+                                };
+                            });
+                        }
+                    }
+                }
+            },
+
+            async createCluster() {
+                if (!this.haProxmoxConnected) return;
+                this.haCreating = true;
+                this.haDeployButtonText = 'Starting...';
+                this.hoverAbort = false;
+
+                // All cards deploy simultaneously
+                this.haNodes = this.haNodes.map(n => ({ ...n, status: 'creating', deployStatus: 'Preparing...' }));
+
+                // Subscribe to SSE for real-time progress updates
+                const evtSource = new EventSource('/api/events');
+                this._clusterEvtSource = evtSource;
+
+                // FIX: Named SSE events require addEventListener, NOT onmessage.
+                // The server sends `event: cluster\ndata: {JSON}\n\n` — onmessage
+                // only fires for unnamed events (event: message).
+                evtSource.addEventListener('cluster', (e) => {
+                    try {
+                        const data = JSON.parse(e.data);
+
+                        // Provisioning lifecycle events from Jetpack OutputHandler
+                        if (data.type === 'cluster_provision') {
+                            const nodeIdx = this.haNodes.findIndex(n => n.hostname === data.host || n.id === data.host);
+                            if (nodeIdx >= 0) {
+                                const msgMap = {
+                                    created: 'Container created',
+                                    exists: 'Container exists',
+                                    ssh_wait: `Waiting for SSH on ${data.ip}...`,
+                                    ssh_ready: `SSH ready (${data.elapsed}s)`,
+                                    destroyed: 'Destroyed',
+                                };
+                                this.haNodes[nodeIdx] = {
+                                    ...this.haNodes[nodeIdx],
+                                    deployStatus: msgMap[data.event] || data.event,
+                                };
+                                this.haNodes = [...this.haNodes];
+                            }
+                            return;
+                        }
+
+                        // Plan ready — populate node cards from the background planning phase
+                        if (data.phase === 'planned' && data.nodes) {
+                            this.haNodes = data.nodes.map((n, i) => ({
+                                status: 'creating',
+                                id: n.hostname,
+                                host: n.proxmox_node,
+                                hostname: n.hostname,
+                                addr: n.ip,
+                                is_leader: i === 0,
+                                deployStatus: 'Queued...',
+                                role: n.role,
+                            }));
+                            this.haDeployButtonText = 'Starting...';
+                            return;
+                        }
+
+                        const phaseMap = {
+                            creating: 'creating', ssh_wait: 'creating',
+                            installing: 'installing',
+                            initialising: 'initialising',
+                            synchronising: 'synchronising',
+                            healthy: 'healthy',
+                            error: 'unhealthy',
+                            aborting: 'failed',
+                        };
+
+                        // Per-node events: update specific card
+                        if (data.idx >= 0 && data.idx < this.haNodes.length) {
+                            this.haNodes[data.idx] = {
+                                ...this.haNodes[data.idx],
+                                deployStatus: data.msg,
+                                status: phaseMap[data.phase] || this.haNodes[data.idx].status,
+                            };
+                            this.haNodes = [...this.haNodes];
+                        }
+
+                        // Global phase advancement: cascade visual state + update button text
+                        if (data.idx === -1 || data.idx === undefined) {
+                            const globalMap = {
+                                starting: 'creating', template: 'creating', creating: 'creating',
+                                ssh_wait: 'creating', installing: 'installing',
+                                clustering: 'initialising', migrating: 'synchronising',
+                            };
+                            const buttonTextMap = {
+                                starting: 'Starting...', template: 'Preparing templates...',
+                                creating: 'Creating containers...', ssh_wait: 'Waiting for SSH...',
+                                installing: 'Installing rqlite...', clustering: 'Forming cluster...',
+                                initialising: 'Initializing nodes...', migrating: 'Migrating data...',
+                                synchronising: 'Synchronizing...',
+                            };
+                            if (buttonTextMap[data.phase]) {
+                                this.haDeployButtonText = buttonTextMap[data.phase];
+                            }
+                            const gs = globalMap[data.phase];
+                            if (gs) {
+                                this.haNodes = this.haNodes.map(n =>
+                                    !['healthy', 'unhealthy', 'failed'].includes(n.status)
+                                        ? { ...n, status: gs, deployStatus: data.msg }
+                                        : n
+                                );
+                            }
+                        }
+
+                        // Global: deployment complete
+                        if (data.phase === 'complete') {
+                            this.haEnabled = true;
+                            this.haCreating = false;
+                            this.haDeployButtonText = 'Deploying...';
+                            evtSource.close();
+                            this._clusterEvtSource = null;
+                            const core = Math.min(3, this.haNodes.length);
+                            const replicas = Math.max(0, this.haNodes.length - 3);
+                            showToast(`Cluster active: ${core} core + ${replicas} replica nodes`, 'success');
+                            this.loadHaStatus();
+                        }
+
+                        // Global: deployment aborted (user clicked Abort)
+                        if (data.phase === 'aborted') {
+                            this.haCreating = false;
+                            this.haDeployButtonText = 'Deploying...';
+                            evtSource.close();
+                            this._clusterEvtSource = null;
+                            showToast('Cluster deployment aborted', 'warning');
+                            this.haNodes = this.haNodes.map(n => ({
+                                ...n,
+                                status: 'empty',
+                                deployStatus: null,
+                            }));
+                        }
+
+                        // Global fatal error — Rule 425: keep button visible for abort
+                        if (data.phase === 'error' && (data.idx === -1 || data.idx === undefined)) {
+                            evtSource.close();
+                            this._clusterEvtSource = null;
+                            this.haDeployButtonText = 'Deployment failed';
+                            showToast('Cluster deployment failed: ' + data.msg, 'error');
+                            this.haNodes = this.haNodes.map(n =>
+                                n.status !== 'healthy' ? { ...n, status: 'failed', deployStatus: data.msg } : n
+                            );
+                        }
+                    } catch (err) {
+                        console.debug('SSE parse skip:', err);
+                    }
+                });
+
+                try {
+                    const response = await fetch('/api/cluster/create', {
+                        method: 'POST',
+                        credentials: 'include',
+                    });
+
+                    if (response.ok) {
+                        // Planning now happens in the background — node cards arrive via SSE 'planned' event
+                        this.haDeployButtonText = 'Planning...';
+                    } else {
+                        const err = await response.text();
+                        showToast('Failed to create cluster: ' + err, 'error');
+                        evtSource.close();
+                        this._clusterEvtSource = null;
+                        // Rule 425: If blocked by existing plan, reload status to show abort button
+                        if (response.status === 409) {
+                            await this.loadHaStatus();
+                        } else {
+                            this.haCreating = false;
+                            this.haNodes = this.haNodes.map(n => ({ ...n, status: 'empty', deployStatus: null }));
+                        }
+                    }
+                } catch (e) {
+                    console.error('Failed to create cluster:', e);
+                    showToast('Failed to create cluster', 'error');
+                    this.haCreating = false;
+                    this.haNodes = this.haNodes.map(n => ({ ...n, status: 'empty', deployStatus: null }));
+                    evtSource.close();
+                    this._clusterEvtSource = null;
+                }
+            },
+
+            async abortCluster() {
+                // Rule 425: Always allow abort — no guards. User must always be able to clean up.
+                this.haDeployButtonText = 'Aborting...';
+                this.hoverAbort = false;
+                try {
+                    const response = await fetch('/api/cluster/abort', {
+                        method: 'POST',
+                        credentials: 'include',
+                    });
+                    if (response.ok) {
+                        showToast('Deployment aborted and cleaned up', 'warning');
+                        this.haCreating = false;
+                        this.haDeployButtonText = 'Deploying...';
+                        if (this._clusterEvtSource) {
+                            this._clusterEvtSource.close();
+                            this._clusterEvtSource = null;
+                        }
+                        this.haNodes = this.haNodes.map(n => ({
+                            ...n, status: 'empty', deployStatus: null,
+                        }));
+                    } else {
+                        const err = await response.text();
+                        showToast('Failed to abort: ' + err, 'error');
+                    }
+                } catch (e) {
+                    console.error('Failed to abort cluster:', e);
+                    showToast('Failed to abort cluster', 'error');
+                }
+            },
+
+            async dissolveCluster() {
+                if (!confirm('Dissolve the cluster and convert back to standalone? Your data will be preserved.')) return;
+                this.haDisabling = true;
+                try {
+                    const response = await fetch('/api/ha/disable', {
+                        method: 'POST',
+                        credentials: 'include',
+                    });
+                    if (response.ok) {
+                        showToast('Cluster dissolved. Running standalone.', 'success');
+                        this.haEnabled = false;
+                        // Reset to empty Proxmox host cards
+                        this.haNodes = this.haNodes.map(n => ({ ...n, status: 'empty', id: null, is_leader: false }));
+                    } else {
+                        const err = await response.text();
+                        showToast('Failed to dissolve cluster: ' + err, 'error');
+                    }
+                } catch (e) {
+                    console.error('Failed to dissolve cluster:', e);
+                    showToast('Failed to dissolve cluster', 'error');
+                } finally {
+                    this.haDisabling = false;
                 }
             },
 
@@ -1937,109 +2876,213 @@
 
     function credentialsPanel() {
         return {
-            status: { configured: false },
-            mode: 'login',
-            connecting: false,
-            error: '',
-            form: {
-                host: '',
-                port: 8006,
-                username: 'root@pam',
-                password: '',
-                skip_tls_verify: false,
-                import_guests: false,
-            },
-            importDangerModal: false,
-            importDangerAccepted: false,
-            tokens: { power: '', create: '', config: '', sync: '' },
+            credentials: [],
+            loading: false,
+
+            // Inline input state
+            showProxmoxForm: false,
+            commandRaw: '',
+            commandDisplay: '',
+            addLoading: false,
+            addError: '',
+            proxmoxForm: { host: '', port: 8006, username: '', password: '', skip_tls_verify: false },
+
+            // Delete modal state
+            showDeleteModal: false,
+            deleteTarget: null,
+            deleteConfirmText: '',
+            deleteCleanup: false,
+            deleting: false,
 
             async init() {
-                await this.fetchStatus();
+                await this.fetchCredentials();
             },
 
-            async fetchStatus() {
+            async fetchCredentials() {
+                this.loading = true;
                 try {
-                    const res = await fetch('/api/proxmox/status', { credentials: 'include' });
+                    const res = await fetch('/api/credentials', { credentials: 'include' });
                     if (res.ok) {
-                        this.status = await res.json();
-                        if (this.status.configured) {
-                            this.form.host = this.status.host || '';
-                            this.form.port = this.status.port || 8006;
-                            this.form.username = this.status.username || 'root@pam';
-                            this.form.skip_tls_verify = this.status.skip_tls_verify || false;
-                        }
+                        const data = await res.json();
+                        this.credentials = data.credentials || [];
                     }
                 } catch (e) {
-                    console.error('Failed to fetch Proxmox status:', e);
+                    console.error('Failed to fetch credentials:', e);
+                } finally {
+                    this.loading = false;
                 }
             },
 
-            async connectAndCreateTokens() {
-                this.connecting = true;
-                this.error = '';
+            chipColor(type) {
+                switch (type) {
+                    case 'proxmox': return 'bg-orange-100 dark:bg-orange-900/50 text-orange-700 dark:text-orange-300 border-orange-300 dark:border-orange-600';
+                    case 'ssh-cluster': return 'bg-emerald-100 dark:bg-emerald-900/50 text-emerald-700 dark:text-emerald-300 border-emerald-300 dark:border-emerald-600';
+                    case 'ssh-machine': return 'bg-blue-100 dark:bg-blue-900/50 text-blue-700 dark:text-blue-300 border-blue-300 dark:border-blue-600';
+                    default: return 'bg-gray-100 dark:bg-gray-800 text-black dark:text-white border-gray-300 dark:border-gray-600';
+                }
+            },
+
+            chipIcon(type) {
+                if (type === 'proxmox') {
+                    return '<svg class="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="18" rx="2"/><path d="M2 9h20M9 21V9"/></svg>';
+                }
+                return '<svg class="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>';
+            },
+
+            onCommandInput(event) {
+                const displayed = event.target.value;
+                if (displayed.length > this.commandDisplay.length) {
+                    const added = displayed.substring(this.commandDisplay.length);
+                    this.commandRaw += added;
+                } else if (displayed.length < this.commandDisplay.length) {
+                    const removed = this.commandDisplay.length - displayed.length;
+                    this.commandRaw = this.commandRaw.substring(0, this.commandRaw.length - removed);
+                }
+                this.commandDisplay = this.censorCommand(this.commandRaw);
+                requestAnimationFrame(() => { event.target.value = this.commandDisplay; });
+            },
+
+            censorCommand(raw) {
+                if (!raw.startsWith('proxmox:')) return raw;
+                const secondColon = raw.indexOf(':', 8);
+                if (secondColon === -1) return raw;
+                return raw.substring(0, secondColon + 1) + '\u2022'.repeat(raw.length - secondColon - 1);
+            },
+
+            clearInput() {
+                this.commandRaw = '';
+                this.commandDisplay = '';
+                this.addError = '';
+                this.showProxmoxForm = false;
+                this.proxmoxForm = { host: '', port: 8006, username: '', password: '', skip_tls_verify: false };
+            },
+
+            async addByCommand() {
+                const raw = this.commandRaw.trim();
+                if (!raw) return;
+                this.addError = '';
+
+                // ssh-keygen commands execute directly
+                if (raw.startsWith('ssh-keygen ')) {
+                    this.addLoading = true;
+                    try {
+                        const res = await fetch('/api/credentials/add', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            credentials: 'include',
+                            body: JSON.stringify({ command: raw }),
+                        });
+                        const data = await res.json();
+                        if (data.success) {
+                            this.clearInput();
+                            await this.fetchCredentials();
+                            if (typeof showToast === 'function') showToast(data.message || 'Credential added', 'success');
+                        } else {
+                            this.addError = data.message || 'Failed';
+                        }
+                    } catch (e) {
+                        this.addError = 'Network error: ' + e.message;
+                    } finally {
+                        this.addLoading = false;
+                    }
+                    return;
+                }
+
+                // proxmox: commands — parse user:pass, open form for host/port
+                if (raw.startsWith('proxmox:')) {
+                    const parts = raw.substring(8).split(':');
+                    if (parts.length < 2 || !parts[0] || !parts[1]) {
+                        this.addError = 'Format: proxmox:username:password';
+                        return;
+                    }
+                    this.proxmoxForm.username = parts[0];
+                    this.proxmoxForm.password = parts.slice(1).join(':');
+                    this.showProxmoxForm = true;
+                    return;
+                }
+
+                this.addError = 'Unknown command. Try: proxmox:user:pass, ssh-keygen cluster, ssh-keygen machine';
+            },
+
+            async addProxmox() {
+                this.addLoading = true;
+                this.addError = '';
                 try {
-                    const res = await fetch('/api/proxmox/connect', {
+                    const res = await fetch('/api/credentials/add', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         credentials: 'include',
                         body: JSON.stringify({
-                            host: this.form.host,
-                            port: this.form.port || 8006,
-                            username: this.form.username,
-                            password: this.form.password,
-                            skip_tls_verify: this.form.skip_tls_verify,
-                            import_guests: this.form.import_guests,
+                            command: `proxmox:${this.proxmoxForm.username}:${this.proxmoxForm.password}`,
+                            host: this.proxmoxForm.host,
+                            port: this.proxmoxForm.port || 8006,
+                            skip_tls_verify: this.proxmoxForm.skip_tls_verify,
                         }),
                     });
                     const data = await res.json();
-                    if (res.ok && data.success) {
-                        let msg = 'Connected and created tokens';
-                        if (data.import_result) {
-                            if (data.import_result.error) {
-                                msg += ` (import error: ${data.import_result.error})`;
-                            } else {
-                                msg += ` — imported ${data.import_result.imported} guests`;
-                                if (data.import_result.failed > 0) {
-                                    msg += ` (${data.import_result.failed} failed)`;
-                                }
-                            }
-                        }
-                        showToast(msg, 'success');
-                        this.form.password = '';
-                        this.form.import_guests = false;
-                        this.importDangerAccepted = false;
-                        await this.fetchStatus();
+                    if (data.success) {
+                        this.clearInput();
+                        await this.fetchCredentials();
+                        if (typeof showToast === 'function') showToast(data.message || 'Proxmox connected', 'success');
                     } else {
-                        this.error = data.error || data.message || 'Connection failed';
+                        this.addError = data.message || 'Failed to connect to Proxmox';
                     }
                 } catch (e) {
-                    this.error = 'Network error: ' + e.message;
+                    this.addError = 'Network error: ' + e.message;
                 } finally {
-                    this.connecting = false;
+                    this.addLoading = false;
                 }
             },
 
-            async saveToken(type, value) {
-                if (!value.trim()) {
-                    showToast('Token value is empty', 'error');
-                    return;
-                }
+            async rotateCredential(cred) {
                 try {
-                    const res = await fetch('/api/proxmox/token', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        credentials: 'include',
-                        body: JSON.stringify({ token_type: type, token_value: value }),
+                    const res = await fetch(`/api/credentials/${cred.id}/rotate`, {
+                        method: 'POST', credentials: 'include'
                     });
-                    if (res.ok) {
-                        showToast(type.charAt(0).toUpperCase() + type.slice(1) + ' token saved', 'success');
-                        await this.fetchStatus();
+                    const data = await res.json();
+                    if (data.success) {
+                        await this.fetchCredentials();
+                        if (typeof showToast === 'function') showToast(data.message || 'Key rotated', 'success');
                     } else {
-                        const data = await res.json();
-                        showToast(data.error || 'Failed to save token', 'error');
+                        if (typeof showToast === 'function') showToast(data.message || 'Rotation failed', 'error');
                     }
                 } catch (e) {
-                    showToast('Network error: ' + e.message, 'error');
+                    if (typeof showToast === 'function') showToast('Network error: ' + e.message, 'error');
+                }
+            },
+
+            confirmDelete(cred) {
+                this.deleteTarget = cred;
+                this.deleteConfirmText = '';
+                this.deleteCleanup = false;
+                this.showDeleteModal = true;
+            },
+
+            get deleteReady() {
+                return this.deleteTarget && this.deleteConfirmText === this.deleteTarget.label;
+            },
+
+            async executeDelete() {
+                if (!this.deleteReady) return;
+                this.deleting = true;
+                try {
+                    const res = await fetch(
+                        `/api/credentials/${this.deleteTarget.id}?cleanup=${this.deleteCleanup}`,
+                        { method: 'DELETE', credentials: 'include' }
+                    );
+                    const data = await res.json();
+                    if (data.success) {
+                        this.showDeleteModal = false;
+                        this.deleteTarget = null;
+                        await this.fetchCredentials();
+                        if (typeof showToast === 'function') showToast(data.message || 'Credential removed', 'success');
+                    } else {
+                        if (typeof showToast === 'function') showToast(data.message || 'Failed to remove', 'error');
+                    }
+                } catch (e) {
+                    if (typeof showToast === 'function') showToast('Network error: ' + e.message, 'error');
+                } finally {
+                    this.deleting = false;
                 }
             },
         };
@@ -2164,6 +3207,68 @@
             },
 
             formatSize(bytes) { return this._formatBytes(bytes); }
+        };
+    }
+
+    function maintenancePanel() {
+        return {
+            devMode: false,
+            devTemplatePath: '',
+            loading: true,
+            error: '',
+
+            async init() {
+                try {
+                    const resp = await fetch('/api/maintenance/dev-mode', { credentials: 'include' });
+                    if (resp.ok) {
+                        const data = await resp.json();
+                        this.devMode = data.enabled;
+                        this.devTemplatePath = data.template_path || '';
+                    }
+                } catch (e) {
+                    console.error('Failed to load dev mode status:', e);
+                } finally {
+                    this.loading = false;
+                }
+            },
+
+            async toggleDevMode() {
+                this.error = '';
+                const enabling = !this.devMode;
+
+                if (enabling && !this.devTemplatePath.trim()) {
+                    this.error = 'Template path is required';
+                    return;
+                }
+
+                this.loading = true;
+
+                try {
+                    const resp = await fetch('/api/maintenance/dev-mode', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        credentials: 'include',
+                        body: JSON.stringify({
+                            enabled: enabling,
+                            template_path: enabling ? this.devTemplatePath.trim() : null
+                        })
+                    });
+
+                    const data = await resp.json().catch(() => ({}));
+                    if (data.success) {
+                        this.devMode = enabling;
+                        if (typeof showToast === 'function') {
+                            showToast(enabling ? 'Developer mode enabled — templates from disk' : 'Developer mode disabled — embedded templates');
+                        }
+                    } else {
+                        this.error = data.message || 'Failed to toggle developer mode';
+                    }
+                } catch (e) {
+                    this.error = 'Request failed: ' + e.message;
+                } finally {
+                    this.loading = false;
+                }
+            }
         };
     }
 </script>

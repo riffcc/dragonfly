@@ -340,9 +340,6 @@
                         <a href="/" class="gamepad-nav-exclude border-transparent text-gray-500 dark:text-gray-300 hover:border-purple-400 hover:text-gray-700 dark:hover:text-white inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium transition-all duration-200 {% if current_path == '/' %} border-purple-500 text-gray-900 dark:text-white {% endif %}">
                             Dashboard
                         </a>
-                        <a href="/tags" class="gamepad-nav-exclude border-transparent text-gray-500 dark:text-gray-300 hover:border-purple-400 hover:text-gray-700 dark:hover:text-white inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium transition-all duration-200 {% if current_path[:5] == '/tags' %} border-purple-500 text-gray-900 dark:text-white {% endif %}">
-                            Tags
-                        </a>
                         <a href="/machines" class="gamepad-nav-exclude border-transparent text-gray-500 dark:text-gray-300 hover:border-purple-400 hover:text-gray-700 dark:hover:text-white inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium transition-all duration-200 {% if current_path[:9] == '/machines' %} border-purple-500 text-gray-900 dark:text-white {% endif %}">
                             Machines
                         </a>
@@ -351,6 +348,9 @@
                         </a>
                         <a href="/networks" class="gamepad-nav-exclude border-transparent text-gray-500 dark:text-gray-300 hover:border-purple-400 hover:text-gray-700 dark:hover:text-white inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium transition-all duration-200 {% if current_path[:9] == '/networks' %} border-purple-500 text-gray-900 dark:text-white {% endif %}">
                             Networks
+                        </a>
+                        <a href="/tags" class="gamepad-nav-exclude border-transparent text-gray-500 dark:text-gray-300 hover:border-purple-400 hover:text-gray-700 dark:hover:text-white inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium transition-all duration-200 {% if current_path[:5] == '/tags' %} border-purple-500 text-gray-900 dark:text-white {% endif %}">
+                            Tags
                         </a>
                         {# Storage tab hidden - not yet implemented
                         <a href="/storage" class="gamepad-nav-exclude border-transparent text-gray-500 dark:text-gray-300 hover:border-purple-400 hover:text-gray-700 dark:hover:text-white inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium transition-all duration-200 {% if current_path[:8] == '/storage' %} border-purple-500 text-gray-900 dark:text-white {% endif %}">

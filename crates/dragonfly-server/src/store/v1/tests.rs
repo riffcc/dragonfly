@@ -1047,3 +1047,74 @@ async fn test_sqlite_machine_update_preserves_indices() {
     let staging = store.list_machines_by_tag("staging").await.unwrap();
     assert_eq!(staging.len(), 1);
 }
+
+/// Test multi-anchor identity resolution: any single matching anchor should
+/// find the machine, even when other identity fields change.
+#[tokio::test]
+async fn test_resolve_machine_identity_multi_anchor() {
+    let store = create_sqlite_store().await;
+
+    // Create a machine with full identity (like an agent check-in)
+    let identity = MachineIdentity::new(
+        "aa:bb:cc:dd:ee:01".to_string(),
+        vec!["aa:bb:cc:dd:ee:01".to_string(), "aa:bb:cc:dd:ee:02".to_string()],
+        Some("vm-smbios-uuid-1234".to_string()),
+        Some("deadbeef12345678".to_string()),
+        Some("fs-uuid-abcdef".to_string()),
+    );
+    let mut machine = Machine::new(identity);
+    machine.config.hostname = Some("test-vm".to_string());
+    store.put_machine(&machine).await.unwrap();
+
+    // Anchor 1: Find by primary MAC alone (different smbios/machine_id/fs_uuid)
+    let lookup1 = MachineIdentity::from_mac("aa:bb:cc:dd:ee:01");
+    let found = store.resolve_machine_identity(&lookup1).await.unwrap();
+    assert!(found.is_some(), "Must find machine by primary MAC");
+    assert_eq!(found.unwrap().id, machine.id);
+
+    // Anchor 2: Find by secondary MAC (different primary MAC)
+    let lookup2 = MachineIdentity::new(
+        "ff:ff:ff:ff:ff:ff".to_string(),
+        vec!["ff:ff:ff:ff:ff:ff".to_string(), "aa:bb:cc:dd:ee:02".to_string()],
+        None, None, None,
+    );
+    let found = store.resolve_machine_identity(&lookup2).await.unwrap();
+    assert!(found.is_some(), "Must find machine by secondary MAC");
+    assert_eq!(found.unwrap().id, machine.id);
+
+    // Anchor 3: Find by SMBIOS UUID (different MACs)
+    let lookup3 = MachineIdentity::new(
+        "ff:ff:ff:ff:ff:ff".to_string(),
+        vec!["ff:ff:ff:ff:ff:ff".to_string()],
+        Some("vm-smbios-uuid-1234".to_string()),
+        None, None,
+    );
+    let found = store.resolve_machine_identity(&lookup3).await.unwrap();
+    assert!(found.is_some(), "Must find machine by SMBIOS UUID");
+    assert_eq!(found.unwrap().id, machine.id);
+
+    // Anchor 4: Find by machine_id (different everything else)
+    let lookup4 = MachineIdentity::new(
+        "ff:ff:ff:ff:ff:ff".to_string(),
+        vec!["ff:ff:ff:ff:ff:ff".to_string()],
+        None,
+        Some("deadbeef12345678".to_string()),
+        None,
+    );
+    let found = store.resolve_machine_identity(&lookup4).await.unwrap();
+    assert!(found.is_some(), "Must find machine by machine_id");
+    assert_eq!(found.unwrap().id, machine.id);
+
+    // fs_uuid deliberately excluded from identity resolution
+
+    // No match: completely different identity
+    let lookup_none = MachineIdentity::new(
+        "ff:ff:ff:ff:ff:ff".to_string(),
+        vec!["ff:ff:ff:ff:ff:ff".to_string()],
+        Some("completely-different-uuid".to_string()),
+        Some("different-machine-id".to_string()),
+        Some("different-fs-uuid".to_string()),
+    );
+    let found = store.resolve_machine_identity(&lookup_none).await.unwrap();
+    assert!(found.is_none(), "Must NOT match unrelated identity");
+}

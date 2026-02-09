@@ -6,7 +6,7 @@
 
 use super::{Result, Store, StoreError, User};
 use async_trait::async_trait;
-use dragonfly_common::{Machine, MachineState, Network, normalize_mac};
+use dragonfly_common::{DnsRecord, DnsRecordSource, DnsRecordType, Machine, MachineState, Network, normalize_mac};
 use dragonfly_crd::{Template, Workflow};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
 use sqlx::{Row, SqlitePool};
@@ -190,6 +190,41 @@ impl SqliteStore {
             .await
             .map_err(|e| StoreError::Database(e.to_string()))?;
 
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS dns_records (
+                id BLOB PRIMARY KEY,
+                zone TEXT NOT NULL,
+                name TEXT NOT NULL,
+                rtype TEXT NOT NULL,
+                rdata TEXT NOT NULL,
+                ttl INTEGER NOT NULL DEFAULT 3600,
+                source TEXT NOT NULL,
+                machine_id BLOB,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            "#,
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StoreError::Database(e.to_string()))?;
+
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_dns_zone_name ON dns_records(zone, name)")
+            .execute(&self.pool)
+            .await
+            .map_err(|e| StoreError::Database(e.to_string()))?;
+
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_dns_machine ON dns_records(machine_id)")
+            .execute(&self.pool)
+            .await
+            .map_err(|e| StoreError::Database(e.to_string()))?;
+
+        sqlx::query("CREATE UNIQUE INDEX IF NOT EXISTS idx_dns_unique ON dns_records(zone, name, rtype, rdata)")
+            .execute(&self.pool)
+            .await
+            .map_err(|e| StoreError::Database(e.to_string()))?;
+
         Ok(())
     }
 
@@ -199,6 +234,49 @@ impl SqliteStore {
 
     fn from_json<T: serde::de::DeserializeOwned>(json: &str) -> Result<T> {
         serde_json::from_str(json).map_err(|e| StoreError::Serialization(e.to_string()))
+    }
+
+    fn dns_record_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<DnsRecord> {
+        let id_bytes: Vec<u8> = row.get("id");
+        let id = Uuid::from_slice(&id_bytes)
+            .map_err(|e| StoreError::Serialization(format!("Invalid UUID: {}", e)))?;
+
+        let machine_id_bytes: Option<Vec<u8>> = row.get("machine_id");
+        let machine_id = machine_id_bytes
+            .and_then(|b| Uuid::from_slice(&b).ok());
+
+        let rtype_str: String = row.get("rtype");
+        let rtype = DnsRecordType::from_str_loose(&rtype_str)
+            .ok_or_else(|| StoreError::Serialization(format!("Unknown DNS record type: {}", rtype_str)))?;
+
+        let source_str: String = row.get("source");
+        let source = DnsRecordSource::from_str_loose(&source_str)
+            .ok_or_else(|| StoreError::Serialization(format!("Unknown DNS record source: {}", source_str)))?;
+
+        let created_str: String = row.get("created_at");
+        let created_at = chrono::DateTime::parse_from_rfc3339(&created_str)
+            .map(|dt| dt.with_timezone(&chrono::Utc))
+            .unwrap_or_else(|_| chrono::Utc::now());
+
+        let updated_str: String = row.get("updated_at");
+        let updated_at = chrono::DateTime::parse_from_rfc3339(&updated_str)
+            .map(|dt| dt.with_timezone(&chrono::Utc))
+            .unwrap_or_else(|_| chrono::Utc::now());
+
+        let ttl: i64 = row.get("ttl");
+
+        Ok(DnsRecord {
+            id,
+            zone: row.get("zone"),
+            name: row.get("name"),
+            rtype,
+            rdata: row.get("rdata"),
+            ttl: ttl as u32,
+            source,
+            machine_id,
+            created_at,
+            updated_at,
+        })
     }
 }
 
@@ -844,5 +922,141 @@ impl Store for SqliteStore {
             .await
             .map_err(|e| StoreError::Database(e.to_string()))?;
         Ok(result.rows_affected() > 0)
+    }
+
+    // === DNS Record Operations ===
+
+    async fn list_dns_records(&self, zone: &str) -> Result<Vec<DnsRecord>> {
+        let rows = sqlx::query(
+            "SELECT id, zone, name, rtype, rdata, ttl, source, machine_id, created_at, updated_at \
+             FROM dns_records WHERE zone = ? ORDER BY name, rtype",
+        )
+        .bind(zone)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| StoreError::Database(e.to_string()))?;
+
+        rows.iter().map(|row| Self::dns_record_from_row(row)).collect()
+    }
+
+    async fn get_dns_records(
+        &self,
+        zone: &str,
+        name: &str,
+        rtype: Option<DnsRecordType>,
+    ) -> Result<Vec<DnsRecord>> {
+        let rows = if let Some(rt) = rtype {
+            sqlx::query(
+                "SELECT id, zone, name, rtype, rdata, ttl, source, machine_id, created_at, updated_at \
+                 FROM dns_records WHERE zone = ? AND name = ? AND rtype = ?",
+            )
+            .bind(zone)
+            .bind(name)
+            .bind(rt.as_str())
+            .fetch_all(&self.pool)
+            .await
+        } else {
+            sqlx::query(
+                "SELECT id, zone, name, rtype, rdata, ttl, source, machine_id, created_at, updated_at \
+                 FROM dns_records WHERE zone = ? AND name = ?",
+            )
+            .bind(zone)
+            .bind(name)
+            .fetch_all(&self.pool)
+            .await
+        }
+        .map_err(|e| StoreError::Database(e.to_string()))?;
+
+        rows.iter().map(|row| Self::dns_record_from_row(row)).collect()
+    }
+
+    async fn put_dns_record(&self, record: &DnsRecord) -> Result<()> {
+        let id_bytes = record.id.as_bytes().to_vec();
+        let machine_id_bytes = record.machine_id.map(|m| m.as_bytes().to_vec());
+        let created = record.created_at.to_rfc3339();
+        let updated = record.updated_at.to_rfc3339();
+
+        sqlx::query(
+            "INSERT INTO dns_records (id, zone, name, rtype, rdata, ttl, source, machine_id, created_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+             ON CONFLICT(id) DO UPDATE SET \
+             zone = excluded.zone, name = excluded.name, rtype = excluded.rtype, \
+             rdata = excluded.rdata, ttl = excluded.ttl, source = excluded.source, \
+             machine_id = excluded.machine_id, updated_at = excluded.updated_at",
+        )
+        .bind(&id_bytes)
+        .bind(&record.zone)
+        .bind(&record.name)
+        .bind(record.rtype.as_str())
+        .bind(&record.rdata)
+        .bind(record.ttl as i64)
+        .bind(record.source.as_str())
+        .bind(&machine_id_bytes)
+        .bind(&created)
+        .bind(&updated)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StoreError::Database(e.to_string()))?;
+
+        Ok(())
+    }
+
+    async fn delete_dns_record(&self, id: Uuid) -> Result<bool> {
+        let id_bytes = id.as_bytes().to_vec();
+        let result = sqlx::query("DELETE FROM dns_records WHERE id = ?")
+            .bind(&id_bytes)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| StoreError::Database(e.to_string()))?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    async fn delete_dns_records_by_machine(&self, machine_id: Uuid) -> Result<u64> {
+        let machine_id_bytes = machine_id.as_bytes().to_vec();
+        let result = sqlx::query("DELETE FROM dns_records WHERE machine_id = ?")
+            .bind(&machine_id_bytes)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| StoreError::Database(e.to_string()))?;
+        Ok(result.rows_affected())
+    }
+
+    async fn upsert_dns_record(
+        &self,
+        zone: &str,
+        name: &str,
+        rtype: DnsRecordType,
+        rdata: &str,
+        ttl: u32,
+        source: DnsRecordSource,
+        machine_id: Option<Uuid>,
+    ) -> Result<()> {
+        let now = chrono::Utc::now().to_rfc3339();
+        let new_id = Uuid::now_v7();
+        let id_bytes = new_id.as_bytes().to_vec();
+        let machine_id_bytes = machine_id.map(|m| m.as_bytes().to_vec());
+
+        sqlx::query(
+            "INSERT INTO dns_records (id, zone, name, rtype, rdata, ttl, source, machine_id, created_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+             ON CONFLICT(zone, name, rtype, rdata) DO UPDATE SET \
+             ttl = excluded.ttl, source = excluded.source, \
+             machine_id = excluded.machine_id, updated_at = excluded.updated_at",
+        )
+        .bind(&id_bytes)
+        .bind(zone)
+        .bind(name)
+        .bind(rtype.as_str())
+        .bind(rdata)
+        .bind(ttl as i64)
+        .bind(source.as_str())
+        .bind(&machine_id_bytes)
+        .bind(&now)
+        .bind(&now)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StoreError::Database(e.to_string()))?;
+
+        Ok(())
     }
 }

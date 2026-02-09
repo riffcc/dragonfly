@@ -1,5 +1,6 @@
 //! Network entity - represents a logical network (VLAN, subnet, etc.)
 
+use crate::dns::DnsProvider;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -39,6 +40,9 @@ pub struct Network {
     /// Static MAC→IP reservations
     #[serde(default)]
     pub reservations: Vec<StaticLease>,
+    /// DNS provider for this network
+    #[serde(default)]
+    pub dns_provider: DnsProvider,
     #[serde(default = "Utc::now")]
     pub created_at: DateTime<Utc>,
     #[serde(default = "Utc::now")]
@@ -76,6 +80,7 @@ impl Network {
             pool_start: None,
             pool_end: None,
             reservations: Vec::new(),
+            dns_provider: DnsProvider::default(),
             created_at: now,
             updated_at: now,
         }

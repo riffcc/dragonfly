@@ -4,6 +4,7 @@
 
 use crate::auth::Settings;
 use crate::event_manager::EventManager;
+use crate::ha;
 use crate::image_cache::ImageCache;
 use crate::store::v1::MemoryStore;
 use crate::{AppState, TemplateEnv};
@@ -57,6 +58,11 @@ pub async fn create_test_app_state() -> AppState {
         dhcp_lease_table: Arc::new(tokio::sync::RwLock::new(
             dragonfly_dhcp::LeaseTable::new(),
         )),
+        ha_manager: Arc::new(ha::HaManager::new("test-node".to_string())),
+        cluster_abort: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        cluster_deploying: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        cluster_phase: Arc::new(std::sync::Mutex::new(String::new())),
+        cluster_node_phases: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
     }
 }
 

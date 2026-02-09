@@ -8,6 +8,9 @@ fn main() {
     println!("cargo:rerun-if-changed=src/input.css");
     println!("cargo:rerun-if-changed=templates");
 
+    // Embed HTML templates into the binary for release builds
+    minijinja_embed::embed_templates!("templates");
+
     let crate_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
     let input_css_path = Path::new(&crate_dir).join("src/input.css");
     let output_css_path = Path::new(&crate_dir).join("static/css/tailwind.css");

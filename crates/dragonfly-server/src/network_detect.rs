@@ -57,6 +57,7 @@ pub async fn init_default_network(store: Arc<dyn Store>) -> Result<()> {
     network.dhcp_enabled = true;
     network.gateway = gateway.clone();
     network.dns_servers = dns_servers.clone();
+    network.domain = Some("home.arpa".to_string());
     network.description = None;
 
     store.put_network(&network).await?;

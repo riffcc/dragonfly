@@ -8,15 +8,19 @@
 //! See SCHEMA_V0.1.0.md for design details.
 
 mod memory;
+pub mod rqlite;
 mod sqlite;
 #[cfg(test)]
 mod tests;
 
 pub use memory::MemoryStore;
+pub use rqlite::RqliteStore;
 pub use sqlite::SqliteStore;
 
 use async_trait::async_trait;
-use dragonfly_common::{Machine, MachineState, Network};
+use dragonfly_common::{
+    DnsRecord, DnsRecordSource, DnsRecordType, Machine, MachineIdentity, MachineState, Network,
+};
 use dragonfly_crd::{Template, Workflow};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -70,10 +74,13 @@ pub trait Store: Send + Sync {
     /// Get machine by UUIDv7
     async fn get_machine(&self, id: Uuid) -> Result<Option<Machine>>;
 
-    /// Get machine by identity hash (for re-identification)
+    /// Get machine by identity hash (for re-identification).
+    ///
+    /// **Deprecated**: prefer `resolve_machine_identity` which checks each anchor
+    /// independently instead of relying on a single combined hash.
     async fn get_machine_by_identity(&self, identity_hash: &str) -> Result<Option<Machine>>;
 
-    /// Get machine by primary MAC (legacy compatibility)
+    /// Get machine by primary MAC
     async fn get_machine_by_mac(&self, mac: &str) -> Result<Option<Machine>>;
 
     /// Get machine by current IP address
@@ -180,6 +187,117 @@ pub trait Store: Send + Sync {
 
     /// Delete user
     async fn delete_user(&self, id: Uuid) -> Result<bool>;
+
+    // === DNS Record Operations ===
+
+    /// List all DNS records in a zone
+    async fn list_dns_records(&self, zone: &str) -> Result<Vec<DnsRecord>>;
+
+    /// Get DNS records matching zone, name, and optional record type
+    async fn get_dns_records(
+        &self,
+        zone: &str,
+        name: &str,
+        rtype: Option<DnsRecordType>,
+    ) -> Result<Vec<DnsRecord>>;
+
+    /// Store a DNS record (insert or update by id)
+    async fn put_dns_record(&self, record: &DnsRecord) -> Result<()>;
+
+    /// Delete a DNS record by id
+    async fn delete_dns_record(&self, id: Uuid) -> Result<bool>;
+
+    /// Delete all DNS records associated with a machine
+    async fn delete_dns_records_by_machine(&self, machine_id: Uuid) -> Result<u64>;
+
+    /// Upsert a DNS record keyed on (zone, name, rtype, rdata).
+    ///
+    /// Idempotent — any trigger path (DHCP, provisioning, Proxmox sync,
+    /// cluster deploy) can call this and the result is the same.
+    async fn upsert_dns_record(
+        &self,
+        zone: &str,
+        name: &str,
+        rtype: DnsRecordType,
+        rdata: &str,
+        ttl: u32,
+        source: DnsRecordSource,
+        machine_id: Option<Uuid>,
+    ) -> Result<()>;
+
+    // === Multi-anchor Identity Resolution ===
+
+    /// Resolve a machine by checking each identity anchor independently.
+    ///
+    /// Each anchor is an OR — matching ANY one is sufficient to identify the machine.
+    /// Priority order:
+    ///   1. Primary MAC (indexed, fast)
+    ///   2. Any secondary MAC (scans all_macs in stored machines)
+    ///   3. SMBIOS UUID (e.g., Proxmox VM EFI UUID)
+    ///   4. machine_id (/etc/machine-id)
+    ///
+    /// Note: fs_uuid is deliberately excluded — too ambiguous (disk clones,
+    /// drive moves) for too little identity signal.
+    ///
+    /// This replaces the old identity_hash approach which was RAID0 for identity —
+    /// changing any single field broke the entire lookup.
+    async fn resolve_machine_identity(
+        &self,
+        identity: &MachineIdentity,
+    ) -> Result<Option<Machine>> {
+        // Anchor 1: Primary MAC (uses indexed column — fast)
+        let normalized_primary = dragonfly_common::normalize_mac(&identity.primary_mac);
+        if !normalized_primary.is_empty() && normalized_primary != "unknown" {
+            if let Some(m) = self.get_machine_by_mac(&normalized_primary).await? {
+                return Ok(Some(m));
+            }
+        }
+
+        // Anchor 2-5: Check all_macs, smbios_uuid, machine_id, fs_uuid
+        // These require scanning stored machines (no dedicated index yet).
+        // For fleets <10k machines this is fine; add indices later if needed.
+        let all_machines = self.list_machines().await?;
+
+        // Anchor 2: Any secondary MAC
+        for mac in &identity.all_macs {
+            let norm = dragonfly_common::normalize_mac(mac);
+            if norm.is_empty() || norm == "unknown" || norm == normalized_primary {
+                continue;
+            }
+            for m in &all_machines {
+                if m.identity.all_macs.iter().any(|stored| {
+                    dragonfly_common::normalize_mac(stored) == norm
+                }) {
+                    return Ok(Some(m.clone()));
+                }
+            }
+        }
+
+        // Anchor 3: SMBIOS UUID (Proxmox EFI/BIOS UUID visible to guest)
+        if let Some(ref uuid) = identity.smbios_uuid {
+            let lower = uuid.to_lowercase();
+            for m in &all_machines {
+                if let Some(ref stored) = m.identity.smbios_uuid {
+                    if stored.to_lowercase() == lower {
+                        return Ok(Some(m.clone()));
+                    }
+                }
+            }
+        }
+
+        // Anchor 4: machine_id (/etc/machine-id, stable across reboots)
+        if let Some(ref mid) = identity.machine_id {
+            for m in &all_machines {
+                if m.identity.machine_id.as_deref() == Some(mid.as_str()) {
+                    return Ok(Some(m.clone()));
+                }
+            }
+        }
+
+        // fs_uuid deliberately excluded — too ambiguous for identity resolution
+
+        Ok(None)
+    }
 }
 
 /// Storage configuration
@@ -191,9 +309,8 @@ pub enum StoreConfig {
     /// SQLite local database
     Sqlite { path: String },
 
-    /// etcd distributed storage
-    #[allow(dead_code)]
-    Etcd { endpoints: Vec<String> },
+    /// rqlite distributed storage (replicated SQLite over Raft)
+    Rqlite { url: String },
 }
 
 impl Default for StoreConfig {
@@ -210,9 +327,9 @@ pub async fn create_store(config: &StoreConfig) -> Result<Arc<dyn Store>> {
             let store = SqliteStore::open(path).await?;
             Ok(Arc::new(store))
         }
-        StoreConfig::Etcd { endpoints: _ } => {
-            // TODO: Implement EtcdStore
-            todo!("EtcdStore not yet implemented")
+        StoreConfig::Rqlite { url } => {
+            let store = RqliteStore::open(url).await?;
+            Ok(Arc::new(store))
         }
     }
 }

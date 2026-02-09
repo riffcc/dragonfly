@@ -42,6 +42,9 @@ mod api;
 mod auth;
 pub mod event_manager;
 mod filters; // Uncomment unused module
+pub mod cluster;
+pub mod dns_sync;
+pub mod ha;
 pub mod handlers;
 pub mod image_cache;
 pub mod mode;
@@ -168,7 +171,6 @@ pub async fn is_dragonfly_installed() -> bool {
 #[derive(Clone)]
 pub enum TemplateEnv {
     Static(Arc<Environment<'static>>),
-    #[cfg(debug_assertions)]
     Reloading(Arc<AutoReloader>),
 }
 
@@ -243,8 +245,10 @@ pub struct AppState {
     pub first_run: bool,                  // First run based on settings
     pub shutdown_tx: watch::Sender<()>,   // Channel to signal shutdown
     pub shutdown_rx: watch::Receiver<()>, // Receiver for shutdown (clonable for services)
-    // Use the new enum for the environment
-    pub template_env: TemplateEnv,
+    // Use the new enum for the environment — behind RwLock for hot-swap (dev mode toggle)
+    pub template_env: Arc<std::sync::RwLock<TemplateEnv>>,
+    // Dev mode template path (set when dev mode is active, empty otherwise)
+    pub dev_template_path: Arc<std::sync::RwLock<Option<String>>>,
     // Add flags for Scenario B
     pub is_installed: bool,
     pub is_demo_mode: bool, // True if explicitly DEMO or if not installed
@@ -265,6 +269,16 @@ pub struct AppState {
     pub services_shutdown_tx: Arc<Mutex<Option<watch::Sender<bool>>>>,
     // Shared DHCP lease table — survives service restarts, queryable from API
     pub dhcp_lease_table: Arc<tokio::sync::RwLock<LeaseTable>>,
+    // High Availability manager (rqlite lifecycle)
+    pub ha_manager: Arc<ha::HaManager>,
+    // Signal to abort an in-flight cluster deployment
+    pub cluster_abort: Arc<AtomicBool>,
+    // True while a cluster deployment task is running
+    pub cluster_deploying: Arc<AtomicBool>,
+    // Current global deployment phase (e.g. "creating", "installing", "clustering")
+    pub cluster_phase: Arc<std::sync::Mutex<String>>,
+    // Per-node deployment phase, indexed by node idx
+    pub cluster_node_phases: Arc<std::sync::Mutex<std::collections::HashMap<usize, String>>>,
 }
 
 /// Map settings store dhcp_mode string to DhcpMode enum
@@ -616,13 +630,47 @@ pub async fn run() -> anyhow::Result<()> {
 
     let _is_install_mode = is_installation_server;
 
-    // Initialize unified SQLite storage
+    // Initialize storage: check HA flag for rqlite cluster, otherwise SQLite
     const SQLITE_PATH: &str = "/var/lib/dragonfly/dragonfly.sqlite3";
-    let sqlite_store = store::v1::SqliteStore::open(SQLITE_PATH)
-        .await
-        .map_err(|e| anyhow!("Failed to open SQLite store: {}", e))?;
-    let db_pool = sqlite_store.pool().clone();
-    let store: Arc<dyn store::v1::Store> = Arc::new(sqlite_store);
+
+    let (store, db_pool): (Arc<dyn store::v1::Store>, _) = if ha::HaManager::is_ha_enabled() {
+        if let Some(rqlite_url) = ha::read_ha_url() {
+            info!("HA mode enabled — connecting to rqlite cluster at {}", rqlite_url);
+            match store::v1::RqliteStore::open(&rqlite_url).await {
+                Ok(rqlite_store) => {
+                    info!("Connected to rqlite cluster");
+                    // Still need SQLite pool for session store
+                    let sqlite_store = store::v1::SqliteStore::open(SQLITE_PATH)
+                        .await
+                        .map_err(|e| anyhow!("Failed to open SQLite for sessions: {}", e))?;
+                    let pool = sqlite_store.pool().clone();
+                    (Arc::new(rqlite_store), pool)
+                }
+                Err(e) => {
+                    warn!("Failed to connect to rqlite cluster: {} — falling back to SQLite", e);
+                    let sqlite_store = store::v1::SqliteStore::open(SQLITE_PATH)
+                        .await
+                        .map_err(|e| anyhow!("Failed to open SQLite store: {}", e))?;
+                    let pool = sqlite_store.pool().clone();
+                    (Arc::new(sqlite_store), pool)
+                }
+            }
+        } else {
+            // HA flag exists but no URL — local rqlite (legacy behavior)
+            info!("HA mode enabled (local) — using SQLite with local rqlite pending");
+            let sqlite_store = store::v1::SqliteStore::open(SQLITE_PATH)
+                .await
+                .map_err(|e| anyhow!("Failed to open SQLite store: {}", e))?;
+            let pool = sqlite_store.pool().clone();
+            (Arc::new(sqlite_store), pool)
+        }
+    } else {
+        let sqlite_store = store::v1::SqliteStore::open(SQLITE_PATH)
+            .await
+            .map_err(|e| anyhow!("Failed to open SQLite store: {}", e))?;
+        let pool = sqlite_store.pool().clone();
+        (Arc::new(sqlite_store), pool)
+    };
 
     // --- Auto-configure Flight mode ---
     // Dragonfly always runs in Flight mode now - no setup wizard needed
@@ -792,9 +840,14 @@ pub async fn run() -> anyhow::Result<()> {
         }
         #[cfg(not(debug_assertions))]
         {
-            let release_template_path = "/opt/dragonfly/templates";
+            let dev_template_path = std::env::var("DRAGONFLY_TEMPLATE_PATH").ok();
             let mut env = Environment::new();
-            env.set_loader(path_loader(release_template_path));
+            if let Some(ref path) = dev_template_path {
+                info!("Developer mode: loading templates from {}", path);
+                env.set_loader(path_loader(path));
+            } else {
+                minijinja_embed::load_templates!(&mut env);
+            }
             if let Err(e) = ui::setup_minijinja_environment(&mut env) {
                 error!("Failed to set up MiniJinja environment: {}", e);
             }
@@ -860,7 +913,8 @@ pub async fn run() -> anyhow::Result<()> {
         first_run,
         shutdown_tx: shutdown_tx.clone(),
         shutdown_rx: shutdown_rx.clone(),
-        template_env,
+        template_env: Arc::new(std::sync::RwLock::new(template_env)),
+        dev_template_path: Arc::new(std::sync::RwLock::new(None)),
         // Add the new flags
         is_installed,
         is_demo_mode,
@@ -881,6 +935,13 @@ pub async fn run() -> anyhow::Result<()> {
         services_shutdown_tx: Arc::new(Mutex::new(None)),
         // Shared DHCP lease table
         dhcp_lease_table: Arc::new(tokio::sync::RwLock::new(LeaseTable::new())),
+        // High Availability manager
+        ha_manager: Arc::new(ha::HaManager::new("node-1".to_string())),
+        // Cluster abort signal
+        cluster_abort: Arc::new(AtomicBool::new(false)),
+        cluster_deploying: Arc::new(AtomicBool::new(false)),
+        cluster_phase: Arc::new(std::sync::Mutex::new(String::new())),
+        cluster_node_phases: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
     };
 
     // Load Proxmox API tokens from database to memory

@@ -14,12 +14,14 @@ pub fn new_machine_id() -> Uuid {
 }
 
 /// Compute identity hash from identity sources.
-/// SHA-256(sorted_macs || smbios_uuid || machine_id || fs_uuid)
+/// SHA-256(sorted_macs || smbios_uuid || machine_id)
+///
+/// Note: `fs_uuid` was deliberately excluded — it's too ambiguous (disk clones,
+/// drive moves between hosts) for too little value as an identity signal.
 pub fn compute_identity_hash(
     macs: &[String],
     smbios_uuid: Option<&str>,
     machine_id: Option<&str>,
-    fs_uuid: Option<&str>,
 ) -> String {
     let mut hasher = Sha256::new();
 
@@ -41,11 +43,6 @@ pub fn compute_identity_hash(
 
     if let Some(mid) = machine_id {
         hasher.update(mid.as_bytes());
-    }
-    hasher.update(b"|");
-
-    if let Some(fsuuid) = fs_uuid {
-        hasher.update(fsuuid.to_lowercase().as_bytes());
     }
 
     format!("{:x}", hasher.finalize())
@@ -151,6 +148,199 @@ impl Machine {
     pub fn dhcp_ip(&self) -> Option<&DhcpReservation> {
         self.config.netboot.dhcp_ip.as_ref()
     }
+
+    /// LWW (Last-Writer-Wins) CRDT-style merge: fold `incoming` data into `self`.
+    ///
+    /// `self` is the existing (stored) machine. `incoming` carries fresh data from
+    /// a discovery source (Proxmox sync, agent check-in, DHCP, etc.).
+    ///
+    /// Rules:
+    /// - **Never replace Some with None.** If existing has a value and incoming
+    ///   doesn't, keep the existing value.
+    /// - **Collections are unioned**, not replaced (MACs, tags, labels).
+    /// - **Identity hash is recomputed** from the merged identity fields.
+    /// - **Source is upgraded** (Agent → Proxmox* is an upgrade, never downgrade).
+    /// - **User-configured fields are preserved** (netboot, network_mode, BMC,
+    ///   os_choice, memorable_name, pending_*, etc.).
+    pub fn merge_lww(&mut self, incoming: &Machine) {
+        // ── Identity: union MACs, keep richest fields ──────────────────
+        // Union all_macs (deduplicated, normalized)
+        for mac in &incoming.identity.all_macs {
+            let norm = normalize_mac(mac);
+            if !norm.is_empty()
+                && norm != "unknown"
+                && !self.identity.all_macs.iter().any(|m| normalize_mac(m) == norm)
+            {
+                self.identity.all_macs.push(norm);
+            }
+        }
+
+        // LWW for identity Option fields — never replace Some with None
+        if incoming.identity.smbios_uuid.is_some() {
+            self.identity.smbios_uuid = incoming.identity.smbios_uuid.clone();
+        }
+        if incoming.identity.machine_id.is_some() {
+            self.identity.machine_id = incoming.identity.machine_id.clone();
+        }
+        // fs_uuid: still stored but NOT used for identity resolution
+        if incoming.identity.fs_uuid.is_some() {
+            self.identity.fs_uuid = incoming.identity.fs_uuid.clone();
+        }
+
+        // Recompute identity hash from the merged fields (excludes fs_uuid)
+        self.identity.identity_hash = compute_identity_hash(
+            &self.identity.all_macs,
+            self.identity.smbios_uuid.as_deref(),
+            self.identity.machine_id.as_deref(),
+        );
+
+        // ── Status: LWW for each field ─────────────────────────────────
+        // State: incoming wins (it has the latest observation)
+        self.status.state = incoming.status.state.clone();
+
+        // last_seen: take the most recent
+        match (&self.status.last_seen, &incoming.status.last_seen) {
+            (Some(existing), Some(inc)) => {
+                if inc > existing {
+                    self.status.last_seen = Some(*inc);
+                }
+            }
+            (None, Some(_)) => self.status.last_seen = incoming.status.last_seen,
+            _ => {} // keep existing
+        }
+
+        // current_ip: incoming wins if it has one and it's not "Unknown"
+        match &incoming.status.current_ip {
+            Some(ip) if ip != "Unknown" => self.status.current_ip = Some(ip.clone()),
+            _ => {} // keep existing
+        }
+
+        // Workflow fields: never erase, only update
+        if incoming.status.current_workflow.is_some() {
+            self.status.current_workflow = incoming.status.current_workflow;
+        }
+        if incoming.status.last_workflow_result.is_some() {
+            self.status.last_workflow_result = incoming.status.last_workflow_result.clone();
+        }
+        if incoming.status.uptime_seconds.is_some() {
+            self.status.uptime_seconds = incoming.status.uptime_seconds;
+        }
+
+        // ── Hardware: incoming wins for non-None fields ─────────────────
+        if incoming.hardware.cpu_model.is_some() {
+            self.hardware.cpu_model = incoming.hardware.cpu_model.clone();
+        }
+        if incoming.hardware.cpu_cores.is_some() {
+            self.hardware.cpu_cores = incoming.hardware.cpu_cores;
+        }
+        if incoming.hardware.cpu_threads.is_some() {
+            self.hardware.cpu_threads = incoming.hardware.cpu_threads;
+        }
+        if incoming.hardware.memory_bytes.is_some() {
+            self.hardware.memory_bytes = incoming.hardware.memory_bytes;
+        }
+        if !incoming.hardware.disks.is_empty() {
+            self.hardware.disks = incoming.hardware.disks.clone();
+        }
+        if !incoming.hardware.gpus.is_empty() {
+            self.hardware.gpus = incoming.hardware.gpus.clone();
+        }
+        if !incoming.hardware.network_interfaces.is_empty() {
+            self.hardware.network_interfaces = incoming.hardware.network_interfaces.clone();
+        }
+        if incoming.hardware.is_virtual {
+            self.hardware.is_virtual = true;
+        }
+        if incoming.hardware.virt_platform.is_some() {
+            self.hardware.virt_platform = incoming.hardware.virt_platform.clone();
+        }
+
+        // ── Config: preserve user-set fields, LWW the rest ──────────────
+        // hostname: incoming wins if it has one, otherwise keep existing
+        if incoming.config.hostname.is_some() {
+            self.config.hostname = incoming.config.hostname.clone();
+        }
+        // reported_hostname: always take incoming (it's an observation)
+        if incoming.config.reported_hostname.is_some() {
+            self.config.reported_hostname = incoming.config.reported_hostname.clone();
+        }
+        // memorable_name: NEVER overwrite (user-facing, may have been customized)
+        // os_choice: NEVER overwrite from discovery (user selects this)
+        // os_installed: incoming wins if it has one
+        if incoming.config.os_installed.is_some() {
+            self.config.os_installed = incoming.config.os_installed.clone();
+        }
+        // reimage_requested: NEVER overwrite (user action)
+        // tags: union
+        for tag in &incoming.config.tags {
+            if !self.config.tags.contains(tag) {
+                self.config.tags.push(tag.clone());
+            }
+        }
+        // bmc: keep existing if incoming is None
+        if incoming.config.bmc.is_some() {
+            self.config.bmc = incoming.config.bmc.clone();
+        }
+        // installation_progress/step: incoming wins if non-zero/non-None
+        if incoming.config.installation_progress > 0 {
+            self.config.installation_progress = incoming.config.installation_progress;
+        }
+        if incoming.config.installation_step.is_some() {
+            self.config.installation_step = incoming.config.installation_step.clone();
+        }
+        // netboot: NEVER overwrite (user-configured DHCP reservations, PXE, workflow)
+        // nameservers: keep existing if incoming is empty
+        if !incoming.config.nameservers.is_empty() {
+            self.config.nameservers = incoming.config.nameservers.clone();
+        }
+        // reported_nameservers: always take incoming (observation)
+        if !incoming.config.reported_nameservers.is_empty() {
+            self.config.reported_nameservers = incoming.config.reported_nameservers.clone();
+        }
+        // network_mode: NEVER overwrite (user-configured)
+        // static_ipv4/ipv6: NEVER overwrite (user-configured)
+        // domain: keep existing if incoming is None
+        if incoming.config.domain.is_some() {
+            self.config.domain = incoming.config.domain.clone();
+        }
+        // network_id: keep existing if incoming is None
+        if incoming.config.network_id.is_some() {
+            self.config.network_id = incoming.config.network_id;
+        }
+        // primary_interface: keep existing if incoming is None
+        if incoming.config.primary_interface.is_some() {
+            self.config.primary_interface = incoming.config.primary_interface.clone();
+        }
+        // pending_*: NEVER overwrite (user action in progress)
+
+        // ── Metadata ────────────────────────────────────────────────────
+        // created_at: keep the earliest
+        if incoming.metadata.created_at < self.metadata.created_at {
+            self.metadata.created_at = incoming.metadata.created_at;
+        }
+        // updated_at: take the latest
+        self.metadata.updated_at = std::cmp::max(self.metadata.updated_at, incoming.metadata.updated_at);
+
+        // labels: union (incoming wins on key conflict — LWW)
+        for (k, v) in &incoming.metadata.labels {
+            self.metadata.labels.insert(k.clone(), v.clone());
+        }
+
+        // source: upgrade Agent → Proxmox*, never downgrade
+        match (&self.metadata.source, &incoming.metadata.source) {
+            (MachineSource::Agent, _) => {
+                // Any source is an upgrade from Agent
+                self.metadata.source = incoming.metadata.source.clone();
+            }
+            (_, MachineSource::Agent) => {
+                // Don't downgrade from Proxmox* to Agent
+            }
+            _ => {
+                // Both are Proxmox variants — take the incoming one (has latest cluster/node info)
+                self.metadata.source = incoming.metadata.source.clone();
+            }
+        }
+    }
 }
 
 // ============================================================================
@@ -185,7 +375,6 @@ impl MachineIdentity {
             &normalized_all,
             smbios_uuid.as_deref(),
             machine_id.as_deref(),
-            fs_uuid.as_deref(),
         );
 
         Self {
@@ -620,24 +809,23 @@ mod tests {
 
     #[test]
     fn test_identity_hash_deterministic() {
-        let hash1 = compute_identity_hash(&["00:11:22:33:44:55".to_string()], None, None, None);
-        let hash2 = compute_identity_hash(&["00:11:22:33:44:55".to_string()], None, None, None);
+        let hash1 = compute_identity_hash(&["00:11:22:33:44:55".to_string()], None, None);
+        let hash2 = compute_identity_hash(&["00:11:22:33:44:55".to_string()], None, None);
         assert_eq!(hash1, hash2);
     }
 
     #[test]
-    fn test_identity_hash_includes_fs_uuid() {
+    fn test_identity_hash_includes_smbios_uuid() {
         let hash_without =
-            compute_identity_hash(&["00:11:22:33:44:55".to_string()], None, None, None);
+            compute_identity_hash(&["00:11:22:33:44:55".to_string()], None, None);
         let hash_with = compute_identity_hash(
             &["00:11:22:33:44:55".to_string()],
+            Some("smbios-1234"),
             None,
-            None,
-            Some("uuid-123"),
         );
         assert_ne!(
             hash_without, hash_with,
-            "fs_uuid should affect identity hash"
+            "smbios_uuid should affect identity hash"
         );
     }
 }

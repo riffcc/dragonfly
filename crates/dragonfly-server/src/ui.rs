@@ -180,20 +180,18 @@ pub fn render_minijinja<T: Serialize>(
     context: T,
 ) -> Response {
     // Get the environment based on the mode (static or reloading)
-    let render_result = match &app_state.template_env {
+    let template_env = app_state.template_env.read().unwrap();
+    let render_result = match &*template_env {
         crate::TemplateEnv::Static(env) => env
             .get_template(template_name)
             .and_then(|tmpl| tmpl.render(context)),
-        #[cfg(debug_assertions)]
         crate::TemplateEnv::Reloading(reloader) => {
-            // Acquire the environment from the reloader
             match reloader.acquire_env() {
                 Ok(env) => env
                     .get_template(template_name)
                     .and_then(|tmpl| tmpl.render(context)),
                 Err(e) => {
                     error!("Failed to acquire MiniJinja env from reloader: {}", e);
-                    // Convert minijinja::Error to rendering result error
                     Err(MiniJinjaError::new(
                         MiniJinjaErrorKind::InvalidOperation,
                         format!("Failed to acquire env from reloader: {}", e),
@@ -1108,6 +1106,7 @@ pub async fn settings_page_section(
         "provisioning",
         "credentials",
         "iso-images",
+        "ha",
         "license",
     ];
     let tab = if valid_tabs.contains(&section.as_str()) {

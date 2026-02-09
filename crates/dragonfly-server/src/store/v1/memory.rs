@@ -5,7 +5,7 @@
 
 use super::{Result, Store, StoreError, User};
 use async_trait::async_trait;
-use dragonfly_common::{Machine, MachineState, Network, normalize_mac};
+use dragonfly_common::{DnsRecord, DnsRecordSource, DnsRecordType, Machine, MachineState, Network, normalize_mac};
 use dragonfly_crd::{Template, Workflow};
 use std::collections::{HashMap, HashSet};
 use std::sync::RwLock;
@@ -28,6 +28,7 @@ pub struct MemoryStore {
     networks: RwLock<HashMap<Uuid, Network>>,
     users: RwLock<HashMap<Uuid, User>>,
     standalone_tags: RwLock<HashSet<String>>,
+    dns_records: RwLock<HashMap<Uuid, DnsRecord>>,
 
     // Machine indices
     /// identity_hash -> machine UUID
@@ -61,6 +62,7 @@ impl MemoryStore {
             networks: RwLock::new(HashMap::new()),
             users: RwLock::new(HashMap::new()),
             standalone_tags: RwLock::new(HashSet::new()),
+            dns_records: RwLock::new(HashMap::new()),
             identity_index: RwLock::new(HashMap::new()),
             mac_index: RwLock::new(HashMap::new()),
             ip_index: RwLock::new(HashMap::new()),
@@ -630,5 +632,106 @@ impl Store for MemoryStore {
         } else {
             Ok(false)
         }
+    }
+
+    // === DNS Record Operations ===
+
+    async fn list_dns_records(&self, zone: &str) -> Result<Vec<DnsRecord>> {
+        let guard = Self::read_lock(&self.dns_records)?;
+        let mut records: Vec<DnsRecord> = guard
+            .values()
+            .filter(|r| r.zone == zone)
+            .cloned()
+            .collect();
+        records.sort_by(|a, b| (&a.name, &a.rtype).partial_cmp(&(&b.name, &b.rtype)).unwrap_or(std::cmp::Ordering::Equal));
+        Ok(records)
+    }
+
+    async fn get_dns_records(
+        &self,
+        zone: &str,
+        name: &str,
+        rtype: Option<DnsRecordType>,
+    ) -> Result<Vec<DnsRecord>> {
+        let guard = Self::read_lock(&self.dns_records)?;
+        Ok(guard
+            .values()
+            .filter(|r| {
+                r.zone == zone
+                    && r.name == name
+                    && rtype.map_or(true, |rt| r.rtype == rt)
+            })
+            .cloned()
+            .collect())
+    }
+
+    async fn put_dns_record(&self, record: &DnsRecord) -> Result<()> {
+        let mut guard = Self::write_lock(&self.dns_records)?;
+        guard.insert(record.id, record.clone());
+        Ok(())
+    }
+
+    async fn delete_dns_record(&self, id: Uuid) -> Result<bool> {
+        let mut guard = Self::write_lock(&self.dns_records)?;
+        Ok(guard.remove(&id).is_some())
+    }
+
+    async fn delete_dns_records_by_machine(&self, machine_id: Uuid) -> Result<u64> {
+        let mut guard = Self::write_lock(&self.dns_records)?;
+        let to_remove: Vec<Uuid> = guard
+            .values()
+            .filter(|r| r.machine_id == Some(machine_id))
+            .map(|r| r.id)
+            .collect();
+        let count = to_remove.len() as u64;
+        for id in to_remove {
+            guard.remove(&id);
+        }
+        Ok(count)
+    }
+
+    async fn upsert_dns_record(
+        &self,
+        zone: &str,
+        name: &str,
+        rtype: DnsRecordType,
+        rdata: &str,
+        ttl: u32,
+        source: DnsRecordSource,
+        machine_id: Option<Uuid>,
+    ) -> Result<()> {
+        let mut guard = Self::write_lock(&self.dns_records)?;
+        let now = chrono::Utc::now();
+
+        // Find existing record by (zone, name, rtype, rdata)
+        let existing_id = guard
+            .values()
+            .find(|r| r.zone == zone && r.name == name && r.rtype == rtype && r.rdata == rdata)
+            .map(|r| r.id);
+
+        if let Some(id) = existing_id {
+            if let Some(record) = guard.get_mut(&id) {
+                record.ttl = ttl;
+                record.source = source;
+                record.machine_id = machine_id;
+                record.updated_at = now;
+            }
+        } else {
+            let record = DnsRecord {
+                id: uuid::Uuid::now_v7(),
+                zone: zone.to_string(),
+                name: name.to_string(),
+                rtype,
+                rdata: rdata.to_string(),
+                ttl,
+                source,
+                machine_id,
+                created_at: now,
+                updated_at: now,
+            };
+            guard.insert(record.id, record);
+        }
+
+        Ok(())
     }
 }

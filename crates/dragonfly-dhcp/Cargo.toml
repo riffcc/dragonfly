@@ -12,6 +12,7 @@ tokio = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 serde = { workspace = true }
+uuid = { workspace = true }
 async-trait = "0.1"
 
 # DHCP protocol

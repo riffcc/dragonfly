@@ -1,0 +1,15 @@
+---
+# Provision HA cluster LXC containers via Jetpack's proxmox_lxc provisioner.
+#
+# Each host in the dragonfly_cluster group has a `provision:` block in its
+# host_vars.  Jetpack automatically provisions hosts before running tasks —
+# creating missing LXCs and skipping containers that already exist (by VMID).
+#
+# After provisioning, Jetpack waits for SSH connectivity on each node.
+
+- name: Provision HA cluster nodes
+  groups: [dragonfly_cluster]
+  tasks:
+    - !echo
+      name: Cluster nodes provisioned
+      msg: "All nodes are up and reachable via SSH"

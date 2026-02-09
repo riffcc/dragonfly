@@ -1,0 +1,20 @@
+---
+# Install rqlite on all cluster nodes.
+#
+# Idempotent — skips download if /opt/rqlite/rqlited already exists.
+# Runs on all nodes in dragonfly_cluster group.
+
+- name: Install rqlite on cluster nodes
+  groups: [dragonfly_cluster]
+  tasks:
+    - !apt
+      name: Install dependencies
+      packages: [curl]
+      update_cache: true
+    - !shell
+      name: Install rqlite
+      cmd: |
+        if [ -x /opt/rqlite/rqlited ]; then echo "Already installed"; exit 0; fi
+        mkdir -p /opt/rqlite &&
+        curl -sL https://github.com/rqlite/rqlite/releases/download/v8.36.6/rqlite-v8.36.6-linux-amd64.tar.gz |
+        tar xzf - -C /opt/rqlite --strip-components=1

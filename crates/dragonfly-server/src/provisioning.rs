@@ -348,21 +348,14 @@ impl ProvisioningService {
             fs_uuid,
         );
 
-        // Try re-identification by identity hash first
-        let mut existing = self
+        // Multi-anchor identity resolution: match on ANY identity source (MAC,
+        // SMBIOS UUID, machine_id, fs_uuid). Each anchor is independent — changing
+        // one field doesn't break recognition via the others.
+        let existing = self
             .store
-            .get_machine_by_identity(&identity.identity_hash)
+            .resolve_machine_identity(&identity)
             .await
             .map_err(ProvisioningError::Store)?;
-
-        // Fall back to MAC lookup (for machines registered before identity hashing)
-        if existing.is_none() {
-            existing = self
-                .store
-                .get_machine_by_mac(&normalized_mac)
-                .await
-                .map_err(ProvisioningError::Store)?;
-        }
 
         let (machine, is_new) = match existing {
             Some(mut m) => {
@@ -392,6 +385,19 @@ impl ProvisioningService {
                 (m, true)
             }
         };
+
+        // DNS sync for the registered/updated machine
+        if machine.status.current_ip.is_some() {
+            if let Err(e) = crate::dns_sync::sync_machine_dns(
+                &self.store,
+                &machine,
+                dragonfly_common::dns::DnsRecordSource::Provision,
+            )
+            .await
+            {
+                warn!("DNS sync failed for machine {}: {}", machine.id, e);
+            }
+        }
 
         // Check for workflows
         let workflows = self.get_workflows_for_machine(&machine).await?;

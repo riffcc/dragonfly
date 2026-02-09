@@ -1,0 +1,20 @@
+[package]
+name = "dragonfly-dns"
+version.workspace = true
+edition = "2024"
+authors = ["Riff.CC"]
+description = "Integrated DNS server for Dragonfly bare metal provisioning"
+
+[dependencies]
+dragonfly-common = { path = "../dragonfly-common" }
+hickory-server = { version = "0.26.0-alpha.1", features = ["resolver"] }
+hickory-proto = "0.26.0-alpha.1"
+tokio = { workspace = true }
+tracing = { workspace = true }
+async-trait = "0.1"
+anyhow = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+
+[dev-dependencies]
+tokio-test = "0.4"

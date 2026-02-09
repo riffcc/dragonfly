@@ -55,7 +55,7 @@ tower-cookies = "0.11.0"
 
 # Networking / DNS
 # dns_lookup = "2.0.4" # Removed synchronous resolver
-hickory-resolver = { version = "0.24.4", features = ["tokio-runtime"] } # Renamed from trust-dns-resolver
+hickory-resolver = { version = "0.26.0-alpha.1", features = ["tokio"] }
 
 # Local dependencies
 dragonfly-common = { path = "../dragonfly-common" }
@@ -66,6 +66,7 @@ dragonfly-dhcp = { path = "../dragonfly-dhcp" }
 dragonfly-tftp = { path = "../dragonfly-tftp" }
 dragonfly-metadata = { path = "../dragonfly-metadata" }
 dragonfly-actions = { path = "../dragonfly-actions" }
+dragonfly-dns = { path = "../dragonfly-dns" }
 
 # Async compression and tar for image cache
 async-compression = { version = "0.4", features = ["tokio", "gzip", "zstd"] }
@@ -77,6 +78,9 @@ tokio-util = { version = "0.7", features = ["io"] }
 # Kubernetes integration (moved from root)
 kube = { version = "0.87.1", features = ["client", "derive", "runtime"] } # Use version from root Cargo.toml
 k8s-openapi = { version = "0.20.0", features = ["v1_28"] }           # Use version from root Cargo.toml
+
+# Distributed storage (rqlite)
+rqlite-rs = "0.6"
 
 # Artifact download dependencies
 reqwest = { version = "0.12.4", features = ["stream", "json", "rustls-tls"], default-features = false }
@@ -118,6 +122,12 @@ oauth2 = { version = "4.4", features = ["reqwest"] }
 urlencoding = "2.1"
 aes-gcm = "0.10.3"
 
+# Cluster deployment automation
+jetpack = { workspace = true }
+
+# SSH key generation for machine management
+ssh-key = { workspace = true }
+
 # Proxmox & Network Scanning
 proxmox-client = { git = "https://github.com/proxmox/proxmox-rs", features = ["hyper-client"] }
 proxmox-schema = { git = "https://github.com/proxmox/proxmox-rs", features = ["api-types"] }
@@ -137,6 +147,9 @@ http = "1"
 # Embed static assets in release builds
 rust-embed = { version = "8", features = ["interpolate-folder-path"] }
 mime_guess = "2"
+
+[build-dependencies]
+minijinja-embed = "2.3.0"
 
 [dev-dependencies]
 tempfile = "3.8"

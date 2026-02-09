@@ -392,13 +392,12 @@ async fn login_page(
     };
 
     // Get the environment based on the mode (static or reloading)
-    let render_result = match &app_state.template_env {
+    let template_env = app_state.template_env.read().unwrap();
+    let render_result = match &*template_env {
         crate::TemplateEnv::Static(env) => env
             .get_template("login.html")
             .and_then(|tmpl| tmpl.render(&template)),
-        #[cfg(debug_assertions)]
         crate::TemplateEnv::Reloading(reloader) => {
-            // Acquire the environment from the reloader
             match reloader.acquire_env() {
                 Ok(env) => env
                     .get_template("login.html")

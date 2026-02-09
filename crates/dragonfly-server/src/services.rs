@@ -10,11 +10,13 @@
 use crate::store::v1::Store;
 use async_trait::async_trait;
 use bytes::Bytes;
+use dragonfly_common::dns::{DnsProvider, DnsRecord, DnsRecordType};
 use dragonfly_common::Machine;
-use dragonfly_dhcp::{DhcpConfig, DhcpEvent, DhcpMode, DhcpServer, LeaseTable, MachineLookup};
+use dragonfly_dhcp::{DhcpConfig, DhcpEvent, DhcpMode, DhcpServer, LeaseTable, MachineLookup, NetworkReservation};
+use dragonfly_dns::{DnsServer, DnsStore, ZoneConfig};
 use dragonfly_tftp::{FileProvider, TftpEvent, TftpServer};
 use std::collections::HashMap;
-use std::net::Ipv4Addr;
+use std::net::{Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::watch;
@@ -143,6 +145,11 @@ impl ServiceRunner {
         if let Some(ref dhcp_config) = self.config.dhcp {
             let dhcp_shutdown = shutdown.clone();
             let (dhcp_server, dhcp_handle) = self.start_dhcp(dhcp_config, dhcp_shutdown).await?;
+
+            // Wire DHCP → DNS sync: lease events automatically create DNS records
+            let dns_events = dhcp_server.subscribe();
+            crate::dns_sync::spawn_dhcp_dns_sync(self.store.clone(), dns_events);
+
             handles.dhcp = Some(ServiceHandle {
                 events: dhcp_server.subscribe(),
                 join_handle: dhcp_handle,
@@ -159,7 +166,86 @@ impl ServiceRunner {
             });
         }
 
+        // Start DNS if any network has dns_provider: Internal
+        self.start_dns().await;
+
         Ok(handles)
+    }
+
+    /// Start the DNS server if any network has internal DNS enabled.
+    ///
+    /// Queries the store for networks with dns_provider=Internal and a configured
+    /// domain. Each such network becomes a DNS zone served by hickory-server.
+    async fn start_dns(&self) {
+        let networks = match self.store.list_networks().await {
+            Ok(n) => n,
+            Err(e) => {
+                warn!(error = %e, "Failed to list networks for DNS startup");
+                return;
+            }
+        };
+
+        let internal_zones: Vec<ZoneConfig> = networks
+            .iter()
+            .filter(|n| n.dns_provider == DnsProvider::Internal)
+            .filter_map(|n| {
+                n.domain.as_ref().map(|domain| ZoneConfig {
+                    origin: domain.clone(),
+                })
+            })
+            .collect();
+
+        if internal_zones.is_empty() {
+            debug!("No networks with internal DNS provider — DNS server not starting");
+            return;
+        }
+
+        // Collect upstream DNS servers from all networks
+        let upstreams: Vec<SocketAddr> = networks
+            .iter()
+            .flat_map(|n| &n.dns_servers)
+            .filter_map(|s| {
+                s.parse::<Ipv4Addr>()
+                    .ok()
+                    .map(|ip| SocketAddr::new(ip.into(), 53))
+            })
+            .collect();
+
+        // Server hostname for SOA/NS records
+        let server_hostname = self
+            .store
+            .get_setting("server_hostname")
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| "dragonfly.local".to_string());
+
+        let zone_count = internal_zones.len();
+        let zone_names: Vec<_> = internal_zones.iter().map(|z| z.origin.clone()).collect();
+
+        // Bridge the Store to DnsStore
+        let dns_store: Arc<dyn DnsStore> = Arc::new(StoreDnsLookup::new(self.store.clone()));
+
+        let bind_addr: SocketAddr = "0.0.0.0:53".parse().unwrap();
+
+        tokio::spawn(async move {
+            info!(
+                zones = ?zone_names,
+                count = zone_count,
+                "Starting DNS server"
+            );
+            if let Err(e) = DnsServer::start(
+                bind_addr,
+                internal_zones,
+                dns_store,
+                upstreams,
+                server_hostname,
+            )
+            .await
+            {
+                error!(error = %e, "DNS server error");
+            }
+        });
     }
 
     /// Start DHCP server
@@ -285,6 +371,74 @@ impl MachineLookup for StoreMachineLookup {
                 None
             }
         }
+    }
+
+    async fn get_network_reservation(&self, mac: &str) -> Option<NetworkReservation> {
+        let normalized = dragonfly_common::normalize_mac(mac);
+        let networks = match self.store.list_networks().await {
+            Ok(n) => n,
+            Err(e) => {
+                warn!(mac = %mac, error = %e, "Failed to list networks for reservation lookup");
+                return None;
+            }
+        };
+
+        for network in &networks {
+            for res in &network.reservations {
+                if dragonfly_common::normalize_mac(&res.mac) == normalized {
+                    let ip = match res.ip.parse::<std::net::Ipv4Addr>() {
+                        Ok(ip) => ip,
+                        Err(_) => continue,
+                    };
+                    let gateway = network
+                        .gateway
+                        .as_ref()
+                        .and_then(|gw| gw.parse::<std::net::Ipv4Addr>().ok());
+                    return Some(NetworkReservation {
+                        ip,
+                        gateway,
+                        hostname: res.hostname.clone(),
+                    });
+                }
+            }
+        }
+        None
+    }
+}
+
+/// Bridge from the dragonfly-server Store trait to dragonfly-dns DnsStore trait.
+///
+/// Keeps dragonfly-dns loosely coupled — it only knows about DnsStore,
+/// never about the full Store type.
+struct StoreDnsLookup {
+    store: Arc<dyn Store>,
+}
+
+impl StoreDnsLookup {
+    fn new(store: Arc<dyn Store>) -> Self {
+        Self { store }
+    }
+}
+
+#[async_trait]
+impl DnsStore for StoreDnsLookup {
+    async fn list_dns_records(&self, zone: &str) -> anyhow::Result<Vec<DnsRecord>> {
+        self.store
+            .list_dns_records(zone)
+            .await
+            .map_err(|e| anyhow::anyhow!("{}", e))
+    }
+
+    async fn get_dns_records(
+        &self,
+        zone: &str,
+        name: &str,
+        rtype: Option<DnsRecordType>,
+    ) -> anyhow::Result<Vec<DnsRecord>> {
+        self.store
+            .get_dns_records(zone, name, rtype)
+            .await
+            .map_err(|e| anyhow::anyhow!("{}", e))
     }
 }
 
