@@ -50,6 +50,7 @@ pub mod image_cache;
 pub mod mode;
 pub mod network_detect;
 pub mod os_templates;
+pub mod playbooks;
 pub mod provisioning;
 pub mod services;
 pub mod store;
@@ -712,6 +713,13 @@ pub async fn run() -> anyhow::Result<()> {
             let _ = event_manager_clone.send("templates_ready".to_string());
         });
 
+        // Extract built-in Jetpack playbook tarballs to disk
+        tokio::spawn(async move {
+            if let Err(e) = playbooks::init_playbooks().await {
+                warn!("Failed to initialize Jetpack playbooks: {}", e);
+            }
+        });
+
         // Detect and create default network if none exists
         let store_for_network = store.clone();
         tokio::spawn(async move {
@@ -1024,6 +1032,8 @@ pub async fn run() -> anyhow::Result<()> {
         .route("/ipxe/{*path}", get(api::serve_ipxe_artifact))
         // ISO images for sanboot (served during boot-from-ISO)
         .nest_service("/isos", ServeDir::new("/var/lib/dragonfly/isos"))
+        // Jetpack playbook tarballs (served during provisioning)
+        .nest_service("/playbooks", ServeDir::new("/var/lib/dragonfly/playbooks"))
         .nest("/api", api::api_router())
         .nest_service("/static", {
             #[cfg(debug_assertions)]

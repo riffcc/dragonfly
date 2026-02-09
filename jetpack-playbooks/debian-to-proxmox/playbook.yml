@@ -1,0 +1,13 @@
+# Debian 13 (Trixie) to Proxmox VE 9 conversion playbook
+#
+# Designed to run inside a chroot on a freshly imaged Debian 13 disk.
+# Called by Dragonfly's jetpack action during bare metal provisioning.
+#
+# Installs Proxmox VE 9.x, removes the Debian kernel, and configures
+# the system to boot directly into Proxmox.
+
+- name: Convert Debian 13 to Proxmox VE 9
+  groups:
+    - all
+  roles:
+    - proxmox

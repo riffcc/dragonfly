@@ -48,7 +48,7 @@ pub async fn create_test_app_state() -> AppState {
         first_run: true,
         shutdown_tx,
         shutdown_rx,
-        template_env,
+        template_env: Arc::new(std::sync::RwLock::new(template_env)),
         dev_template_path: Arc::new(std::sync::RwLock::new(None)),
         is_installed: false,
         is_demo_mode: true,

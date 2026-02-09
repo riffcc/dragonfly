@@ -1,17 +1,18 @@
 //! Jetpack action
 //!
-//! Downloads the Jetpack binary and a playbook, then runs Jetpack in pull mode.
+//! Downloads the Jetpack binary and runs it in pull mode with `--url`,
+//! letting Jetpack handle playbook download/extraction (single files, tarballs, git repos).
 //! If a chroot is active (via the chroot action), Jetpack runs inside it with
 //! `--chroot <path>`.
 //!
 //! This action is Dragonfly-agnostic: the playbook URL can point to any
-//! HTTPS endpoint or git repository, and the Jetpack binary can be sourced
-//! from any URL (defaults to the latest GitHub release).
+//! HTTPS endpoint, tarball, or git repository, and the Jetpack binary can be
+//! sourced from any URL (defaults to the latest GitHub release).
 //!
 //! Template usage:
 //! ```yaml
 //! - action: jetpack
-//!   url: "https://example.com/playbook.yml"
+//!   url: "https://dragonfly.example.com/playbooks/debian-to-proxmox.tar.gz"
 //!   timeout: 3600
 //! ```
 
@@ -30,9 +31,6 @@ const DEFAULT_JETPACK_URL: &str =
 
 /// Where to store the downloaded Jetpack binary.
 const JETPACK_BIN_PATH: &str = "/tmp/jetpack-bin";
-
-/// Where to store the downloaded playbook.
-const PLAYBOOK_PATH: &str = "/tmp/jetpack-playbook.yml";
 
 pub struct JetpackAction;
 
@@ -71,23 +69,19 @@ impl Action for JetpackAction {
         make_executable(JETPACK_BIN_PATH).await?;
         info!(url = %binary_url, dest = %JETPACK_BIN_PATH, "Jetpack binary downloaded");
 
-        // Step 2: Download playbook
-        reporter.report(Progress::new("jetpack", 20, "Downloading playbook"));
-        download_file(&playbook_url, PLAYBOOK_PATH).await?;
-        info!(url = %playbook_url, dest = %PLAYBOOK_PATH, "Playbook downloaded");
-
-        // Step 3: Run Jetpack in pull mode
-        reporter.report(Progress::new("jetpack", 30, "Running Jetpack pull mode"));
+        // Step 2: Run Jetpack in pull mode with --url
+        // Jetpack handles download, extraction (tarballs), and playbook discovery
+        reporter.report(Progress::new("jetpack", 20, "Running Jetpack pull mode"));
 
         let chroot = chroot_path();
         let mut cmd = Command::new(JETPACK_BIN_PATH);
-        cmd.arg("pull").arg("--playbook").arg(PLAYBOOK_PATH);
+        cmd.arg("pull").arg("--url").arg(&playbook_url);
 
         if let Some(ref cp) = chroot {
             cmd.arg("--chroot").arg(cp);
-            info!(chroot = %cp, "Running Jetpack inside chroot");
+            info!(chroot = %cp, url = %playbook_url, "Running Jetpack inside chroot");
         } else {
-            info!("Running Jetpack locally (no chroot)");
+            info!(url = %playbook_url, "Running Jetpack locally (no chroot)");
         }
 
         let output = cmd

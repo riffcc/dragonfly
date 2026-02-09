@@ -1,0 +1,50 @@
+# Proxmox VE 9 installation tasks for Debian 13 (Trixie)
+#
+# Reference: https://pve.proxmox.com/wiki/Install_Proxmox_VE_on_Debian_13_Trixie
+#
+# Runs inside a chroot on a freshly imaged Debian 13 disk.
+# All commands execute via ChrootConnection (chroot <path> sh -c "...").
+
+- !shell
+  name: Add Proxmox VE archive keyring
+  cmd: "wget -qO /usr/share/keyrings/proxmox-archive-keyring.gpg https://enterprise.proxmox.com/debian/proxmox-archive-keyring-trixie.gpg"
+
+- !shell
+  name: Verify GPG key checksum
+  cmd: "echo '136673be77aba35dcce385b28737689ad64fd785a797e57897589aed08db6e45 /usr/share/keyrings/proxmox-archive-keyring.gpg' | sha256sum -c -"
+
+- !shell
+  name: Add Proxmox VE repository (deb822 format)
+  cmd: "printf 'Types: deb\\nURIs: http://download.proxmox.com/debian/pve\\nSuites: trixie\\nComponents: pve-no-subscription\\nSigned-By: /usr/share/keyrings/proxmox-archive-keyring.gpg\\n' > /etc/apt/sources.list.d/pve-install-repo.sources"
+
+- !shell
+  name: Update package index
+  cmd: "apt-get update"
+
+- !shell
+  name: Full system upgrade
+  cmd: "DEBIAN_FRONTEND=noninteractive apt-get -y full-upgrade"
+
+- !shell
+  name: Install Proxmox default kernel
+  cmd: "DEBIAN_FRONTEND=noninteractive apt-get -y install proxmox-default-kernel"
+
+- !shell
+  name: Install Proxmox VE
+  cmd: "DEBIAN_FRONTEND=noninteractive apt-get -y install proxmox-ve postfix open-iscsi chrony"
+
+- !shell
+  name: Remove Debian default kernel
+  cmd: "DEBIAN_FRONTEND=noninteractive apt-get -y remove linux-image-amd64 'linux-image-6.12*'"
+
+- !shell
+  name: Remove os-prober
+  cmd: "DEBIAN_FRONTEND=noninteractive apt-get -y remove os-prober"
+
+- !shell
+  name: Clean up unused packages
+  cmd: "DEBIAN_FRONTEND=noninteractive apt-get -y autoremove"
+
+- !shell
+  name: Update GRUB configuration
+  cmd: "update-grub"
