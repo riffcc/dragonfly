@@ -1,0 +1,39 @@
+[package]
+name = "rqlite-rs"
+version = "0.6.1"
+publish = true
+description = "Async rqlite client for Rust"
+readme = "../README.md"
+documentation = "https://docs.rs/rqlite-rs/"
+license.workspace = true
+authors.workspace = true
+edition.workspace = true
+keywords.workspace = true
+categories.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[features]
+default = ["macros", "native-tls"]
+
+native-tls = ["reqwest/native-tls"]
+rustls-tls = ["reqwest/rustls-tls"]
+
+macros = ["rqlite-rs-macros"]
+fast-blob = ["rqlite-rs-core/fast-blob", "rqlite-rs-macros/fast-blob"]
+random-fallback = ["nanorand"]
+
+[dependencies]
+rqlite-rs-macros = { version = "0.3.2", path = "../rqlite-rs-macros", optional = true }
+rqlite-rs-core = { version = "0.3.2", path = "../rqlite-rs-core" }
+reqwest = { version = "0.12", default-features = false }
+nanorand = { version = "0.7", optional = true }
+base64.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tokio = "1"
+axum = { version = "0.8", features = ["macros"] }
+axum-test = "17"
