@@ -5,7 +5,8 @@ metadata:
 spec:
   timeout: 14400
   actions:
-    # Proxmox VE installation uses Debian 13 Trixie as a base
+    # Proxmox VE 9 installation on Debian 13 Trixie
+    # Follows: https://pve.proxmox.com/wiki/Install_Proxmox_VE_on_Debian_13_Trixie
     - action: image2disk
       url: "https://cloud.debian.org/images/cloud/trixie/daily/latest/debian-13-generic-amd64-daily.tar.xz"
       disk: auto
@@ -41,7 +42,7 @@ spec:
       partition: 1
       content: |
         #cloud-config
-        manage_etc_hosts: localhost
+        manage_etc_hosts: false
         users:
           - name: "{{ default_user }}"
             sudo: ALL=(ALL) NOPASSWD:ALL
@@ -60,49 +61,157 @@ spec:
               password: "{{ default_password }}"
               type: text
         ssh_pwauth: {{ ssh_pwauth }}
-        runcmd:
-          - |
-            # Only install qemu-guest-agent if virtio serial port exists (running on QEMU/KVM)
-            if [ -e /dev/virtio-ports/org.qemu.guest_agent.0 ]; then
-              apt-get install -y qemu-guest-agent
-              systemctl enable qemu-guest-agent
-              systemctl start qemu-guest-agent
-            fi
-          - |
-            # Add Proxmox VE repository (Debian 13 Trixie)
-            cat > /etc/apt/sources.list.d/pve-install-repo.sources << 'PVEREPO'
-            Types: deb
-            URIs: http://download.proxmox.com/debian/pve
-            Suites: trixie
-            Components: pve-no-subscription
-            Signed-By: /usr/share/keyrings/proxmox-archive-keyring.gpg
-            PVEREPO
-          - |
-            # Download and install Proxmox repository key
-            wget -q https://enterprise.proxmox.com/debian/proxmox-archive-keyring-trixie.gpg \
-              -O /usr/share/keyrings/proxmox-archive-keyring.gpg
-          - |
-            # Update package lists and full upgrade
-            apt-get update
-            DEBIAN_FRONTEND=noninteractive apt-get -y full-upgrade
-          - |
-            # Install Proxmox kernel
-            DEBIAN_FRONTEND=noninteractive apt-get -y install proxmox-default-kernel
-          - |
-            # Install Proxmox VE packages (postfix configured as local only)
-            debconf-set-selections <<< "postfix postfix/mailname string $(hostname -f)"
-            debconf-set-selections <<< "postfix postfix/main_mailer_type string 'Local only'"
-            DEBIAN_FRONTEND=noninteractive apt-get -y install proxmox-ve postfix open-iscsi chrony
-          - |
-            # Remove default Debian kernel (will use Proxmox kernel after reboot)
-            DEBIAN_FRONTEND=noninteractive apt-get -y remove linux-image-amd64 'linux-image-6.*' || true
-            update-grub
-          - |
-            # Remove os-prober to prevent issues with VMs
-            DEBIAN_FRONTEND=noninteractive apt-get -y remove os-prober || true
-          - |
-            # Enable pveproxy service
-            systemctl enable pveproxy
+      mode: "0644"
+      timeout: 90
+
+    # Proxmox requires hostname → real IP in /etc/hosts (NOT loopback).
+    # Cloud-init's manage_etc_hosts is set to false so we control this.
+    # The install script will fix /etc/hosts at runtime with the real IP.
+
+    # Multi-phase installer: survives reboots via systemd oneshot service.
+    # Phase 1: Add repo + install Proxmox kernel → reboot
+    # Phase 2: Install proxmox-ve + configure vmbr0 → reboot
+    - action: writefile
+      path: /opt/dragonfly-proxmox-install.sh
+      partition: 1
+      content: |
+        #!/bin/bash
+        set -euo pipefail
+        export DEBIAN_FRONTEND=noninteractive
+        PHASE_FILE="/opt/.dragonfly-proxmox-phase"
+        LOG="/var/log/dragonfly-proxmox-install.log"
+        exec >> "$LOG" 2>&1
+        echo "=== $(date) === Phase: $(cat "$PHASE_FILE" 2>/dev/null || echo 1) ==="
+
+        # Determine real IP and primary interface
+        PRIMARY_IF=$(ip -o -4 route show default | awk '{print $5}' | head -1)
+        PRIMARY_IP=$(ip -o -4 addr show dev "$PRIMARY_IF" | awk '{print $4}' | head -1)
+        PRIMARY_ADDR=${PRIMARY_IP%/*}
+        PRIMARY_CIDR=$PRIMARY_IP
+        GATEWAY=$(ip -o -4 route show default | awk '{print $3}' | head -1)
+        HOSTNAME_SHORT=$(hostname -s)
+        HOSTNAME_FQDN=$(hostname -f 2>/dev/null || echo "$HOSTNAME_SHORT")
+
+        # Fix /etc/hosts — Proxmox requires hostname → non-loopback IP
+        sed -i "/127\.0\.1\.1/d" /etc/hosts
+        if ! grep -q "$PRIMARY_ADDR.*$HOSTNAME_SHORT" /etc/hosts; then
+          sed -i "/^127\.0\.0\.1/a $PRIMARY_ADDR $HOSTNAME_FQDN $HOSTNAME_SHORT" /etc/hosts
+        fi
+
+        PHASE=$(cat "$PHASE_FILE" 2>/dev/null || echo "1")
+
+        if [ "$PHASE" = "1" ]; then
+          echo "=== PHASE 1: Repository + Proxmox kernel ==="
+
+          # Add Proxmox VE repository
+          cat > /etc/apt/sources.list.d/pve-install-repo.sources << 'PVEREPO'
+        Types: deb
+        URIs: http://download.proxmox.com/debian/pve
+        Suites: trixie
+        Components: pve-no-subscription
+        Signed-By: /usr/share/keyrings/proxmox-archive-keyring.gpg
+        PVEREPO
+
+          # Download GPG key
+          wget -q https://enterprise.proxmox.com/debian/proxmox-archive-keyring-trixie.gpg \
+            -O /usr/share/keyrings/proxmox-archive-keyring.gpg
+
+          # Update and full-upgrade
+          apt-get update
+          apt-get -y full-upgrade
+
+          # Install Proxmox kernel
+          apt-get -y install proxmox-default-kernel
+
+          # Mark phase 2 and reboot into Proxmox kernel
+          echo "2" > "$PHASE_FILE"
+          echo "=== Phase 1 complete, rebooting into Proxmox kernel ==="
+          systemctl reboot
+          exit 0
+        fi
+
+        if [ "$PHASE" = "2" ]; then
+          echo "=== PHASE 2: Proxmox VE packages + network bridge ==="
+
+          # Preconfigure postfix as local-only
+          debconf-set-selections <<< "postfix postfix/mailname string $HOSTNAME_FQDN"
+          debconf-set-selections <<< "postfix postfix/main_mailer_type string Local only"
+
+          # Install Proxmox VE
+          apt-get -y install proxmox-ve postfix open-iscsi chrony
+
+          # Remove Debian default kernel
+          apt-get -y remove linux-image-amd64 'linux-image-6.*' || true
+          update-grub
+
+          # Remove os-prober
+          apt-get -y remove os-prober || true
+
+          # Install qemu-guest-agent if running on QEMU/KVM
+          if [ -e /dev/virtio-ports/org.qemu.guest_agent.0 ]; then
+            apt-get -y install qemu-guest-agent
+            systemctl enable qemu-guest-agent
+            systemctl start qemu-guest-agent
+          fi
+
+          # Configure vmbr0 bridge
+          cat > /etc/network/interfaces << NETEOF
+        auto lo
+        iface lo inet loopback
+
+        iface $PRIMARY_IF inet manual
+
+        auto vmbr0
+        iface vmbr0 inet static
+            address $PRIMARY_CIDR
+            gateway $GATEWAY
+            bridge-ports $PRIMARY_IF
+            bridge-stp off
+            bridge-fd 0
+        NETEOF
+
+          # Mark complete and disable the installer service
+          echo "done" > "$PHASE_FILE"
+          systemctl disable dragonfly-proxmox-install.service
+          echo "=== Phase 2 complete, Proxmox VE installed ==="
+          echo "=== Web UI available at https://$PRIMARY_ADDR:8006 ==="
+          systemctl reboot
+          exit 0
+        fi
+
+        echo "Unknown phase: $PHASE"
+        exit 1
+      mode: "0755"
+      timeout: 90
+
+    # Systemd service that runs the installer on every boot until complete
+    - action: writefile
+      path: /etc/systemd/system/dragonfly-proxmox-install.service
+      partition: 1
+      content: |
+        [Unit]
+        Description=Dragonfly Proxmox VE Installer
+        After=network-online.target cloud-final.service
+        Wants=network-online.target
+        ConditionPathExists=!/opt/.dragonfly-proxmox-phase-done
+
+        [Service]
+        Type=oneshot
+        ExecStart=/opt/dragonfly-proxmox-install.sh
+        RemainAfterExit=no
+        TimeoutStartSec=3600
+
+        [Install]
+        WantedBy=multi-user.target
+      mode: "0644"
+      timeout: 90
+
+    # Enable the service
+    - action: writefile
+      path: /etc/systemd/system/multi-user.target.wants/dragonfly-proxmox-install.service
+      partition: 1
+      content: |
+        symlink:/etc/systemd/system/dragonfly-proxmox-install.service
       mode: "0644"
       timeout: 90
 
