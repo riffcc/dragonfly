@@ -58,6 +58,13 @@ See [ROADMAP.md](ROADMAP.md) for upcoming features and planned work.
 
 See [dragonfly.computer](https://dragonfly.computer/docs/installation/) for installation instructions.
 
+
+## 📝 License
+
+Dragonfly is licensed under the AGPLv3 license.
+
+See the [LICENSE](LICENSE) for more details.
+
 ## 📚 Credits
 
 Dragonfly is inspired by the Tinkerbell project. It would not have been possible without their work, and we're grateful for their efforts.
@@ -70,9 +77,18 @@ We also thank other projects that Dragonfly builds on, such as:
 
 Thanks to [Taylor Vick](https://unsplash.com/photos/cable-network-M5tzZtFCOfs) for the login page background image ("racks.jpg")
 
-## 📝 License
+## 🤖 Interim AI Disclosure
+This project's development is accelerated via contributions from LLMs ("code-gen"/"ai generated code").
 
-Dragonfly is licensed under the AGPLv3 license.
+A combination of manual human testing and automated testing is used when developing Dragonfly, and **real hardware with real stakes** is used to validate it.
 
-See the [LICENSE](LICENSE) for more details.
+Tools used include:
+* Claude Code (Anthropic) + Codex (OpenAI) + Palace (Riff Labs)
+
+Models used include:
+* Claude (Anthropic, various models)
+* GPT-Codex, GPT (OpenAI, various models)
+* GLM (Z.ai, various models)
+
+Further details on our specific usage of AI for development will be published in a documentation refresh.
 
