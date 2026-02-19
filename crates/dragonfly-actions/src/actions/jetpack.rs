@@ -130,8 +130,31 @@ impl Action for JetpackAction {
     }
 }
 
-/// Download a file from a URL using curl.
+/// Download a file from a URL.
+///
+/// Tries `wget` first (available in Alpine/BusyBox environments like Mage),
+/// then falls back to `curl` if wget is not found.
 async fn download_file(url: &str, dest: &str) -> Result<()> {
+    // Try wget first (Alpine/BusyBox has it built-in)
+    match Command::new("wget").arg("-q").arg("-O").arg(dest).arg(url).status().await {
+        Ok(status) if status.success() => return Ok(()),
+        Ok(status) => {
+            return Err(ActionError::ExecutionFailed(format!(
+                "download failed (wget exit {}): {}",
+                status.code().unwrap_or(-1),
+                url
+            )));
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            // wget not found, fall through to curl
+            debug!("wget not found, trying curl");
+        }
+        Err(e) => {
+            return Err(ActionError::ExecutionFailed(format!("wget failed: {}", e)));
+        }
+    }
+
+    // Fall back to curl
     let status = Command::new("curl")
         .arg("-sfL")
         .arg("--connect-timeout")
@@ -147,7 +170,7 @@ async fn download_file(url: &str, dest: &str) -> Result<()> {
 
     if !status.success() {
         return Err(ActionError::ExecutionFailed(format!(
-            "download failed ({}): {}",
+            "download failed (curl exit {}): {}",
             status.code().unwrap_or(-1),
             url
         )));
