@@ -4624,8 +4624,11 @@ pub async fn serve_pxelinux_config() -> Response {
 // Mage Boot Environment
 // ============================================================================
 
-/// Mage artifacts directory
+/// Mage artifacts directory (Alpine)
 const MAGE_DIR: &str = "/var/lib/dragonfly/mage";
+
+/// Debian Mage artifacts directory
+const MAGE_DEBIAN_DIR: &str = "/var/lib/dragonfly/mage-debian";
 
 /// Alpine mirror for netboot artifacts
 const ALPINE_MIRROR: &str = "https://dl-cdn.alpinelinux.org/alpine";
@@ -4977,6 +4980,159 @@ pub async fn serve_boot_asset(arch: &str, asset: &str, state: &AppState) -> Resp
                 .into_response()
         }
     }
+}
+
+// ============================================================================
+// Debian Mage Boot Environment
+// ============================================================================
+
+/// Handler for /boot-debian/{arch}/{asset} routes — serves Debian Mage artifacts
+pub async fn serve_debian_boot_asset_handler(
+    axum::extract::Path((arch, asset)): axum::extract::Path<(String, String)>,
+) -> Response {
+    serve_debian_boot_asset(&arch, &asset).await
+}
+
+/// Serve Debian Mage boot assets (kernel, initramfs) for a specific architecture
+///
+/// Maps URL paths to Debian Mage files:
+/// - /boot-debian/{arch}/kernel -> vmlinuz
+/// - /boot-debian/{arch}/initramfs -> initramfs
+///
+/// Unlike Alpine Mage, Debian Mage has no modloop or apkovl — the agent is
+/// baked into the initramfs and all packages are pre-installed.
+pub async fn serve_debian_boot_asset(arch: &str, asset: &str) -> Response {
+    // Normalize architecture names
+    let normalized_arch = match arch {
+        "x86_64" | "i386" => "x86_64",
+        "aarch64" | "arm64" => "aarch64",
+        _ => {
+            warn!("404 /boot-debian/{}/{}: Unknown architecture", arch, asset);
+            return (
+                StatusCode::NOT_FOUND,
+                format!(
+                    "Unknown architecture: {} (supported: x86_64, i386, aarch64, arm64)",
+                    arch
+                ),
+            )
+                .into_response();
+        }
+    };
+
+    // Map URL names to internal file names
+    let filename = match asset {
+        "kernel" => "vmlinuz",
+        "initramfs" => "initramfs",
+        _ => {
+            warn!(
+                "404 /boot-debian/{}/{}: Unknown asset type",
+                arch, asset
+            );
+            return (
+                StatusCode::NOT_FOUND,
+                format!("Unknown Debian Mage boot asset: {} (supported: kernel, initramfs)", asset),
+            )
+                .into_response();
+        }
+    };
+
+    let file_path = FilePath::new(MAGE_DEBIAN_DIR)
+        .join(normalized_arch)
+        .join(filename);
+
+    if !file_path.exists() {
+        warn!(
+            "404 /boot-debian/{}/{}: File not found at {:?}",
+            arch, asset, file_path
+        );
+        return (
+            StatusCode::NOT_FOUND,
+            format!(
+                "Debian Mage boot asset not found: {}/{} (run scripts/build-debian-mage.sh first)",
+                normalized_arch, asset
+            ),
+        )
+            .into_response();
+    }
+
+    // Read file and serve
+    match tokio::fs::read(&file_path).await {
+        Ok(content) => {
+            info!(
+                "200 /boot-debian/{}/{}: Serving {} bytes from {:?}",
+                arch,
+                asset,
+                content.len(),
+                file_path
+            );
+            (
+                StatusCode::OK,
+                [(
+                    axum::http::header::CONTENT_TYPE,
+                    "application/octet-stream",
+                )],
+                content,
+            )
+                .into_response()
+        }
+        Err(e) => {
+            error!(
+                "500 /boot-debian/{}/{}: Failed to read {:?}: {}",
+                arch, asset, file_path, e
+            );
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to read Debian Mage boot asset: {}", e),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// Verify that Debian Mage boot artifacts exist for the given architectures
+pub fn verify_debian_mage_artifacts(architectures: &[&str]) -> anyhow::Result<()> {
+    let required_files = ["vmlinuz", "initramfs"];
+    let mut missing = Vec::new();
+    let mut empty = Vec::new();
+
+    for arch in architectures {
+        let mage_dir = FilePath::new(MAGE_DEBIAN_DIR).join(arch);
+
+        for file in &required_files {
+            let file_path = mage_dir.join(file);
+
+            if !file_path.exists() {
+                missing.push(format!("{}/{}", arch, file));
+            } else if let Ok(metadata) = std::fs::metadata(&file_path) {
+                if metadata.len() == 0 {
+                    empty.push(format!("{}/{}", arch, file));
+                }
+            }
+        }
+    }
+
+    if !missing.is_empty() || !empty.is_empty() {
+        let mut errors = Vec::new();
+        if !missing.is_empty() {
+            errors.push(format!(
+                "Missing Debian Mage artifacts: {}",
+                missing.join(", ")
+            ));
+        }
+        if !empty.is_empty() {
+            errors.push(format!(
+                "Empty Debian Mage artifacts: {}",
+                empty.join(", ")
+            ));
+        }
+        anyhow::bail!("{}", errors.join("; "));
+    }
+
+    info!(
+        "Verified all Debian Mage artifacts exist for: {}",
+        architectures.join(", ")
+    );
+    Ok(())
 }
 
 /// Download iPXE binaries for PXE boot

@@ -272,16 +272,30 @@ impl ProvisioningService {
         });
 
         if let Some(wf) = active_workflow {
-            // Active imaging workflow - boot directly into Mage
-            info!(
-                "Machine {} has active workflow {}, booting Mage",
-                machine.id, wf.metadata.name
-            );
-            let script = self
-                .ipxe_generator
-                .imaging_script(None, &wf.metadata.name)
-                .map_err(|e| ProvisioningError::IpxeGeneration(e.to_string()))?;
-            return Ok(script);
+            // Active imaging workflow - choose boot environment based on template
+            let use_debian_mage = self.should_use_debian_mage(&wf.spec.template_ref).await;
+
+            if use_debian_mage {
+                info!(
+                    "Machine {} has active workflow {}, booting Debian Mage",
+                    machine.id, wf.metadata.name
+                );
+                let script = self
+                    .ipxe_generator
+                    .debian_imaging_script(None, &wf.metadata.name)
+                    .map_err(|e| ProvisioningError::IpxeGeneration(e.to_string()))?;
+                return Ok(script);
+            } else {
+                info!(
+                    "Machine {} has active workflow {}, booting Alpine Mage",
+                    machine.id, wf.metadata.name
+                );
+                let script = self
+                    .ipxe_generator
+                    .imaging_script(None, &wf.metadata.name)
+                    .map_err(|e| ProvisioningError::IpxeGeneration(e.to_string()))?;
+                return Ok(script);
+            }
         }
 
         // No active workflow - boot into Spark for discovery
@@ -294,6 +308,23 @@ impl ProvisioningService {
             machine.id, machine.status.state
         );
         Ok(self.ipxe_generator.spark_script())
+    }
+
+    /// Check if a template requires Debian Mage boot environment
+    ///
+    /// Returns true if the template has `boot_env: debian` set, indicating
+    /// it should use Debian Mage instead of Alpine Mage for provisioning.
+    async fn should_use_debian_mage(&self, template_name: &str) -> bool {
+        match self.store.get_template(template_name).await {
+            Ok(Some(template)) => {
+                template
+                    .spec
+                    .boot_env
+                    .as_deref()
+                    .is_some_and(|env| env == "debian")
+            }
+            _ => false,
+        }
     }
 
     /// Get boot script for unknown machine

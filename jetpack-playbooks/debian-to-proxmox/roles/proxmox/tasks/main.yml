@@ -2,8 +2,19 @@
 #
 # Reference: https://pve.proxmox.com/wiki/Install_Proxmox_VE_on_Debian_13_Trixie
 #
-# Runs inside a chroot on a freshly imaged Debian 13 disk.
-# All commands execute via ChrootConnection (chroot <path> sh -c "...").
+# Runs inside a chroot on a Debian 13 disk (cloud image or debootstrapped).
+# Debian Mage boot environment = Debian-on-Debian = zero impedance mismatch.
+#
+# No sandbox hacks. No dpkg-divert. No MODULES pinning. No kernel mismatch.
+# Just install packages and go.
+
+# === Chroot safety: prevent daemons from starting during installation ===
+
+- !shell
+  name: Prevent service starts in chroot
+  cmd: "printf '#!/bin/sh\\nexit 101\\n' > /usr/sbin/policy-rc.d && chmod +x /usr/sbin/policy-rc.d"
+
+# === Proxmox repository setup ===
 
 - !shell
   name: Add Proxmox VE archive keyring
@@ -21,6 +32,8 @@
   name: Update package index
   cmd: "apt-get update"
 
+# === Package installation ===
+
 - !shell
   name: Full system upgrade
   cmd: "DEBIAN_FRONTEND=noninteractive apt-get -y full-upgrade"
@@ -33,6 +46,8 @@
   name: Install Proxmox VE
   cmd: "DEBIAN_FRONTEND=noninteractive apt-get -y install proxmox-ve postfix open-iscsi chrony"
 
+# === Cleanup ===
+
 - !shell
   name: Remove Debian default kernel
   cmd: "DEBIAN_FRONTEND=noninteractive apt-get -y remove linux-image-amd64 'linux-image-6.12*'"
@@ -44,6 +59,43 @@
 - !shell
   name: Clean up unused packages
   cmd: "DEBIAN_FRONTEND=noninteractive apt-get -y autoremove"
+
+# === Bootloader installation ===
+
+- !shell
+  name: Remove chroot policy-rc.d
+  cmd: "rm -f /usr/sbin/policy-rc.d"
+
+# Detect BIOS vs UEFI and install GRUB to the correct target
+- !shell
+  name: Install GRUB bootloader (BIOS or UEFI)
+  cmd: |
+    if [ -d /sys/firmware/efi ]; then
+      echo "Detected UEFI boot"
+      mkdir -p /boot/efi
+      EFI_PART=$(lsblk -rno NAME,PARTTYPE | grep -i 'c12a7328-f81f-11d2-ba4b-00a0c93ec93b' | awk '{print "/dev/"$1}' | head -1)
+      if [ -n "$EFI_PART" ]; then
+        mount "$EFI_PART" /boot/efi
+        grub-install --target=x86_64-efi --efi-directory=/boot/efi --bootloader-id=proxmox --recheck
+        umount /boot/efi
+      else
+        echo "WARNING: UEFI detected but no EFI System Partition found, skipping grub-install"
+      fi
+    else
+      echo "Detected BIOS boot"
+      ROOT_PART=$(awk '$2 == "/mnt/chroot" { print $1; exit }' /proc/mounts)
+      if [ -z "$ROOT_PART" ]; then
+        ROOT_PART=$(awk '$2 == "/" && $1 ~ /^\/dev/ { print $1; exit }' /proc/mounts)
+      fi
+      DISK=$(lsblk -no PKNAME "$ROOT_PART" 2>/dev/null)
+      if [ -n "$DISK" ]; then
+        DISK="/dev/$DISK"
+      else
+        DISK=$(echo "$ROOT_PART" | sed 's/[0-9]*$//')
+      fi
+      echo "Installing GRUB to $DISK (BIOS/MBR)"
+      grub-install --target=i386-pc "$DISK"
+    fi
 
 - !shell
   name: Update GRUB configuration

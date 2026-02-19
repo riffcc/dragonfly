@@ -10,4 +10,4 @@
   groups:
     - all
   roles:
-    - proxmox
+    - role: proxmox

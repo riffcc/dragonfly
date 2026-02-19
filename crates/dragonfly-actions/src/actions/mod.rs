@@ -7,6 +7,7 @@
 //! # Available Actions
 //!
 //! - `image2disk` - Stream OS images (QCOW2, raw, tar.gz) to disk
+//! - `debootstrap` - Install Debian base system from scratch
 //! - `writefile` - Write files to the filesystem
 //! - `kexec` - Boot into the installed operating system
 //! - `partition` - Create disk partitions
@@ -15,6 +16,7 @@
 //! - `reboot` - Reboot the machine
 
 mod chroot;
+mod debootstrap;
 mod efibootmgr;
 mod image2disk;
 mod jetpack;
@@ -25,6 +27,7 @@ mod seabios;
 mod writefile;
 
 pub use chroot::{ChrootAction, chroot_path, is_chroot_active};
+pub use debootstrap::DebootstrapAction;
 pub use efibootmgr::EfibootmgrAction;
 pub use image2disk::Image2DiskAction;
 pub use jetpack::JetpackAction;
@@ -39,6 +42,7 @@ use crate::ActionEngine;
 /// Register all native actions with the engine
 pub fn register_all(engine: &mut ActionEngine) {
     engine.register(ChrootAction);
+    engine.register(DebootstrapAction);
     engine.register(EfibootmgrAction);
     engine.register(Image2DiskAction);
     engine.register(JetpackAction);

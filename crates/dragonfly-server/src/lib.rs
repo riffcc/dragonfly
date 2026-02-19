@@ -1,5 +1,5 @@
 use anyhow::{Context, anyhow};
-use axum::extract::MatchedPath;
+use axum::extract::{MatchedPath, Path};
 use axum::{Router, extract::Extension, http::StatusCode, response::IntoResponse, routing::get};
 use axum_login::AuthManagerLayerBuilder;
 use listenfd::ListenFd;
@@ -58,6 +58,29 @@ pub mod ui;
 
 // Expose status module for integration tests
 pub mod status;
+
+// Static web assets embedded at compile time.
+// In debug builds rust-embed reads from disk on each request (hot-reload).
+// In release builds the files are baked into the binary — no /opt/dragonfly/static needed.
+#[derive(rust_embed::Embed)]
+#[folder = "$CARGO_MANIFEST_DIR/static"]
+struct StaticAssets;
+
+// Serve a file from the embedded static asset bundle.
+async fn serve_embedded_static(Path(path): Path<String>) -> impl IntoResponse {
+    let path = path.trim_start_matches('/');
+    match StaticAssets::get(path) {
+        Some(content) => {
+            let mime = mime_guess::from_path(path).first_or_octet_stream();
+            (
+                [(axum::http::header::CONTENT_TYPE, mime.as_ref().to_string())],
+                content.data.into_owned(),
+            )
+                .into_response()
+        }
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
+}
 
 // Add tokio::fs for directory check
 use tokio::fs as async_fs;
@@ -897,6 +920,8 @@ pub async fn run() -> anyhow::Result<()> {
             spark_url: std::env::var("DRAGONFLY_SPARK_URL").ok(),
             mage_kernel_url: std::env::var("DRAGONFLY_MAGE_KERNEL_URL").ok(),
             mage_initramfs_url: std::env::var("DRAGONFLY_MAGE_INITRAMFS_URL").ok(),
+            debian_mage_kernel_url: std::env::var("DRAGONFLY_DEBIAN_MAGE_KERNEL_URL").ok(),
+            debian_mage_initramfs_url: std::env::var("DRAGONFLY_DEBIAN_MAGE_INITRAMFS_URL").ok(),
             kernel_params: vec![],
             console: std::env::var("DRAGONFLY_CONSOLE").ok(),
             verbose: false,
@@ -1022,6 +1047,8 @@ pub async fn run() -> anyhow::Result<()> {
         .route("/boot/pxelinux.cfg/default", get(api::serve_pxelinux_config))
         // Dynamic boot assets - supports x86_64, aarch64, and arm64 (iPXE uses arm64)
         .route("/boot/{arch}/{asset}", get(api::serve_boot_asset_handler))
+        // Debian Mage boot assets - Debian-based boot environment for zero-impedance provisioning
+        .route("/boot-debian/{arch}/{asset}", get(api::serve_debian_boot_asset_handler))
         // OS images (served during provisioning)
         .route("/os/debian-13/amd64", get(|| async { api::serve_os_image("debian-13", "amd64").await }))
         .route("/os/debian-13/arm64", get(|| async { api::serve_os_image("debian-13", "arm64").await }))
@@ -1035,13 +1062,9 @@ pub async fn run() -> anyhow::Result<()> {
         // Jetpack playbook tarballs (served during provisioning)
         .nest_service("/playbooks", ServeDir::new("/var/lib/dragonfly/playbooks"))
         .nest("/api", api::api_router())
-        .nest_service("/static", {
-            #[cfg(debug_assertions)]
-            let static_path = "crates/dragonfly-server/static";
-            #[cfg(not(debug_assertions))]
-            let static_path = "/opt/dragonfly/static";
-            ServeDir::new(static_path)
-        })
+        // Static assets are embedded in the binary at compile time (rust-embed).
+        // In debug builds, rust-embed reads from disk on each request for hot-reload.
+        .route("/static/{*path}", get(serve_embedded_static))
         .layer(CookieManagerLayer::new())
         .layer(auth_layer)
         // Configure a more verbose TraceLayer (after IP tracking)
@@ -1157,6 +1180,7 @@ pub async fn run() -> anyhow::Result<()> {
     }
 
     // Shutdown signal handling
+    let cluster_abort_flag = app_state.cluster_abort.clone();
     let shutdown_signal = async move {
         let ctrl_c = async {
             let _ = tokio::signal::ctrl_c().await;
@@ -1179,6 +1203,9 @@ pub async fn run() -> anyhow::Result<()> {
             _ = terminate => {},
         }
 
+        // Abort any in-flight cluster deployment so it exits promptly
+        cluster_abort_flag.store(true, std::sync::atomic::Ordering::Relaxed);
+
         let _ = shutdown_tx.send(());
 
         // Force exit after 5 seconds
@@ -1200,19 +1227,14 @@ pub async fn run() -> anyhow::Result<()> {
 }
 
 async fn handle_favicon() -> impl IntoResponse {
-    #[cfg(debug_assertions)]
-    let path = "crates/dragonfly-server/static/favicon/favicon.ico";
-    #[cfg(not(debug_assertions))]
-    let path = "/opt/dragonfly/static/favicon/favicon.ico";
-
-    match tokio::fs::read(path).await {
-        Ok(contents) => (
+    match StaticAssets::get("favicon/favicon.ico") {
+        Some(content) => (
             StatusCode::OK,
             [(axum::http::header::CONTENT_TYPE, "image/x-icon")],
-            contents,
+            content.data.into_owned(),
         )
             .into_response(),
-        Err(_) => (StatusCode::NOT_FOUND, "Favicon not found").into_response(),
+        None => (StatusCode::NOT_FOUND, "Favicon not found").into_response(),
     }
 }
 

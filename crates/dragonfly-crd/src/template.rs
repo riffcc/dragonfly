@@ -95,6 +95,14 @@ pub struct TemplateSpec {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timeout: Option<u64>,
 
+    /// Boot environment to use: "alpine" (default) or "debian"
+    ///
+    /// Alpine Mage is the standard boot environment. Debian Mage is used for
+    /// provisioning Debian-based systems where Alpine causes impedance mismatch
+    /// (apt sandbox failures, dpkg-divert issues, kernel mismatch).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub boot_env: Option<String>,
+
     /// Actions to execute in order
     #[serde(default)]
     pub actions: Vec<ActionStep>,
@@ -141,6 +149,8 @@ pub enum ActionStep {
     Chroot(ChrootConfig),
     /// Run Jetpack in pull mode (optionally inside active chroot)
     Jetpack(JetpackConfig),
+    /// Install a Debian base system via debootstrap
+    Debootstrap(DebootstrapConfig),
 }
 
 impl ActionStep {
@@ -156,6 +166,7 @@ impl ActionStep {
             ActionStep::Reboot(_) => "reboot",
             ActionStep::Chroot(_) => "chroot",
             ActionStep::Jetpack(_) => "jetpack",
+            ActionStep::Debootstrap(_) => "debootstrap",
         }
     }
 
@@ -171,6 +182,7 @@ impl ActionStep {
             ActionStep::Reboot(cfg) => cfg.timeout,
             ActionStep::Chroot(cfg) => cfg.timeout,
             ActionStep::Jetpack(cfg) => cfg.timeout,
+            ActionStep::Debootstrap(cfg) => cfg.timeout,
         }
     }
 
@@ -212,6 +224,12 @@ impl ActionStep {
             ActionStep::Jetpack(cfg) => {
                 if cfg.url.is_empty() {
                     return Err(CrdError::MissingField("jetpack.url".to_string()));
+                }
+                Ok(())
+            }
+            ActionStep::Debootstrap(cfg) => {
+                if cfg.suite.is_empty() {
+                    return Err(CrdError::MissingField("debootstrap.suite".to_string()));
                 }
                 Ok(())
             }
@@ -422,6 +440,35 @@ impl ActionStep {
                 if let Some(ref bin_url) = cfg.binary_url {
                     let bin_url = bin_url.replace("{{ server }}", server);
                     env.insert("JETPACK_BINARY_URL".to_string(), bin_url);
+                }
+            }
+            ActionStep::Debootstrap(cfg) => {
+                // Resolve disk
+                let disk = if cfg.disk == "auto" {
+                    hardware_disks
+                        .first()
+                        .cloned()
+                        .unwrap_or_else(|| "/dev/sda".to_string())
+                } else {
+                    cfg.disk.clone()
+                };
+
+                env.insert("DEST_DISK".to_string(), disk);
+                env.insert("SUITE".to_string(), cfg.suite.clone());
+                env.insert(
+                    "PARTITION_LAYOUT".to_string(),
+                    cfg.layout.clone().unwrap_or_else(|| "gpt-bios".to_string()),
+                );
+                env.insert(
+                    "HOSTNAME".to_string(),
+                    friendly_name.clone(),
+                );
+
+                if let Some(ref mirror) = cfg.mirror {
+                    env.insert("MIRROR".to_string(), mirror.clone());
+                }
+                if let Some(ref extra) = cfg.extra_packages {
+                    env.insert("EXTRA_PACKAGES".to_string(), extra.clone());
                 }
             }
         }
@@ -640,6 +687,36 @@ pub struct ChrootConfig {
     pub timeout: Option<u64>,
 }
 
+/// Configuration for debootstrap action
+///
+/// Partitions a disk and installs a minimal Debian base system via debootstrap.
+/// Used by Debian Mage boot environment for zero-impedance-mismatch provisioning.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DebootstrapConfig {
+    /// Debian suite to install (e.g., "trixie", "bookworm")
+    pub suite: String,
+
+    /// Target disk device ("auto" to auto-detect)
+    #[serde(default = "default_disk")]
+    pub disk: String,
+
+    /// Partition layout: "gpt-efi", "gpt-bios", or "single"
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub layout: Option<String>,
+
+    /// Debian mirror URL (defaults to the standard mirror)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mirror: Option<String>,
+
+    /// Extra packages to install (comma-separated)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub extra_packages: Option<String>,
+
+    /// Action timeout in seconds
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timeout: Option<u64>,
+}
+
 fn default_true() -> bool {
     true
 }
@@ -664,6 +741,8 @@ pub mod actions {
     pub const CHROOT: &str = "chroot";
     /// Run Jetpack in pull mode
     pub const JETPACK: &str = "jetpack";
+    /// Install Debian base system via debootstrap
+    pub const DEBOOTSTRAP: &str = "debootstrap";
 }
 
 #[cfg(test)]

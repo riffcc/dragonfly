@@ -56,6 +56,12 @@ pub struct IpxeConfig {
 
     /// Enable verbose boot logging
     pub verbose: bool,
+
+    /// Debian Mage kernel URL (for Debian-based provisioning)
+    pub debian_mage_kernel_url: Option<String>,
+
+    /// Debian Mage initramfs URL
+    pub debian_mage_initramfs_url: Option<String>,
 }
 
 impl Default for IpxeConfig {
@@ -68,6 +74,8 @@ impl Default for IpxeConfig {
             verbose: false,
             mage_kernel_url: None,
             mage_initramfs_url: None,
+            debian_mage_kernel_url: None,
+            debian_mage_initramfs_url: None,
         }
     }
 }
@@ -146,6 +154,30 @@ impl IpxeConfig {
 
     fn mage_apkovl(&self) -> String {
         format!("{}/boot/${{buildarch}}/apkovl.tar.gz", self.base_url)
+    }
+
+    fn debian_mage_kernel(&self) -> String {
+        self.debian_mage_kernel_url
+            .clone()
+            .unwrap_or_else(|| format!("{}/boot-debian/${{buildarch}}/kernel", self.base_url))
+    }
+
+    fn debian_mage_initramfs(&self) -> String {
+        self.debian_mage_initramfs_url
+            .clone()
+            .unwrap_or_else(|| format!("{}/boot-debian/${{buildarch}}/initramfs", self.base_url))
+    }
+
+    /// Set Debian Mage kernel URL
+    pub fn with_debian_mage_kernel(mut self, url: impl Into<String>) -> Self {
+        self.debian_mage_kernel_url = Some(url.into());
+        self
+    }
+
+    /// Set Debian Mage initramfs URL
+    pub fn with_debian_mage_initramfs(mut self, url: impl Into<String>) -> Self {
+        self.debian_mage_initramfs_url = Some(url.into());
+        self
     }
 }
 
@@ -406,7 +438,97 @@ shell
         )
     }
 
-    /// Build kernel parameters string
+    /// Generate Debian Mage discovery script
+    ///
+    /// Boots into Debian Mage environment for discovery. Used when a machine
+    /// needs rescue mode but Debian Mage is available.
+    pub fn debian_discovery_script(&self, hardware: Option<&Hardware>) -> Result<String> {
+        let kernel = self.config.debian_mage_kernel();
+        let initramfs = self.config.debian_mage_initramfs();
+        let params = self.debian_kernel_params(hardware, "discovery");
+
+        Ok(format!(
+            r#"#!ipxe
+# Dragonfly - Discovery Mode (Debian Mage)
+echo Booting into Debian Mage discovery mode...
+echo MAC: ${{mac}}
+
+kernel {kernel} {params}
+initrd {initramfs}
+boot
+"#
+        ))
+    }
+
+    /// Generate Debian Mage imaging script
+    ///
+    /// Boots into Debian Mage environment for provisioning. Used when a template
+    /// specifies `boot_env: debian` for zero-impedance-mismatch Debian provisioning.
+    pub fn debian_imaging_script(
+        &self,
+        hardware: Option<&Hardware>,
+        workflow_id: &str,
+    ) -> Result<String> {
+        let kernel = self.config.debian_mage_kernel();
+        let initramfs = self.config.debian_mage_initramfs();
+        let params = self.debian_kernel_params(hardware, "imaging");
+
+        Ok(format!(
+            r#"#!ipxe
+# Dragonfly - Imaging Mode (Debian Mage)
+echo Booting into Debian Mage imaging mode...
+echo MAC: ${{mac}}
+echo Workflow: {workflow_id}
+
+kernel {kernel} {params} dragonfly.workflow={workflow_id}
+initrd {initramfs}
+boot
+"#
+        ))
+    }
+
+    /// Build kernel parameters for Debian Mage
+    ///
+    /// Unlike Alpine Mage, Debian Mage doesn't need alpine_repo, modules=,
+    /// modloop, or apkovl parameters. It uses systemd-networkd for DHCP and
+    /// needs a larger tmpfs for debootstrap work.
+    fn debian_kernel_params(&self, hardware: Option<&Hardware>, mode: &str) -> String {
+        let mut params = self.config.kernel_params.clone();
+
+        // Debian boots with systemd — just need IP and tmpfs config
+        params.push("ip=dhcp".to_string());
+        // Larger tmpfs: debootstrap + package installs need ~2GB
+        params.push("rootflags=size=2g".to_string());
+        // Enable kexec for chainloading into installed OS
+        params.push("kexec_load_disabled=0".to_string());
+
+        // Console configuration
+        if let Some(ref console) = self.config.console {
+            params.push(format!("console={}", console));
+        } else {
+            params.push("console=tty1".to_string());
+            params.push("console=ttyS0,115200".to_string());
+        }
+
+        // Verbose logging
+        if self.config.verbose {
+            params.push("loglevel=7".to_string());
+        }
+
+        // Dragonfly parameters
+        params.push(format!("dragonfly.url={}", self.config.base_url));
+        params.push(format!("dragonfly.mode={}", mode));
+        params.push("dragonfly.mac=${mac}".to_string());
+
+        // Hardware ID if known
+        if let Some(hw) = hardware {
+            params.push(format!("dragonfly.hardware={}", hw.metadata.name));
+        }
+
+        params.join(" ")
+    }
+
+    /// Build kernel parameters string (Alpine Mage)
     fn kernel_params(&self, hardware: Option<&Hardware>, mode: &str) -> String {
         let mut params = self.config.kernel_params.clone();
 
@@ -420,6 +542,8 @@ shell
         );
         // Enable kexec for chainloading into existing OS (Alpine kernels disable by default)
         params.push("kexec_load_disabled=0".to_string());
+        // Increase root tmpfs size for provisioning workflows (kernel installs need space)
+        params.push("rootflags=size=768m".to_string());
 
         // Console configuration
         if let Some(ref console) = self.config.console {
@@ -612,5 +736,78 @@ mod tests {
         assert_eq!(config.console, Some("tty0".to_string()));
         assert!(config.verbose);
         assert_eq!(config.mage_kernel(), "http://10.0.0.1/kernel");
+    }
+
+    #[test]
+    fn test_debian_discovery_script() {
+        let generator = IpxeScriptGenerator::new(test_config());
+        let script = generator.debian_discovery_script(None).unwrap();
+
+        assert!(script.starts_with("#!ipxe"));
+        assert!(script.contains("Debian Mage discovery"));
+        assert!(script.contains("dragonfly.mode=discovery"));
+        // Debian Mage uses different boot URL path
+        assert!(script.contains("/boot-debian/"));
+        // No Alpine-specific params
+        assert!(!script.contains("alpine_repo"));
+        assert!(!script.contains("modloop="));
+        assert!(!script.contains("apkovl="));
+        // Larger tmpfs for debootstrap
+        assert!(script.contains("rootflags=size=2g"));
+    }
+
+    #[test]
+    fn test_debian_imaging_script() {
+        let generator = IpxeScriptGenerator::new(test_config());
+        let hw = test_hardware();
+        let script = generator
+            .debian_imaging_script(Some(&hw), "workflow-456")
+            .unwrap();
+
+        assert!(script.starts_with("#!ipxe"));
+        assert!(script.contains("Debian Mage imaging"));
+        assert!(script.contains("dragonfly.workflow=workflow-456"));
+        assert!(script.contains("dragonfly.hardware=test-machine"));
+        // No Alpine-specific params
+        assert!(!script.contains("alpine_repo"));
+        assert!(!script.contains("modloop="));
+    }
+
+    #[test]
+    fn test_debian_kernel_params_no_alpine() {
+        let config = test_config().with_console("ttyS0,115200");
+        let generator = IpxeScriptGenerator::new(config);
+        let params = generator.debian_kernel_params(None, "imaging");
+
+        // Should have Debian-specific params
+        assert!(params.contains("ip=dhcp"));
+        assert!(params.contains("rootflags=size=2g"));
+        assert!(params.contains("dragonfly.mode=imaging"));
+
+        // Should NOT have Alpine-specific params
+        assert!(!params.contains("alpine_repo"));
+        assert!(!params.contains("modules=loop"));
+    }
+
+    #[test]
+    fn test_debian_mage_url_defaults() {
+        let config = IpxeConfig::new("http://10.0.0.1:8080");
+        assert_eq!(
+            config.debian_mage_kernel(),
+            "http://10.0.0.1:8080/boot-debian/${buildarch}/kernel"
+        );
+        assert_eq!(
+            config.debian_mage_initramfs(),
+            "http://10.0.0.1:8080/boot-debian/${buildarch}/initramfs"
+        );
+    }
+
+    #[test]
+    fn test_debian_mage_url_custom() {
+        let config = IpxeConfig::new("http://10.0.0.1:8080")
+            .with_debian_mage_kernel("http://custom/kernel")
+            .with_debian_mage_initramfs("http://custom/initramfs");
+        assert_eq!(config.debian_mage_kernel(), "http://custom/kernel");
+        assert_eq!(config.debian_mage_initramfs(), "http://custom/initramfs");
     }
 }

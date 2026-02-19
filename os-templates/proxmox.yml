@@ -4,15 +4,20 @@ metadata:
   name: proxmox
 spec:
   timeout: 14400
+  bootEnv: debian
   actions:
-    # Proxmox VE 9 on Debian 13 Trixie — one-boot provisioning
+    # Proxmox VE 9 on Debian 13 Trixie — Debian Mage provisioning
     #
-    # 1. Image disk with Debian 13 cloud image
+    # Uses Debian Mage boot environment (boot_env: debian) for zero-impedance
+    # provisioning. Cloud image for speed, Debian-on-Debian chroot for correctness.
+    # No sandbox hacks. No dpkg-divert. No kernel mismatch. Secure boot compatible.
+    #
+    # 1. Image disk with Debian 13 cloud image (fast dd)
     # 2. Write cloud-init seed data (user, SSH keys, network)
-    # 3. Activate chroot on the imaged disk
+    # 3. Activate chroot on the imaged disk (Debian into Debian)
     # 4. Run Jetpack playbook inside chroot to install Proxmox VE 9
     # 5. Tear down chroot
-    # 6. Boot into finished Proxmox system
+    # 6. Boot into finished Proxmox system (kexec, same kernel family)
 
     - action: image2disk
       url: "https://cloud.debian.org/images/cloud/trixie/daily/latest/debian-13-generic-amd64-daily.tar.xz"
@@ -73,13 +78,13 @@ spec:
 
     # Mount the imaged disk and activate chroot environment
     - action: chroot
-      disk: "{{ destination_disk }}"
+      disk: auto
       partition: 1
       timeout: 120
 
     # Run Jetpack inside the chroot to install Proxmox VE 9
     - action: jetpack
-      url: "http://{{ server }}/playbooks/debian-to-proxmox.tar.gz"
+      url: "{{ server }}/playbooks/debian-to-proxmox.tar.gz"
       timeout: 7200
 
     # Tear down the chroot

@@ -1,0 +1,52 @@
+apiVersion: dragonfly.computer/v1
+kind: Template
+metadata:
+  name: proxmox-debootstrap
+spec:
+  timeout: 14400
+  bootEnv: debian
+  actions:
+    # Proxmox VE 9 on Debian 13 Trixie — debootstrap from scratch
+    #
+    # Alternative to the cloud-image path. Uses debootstrap to build a minimal
+    # Debian system from scratch, then installs Proxmox on top. Slower than
+    # cloud image but produces a truly minimal base with no cloud-init bloat.
+    #
+    # Use this when:
+    # - No cloud image is available or cached
+    # - You want a minimal base without cloud-init
+    # - You need a custom mirror (airgapped environments)
+    #
+    # 1. Debootstrap minimal Debian 13 onto target disk
+    # 2. Activate chroot (Debian into Debian, zero mismatch)
+    # 3. Run Jetpack playbook to install Proxmox VE 9
+    # 4. Tear down chroot
+    # 5. kexec into finished Proxmox (same kernel family)
+
+    - action: debootstrap
+      suite: trixie
+      disk: auto
+      layout: gpt-bios
+      timeout: 1800
+
+    # Mount the debootstrapped disk and activate chroot
+    # Partition 2 because gpt-bios layout is: 1=BIOS boot (1M), 2=root
+    - action: chroot
+      disk: auto
+      partition: 2
+      timeout: 120
+
+    # Run Jetpack inside the chroot to install Proxmox VE 9
+    - action: jetpack
+      url: "{{ server }}/playbooks/debian-to-proxmox.tar.gz"
+      timeout: 7200
+
+    # Tear down the chroot
+    - action: chroot
+      teardown: true
+      timeout: 120
+
+    # Boot into the finished Proxmox VE system
+    - action: kexec
+      partition: 2
+      timeout: 120
