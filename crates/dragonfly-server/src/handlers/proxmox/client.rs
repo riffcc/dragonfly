@@ -10,7 +10,7 @@ use super::discovery::connect_proxmox_discover;
 use super::settings::{
     get_proxmox_settings_from_store, update_proxmox_connection_settings_in_store,
 };
-use super::tokens::{create_token_with_role, save_proxmox_tokens};
+use super::tokens::{create_token_with_role, save_proxmox_tokens, DRAGONFLY_ROLES};
 use super::types::{ProxmoxConnectRequest, ProxmoxConnectionInfo, ProxmoxTokenSet, ProxmoxTokensCreateRequest};
 
 /// Create a ProxmoxApiClient with proper TLS settings.
@@ -197,17 +197,8 @@ pub async fn generate_proxmox_tokens_with_credentials(
                 }
             }
 
-            // Update roles with proper permissions
-            let role_permissions = [
-                ("DragonflyCreate", "VM.Allocate,VM.Audit,VM.Config.Options,VM.Config.Disk,VM.Config.CPU,VM.Config.Memory,VM.Config.Network,VM.Config.HWType,VM.PowerMgmt,VM.Console,Datastore.AllocateSpace,Datastore.Audit,SDN.Use,Sys.Audit"),
-                ("DragonflyVMConfig", "VM.Config.Options,VM.Config.Disk"),
-                (
-                    "DragonflySync",
-                    "VM.Audit,Sys.Audit,Sys.Modify,SDN.Audit,VM.Config.Options,Datastore.Audit",
-                ),
-            ];
-
-            for (role_name, permissions) in role_permissions.iter() {
+            // Update roles with proper permissions (canonical source: DRAGONFLY_ROLES)
+            for (role_name, permissions) in DRAGONFLY_ROLES.iter() {
                 info!(
                     "Setting permissions for role {}: {}",
                     role_name, permissions

@@ -10,6 +10,23 @@ use super::settings::{
 };
 use super::types::{ProxmoxTokenSet, ProxmoxTokensCreateRequest};
 
+/// Canonical permissions for each Dragonfly Proxmox role.
+/// This is the SINGLE SOURCE OF TRUTH — all code that creates or updates
+/// Proxmox roles MUST use this constant.
+pub const DRAGONFLY_ROLES: &[(&str, &str)] = &[
+    ("DragonflyCreate", "VM.Allocate,VM.Audit,VM.Config.Options,VM.Config.Disk,VM.Config.CPU,VM.Config.Memory,VM.Config.Network,VM.Config.HWType,VM.PowerMgmt,VM.Console,Datastore.AllocateSpace,Datastore.Audit,SDN.Use,Sys.Audit"),
+    ("DragonflyVMConfig", "VM.Config.Options,VM.Config.Disk"),
+    ("DragonflySync", "VM.Audit,Sys.Audit,Sys.Modify,SDN.Audit,VM.Config.Options,Datastore.Audit"),
+];
+
+/// Look up the permissions for a Dragonfly Proxmox role by name.
+pub fn role_permissions(role_name: &str) -> &'static str {
+    DRAGONFLY_ROLES.iter()
+        .find(|(name, _)| *name == role_name)
+        .map(|(_, perms)| *perms)
+        .unwrap_or("")
+}
+
 /// Handler to create Proxmox API tokens.
 pub async fn create_proxmox_tokens_handler(
     State(state): State<crate::AppState>,
@@ -74,21 +91,23 @@ pub async fn save_proxmox_tokens(
     let encrypted_config_token = encrypt_string(&token_set.config_token)?;
     let encrypted_sync_token = encrypt_string(&token_set.sync_token)?;
 
-    update_proxmox_tokens_in_store(
-        state.store.as_ref(),
-        encrypted_create_token,
-        encrypted_power_token,
-        encrypted_config_token,
-        encrypted_sync_token,
-    )
-    .await?;
-
+    // Connection settings must be saved first — update_proxmox_tokens_in_store
+    // requires an existing settings row to attach the tokens to.
     update_proxmox_connection_settings_in_store(
         state.store.as_ref(),
         &token_set.connection_info.host,
         token_set.connection_info.port,
         &token_set.connection_info.username,
         token_set.connection_info.skip_tls_verify,
+    )
+    .await?;
+
+    update_proxmox_tokens_in_store(
+        state.store.as_ref(),
+        encrypted_create_token,
+        encrypted_power_token,
+        encrypted_config_token,
+        encrypted_sync_token,
     )
     .await?;
 
@@ -281,12 +300,7 @@ async fn try_acl_with_fallback(
 
     // Try to create the role
     let role_create_path = "/api2/json/access/roles";
-    let permissions = match role_name {
-        "DragonflyCreate" => "VM.Allocate,VM.Config.Options,VM.Config.Disk,VM.Config.CPU,VM.Config.Memory,VM.Config.Network,VM.Config.HWType,VM.PowerMgmt,VM.Console,Datastore.AllocateSpace,Datastore.Audit,SDN.Use,Sys.Audit",
-        "DragonflyVMConfig" => "VM.Config.Options,VM.Config.Disk",
-        "DragonflySync" => "VM.Audit,Sys.Audit,Sys.Modify,SDN.Audit,VM.Config.Options,Datastore.Audit",
-        _ => "",
-    };
+    let permissions = role_permissions(role_name);
 
     let role_create_params = json!({
         "roleid": role_name.to_string(),

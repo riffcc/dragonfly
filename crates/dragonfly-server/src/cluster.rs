@@ -19,7 +19,7 @@ use tracing::{info, warn, error};
 use crate::AppState;
 use crate::event_manager::EventManager;
 use crate::ha;
-use crate::handlers::proxmox::connect_to_proxmox;
+use crate::handlers::proxmox::{connect_to_proxmox, DRAGONFLY_ROLES};
 use crate::store::v1::{RqliteStore, SqliteStore};
 
 /// Jetpack OutputHandler that emits SSE events for provisioning lifecycle.
@@ -249,12 +249,22 @@ pub struct PlannedNode {
     pub template_storage: String,
     /// Per-node OS template volid
     pub ostemplate: String,
-    /// Generated root password for the LXC
-    #[serde(skip_serializing)]
+    /// Generated root password for the LXC (excluded from stored plan, defaults to empty on reload)
+    #[serde(skip_serializing, default)]
     pub password: String,
     /// Whether this container already exists on Proxmox (skip creation)
     #[serde(default)]
     pub existing: bool,
+    /// Per-node network bridge (detected from Proxmox node interfaces)
+    #[serde(default = "default_bridge")]
+    pub bridge: String,
+    /// VLAN tag if subnet is not native on any bridge
+    #[serde(default)]
+    pub vlan_tag: Option<u16>,
+}
+
+fn default_bridge() -> String {
+    "vmbr0".to_string()
 }
 
 /// The complete cluster deployment plan
@@ -264,6 +274,9 @@ pub struct ClusterPlan {
     pub network_subnet: String,
     pub network_gateway: String,
     pub network_prefix: u8,
+    /// DNS servers from the network definition (space-separated for Proxmox LXC)
+    #[serde(default)]
+    pub dns_servers: Vec<String>,
 }
 
 /// SSE event helper — sends cluster deployment progress and persists phase in AppState.
@@ -414,12 +427,8 @@ fn proxmox_node_name(source: &dragonfly_common::machine::MachineSource) -> Optio
 /// This is idempotent — it updates existing roles and reassigns token ACLs.
 /// The sync token's Sys.Modify privilege allows role management.
 async fn ensure_proxmox_roles(client: &ProxmoxApiClient, state: &AppState) {
-    let role_updates = [
-        ("DragonflyCreate", "VM.Allocate,VM.Config.Options,VM.Config.Disk,VM.Config.CPU,VM.Config.Memory,VM.Config.Network,VM.Config.HWType,VM.PowerMgmt,VM.Console,Datastore.AllocateSpace,Datastore.Audit,SDN.Use,Sys.Audit"),
-        ("DragonflySync", "VM.Audit,Sys.Audit,Sys.Modify,SDN.Audit,VM.Config.Options,Datastore.Audit"),
-    ];
-
-    for (role_name, privs) in &role_updates {
+    // Update all roles with canonical permissions (source: DRAGONFLY_ROLES)
+    for (role_name, privs) in DRAGONFLY_ROLES.iter() {
         let path = format!("/api2/json/access/roles/{}", role_name);
         let params = serde_json::json!({ "privs": privs });
 
@@ -814,6 +823,20 @@ pub async fn build_cluster_plan(state: &AppState) -> Result<ClusterPlan> {
         let ostemplate = ensure_template(&client, node_name, &tmpl_storage).await
             .context(format!("Failed to ensure Debian template on node '{}'", node_name))?;
 
+        // Detect which bridge carries the target subnet (or fall back to vmbr0 + VLAN tag)
+        let (bridge, vlan_tag) = match detect_bridge(&client, node_name, &network.subnet).await? {
+            Some(br) => (br, None),
+            None => {
+                let tag = network.vlan_id.ok_or_else(|| anyhow::anyhow!(
+                    "No bridge on '{}' carries subnet {} and no VLAN ID configured on network '{}'",
+                    node_name, network.subnet, network.name
+                ))?;
+                info!("No native bridge for subnet '{}' on '{}', using vmbr0 with VLAN tag {}",
+                    network.subnet, node_name, tag);
+                ("vmbr0".to_string(), Some(tag))
+            }
+        };
+
         // Reuse existing container data or allocate from scanned free block
         let (vmid, ip, is_existing) = if let Some(ec) = existing.get(&hostname) {
             let ip = ec.ip.unwrap_or_else(|| {
@@ -870,6 +893,8 @@ pub async fn build_cluster_plan(state: &AppState) -> Result<ClusterPlan> {
             ostemplate,
             password,
             existing: is_existing,
+            bridge,
+            vlan_tag,
         });
     }
 
@@ -878,6 +903,7 @@ pub async fn build_cluster_plan(state: &AppState) -> Result<ClusterPlan> {
         network_subnet: network.subnet.clone(),
         network_gateway: gateway.to_string(),
         network_prefix: prefix,
+        dns_servers: network.dns_servers.clone(),
     };
 
     // Store plan in settings KV
@@ -952,6 +978,97 @@ async fn detect_storage(
     }
 
     bail!("No storage with rootdir support found on node '{}'", node);
+}
+
+/// Detect which Proxmox bridge carries a given subnet.
+///
+/// Queries `/nodes/{node}/network` and checks each active bridge's CIDR
+/// against the target subnet. Returns `Some(bridge_name)` if a bridge
+/// natively carries the subnet, or `None` if no match (caller should
+/// fall back to vmbr0 + VLAN tag).
+async fn detect_bridge(
+    client: &ProxmoxApiClient,
+    node: &str,
+    target_subnet: &str,
+) -> Result<Option<String>> {
+    info!("Detecting bridge for subnet '{}' on node '{}' ...", target_subnet, node);
+
+    // Parse target subnet: "10.7.2.0/24" → network octets + prefix
+    let (target_network, target_prefix) = parse_cidr_network(target_subnet)
+        .ok_or_else(|| anyhow::anyhow!("Invalid target subnet: '{}'", target_subnet))?;
+
+    let path = format!("/api2/json/nodes/{}/network", node);
+    let resp = client.get(&path).await
+        .map_err(|e| anyhow::anyhow!("Failed to query network on node '{}': {:?}", node, e))?;
+
+    let body: serde_json::Value = serde_json::from_slice(&resp.body)
+        .context("Failed to parse network response")?;
+
+    if let Some(data) = body.get("data").and_then(|d| d.as_array()) {
+        info!("Found {} network interfaces on node '{}'", data.len(), node);
+
+        for entry in data {
+            let iface_type = entry.get("type").and_then(|t| t.as_str()).unwrap_or("");
+            let iface_name = entry.get("iface").and_then(|i| i.as_str()).unwrap_or("");
+            let active = entry.get("active").and_then(|a| a.as_i64()).unwrap_or(0);
+
+            if iface_type != "bridge" || active != 1 || iface_name.is_empty() {
+                continue;
+            }
+
+            // Try cidr field first (e.g. "10.7.2.1/24"), then address+netmask
+            let bridge_cidr = if let Some(cidr) = entry.get("cidr").and_then(|c| c.as_str()) {
+                Some(cidr.to_string())
+            } else if let (Some(addr), Some(mask)) = (
+                entry.get("address").and_then(|a| a.as_str()),
+                entry.get("netmask").and_then(|n| n.as_str()),
+            ) {
+                netmask_to_prefix(mask).map(|prefix| format!("{}/{}", addr, prefix))
+            } else {
+                None
+            };
+
+            if let Some(cidr) = bridge_cidr {
+                if let Some((bridge_network, bridge_prefix)) = parse_cidr_network(&cidr) {
+                    info!("  bridge '{}' cidr={} → network={:?}/{}", iface_name, cidr, bridge_network, bridge_prefix);
+                    if bridge_network == target_network && bridge_prefix == target_prefix {
+                        info!("Detected bridge '{}' carries subnet '{}' on node '{}'",
+                            iface_name, target_subnet, node);
+                        return Ok(Some(iface_name.to_string()));
+                    }
+                }
+            }
+        }
+    } else {
+        warn!("No 'data' array in network response for node '{}': {}", node, body);
+    }
+
+    info!("No bridge on node '{}' natively carries subnet '{}'", node, target_subnet);
+    Ok(None)
+}
+
+/// Parse a CIDR string like "10.7.2.1/24" into its network address and prefix length.
+/// Returns the masked network octets and prefix, e.g. ([10, 7, 2, 0], 24).
+fn parse_cidr_network(cidr: &str) -> Option<([u8; 4], u8)> {
+    let slash = cidr.rfind('/')?;
+    let addr_str = &cidr[..slash];
+    let prefix: u8 = cidr[slash + 1..].parse().ok()?;
+
+    let ip: Ipv4Addr = addr_str.parse().ok()?;
+    let octets = ip.octets();
+
+    // Apply mask
+    let mask = if prefix == 0 { 0u32 } else { !0u32 << (32 - prefix) };
+    let addr_u32 = u32::from_be_bytes(octets);
+    let network_u32 = addr_u32 & mask;
+    Some((network_u32.to_be_bytes(), prefix))
+}
+
+/// Convert a dotted netmask like "255.255.255.0" to a prefix length like 24.
+fn netmask_to_prefix(mask: &str) -> Option<u8> {
+    let ip: Ipv4Addr = mask.parse().ok()?;
+    let bits = u32::from_be_bytes(ip.octets());
+    Some(bits.count_ones() as u8)
 }
 
 /// Detect a storage volume that supports `vztmpl` content type (for LXC templates).
@@ -1214,10 +1331,17 @@ fn build_jetpack_inventory(
 
         // For non-existing nodes, set up provisioning
         if !node.existing {
-            let net_config = format!(
-                "name=eth0,bridge=vmbr0,ip={}/{},gw={}",
-                node.ip, plan.network_prefix, plan.network_gateway
-            );
+            let net_config = if let Some(tag) = node.vlan_tag {
+                format!(
+                    "name=eth0,bridge={},tag={},ip={}/{},gw={}",
+                    node.bridge, tag, node.ip, plan.network_prefix, plan.network_gateway
+                )
+            } else {
+                format!(
+                    "name=eth0,bridge={},ip={}/{},gw={}",
+                    node.bridge, node.ip, plan.network_prefix, plan.network_gateway
+                )
+            };
 
             let mut extra = HashMap::new();
             extra.insert("searchdomain".to_string(), "home.arpa".to_string());
@@ -1232,6 +1356,7 @@ fn build_jetpack_inventory(
                 memory: Some("1536".to_string()),
                 cores: Some("1".to_string()),
                 ostemplate: Some(node.ostemplate.clone()),
+                fetch: None,
                 storage: Some(node.storage.clone()),
                 rootfs_size: Some("4G".to_string()),
                 net0: Some(net_config),
@@ -1245,7 +1370,11 @@ fn build_jetpack_inventory(
                 start_on_create: Some("true".to_string()),
                 features: Some("nesting=1".to_string()),
                 tun: None,
-                nameserver: Some(plan.network_gateway.clone()),
+                nameserver: Some(if plan.dns_servers.is_empty() {
+                    plan.network_gateway.clone()
+                } else {
+                    plan.dns_servers.join(" ")
+                }),
                 wait_for_host: Some(true),
                 wait_timeout: Some(120),
                 wait_delay: None,

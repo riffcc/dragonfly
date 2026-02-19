@@ -1105,58 +1105,58 @@
                                     rx: 12px;
                                 }
 
-                                /* Creating: amber, thick 3px, fast 0.35s, short dashes */
+                                /* Creating: amber, thick 3px, fast 0.7s, short dashes (6+6=12) */
                                 .ha-state-creating .ha-border-svg rect {
                                     stroke: #f59e0b;
                                     stroke-width: 3;
                                     stroke-dasharray: 6 6;
-                                    animation: march-svg 0.7s linear infinite;
+                                    animation: march-12 0.7s linear infinite;
                                 }
 
-                                /* Installing: blue, 2.5px, steady 1.2s, medium dashes */
+                                /* Installing: blue, 2.5px, steady 1.2s, medium dashes (10+6=16) */
                                 .ha-state-installing .ha-border-svg rect {
                                     stroke: #3b82f6;
                                     stroke-width: 2.5;
                                     stroke-dasharray: 10 6;
-                                    animation: march-svg 1.2s linear infinite;
+                                    animation: march-16 1.2s linear infinite;
                                 }
 
-                                /* Initialising: cyan, 2px, flowing 2s, long dashes */
+                                /* Initialising: cyan, 2px, flowing 2s, long dashes (16+8=24) */
                                 .ha-state-initialising .ha-border-svg rect {
                                     stroke: #06b6d4;
                                     stroke-width: 2;
                                     stroke-dasharray: 16 8;
-                                    animation: march-svg 2s linear infinite;
+                                    animation: march-24 2s linear infinite;
                                 }
 
-                                /* Synchronising: violet, 2px, smooth reverse 1s, medium dashes */
+                                /* Synchronising: violet, 2px, smooth reverse 1s, medium dashes (10+6=16) */
                                 .ha-state-synchronising .ha-border-svg rect {
                                     stroke: #8b5cf6;
                                     stroke-width: 2;
                                     stroke-dasharray: 10 6;
-                                    animation: march-svg 1s linear infinite reverse;
+                                    animation: march-16 1s linear infinite reverse;
                                 }
 
-                                /* Out of sync: amber, 2px, alternating 1.6s, choppy dashes */
+                                /* Out of sync: amber, 2px, alternating 1.6s, choppy dashes (6+6=12) */
                                 .ha-state-out_of_sync .ha-border-svg rect {
                                     stroke: #eab308;
                                     stroke-width: 2;
                                     stroke-dasharray: 6 6;
-                                    animation: march-svg 1.6s ease-in-out infinite alternate;
+                                    animation: march-12 1.6s ease-in-out infinite alternate;
                                 }
 
-                                /* Unhealthy: red, 2.5px, frantic 0.5s, short dashes */
+                                /* Unhealthy: red, 2.5px, frantic 0.5s, short dashes (6+6=12) */
                                 .ha-state-unhealthy .ha-border-svg rect {
                                     stroke: #ef4444;
                                     stroke-width: 2.5;
                                     stroke-dasharray: 6 6;
-                                    animation: march-svg 0.5s linear infinite;
+                                    animation: march-12 0.5s linear infinite;
                                 }
 
-                                /* Single keyframe: offset by total dash+gap to loop seamlessly */
-                                @keyframes march-svg {
-                                    to { stroke-dashoffset: -24; }
-                                }
+                                /* Offset must equal exactly one dash+gap cycle for seamless looping */
+                                @keyframes march-12 { to { stroke-dashoffset: -12; } }
+                                @keyframes march-16 { to { stroke-dashoffset: -16; } }
+                                @keyframes march-24 { to { stroke-dashoffset: -24; } }
 
                                 /* === Healthy: solid SVG border with breathing glow === */
                                 .ha-state-healthy .ha-border-svg rect {
