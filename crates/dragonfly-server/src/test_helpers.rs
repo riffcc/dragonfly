@@ -327,6 +327,7 @@ mod tests {
                 })],
                 timeout: None,
                 version: None,
+                boot_env: None,
             },
         };
 
@@ -407,6 +408,7 @@ mod tests {
                 })],
                 timeout: None,
                 version: None,
+                boot_env: None,
             },
         };
 
@@ -501,6 +503,7 @@ mod tests {
                 ],
                 timeout: None,
                 version: None,
+                boot_env: None,
             },
         };
         state.store.put_template(&template).await.unwrap();
@@ -626,6 +629,7 @@ mod tests {
                 })],
                 timeout: None,
                 version: None,
+                boot_env: None,
             },
         };
         state.store.put_template(&template).await.unwrap();
@@ -717,6 +721,7 @@ mod tests {
                 })],
                 timeout: None,
                 version: None,
+                boot_env: None,
             },
         };
         state.store.put_template(&template).await.unwrap();
@@ -832,6 +837,7 @@ mod tests {
                 })],
                 timeout: None,
                 version: None,
+                boot_env: None,
             },
         };
         state.store.put_template(&template).await.unwrap();
@@ -898,6 +904,7 @@ mod tests {
                 actions: vec![],
                 timeout: None,
                 version: None,
+                boot_env: None,
             },
         };
         state.store.put_template(&template).await.unwrap();
@@ -1201,6 +1208,7 @@ mod tests {
                 })],
                 timeout: None,
                 version: None,
+                boot_env: None,
             },
         };
         state.store.put_template(&template).await.unwrap();

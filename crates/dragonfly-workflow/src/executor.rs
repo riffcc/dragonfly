@@ -458,6 +458,7 @@ mod tests {
                 ],
                 timeout: Some(300),
                 version: None,
+                boot_env: None,
             },
         }
     }

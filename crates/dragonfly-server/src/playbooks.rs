@@ -38,18 +38,13 @@ pub async fn init_playbooks() -> Result<()> {
         let dest = Path::new(PLAYBOOK_DIR).join(format!("{}.tar.gz", name));
 
         if dest.exists() {
-            // Check if the existing file is the same size — if so, it's the same built-in
-            // If different size, it's a user override — don't clobber
             let metadata = fs::metadata(&dest).await?;
             if metadata.len() == data.len() as u64 {
                 info!("Built-in playbook '{}' already extracted (unchanged)", name);
                 continue;
             }
-            info!(
-                "Playbook '{}' exists with different size (user override), keeping it",
-                name
-            );
-            continue;
+            // Size differs — built-in was updated, overwrite
+            info!("Built-in playbook '{}' updated ({} -> {} bytes), overwriting", name, metadata.len(), data.len());
         }
 
         fs::write(&dest, data).await?;

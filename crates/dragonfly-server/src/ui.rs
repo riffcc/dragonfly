@@ -62,7 +62,7 @@ pub fn get_theme_from_cookie(headers: &HeaderMap) -> String {
             }
         }
     }
-    "light".to_string()
+    "system".to_string()
 }
 
 // Update struct for MiniJinja context, matching data from api.rs handler
