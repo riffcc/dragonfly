@@ -15,6 +15,7 @@ use tracing_subscriber::{EnvFilter, fmt, prelude::*, registry};
 // Reference the cmd module where subcommands live
 mod cmd;
 use cmd::install::InstallArgs;
+use cmd::install_pve::InstallPveArgs;
 
 use std::io::stderr;
 
@@ -22,6 +23,58 @@ use std::io::stderr;
 use dragonfly_server::run as run_server;
 
 const DRAGONFLY_CONFIG: &str = "/var/lib/dragonfly/config.toml";
+const DRAGONFLY_DIR: &str = "/var/lib/dragonfly";
+
+/// Auto-create config.toml and required directories if not present.
+///
+/// Safe to call every startup — skips creation if config already exists.
+fn ensure_config() {
+    use std::net::UdpSocket;
+
+    // Ensure base directory and standard subdirectories exist.
+    for dir in &[
+        DRAGONFLY_DIR,
+        "/var/lib/dragonfly/data",
+        "/var/lib/dragonfly/tftp",
+        "/var/lib/dragonfly/tftp/mage",
+        "/var/lib/dragonfly/os-templates",
+    ] {
+        if let Err(e) = std::fs::create_dir_all(dir) {
+            eprintln!("Warning: could not create directory {}: {}", dir, e);
+        }
+    }
+
+    if Path::new(DRAGONFLY_CONFIG).exists() {
+        return;
+    }
+
+    // Detect primary outbound IP (no external traffic actually sent).
+    let local_ip = UdpSocket::bind("0.0.0.0:0")
+        .and_then(|s| { s.connect("8.8.8.8:80")?; s.local_addr() })
+        .map(|a| a.ip().to_string())
+        .unwrap_or_else(|_| "127.0.0.1".to_string());
+
+    let base_url = format!("http://{}:3000", local_ip);
+
+    let config = format!(
+        r#"# Dragonfly Configuration
+# Auto-generated on first start — edit as needed.
+
+[server]
+port = 3000
+base_url = "{base_url}"
+
+[paths]
+data_dir = "/var/lib/dragonfly/data"
+tftp_dir = "/var/lib/dragonfly/tftp"
+"#
+    );
+
+    match std::fs::write(DRAGONFLY_CONFIG, config) {
+        Ok(()) => println!("Created default config: {DRAGONFLY_CONFIG}"),
+        Err(e) => eprintln!("Warning: could not write default config {DRAGONFLY_CONFIG}: {e}"),
+    }
+}
 
 // Define the command-line arguments
 #[derive(Parser, Debug)]
@@ -46,6 +99,9 @@ enum Commands {
     Dev,
     /// Install Dragonfly on this system
     Install(InstallArgs),
+    /// Install Dragonfly on Proxmox VE
+    #[command(name = "install-pve")]
+    InstallPve(InstallPveArgs),
     /// Show Dragonfly status
     Status,
 }
@@ -54,10 +110,6 @@ enum Commands {
 #[derive(Parser, Debug)]
 struct ServeArgs {}
 
-/// Check if Dragonfly is installed (config file exists)
-fn is_installed() -> bool {
-    Path::new(DRAGONFLY_CONFIG).exists()
-}
 
 fn main() -> Result<()> {
     // Install the rustls CryptoProvider globally before any TLS operations.
@@ -93,7 +145,7 @@ async fn async_main(cli: Cli) -> Result<()> {
 
     // --- Logging Initialization ---
     let filter = match &cli.command {
-        Some(Commands::Install(_)) => {
+        Some(Commands::Install(_)) | Some(Commands::InstallPve(_)) => {
             let log_level = if cli.verbose { "debug" } else { "info" };
             let directives = format!(
                 "dragonfly={level},dragonfly_server=off,tower=warn,hyper=warn,sqlx=warn,rustls=warn,h2=warn,reqwest=warn,tokio_reactor=warn,mio=warn,want=warn",
@@ -116,19 +168,22 @@ async fn async_main(cli: Cli) -> Result<()> {
         .with(fmt::layer().with_writer(stderr))
         .init();
 
-    if !matches!(cli.command, Some(Commands::Install(_))) {
+    if !matches!(cli.command, Some(Commands::Install(_)) | Some(Commands::InstallPve(_))) {
         info!("Global logger initialized.");
     }
 
-    // Set up Ctrl+C handler
-    let shutdown_tx_clone = shutdown_tx.clone();
-    tokio::spawn(async move {
-        tokio::signal::ctrl_c()
-            .await
-            .expect("Failed to install Ctrl+C handler");
-        info!("Ctrl+C received, sending shutdown signal...");
-        let _ = shutdown_tx_clone.send(());
-    });
+    // Set up Ctrl+C handler - but skip for install commands which handle their own stdin
+    let is_install_command = matches!(cli.command, Some(Commands::Install(_)) | Some(Commands::InstallPve(_)));
+    if !is_install_command {
+        let shutdown_tx_clone = shutdown_tx.clone();
+        tokio::spawn(async move {
+            tokio::signal::ctrl_c()
+                .await
+                .expect("Failed to install Ctrl+C handler");
+            info!("Ctrl+C received, sending shutdown signal...");
+            let _ = shutdown_tx_clone.send(());
+        });
+    }
 
     // Process commands
     match cli.command {
@@ -162,12 +217,7 @@ async fn async_main(cli: Cli) -> Result<()> {
 
         // Serve command
         Some(Commands::Serve(_)) => {
-            if !is_installed() && std::env::var("DRAGONFLY_INSTALLED").as_deref() != Ok("true") {
-                eprintln!("Dragonfly is not installed.");
-                eprintln!("Run 'dragonfly install' first, or use 'dragonfly demo' for demo mode.");
-                std::process::exit(1);
-            }
-
+            ensure_config();
             println!("Starting Dragonfly server - press Ctrl+C to stop");
 
             // Register a panic handler to ensure clean exit
@@ -199,6 +249,15 @@ async fn async_main(cli: Cli) -> Result<()> {
             if let Err(e) = cmd::install::run_install(args, shutdown_rx).await {
                 error!("Installation failed: {:#}", e);
                 eprintln!("Error during installation: {}", e);
+                let _ = shutdown_tx.send(());
+                std::process::exit(1);
+            }
+        }
+
+        // Install PVE command
+        Some(Commands::InstallPve(args)) => {
+            if let Err(e) = cmd::install_pve::run_install_pve(args).await {
+                eprintln!("\n❌ {}", e);
                 let _ = shutdown_tx.send(());
                 std::process::exit(1);
             }
@@ -291,7 +350,7 @@ fn get_local_ip_for_display() -> String {
 fn print_status() {
     const PASSWORD_FILE: &str = "/var/lib/dragonfly/initial_password.txt";
 
-    if is_installed() {
+    if Path::new(DRAGONFLY_CONFIG).exists() {
         let port = get_server_port();
         let ip = get_local_ip_for_display();
         let running = is_service_running();

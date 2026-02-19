@@ -1,3 +1,14 @@
+//! Local system installation — `dragonfly install`.
+//!
+//! Installs Dragonfly on the **current machine** by:
+//! - Creating required directories in `/var/lib/dragonfly`
+//! - Writing a config file
+//! - Copying the binary to `/usr/local/bin/dragonfly`
+//! - Extracting embedded web assets to `/opt/dragonfly`
+//! - Installing and starting a systemd (Linux) or launchd (macOS) service
+//!
+//! For installing on Proxmox VE, see `src/cmd/install_pve/mod.rs`.
+
 use clap::Args;
 use color_eyre::eyre::Result;
 use include_dir::{Dir, include_dir};
@@ -5,8 +16,7 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-/// Static assets and templates embedded at compile time.
-/// This allows `dragonfly install` to work from a standalone binary download.
+/// Static assets embedded at compile time so the binary is self-contained.
 static EMBEDDED_STATIC: Dir = include_dir!("crates/dragonfly-server/static");
 static EMBEDDED_TEMPLATES: Dir = include_dir!("crates/dragonfly-server/templates");
 
@@ -15,12 +25,13 @@ const DRAGONFLY_CONFIG: &str = "/var/lib/dragonfly/config.toml";
 const PROD_BINARY: &str = "/usr/local/bin/dragonfly";
 const OPT_DIR: &str = "/opt/dragonfly";
 
-// Platform-specific service paths
 #[cfg(target_os = "macos")]
 const LAUNCHD_PLIST: &str = "/Library/LaunchDaemons/com.dragonfly.daemon.plist";
 
 #[cfg(target_os = "linux")]
 const SYSTEMD_SERVICE: &str = "/etc/systemd/system/dragonfly.service";
+
+// ─── Args ────────────────────────────────────────────────────────────────────
 
 #[derive(Args, Debug)]
 pub struct InstallArgs {
@@ -49,28 +60,25 @@ pub struct InstallArgs {
     pub force: bool,
 }
 
-/// Track what's already installed
+// ─── State detection ─────────────────────────────────────────────────────────
+
 #[derive(Debug, Default)]
 struct InstallationState {
     directory_exists: bool,
     config_exists: bool,
     service_exists: bool,
+    #[allow(dead_code)] // checked in tests
     assets_exist: bool,
 }
 
 impl InstallationState {
     fn detect() -> Self {
-        let directory_exists = Path::new(DRAGONFLY_DIR).exists();
-        let config_exists = Path::new(DRAGONFLY_CONFIG).exists();
-        let service_exists = service_file_exists();
-        let assets_exist = Path::new("/var/lib/dragonfly/tftp/mage/vmlinuz").exists()
-            && Path::new("/var/lib/dragonfly/tftp/mage/initramfs").exists();
-
         Self {
-            directory_exists,
-            config_exists,
-            service_exists,
-            assets_exist,
+            directory_exists: Path::new(DRAGONFLY_DIR).exists(),
+            config_exists: Path::new(DRAGONFLY_CONFIG).exists(),
+            service_exists: service_file_exists(),
+            assets_exist: Path::new("/var/lib/dragonfly/tftp/mage/vmlinuz").exists()
+                && Path::new("/var/lib/dragonfly/tftp/mage/initramfs").exists(),
         }
     }
 }
@@ -80,38 +88,36 @@ fn service_file_exists() -> bool {
     {
         Path::new(LAUNCHD_PLIST).exists()
     }
-
     #[cfg(target_os = "linux")]
     {
         Path::new(SYSTEMD_SERVICE).exists()
     }
-
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
         false
     }
 }
 
+#[allow(dead_code)] // used in tests
 fn is_macos() -> bool {
     cfg!(target_os = "macos")
 }
 
-/// Get this machine's local IP address (first non-loopback IPv4)
+/// Return the machine's outbound IP (used for display and config generation).
 fn get_local_ip() -> Option<String> {
     use std::net::UdpSocket;
-    // Connect to a public IP (doesn't actually send anything) to find our outbound IP
     let socket = UdpSocket::bind("0.0.0.0:0").ok()?;
     socket.connect("8.8.8.8:80").ok()?;
     let addr = socket.local_addr().ok()?;
     Some(addr.ip().to_string())
 }
 
-/// Check if a port is available
+// ─── Port helpers ─────────────────────────────────────────────────────────────
+
 fn is_port_available(port: u16) -> bool {
     std::net::TcpListener::bind(("0.0.0.0", port)).is_ok()
 }
 
-/// Get an available port, prompting user if default is taken
 fn read_configured_port() -> Option<u16> {
     let content = std::fs::read_to_string(DRAGONFLY_CONFIG).ok()?;
     for line in content.lines() {
@@ -134,32 +140,19 @@ fn find_next_available_port(start: u16) -> u16 {
 }
 
 fn get_available_port() -> Result<u16> {
-    // Check if there's already a configured port
     if let Some(configured_port) = read_configured_port() {
-        // If configured port is available, use it
-        if is_port_available(configured_port) {
-            return Ok(configured_port);
-        }
-        // Port is in use - likely dragonfly is already running, that's fine
-        // We'll just reuse the same port config
+        // Port may be in use because Dragonfly is already running — that's fine.
         return Ok(configured_port);
     }
 
-    // No existing config, use default
     let default_port: u16 = 3000;
-
     if is_port_available(default_port) {
         return Ok(default_port);
     }
 
-    // Find next available port to suggest
     let suggested = find_next_available_port(default_port + 1);
-
     println!("Port {} is already in use.", default_port);
-    print!(
-        "Enter a different port (or press Enter for {}): ",
-        suggested
-    );
+    print!("Enter a different port (or press Enter for {}): ", suggested);
     std::io::stdout().flush()?;
 
     let mut input = String::new();
@@ -181,10 +174,8 @@ fn get_available_port() -> Result<u16> {
     }
 }
 
-/// Get the binary path to use in the service
 fn get_binary_path(dev_mode: bool) -> Result<PathBuf> {
     if dev_mode {
-        // Dev mode: use target/release/dragonfly relative to current dir
         let cwd = std::env::current_dir()?;
         let dev_binary = cwd.join("target/release/dragonfly");
         if !dev_binary.exists() {
@@ -195,10 +186,11 @@ fn get_binary_path(dev_mode: bool) -> Result<PathBuf> {
         }
         Ok(dev_binary)
     } else {
-        // Production mode: will copy to /usr/local/bin
         Ok(PathBuf::from(PROD_BINARY))
     }
 }
+
+// ─── Entry point ──────────────────────────────────────────────────────────────
 
 pub async fn run_install(
     args: InstallArgs,
@@ -206,7 +198,6 @@ pub async fn run_install(
 ) -> Result<()> {
     println!("🐉 Dragonfly Installer");
 
-    // Handle --fresh: wipe everything first
     if args.fresh {
         if !args.force {
             println!("WARNING: This will delete all Dragonfly data including:");
@@ -228,7 +219,6 @@ pub async fn run_install(
         wipe_installation()?;
     }
 
-    // Detect current state
     let state = InstallationState::detect();
     let is_reinstall = state.directory_exists || state.config_exists || state.service_exists;
 
@@ -236,23 +226,19 @@ pub async fn run_install(
         println!("Found existing installation, preserving existing data.");
     }
 
-    // Get local IP for display purposes (server binds to 0.0.0.0)
     let display_ip = args
         .ip
         .clone()
         .unwrap_or_else(|| get_local_ip().unwrap_or_else(|| "localhost".to_string()));
 
-    // Check sudo/admin access
     if !check_admin_access()? {
         return Err(color_eyre::eyre::eyre!(
             "Administrator access required for installation"
         ));
     }
 
-    // Get available port (prompts user if default is in use)
     let port = get_available_port()?;
 
-    // Do the work silently
     if !state.directory_exists {
         create_directories()?;
     }
@@ -267,14 +253,10 @@ pub async fn run_install(
         install_service(&binary_path, args.dev)?;
     }
 
-    // Success
     println!("\n🚀 Dragonfly installed! http://{}:{}", display_ip, port);
 
-    // On fresh install, wait for the password file and show credentials
     if args.fresh || !is_reinstall {
         let password_file = PathBuf::from(format!("{}/initial_password.txt", DRAGONFLY_DIR));
-
-        // Check if file already exists
         if password_file.exists() {
             show_admin_credentials(&password_file);
         } else {
@@ -285,6 +267,8 @@ pub async fn run_install(
 
     Ok(())
 }
+
+// ─── Credential display ───────────────────────────────────────────────────────
 
 fn show_admin_credentials(password_file: &Path) {
     if let Ok(password) = fs::read_to_string(password_file) {
@@ -300,6 +284,13 @@ fn show_admin_credentials(password_file: &Path) {
     }
 }
 
+/// Wait for the server to generate the initial admin password using inotify.
+///
+/// We use file-system events rather than polling. The event sequence is:
+/// 1. `Create` — the server creates the file (may be empty at this point)
+/// 2. `Modify` — the server writes the password into it
+///
+/// We only display the credentials once the file has non-empty content.
 fn wait_for_password_file(password_file: &Path) -> Result<()> {
     use notify::{RecursiveMode, Watcher};
     use std::sync::mpsc;
@@ -308,7 +299,6 @@ fn wait_for_password_file(password_file: &Path) -> Result<()> {
 
     let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
         if let Ok(event) = res {
-            // Check for file creation or modification
             if matches!(
                 event.kind,
                 notify::EventKind::Create(_) | notify::EventKind::Modify(_)
@@ -319,39 +309,42 @@ fn wait_for_password_file(password_file: &Path) -> Result<()> {
     })
     .map_err(|e| color_eyre::eyre::eyre!("Failed to create file watcher: {}", e))?;
 
-    // Watch the parent directory for the password file to appear
     let watch_dir = password_file.parent().unwrap_or(Path::new(DRAGONFLY_DIR));
     watcher
         .watch(watch_dir, RecursiveMode::NonRecursive)
         .map_err(|e| color_eyre::eyre::eyre!("Failed to watch directory: {}", e))?;
 
-    // Wait for notification
     loop {
-        // Check if file exists now (may have been created between our check and watch setup)
-        if password_file.exists() {
-            show_admin_credentials(password_file);
-            break;
+        // The file may have been created between our initial check and the watch setup.
+        if let Ok(content) = fs::read_to_string(password_file) {
+            if !content.trim().is_empty() {
+                show_admin_credentials(password_file);
+                break;
+            }
         }
 
-        // Wait for file system event
+        // Wait for a file-system event (Create or Modify).
         match rx.recv() {
             Ok(()) => {
-                if password_file.exists() {
-                    // Small delay to ensure file is fully written
-                    std::thread::sleep(std::time::Duration::from_millis(100));
-                    show_admin_credentials(password_file);
-                    break;
+                // Re-read: if the file now has content we're done, otherwise wait for
+                // the next event (the server will fire Modify once it writes the password).
+                if let Ok(content) = fs::read_to_string(password_file) {
+                    if !content.trim().is_empty() {
+                        show_admin_credentials(password_file);
+                        break;
+                    }
                 }
             }
-            Err(_) => break, // Channel closed, watcher dropped
+            Err(_) => break, // Channel closed (watcher dropped)
         }
     }
 
     Ok(())
 }
 
+// ─── System operations ────────────────────────────────────────────────────────
+
 fn wipe_installation() -> Result<()> {
-    // Stop service first
     #[cfg(target_os = "macos")]
     {
         let _ = std::process::Command::new("sudo")
@@ -365,30 +358,19 @@ fn wipe_installation() -> Result<()> {
             .output();
     }
 
-    // Remove the ENTIRE dragonfly directory (database, data, config, everything)
-    // This is critical because is_dragonfly_installed() checks for this directory
-    // and the database stores deployment_mode setting
     let _ = std::process::Command::new("sudo")
         .args(["rm", "-rf", DRAGONFLY_DIR])
         .status();
-
-    // Remove the mode file and config directory
-    // This is critical because get_current_mode() falls back to /etc/dragonfly/mode
     let _ = std::process::Command::new("sudo")
         .args(["rm", "-rf", "/etc/dragonfly"])
         .status();
-
-    // Remove web assets
     let _ = std::process::Command::new("sudo")
         .args(["rm", "-rf", OPT_DIR])
         .status();
-
-    // Remove production binary
     let _ = std::process::Command::new("sudo")
         .args(["rm", "-f", PROD_BINARY])
         .status();
 
-    // Remove service file
     #[cfg(target_os = "macos")]
     {
         let _ = std::process::Command::new("sudo")
@@ -409,7 +391,6 @@ fn wipe_installation() -> Result<()> {
 }
 
 fn check_admin_access() -> Result<bool> {
-    // Check if we're already root by running `id -u`
     if let Ok(output) = std::process::Command::new("id").arg("-u").output() {
         if let Ok(uid_str) = String::from_utf8(output.stdout) {
             if uid_str.trim() == "0" {
@@ -426,7 +407,6 @@ fn check_admin_access() -> Result<bool> {
         return Ok(true);
     }
 
-    // Prompt for sudo
     let status = std::process::Command::new("sudo")
         .args(["echo", "-n", ""])
         .status()?;
@@ -459,7 +439,6 @@ fn create_directories() -> Result<()> {
 }
 
 fn write_config(port: u16) -> Result<()> {
-    // Detect local IP for base_url
     let local_ip = get_local_ip().unwrap_or_else(|| "127.0.0.1".to_string());
     let base_url = format!("http://{}:{}", local_ip, port);
 
@@ -507,16 +486,12 @@ fn install_binary() -> Result<()> {
     Ok(())
 }
 
-// TODO: Enable when releases are available
-// const GITHUB_WEB_ASSETS_URL: &str = "https://github.com/zorlin/dragonfly/releases/latest/download/dragonfly-web.zip";
-
 fn install_os_templates(dev_mode: bool) -> Result<()> {
     let os_templates_src = Path::new("os-templates");
     let os_templates_dest = format!("{}/os-templates", DRAGONFLY_DIR);
 
     if !os_templates_src.exists() {
-        // Not in project directory, skip OS template copy
-        // Templates will be downloaded on demand if not present
+        // Not in project directory; templates will be added via the web UI later.
         return Ok(());
     }
 
@@ -525,32 +500,21 @@ fn install_os_templates(dev_mode: bool) -> Result<()> {
         .status()?;
 
     if dev_mode {
-        // In dev mode, symlink for easy updates
         let os_templates_abs = std::fs::canonicalize(os_templates_src)?;
-
         let _ = std::process::Command::new("sudo")
             .args(["rm", "-rf", &os_templates_dest])
             .status();
-
         std::process::Command::new("sudo")
-            .args([
-                "ln",
-                "-s",
-                &os_templates_abs.to_string_lossy(),
-                &os_templates_dest,
-            ])
+            .args(["ln", "-s", &os_templates_abs.to_string_lossy(), &os_templates_dest])
             .status()?;
     } else {
-        // Production: copy all .yml files
         let _ = std::process::Command::new("sudo")
             .args(["rm", "-rf", &os_templates_dest])
             .status();
-
         std::process::Command::new("sudo")
             .args(["mkdir", "-p", &os_templates_dest])
             .status()?;
 
-        // Copy all .yml files from os-templates/
         for entry in std::fs::read_dir(os_templates_src)? {
             let entry = entry?;
             let path = entry.path();
@@ -565,7 +529,32 @@ fn install_os_templates(dev_mode: bool) -> Result<()> {
     Ok(())
 }
 
-/// Extract an embedded directory tree to a destination path on disk.
+/// Resolve the local path to the web static assets directory.
+///
+/// Returns `(tempdir, path)` where `tempdir` is `Some` only when the assets
+/// were extracted from the embedded binary (caller must keep it alive until
+/// the path is no longer needed).
+///
+/// Resolution order:
+/// 1. `crates/dragonfly-server/static` in the current directory (dev / source tree)
+/// 2. Embedded assets extracted to a temp directory (standalone binary)
+pub fn resolve_local_static_path() -> Result<(Option<tempfile::TempDir>, std::path::PathBuf)> {
+    let src = Path::new("crates/dragonfly-server/static");
+    if src.exists() {
+        return Ok((None, src.to_path_buf()));
+    }
+
+    // Extract the embedded static assets to a temp directory.
+    let tmp = tempfile::tempdir()
+        .map_err(|e| color_eyre::eyre::eyre!("Failed to create temp dir for static assets: {}", e))?;
+    let dest = tmp.path().join("static");
+    fs::create_dir_all(&dest)
+        .map_err(|e| color_eyre::eyre::eyre!("mkdir {}: {}", dest.display(), e))?;
+    extract_embedded_dir(&EMBEDDED_STATIC, &dest)?;
+    Ok((Some(tmp), dest))
+}
+
+/// Recursively extract an embedded directory to disk.
 fn extract_embedded_dir(embedded: &Dir, dest: &Path) -> Result<()> {
     for file in embedded.files() {
         let out_path = dest.join(file.path());
@@ -590,7 +579,6 @@ fn install_web_assets(dev_mode: bool) -> Result<()> {
         .args(["mkdir", "-p", OPT_DIR])
         .status()?;
 
-    // Remove existing assets first
     let _ = std::process::Command::new("sudo")
         .args(["rm", "-rf", &format!("{}/templates", OPT_DIR)])
         .status();
@@ -598,47 +586,25 @@ fn install_web_assets(dev_mode: bool) -> Result<()> {
         .args(["rm", "-rf", &format!("{}/static", OPT_DIR)])
         .status();
 
-    // Dev mode with project directory: symlink for hot reload
     if dev_mode && templates_src.exists() && static_src.exists() {
         let templates_abs = std::fs::canonicalize(templates_src)?;
         let static_abs = std::fs::canonicalize(static_src)?;
 
         std::process::Command::new("sudo")
-            .args([
-                "ln",
-                "-s",
-                &templates_abs.to_string_lossy(),
-                &format!("{}/templates", OPT_DIR),
-            ])
+            .args(["ln", "-s", &templates_abs.to_string_lossy(), &format!("{}/templates", OPT_DIR)])
             .status()?;
         std::process::Command::new("sudo")
-            .args([
-                "ln",
-                "-s",
-                &static_abs.to_string_lossy(),
-                &format!("{}/static", OPT_DIR),
-            ])
+            .args(["ln", "-s", &static_abs.to_string_lossy(), &format!("{}/static", OPT_DIR)])
             .status()?;
     } else if !dev_mode && templates_src.exists() && static_src.exists() {
-        // Production install from project directory: copy files
         std::process::Command::new("sudo")
-            .args([
-                "cp",
-                "-r",
-                &templates_src.to_string_lossy(),
-                &format!("{}/templates", OPT_DIR),
-            ])
+            .args(["cp", "-r", &templates_src.to_string_lossy(), &format!("{}/templates", OPT_DIR)])
             .status()?;
         std::process::Command::new("sudo")
-            .args([
-                "cp",
-                "-r",
-                &static_src.to_string_lossy(),
-                &format!("{}/static", OPT_DIR),
-            ])
+            .args(["cp", "-r", &static_src.to_string_lossy(), &format!("{}/static", OPT_DIR)])
             .status()?;
     } else {
-        // Standalone binary — extract embedded assets
+        // Standalone binary — use embedded assets
         let temp_dir = tempfile::tempdir()?;
 
         let static_tmp = temp_dir.path().join("static");
@@ -650,25 +616,17 @@ fn install_web_assets(dev_mode: bool) -> Result<()> {
         extract_embedded_dir(&EMBEDDED_TEMPLATES, &templates_tmp)?;
 
         std::process::Command::new("sudo")
-            .args([
-                "cp",
-                "-r",
-                &static_tmp.to_string_lossy(),
-                &format!("{}/static", OPT_DIR),
-            ])
+            .args(["cp", "-r", &static_tmp.to_string_lossy(), &format!("{}/static", OPT_DIR)])
             .status()?;
         std::process::Command::new("sudo")
-            .args([
-                "cp",
-                "-r",
-                &templates_tmp.to_string_lossy(),
-                &format!("{}/templates", OPT_DIR),
-            ])
+            .args(["cp", "-r", &templates_tmp.to_string_lossy(), &format!("{}/templates", OPT_DIR)])
             .status()?;
     }
 
     Ok(())
 }
+
+// ─── Service installation ─────────────────────────────────────────────────────
 
 #[cfg(target_os = "macos")]
 fn install_service(binary_path: &Path, dev_mode: bool) -> Result<()> {
@@ -718,7 +676,6 @@ fn install_service(binary_path: &Path, dev_mode: bool) -> Result<()> {
     let temp_plist = "/tmp/com.dragonfly.daemon.plist";
     fs::write(temp_plist, &plist_content)?;
 
-    // Unload existing service if present
     let _ = std::process::Command::new("sudo")
         .args(["launchctl", "unload", LAUNCHD_PLIST])
         .output();
@@ -731,12 +688,9 @@ fn install_service(binary_path: &Path, dev_mode: bool) -> Result<()> {
     std::process::Command::new("sudo")
         .args(["chown", "root:wheel", LAUNCHD_PLIST])
         .status()?;
-
     std::process::Command::new("sudo")
         .args(["chmod", "644", LAUNCHD_PLIST])
         .status()?;
-
-    // Load the service
     std::process::Command::new("sudo")
         .args(["launchctl", "load", LAUNCHD_PLIST])
         .status()?;
@@ -779,7 +733,6 @@ WantedBy=multi-user.target
         ));
     }
 
-    // If dev mode, create a path unit to watch the binary
     if dev_mode {
         let path_content = format!(
             r#"[Unit]
@@ -797,7 +750,6 @@ WantedBy=multi-user.target
 
         let temp_path = "/tmp/dragonfly.path";
         fs::write(temp_path, &path_content)?;
-
         std::process::Command::new("sudo")
             .args(["mv", temp_path, "/etc/systemd/system/dragonfly.path"])
             .status()?;
@@ -811,7 +763,6 @@ WantedBy=multi-user.target
         return Err(color_eyre::eyre::eyre!("systemctl daemon-reload failed"));
     }
 
-    // Verify the service file exists before enabling
     if !Path::new(SYSTEMD_SERVICE).exists() {
         return Err(color_eyre::eyre::eyre!(
             "Service file not found at {} after installation",
@@ -819,7 +770,6 @@ WantedBy=multi-user.target
         ));
     }
 
-    // Enable and start the service
     let status = std::process::Command::new("sudo")
         .args(["systemctl", "enable", "--now", "dragonfly"])
         .status()?;
@@ -829,7 +779,6 @@ WantedBy=multi-user.target
         ));
     }
 
-    // If dev mode, also enable the path watcher
     if dev_mode {
         std::process::Command::new("sudo")
             .args(["systemctl", "enable", "--now", "dragonfly.path"])
@@ -844,6 +793,8 @@ fn install_service(_binary_path: &Path, _dev_mode: bool) -> Result<()> {
     println!("Service installation not supported on this platform");
     Ok(())
 }
+
+// ─── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -860,7 +811,30 @@ mod tests {
 
     #[test]
     fn test_is_macos() {
-        // Just verify the function compiles and returns a bool
-        let _ = is_macos();
+        let _ = is_macos(); // just confirm it compiles and returns a bool
+    }
+
+    #[test]
+    fn test_find_next_available_port_advances() {
+        // Any port in [1,1024] should be unavailable without root; find_next should
+        // go past it. We only verify the return is >= start, not that it's actually open.
+        let result = find_next_available_port(1);
+        assert!(result >= 1);
+    }
+
+    #[test]
+    fn test_is_port_available_on_used_port() {
+        // Bind port 0 to get an OS-assigned port, then check it's unavailable.
+        let listener = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        // Port is still held by listener — should be unavailable.
+        assert!(!is_port_available(port));
+    }
+
+    #[test]
+    fn test_get_local_ip_returns_something() {
+        // In CI and dev environments, this should always succeed.
+        // If network is completely absent, the function returns None — that's fine.
+        let _ = get_local_ip(); // just don't panic
     }
 }

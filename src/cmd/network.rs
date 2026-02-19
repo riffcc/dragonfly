@@ -167,6 +167,7 @@ pub fn process_ip_input(input: &str, default_ip: Ipv4Addr) -> Result<Ipv4Addr> {
 
 /// Interactive IP selection prompt
 /// Returns the selected IP (either default or user-entered)
+#[allow(dead_code)] // public utility used by install flows
 pub fn prompt_for_ip(default_ip: Ipv4Addr) -> Result<Ipv4Addr> {
     println!("Selected [{}] as the first available IP.", default_ip);
     print!("Press Enter to accept, or Tab to select your own.\n");
@@ -211,6 +212,7 @@ pub fn prompt_for_ip(default_ip: Ipv4Addr) -> Result<Ipv4Addr> {
 }
 
 /// Read a custom IP from user with placeholder text
+#[allow(dead_code)]
 fn read_custom_ip() -> Result<Ipv4Addr> {
     let mut stdout = io::stdout();
 
