@@ -263,7 +263,7 @@ pub fn api_router() -> Router<crate::AppState> {
         .route("/cluster/create", post(cluster_create_handler))
         .route("/cluster/abort", post(cluster_abort_handler))
         .route("/cluster/status", get(cluster_status_handler))
-        .route("/cluster/nodes/:idx/role", patch(cluster_node_role_handler))
+        .route("/cluster/nodes/{idx}/role", patch(cluster_node_role_handler))
         .route("/cluster/management-key", get(cluster_management_key_handler))
         // --- Kubernetes Cluster Routes ---
         .route("/k8s/create", post(k8s_create_handler))
