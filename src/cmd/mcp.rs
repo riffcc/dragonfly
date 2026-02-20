@@ -211,8 +211,8 @@ impl DragonflyMcp {
             // ── Machines ────────────────────────────────────────
             "machines.list" => {
                 let detail = params.get("detail").and_then(|v| v.as_str());
-                let page = params.get("page").and_then(|v| v.as_u64());
-                let per_page = params.get("per_page").and_then(|v| v.as_u64());
+                let page = u64_param_opt(params, "page");
+                let per_page = u64_param_opt(params, "per_page");
                 let mut qparams = Vec::new();
                 if let Some(d) = detail {
                     qparams.push(format!("detail={d}"));
@@ -501,6 +501,13 @@ impl DragonflyMcp {
 }
 
 // ─── Param extraction helpers ───────────────────────────────────────
+
+/// Extract an optional u64 from a JSON value that could be a number or a string.
+fn u64_param_opt(params: &Value, key: &str) -> Option<u64> {
+    params.get(key).and_then(|v| {
+        v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+    })
+}
 
 fn str_param(params: &Value, key: &str) -> Result<String, ErrorData> {
     params
