@@ -1,5 +1,5 @@
 use crate::AppState;
-use crate::auth::AuthSession;
+use crate::api_token::AuthenticatedCaller;
 use crate::provisioning::HardwareCheckIn;
 use crate::store::conversions::{machine_to_common, revert_pending_changes};
 use crate::ui; // Import the ui module
@@ -658,14 +658,14 @@ async fn register_machine(
 #[axum::debug_handler]
 async fn get_all_machines(
     State(state): State<crate::AppState>,
-    auth_session: AuthSession,
+    caller: AuthenticatedCaller,
     req: axum::http::Request<axum::body::Body>,
 ) -> Response {
     // Check if this is an HTMX request
     let is_htmx = req.headers().get("HX-Request").is_some();
 
     // Check if user is authenticated as admin
-    let is_admin = auth_session.user.is_some();
+    let is_admin = caller.user.is_some();
 
     // Query v1 Store (SQLite) for machines
     let machines: Vec<Machine> = match state.store.list_machines().await {
@@ -918,12 +918,12 @@ async fn get_machine(State(state): State<AppState>, Path(id): Path<Uuid>) -> Res
 #[axum::debug_handler]
 async fn assign_os(
     State(app_state): State<AppState>,
-    auth_session: AuthSession,
+    caller: AuthenticatedCaller,
     Path(id): Path<Uuid>,
     req: axum::http::Request<axum::body::Body>,
 ) -> Response {
     // Check if user is authenticated as admin
-    if auth_session.user.is_none() {
+    if caller.user.is_none() {
         return (
             StatusCode::UNAUTHORIZED,
             Json(json!({
@@ -1082,7 +1082,7 @@ async fn assign_os_internal(app_state: &AppState, id: Uuid, os_choice: String) -
 #[axum::debug_handler]
 async fn update_status(
     State(state): State<AppState>,
-    _auth_session: AuthSession,
+    _caller: AuthenticatedCaller,
     Path(id): Path<Uuid>,
     req: axum::http::Request<axum::body::Body>,
 ) -> Response {
@@ -1242,12 +1242,12 @@ async fn update_status(
 #[axum::debug_handler]
 async fn update_hostname(
     State(state): State<AppState>,
-    auth_session: AuthSession,
+    caller: AuthenticatedCaller,
     Path(id): Path<Uuid>,
     Json(payload): Json<HostnameUpdateRequest>,
 ) -> Response {
     // Check if user is authenticated as admin
-    if auth_session.user.is_none() {
+    if caller.user.is_none() {
         return (
             StatusCode::UNAUTHORIZED,
             Json(json!({
@@ -1379,14 +1379,14 @@ async fn update_os_installed(
 #[axum::debug_handler]
 async fn update_bmc(
     State(state): State<AppState>,
-    auth_session: AuthSession,
+    caller: AuthenticatedCaller,
     Path(id): Path<Uuid>,
     Form(payload): Form<BmcCredentialsUpdateRequest>,
 ) -> Response {
     use dragonfly_common::{BmcConfig, BmcType as StoreBmcType};
 
     // Check if user is authenticated as admin
-    if auth_session.user.is_none() {
+    if caller.user.is_none() {
         return (
             StatusCode::UNAUTHORIZED,
             Json(json!({
@@ -1670,14 +1670,14 @@ pub async fn ipxe_script(State(state): State<AppState>, Path(mac): Path<String>)
 #[axum::debug_handler]
 async fn delete_machine(
     State(state): State<AppState>,
-    auth_session: AuthSession,
+    caller: AuthenticatedCaller,
     Path(id): Path<Uuid>,
     Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> Response {
     use dragonfly_common::MachineSource;
 
     // Check if user is authenticated as admin
-    if auth_session.user.is_none() {
+    if caller.user.is_none() {
         return (
             StatusCode::UNAUTHORIZED,
             Json(json!({
@@ -1788,7 +1788,7 @@ async fn delete_machine(
 #[axum::debug_handler]
 async fn update_machine(
     State(state): State<AppState>,
-    auth_session: AuthSession,
+    caller: AuthenticatedCaller,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     Path(id): Path<Uuid>,
     Json(machine_payload): Json<Machine>,
@@ -1797,7 +1797,7 @@ async fn update_machine(
     info!("Update request for machine {} from IP: {}", id, client_ip);
 
     // Authorization Logic - check if admin or agent's own IP
-    let is_admin = auth_session.user.is_some();
+    let is_admin = caller.user.is_some();
 
     // Get machine from v1 Store
     let mut machine = match state.store.get_machine(id).await {
@@ -1910,11 +1910,11 @@ async fn update_machine(
 /// PATCH /api/machines/{id} — partial update using UpdateMachineRequest
 async fn patch_machine(
     State(state): State<AppState>,
-    auth_session: AuthSession,
+    caller: AuthenticatedCaller,
     Path(id): Path<Uuid>,
     Json(req): Json<crate::store::conversions::UpdateMachineRequest>,
 ) -> Response {
-    if auth_session.user.is_none() {
+    if caller.user.is_none() {
         return (
             StatusCode::FORBIDDEN,
             Json(json!({
@@ -5542,7 +5542,7 @@ pub fn normalize_workflow_progress(action_name: &str, action_progress: u8) -> u8
 
 async fn update_installation_progress(
     State(state): State<AppState>, // State is used for event manager
-    _auth_session: AuthSession,    // Mark as unused - updates come from agent/tinkerbell
+    _caller: AuthenticatedCaller,    // Mark as unused - updates come from agent/tinkerbell
     Path(id): Path<Uuid>,
     Json(payload): Json<InstallationProgressUpdateRequest>,
 ) -> Response {
@@ -5628,13 +5628,12 @@ async fn api_get_machine_tags(State(state): State<AppState>, Path(id): Path<Uuid
 #[axum::debug_handler]
 async fn api_update_machine_tags(
     State(state): State<AppState>,
-    auth_session: AuthSession,
+    caller: AuthenticatedCaller,
     Path(id): Path<Uuid>,
     Json(tags): Json<Vec<String>>,
 ) -> Response {
-    // Check if user is authenticated as admin
-    if let Err(response) = crate::auth::require_admin(&auth_session) {
-        return response;
+    if caller.user.is_none() {
+        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Not authenticated"}))).into_response();
     }
 
     // Get machine from v1 store
@@ -5726,11 +5725,11 @@ async fn get_install_status() -> Response {
 #[axum::debug_handler]
 async fn api_delete_machine_tag(
     State(state): State<AppState>,
-    auth_session: AuthSession,
+    caller: AuthenticatedCaller,
     Path((id, tag)): Path<(Uuid, String)>,
 ) -> Response {
     // Check if user is authenticated as admin
-    if auth_session.user.is_none() {
+    if caller.user.is_none() {
         return (
             StatusCode::UNAUTHORIZED,
             Json(json!({
@@ -5856,10 +5855,9 @@ async fn get_machine_status_and_progress_partial(
 // --- Tag Management API ---
 /// Get all tags in the system
 #[axum::debug_handler]
-async fn api_get_tags(State(state): State<AppState>, auth_session: AuthSession) -> Response {
-    // Check if user is authenticated as admin
-    if let Err(response) = crate::auth::require_admin(&auth_session) {
-        return response;
+async fn api_get_tags(State(state): State<AppState>, caller: AuthenticatedCaller) -> Response {
+    if caller.user.is_none() {
+        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Not authenticated"}))).into_response();
     }
 
     match state.store.list_all_tags().await {
@@ -5879,12 +5877,11 @@ async fn api_get_tags(State(state): State<AppState>, auth_session: AuthSession) 
 #[axum::debug_handler]
 async fn api_create_tag(
     State(state): State<AppState>,
-    auth_session: AuthSession,
+    caller: AuthenticatedCaller,
     Json(payload): Json<serde_json::Value>,
 ) -> Response {
-    // Check if user is authenticated as admin
-    if let Err(response) = crate::auth::require_admin(&auth_session) {
-        return response;
+    if caller.user.is_none() {
+        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Not authenticated"}))).into_response();
     }
 
     // Extract tag name from JSON payload
@@ -5936,12 +5933,11 @@ async fn api_create_tag(
 #[axum::debug_handler]
 async fn api_delete_tag(
     State(state): State<AppState>,
-    auth_session: AuthSession,
+    caller: AuthenticatedCaller,
     Path(tag_name): Path<String>,
 ) -> Response {
-    // Check if user is authenticated as admin
-    if let Err(response) = crate::auth::require_admin(&auth_session) {
-        return response;
+    if caller.user.is_none() {
+        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Not authenticated"}))).into_response();
     }
 
     match state.store.delete_tag(&tag_name).await {
@@ -5973,12 +5969,11 @@ async fn api_delete_tag(
 #[axum::debug_handler]
 async fn api_get_machines_by_tag(
     State(state): State<AppState>,
-    auth_session: AuthSession,
+    caller: AuthenticatedCaller,
     Path(tag_name): Path<String>,
 ) -> Response {
-    // Check if user is authenticated as admin
-    if let Err(response) = crate::auth::require_admin(&auth_session) {
-        return response;
+    if caller.user.is_none() {
+        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Not authenticated"}))).into_response();
     }
 
     match state.store.list_machines_by_tag(&tag_name).await {
@@ -6003,14 +5998,14 @@ async fn api_get_machines_by_tag(
 // New reimage handler
 #[axum::debug_handler]
 async fn reimage_machine(
-    auth_session: AuthSession,
+    caller: AuthenticatedCaller,
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> Response {
     use dragonfly_common::MachineState;
 
     // Check if user is authenticated as admin
-    if auth_session.user.is_none() {
+    if caller.user.is_none() {
         return (
             StatusCode::UNAUTHORIZED,
             Json(json!({
@@ -6255,14 +6250,14 @@ async fn reimage_machine(
 /// Abort a pending reimage - cancels before the machine actually starts installing
 #[axum::debug_handler]
 async fn abort_reimage(
-    auth_session: AuthSession,
+    caller: AuthenticatedCaller,
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> Response {
     use dragonfly_common::MachineState;
 
     // Check if user is authenticated as admin
-    if auth_session.user.is_none() {
+    if caller.user.is_none() {
         return (
             StatusCode::UNAUTHORIZED,
             Json(json!({
@@ -6864,10 +6859,10 @@ pub struct UpdateUserRequest {
 #[axum::debug_handler]
 pub async fn api_get_users(
     State(state): State<AppState>,
-    auth_session: AuthSession,
+    caller: AuthenticatedCaller,
 ) -> impl IntoResponse {
     // Require authentication
-    if auth_session.user.is_none() {
+    if caller.user.is_none() {
         return (
             StatusCode::UNAUTHORIZED,
             Json(json!({
@@ -6901,10 +6896,10 @@ pub async fn api_get_users(
 #[axum::debug_handler]
 pub async fn api_get_user(
     State(state): State<AppState>,
-    auth_session: AuthSession,
+    caller: AuthenticatedCaller,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    if auth_session.user.is_none() {
+    if caller.user.is_none() {
         return (
             StatusCode::UNAUTHORIZED,
             Json(json!({
@@ -6957,10 +6952,10 @@ pub async fn api_get_user(
 #[axum::debug_handler]
 pub async fn api_create_user(
     State(state): State<AppState>,
-    auth_session: AuthSession,
+    caller: AuthenticatedCaller,
     Json(request): Json<CreateUserRequest>,
 ) -> impl IntoResponse {
-    if auth_session.user.is_none() {
+    if caller.user.is_none() {
         return (
             StatusCode::UNAUTHORIZED,
             Json(json!({
@@ -7070,11 +7065,11 @@ pub async fn api_create_user(
 #[axum::debug_handler]
 pub async fn api_update_user(
     State(state): State<AppState>,
-    auth_session: AuthSession,
+    caller: AuthenticatedCaller,
     Path(id): Path<String>,
     Json(request): Json<UpdateUserRequest>,
 ) -> impl IntoResponse {
-    if auth_session.user.is_none() {
+    if caller.user.is_none() {
         return (
             StatusCode::UNAUTHORIZED,
             Json(json!({
@@ -7205,10 +7200,10 @@ pub async fn api_update_user(
 #[axum::debug_handler]
 pub async fn api_delete_user(
     State(state): State<AppState>,
-    auth_session: AuthSession,
+    caller: AuthenticatedCaller,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let current_user = match auth_session.user {
+    let current_user = match caller.user {
         Some(user) => user,
         None => {
             return (
@@ -7830,8 +7825,8 @@ pub async fn agent_list_isos_handler() -> Response {
 /// GET /api/isos
 ///
 /// Returns detailed list of ISO files for the web UI.
-pub async fn list_isos_handler(auth_session: AuthSession) -> Response {
-    if auth_session.user.is_none() {
+pub async fn list_isos_handler(caller: AuthenticatedCaller) -> Response {
+    if caller.user.is_none() {
         return (
             StatusCode::UNAUTHORIZED,
             Json(json!({
@@ -7882,12 +7877,12 @@ pub async fn list_isos_handler(auth_session: AuthSession) -> Response {
 /// Upload an ISO file to /var/lib/dragonfly/isos/
 /// Streams data to disk to support large files (multi-GB ISOs).
 pub async fn upload_iso_handler(
-    auth_session: AuthSession,
+    caller: AuthenticatedCaller,
     mut multipart: axum::extract::Multipart,
 ) -> Response {
     use tokio::io::AsyncWriteExt;
 
-    if auth_session.user.is_none() {
+    if caller.user.is_none() {
         return (
             StatusCode::UNAUTHORIZED,
             Json(json!({
@@ -8033,10 +8028,10 @@ pub async fn upload_iso_handler(
 ///
 /// Delete an ISO file from /var/lib/dragonfly/isos/
 pub async fn delete_iso_handler(
-    auth_session: AuthSession,
+    caller: AuthenticatedCaller,
     Path(filename): Path<String>,
 ) -> Response {
-    if auth_session.user.is_none() {
+    if caller.user.is_none() {
         return (
             StatusCode::UNAUTHORIZED,
             Json(json!({
@@ -8098,9 +8093,9 @@ pub async fn delete_iso_handler(
 
 async fn list_networks_handler(
     State(state): State<AppState>,
-    auth_session: AuthSession,
+    caller: AuthenticatedCaller,
 ) -> Response {
-    if auth_session.user.is_none() {
+    if caller.user.is_none() {
         return (
             StatusCode::UNAUTHORIZED,
             Json(json!({"error": "Not authenticated"})),
@@ -8123,10 +8118,10 @@ async fn list_networks_handler(
 
 async fn get_network_handler(
     State(state): State<AppState>,
-    auth_session: AuthSession,
+    caller: AuthenticatedCaller,
     Path(id): Path<Uuid>,
 ) -> Response {
-    if auth_session.user.is_none() {
+    if caller.user.is_none() {
         return (
             StatusCode::UNAUTHORIZED,
             Json(json!({"error": "Not authenticated"})),
@@ -8154,10 +8149,10 @@ async fn get_network_handler(
 
 async fn create_network_handler(
     State(state): State<AppState>,
-    auth_session: AuthSession,
+    caller: AuthenticatedCaller,
     Json(payload): Json<dragonfly_common::Network>,
 ) -> Response {
-    if auth_session.user.is_none() {
+    if caller.user.is_none() {
         return (
             StatusCode::UNAUTHORIZED,
             Json(json!({"error": "Not authenticated"})),
@@ -8181,11 +8176,11 @@ async fn create_network_handler(
 
 async fn update_network_handler(
     State(state): State<AppState>,
-    auth_session: AuthSession,
+    caller: AuthenticatedCaller,
     Path(id): Path<Uuid>,
     Json(mut payload): Json<dragonfly_common::Network>,
 ) -> Response {
-    if auth_session.user.is_none() {
+    if caller.user.is_none() {
         return (
             StatusCode::UNAUTHORIZED,
             Json(json!({"error": "Not authenticated"})),
@@ -8238,10 +8233,10 @@ async fn is_full_dhcp_target_network(state: &AppState, network_id: Uuid) -> bool
 
 async fn delete_network_handler(
     State(state): State<AppState>,
-    auth_session: AuthSession,
+    caller: AuthenticatedCaller,
     Path(id): Path<Uuid>,
 ) -> Response {
-    if auth_session.user.is_none() {
+    if caller.user.is_none() {
         return (
             StatusCode::UNAUTHORIZED,
             Json(json!({"error": "Not authenticated"})),
@@ -8276,10 +8271,10 @@ async fn delete_network_handler(
 
 async fn apply_machine_config_handler(
     State(state): State<AppState>,
-    auth_session: AuthSession,
+    caller: AuthenticatedCaller,
     Path(id): Path<Uuid>,
 ) -> Response {
-    if auth_session.user.is_none() {
+    if caller.user.is_none() {
         return (
             StatusCode::UNAUTHORIZED,
             Json(json!({"error": "Not authenticated"})),
@@ -8348,12 +8343,12 @@ async fn apply_machine_config_handler(
 /// POST /api/machines/{id}/proxmox/apply-config — push cores/RAM config to Proxmox API
 async fn apply_proxmox_config(
     State(state): State<AppState>,
-    auth_session: AuthSession,
+    caller: AuthenticatedCaller,
     Path(id): Path<Uuid>,
 ) -> Response {
     use proxmox_client::HttpApiClient;
 
-    if auth_session.user.is_none() {
+    if caller.user.is_none() {
         return (
             StatusCode::UNAUTHORIZED,
             Json(json!({"error": "Not authenticated"})),
@@ -8467,10 +8462,10 @@ async fn apply_proxmox_config(
 /// POST /api/machines/{id}/revert-pending — clear pending state without applying
 async fn revert_pending_handler(
     State(state): State<AppState>,
-    auth_session: AuthSession,
+    caller: AuthenticatedCaller,
     Path(id): Path<Uuid>,
 ) -> Response {
-    if auth_session.user.is_none() {
+    if caller.user.is_none() {
         return (
             StatusCode::UNAUTHORIZED,
             Json(json!({"error": "Not authenticated"})),
@@ -8522,9 +8517,9 @@ async fn revert_pending_handler(
 /// GET /api/dhcp/leases — List all active DHCP leases
 async fn list_dhcp_leases_handler(
     State(state): State<AppState>,
-    auth_session: AuthSession,
+    caller: AuthenticatedCaller,
 ) -> Response {
-    if auth_session.user.is_none() {
+    if caller.user.is_none() {
         return (
             StatusCode::UNAUTHORIZED,
             Json(json!({"error": "Not authenticated"})),
@@ -8540,10 +8535,10 @@ async fn list_dhcp_leases_handler(
 /// DELETE /api/dhcp/leases/{mac} — Terminate a specific DHCP lease
 async fn terminate_dhcp_lease_handler(
     State(state): State<AppState>,
-    auth_session: AuthSession,
+    caller: AuthenticatedCaller,
     Path(mac): Path<String>,
 ) -> Response {
-    if auth_session.user.is_none() {
+    if caller.user.is_none() {
         return (
             StatusCode::UNAUTHORIZED,
             Json(json!({"error": "Not authenticated"})),
@@ -8568,15 +8563,22 @@ async fn terminate_dhcp_lease_handler(
 /// GET /api/ha/status — return HA cluster status
 async fn ha_status_handler(
     State(state): State<crate::AppState>,
-) -> impl IntoResponse {
-    let status = state.ha_manager.status().await;
-    Json(status)
+    caller: AuthenticatedCaller,
+) -> Response {
+    if caller.user.is_none() {
+        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Not authenticated"}))).into_response();
+    }
+    Json(state.ha_manager.status().await).into_response()
 }
 
 /// POST /api/ha/enable — enable HA mode (download rqlite, migrate data, start cluster)
 async fn ha_enable_handler(
     State(state): State<crate::AppState>,
+    caller: AuthenticatedCaller,
 ) -> Response {
+    if caller.user.is_none() {
+        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Not authenticated"}))).into_response();
+    }
     use crate::store::v1::SqliteStore;
 
     // Check if already enabled
@@ -8631,7 +8633,11 @@ async fn ha_enable_handler(
 /// the plan so the user is never stuck.
 async fn ha_disable_handler(
     State(state): State<crate::AppState>,
+    caller: AuthenticatedCaller,
 ) -> Response {
+    if caller.user.is_none() {
+        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Not authenticated"}))).into_response();
+    }
     let has_cluster_plan = state.store.get_setting("cluster_plan").await
         .ok()
         .flatten()
@@ -8748,7 +8754,11 @@ async fn ha_disable_handler(
 /// POST /api/cluster/create — Build and deploy an HA cluster across Proxmox nodes
 async fn cluster_create_handler(
     State(state): State<crate::AppState>,
+    caller: AuthenticatedCaller,
 ) -> Response {
+    if caller.user.is_none() {
+        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Not authenticated"}))).into_response();
+    }
     // Check if already enabled
     if crate::ha::HaManager::is_ha_enabled() {
         return (
@@ -8846,7 +8856,11 @@ async fn cluster_create_handler(
 /// already-created LXCs and clears the stored cluster plan.
 async fn cluster_abort_handler(
     State(state): State<crate::AppState>,
+    caller: AuthenticatedCaller,
 ) -> Response {
+    if caller.user.is_none() {
+        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Not authenticated"}))).into_response();
+    }
     info!("Cluster abort requested");
 
     match crate::cluster::abort_cluster(&state).await {
@@ -8874,7 +8888,11 @@ async fn cluster_abort_handler(
 /// The UI uses this on page load to reconnect to an in-progress deployment.
 async fn cluster_status_handler(
     State(state): State<crate::AppState>,
-) -> impl IntoResponse {
+    caller: AuthenticatedCaller,
+) -> Response {
+    if caller.user.is_none() {
+        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Not authenticated"}))).into_response();
+    }
     let plan_json = state.store.get_setting("cluster_plan").await
         .ok()
         .flatten()
@@ -8893,7 +8911,7 @@ async fn cluster_status_handler(
             "deploying": actively_deploying,
             "phase": global_phase,
             "nodes": [],
-        }));
+        })).into_response();
     }
 
     let ha_enabled = crate::ha::HaManager::is_ha_enabled();
@@ -8920,7 +8938,7 @@ async fn cluster_status_handler(
                         "phase": node_phase,
                     })
                 }).collect::<Vec<_>>(),
-            }))
+            })).into_response()
         }
         Err(_) => {
             // Unparseable plan — stale data from old format. Clear it automatically.
@@ -8930,7 +8948,7 @@ async fn cluster_status_handler(
                 "deployed": false,
                 "deploying": false,
                 "nodes": [],
-            }))
+            })).into_response()
         }
     }
 }
@@ -8943,14 +8961,18 @@ async fn cluster_status_handler(
 /// Never returns the private key.
 async fn cluster_management_key_handler(
     State(state): State<crate::AppState>,
-) -> impl IntoResponse {
+    caller: AuthenticatedCaller,
+) -> Response {
+    if caller.user.is_none() {
+        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Not authenticated"}))).into_response();
+    }
     let pubkey = state.store.get_setting("cluster_management_pubkey").await
         .ok().flatten().unwrap_or_default();
 
     if pubkey.is_empty() {
         return Json(json!({
             "exists": false,
-        }));
+        })).into_response();
     }
 
     // Parse the public key to get the fingerprint
@@ -8962,14 +8984,18 @@ async fn cluster_management_key_handler(
         "exists": true,
         "public_key": pubkey,
         "fingerprint": fingerprint,
-    }))
+    })).into_response()
 }
 
 /// Rotate the management key: generates a new keypair, stores it, and returns the new fingerprint.
 /// Note: Existing cluster nodes will need the new key deployed on next provision/restart.
 async fn cluster_rotate_key_handler(
     State(state): State<crate::AppState>,
-) -> impl IntoResponse {
+    caller: AuthenticatedCaller,
+) -> Response {
+    if caller.user.is_none() {
+        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Not authenticated"}))).into_response();
+    }
     // Clear existing key so ensure_management_key() generates fresh
     let _ = state.store.put_setting("cluster_management_pubkey", "").await;
     let _ = state.store.put_setting("cluster_management_privkey", "").await;
@@ -8984,13 +9010,13 @@ async fn cluster_rotate_key_handler(
                 "success": true,
                 "public_key": pubkey,
                 "fingerprint": fingerprint,
-            }))
+            })).into_response()
         }
         Err(e) => {
             Json(json!({
                 "success": false,
                 "error": format!("{}", e),
-            }))
+            })).into_response()
         }
     }
 }
@@ -9152,7 +9178,11 @@ fn ssh_fingerprint(pubkey: &str) -> String {
 /// GET /api/credentials — list all credentials as a unified view
 async fn credentials_list_handler(
     State(state): State<crate::AppState>,
-) -> impl IntoResponse {
+    caller: AuthenticatedCaller,
+) -> Response {
+    if caller.user.is_none() {
+        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Not authenticated"}))).into_response();
+    }
     let mut credentials: Vec<CredentialInfo> = Vec::new();
 
     // 1. Proxmox credentials
@@ -9210,7 +9240,7 @@ async fn credentials_list_handler(
         });
     }
 
-    Json(json!({ "credentials": credentials }))
+    Json(json!({ "credentials": credentials })).into_response()
 }
 
 #[derive(Deserialize)]
@@ -9229,8 +9259,12 @@ struct AddCredentialRequest {
 /// POST /api/credentials/add — add or generate a credential by command string
 async fn credentials_add_handler(
     State(state): State<crate::AppState>,
+    caller: AuthenticatedCaller,
     Json(request): Json<AddCredentialRequest>,
-) -> impl IntoResponse {
+) -> Response {
+    if caller.user.is_none() {
+        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Not authenticated"}))).into_response();
+    }
     let cmd = request.command.trim();
 
     if cmd.starts_with("proxmox:") {
@@ -9241,7 +9275,7 @@ async fn credentials_add_handler(
             None => return Json(json!({
                 "success": false,
                 "message": "Invalid format. Use proxmox:username:password"
-            })),
+            })).into_response(),
         };
         let username = &rest[..colon_pos];
         let password = &rest[colon_pos + 1..];
@@ -9250,7 +9284,7 @@ async fn credentials_add_handler(
             return Json(json!({
                 "success": false,
                 "message": "Username and password cannot be empty"
-            }));
+            })).into_response();
         }
 
         // Get host/port from request or existing settings
@@ -9270,7 +9304,7 @@ async fn credentials_add_handler(
             return Json(json!({
                 "success": false,
                 "message": "No Proxmox host configured. Provide host in the form."
-            }));
+            })).into_response();
         }
 
         let token_request = crate::handlers::proxmox::ProxmoxTokensCreateRequest {
@@ -9309,18 +9343,18 @@ async fn credentials_add_handler(
                         Json(json!({
                             "success": true,
                             "message": msg,
-                        }))
+                        })).into_response()
                     }
                     Err(e) => Json(json!({
                         "success": false,
                         "message": format!("Tokens created but failed to save: {}", e),
-                    })),
+                    })).into_response(),
                 }
             }
             Err(e) => Json(json!({
                 "success": false,
                 "message": format!("Failed to create Proxmox tokens: {}", e),
-            })),
+            })).into_response(),
         }
     } else if cmd == "ssh-keygen cluster" {
         match crate::cluster::ensure_management_key_public(&state).await {
@@ -9329,12 +9363,12 @@ async fn credentials_add_handler(
                 Json(json!({
                     "success": true,
                     "message": format!("Cluster key generated ({})", fp),
-                }))
+                })).into_response()
             }
             Err(e) => Json(json!({
                 "success": false,
                 "message": format!("Failed to generate cluster key: {}", e),
-            })),
+            })).into_response(),
         }
     } else if cmd == "ssh-keygen machine" {
         match crate::cluster::ensure_machine_key_public(&state).await {
@@ -9343,31 +9377,35 @@ async fn credentials_add_handler(
                 Json(json!({
                     "success": true,
                     "message": format!("Machine key generated ({})", fp),
-                }))
+                })).into_response()
             }
             Err(e) => Json(json!({
                 "success": false,
                 "message": format!("Failed to generate machine key: {}", e),
-            })),
+            })).into_response(),
         }
     } else {
         Json(json!({
             "success": false,
             "message": format!("Unknown command: {}. Use proxmox:user:pass, ssh-keygen cluster, or ssh-keygen machine", cmd),
-        }))
+        })).into_response()
     }
 }
 
 /// POST /api/credentials/{id}/rotate — rotate a credential
 async fn credentials_rotate_handler(
     State(state): State<crate::AppState>,
+    caller: AuthenticatedCaller,
     Path(id): Path<String>,
-) -> impl IntoResponse {
+) -> Response {
+    if caller.user.is_none() {
+        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Not authenticated"}))).into_response();
+    }
     match id.as_str() {
         "proxmox" => Json(json!({
             "success": false,
             "message": "Use 'Add' to re-connect with Proxmox credentials",
-        })),
+        })).into_response(),
         "ssh-cluster" => {
             let _ = state.store.put_setting("cluster_management_pubkey", "").await;
             let _ = state.store.put_setting("cluster_management_privkey", "").await;
@@ -9377,12 +9415,12 @@ async fn credentials_rotate_handler(
                     Json(json!({
                         "success": true,
                         "message": format!("Cluster key rotated ({})", fp),
-                    }))
+                    })).into_response()
                 }
                 Err(e) => Json(json!({
                     "success": false,
                     "message": format!("Failed to rotate cluster key: {}", e),
-                })),
+                })).into_response(),
             }
         }
         "ssh-machine" => {
@@ -9394,27 +9432,31 @@ async fn credentials_rotate_handler(
                     Json(json!({
                         "success": true,
                         "message": format!("Machine key rotated ({})", fp),
-                    }))
+                    })).into_response()
                 }
                 Err(e) => Json(json!({
                     "success": false,
                     "message": format!("Failed to rotate machine key: {}", e),
-                })),
+                })).into_response(),
             }
         }
         _ => Json(json!({
             "success": false,
             "message": format!("Unknown credential: {}", id),
-        })),
+        })).into_response(),
     }
 }
 
 /// DELETE /api/credentials/{id} — delete a credential
 async fn credentials_delete_handler(
     State(state): State<crate::AppState>,
+    caller: AuthenticatedCaller,
     Path(id): Path<String>,
     Query(params): Query<HashMap<String, String>>,
-) -> impl IntoResponse {
+) -> Response {
+    if caller.user.is_none() {
+        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Not authenticated"}))).into_response();
+    }
     let _cleanup = params.get("cleanup").map(|v| v == "true").unwrap_or(false);
 
     match id.as_str() {
@@ -9452,7 +9494,7 @@ async fn credentials_delete_handler(
             Json(json!({
                 "success": true,
                 "message": "Proxmox credentials removed",
-            }))
+            })).into_response()
         }
         "ssh-cluster" => {
             let _ = state.store.put_setting("cluster_management_pubkey", "").await;
@@ -9461,7 +9503,7 @@ async fn credentials_delete_handler(
             Json(json!({
                 "success": true,
                 "message": "Cluster key removed",
-            }))
+            })).into_response()
         }
         "ssh-machine" => {
             let _ = state.store.put_setting("machine_management_pubkey", "").await;
@@ -9470,12 +9512,12 @@ async fn credentials_delete_handler(
             Json(json!({
                 "success": true,
                 "message": "Machine key removed",
-            }))
+            })).into_response()
         }
         _ => Json(json!({
             "success": false,
             "message": format!("Unknown credential: {}", id),
-        })),
+        })).into_response(),
     }
 }
 
@@ -9484,7 +9526,10 @@ async fn credentials_delete_handler(
 // =============================================================================
 
 /// List DNS zones (derived from networks with Internal DNS provider + domain)
-async fn dns_list_zones_handler(State(state): State<crate::AppState>) -> Response {
+async fn dns_list_zones_handler(State(state): State<crate::AppState>, caller: AuthenticatedCaller) -> Response {
+    if caller.user.is_none() {
+        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Not authenticated"}))).into_response();
+    }
     let networks = match state.store.list_networks().await {
         Ok(n) => n,
         Err(e) => {
@@ -9517,8 +9562,12 @@ async fn dns_list_zones_handler(State(state): State<crate::AppState>) -> Respons
 /// List all DNS records in a zone
 async fn dns_list_records_handler(
     State(state): State<crate::AppState>,
+    caller: AuthenticatedCaller,
     Path(zone): Path<String>,
 ) -> Response {
+    if caller.user.is_none() {
+        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Not authenticated"}))).into_response();
+    }
     match state.store.list_dns_records(&zone).await {
         Ok(records) => Json(json!({ "records": records })).into_response(),
         Err(e) => (
@@ -9547,9 +9596,13 @@ fn default_dns_ttl() -> u32 {
 /// Create a DNS record in a zone
 async fn dns_create_record_handler(
     State(state): State<crate::AppState>,
+    caller: AuthenticatedCaller,
     Path(zone): Path<String>,
     Json(req): Json<CreateDnsRecordRequest>,
 ) -> Response {
+    if caller.user.is_none() {
+        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Not authenticated"}))).into_response();
+    }
     match state
         .store
         .upsert_dns_record(
@@ -9594,9 +9647,13 @@ struct UpdateDnsRecordRequest {
 /// Update a DNS record
 async fn dns_update_record_handler(
     State(state): State<crate::AppState>,
+    caller: AuthenticatedCaller,
     Path((zone, id)): Path<(String, Uuid)>,
     Json(req): Json<UpdateDnsRecordRequest>,
 ) -> Response {
+    if caller.user.is_none() {
+        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Not authenticated"}))).into_response();
+    }
     // Get current records to find the one to update
     let records = match state.store.list_dns_records(&zone).await {
         Ok(r) => r,
@@ -9651,8 +9708,12 @@ async fn dns_update_record_handler(
 /// Delete a DNS record by ID
 async fn dns_delete_record_handler(
     State(state): State<crate::AppState>,
+    caller: AuthenticatedCaller,
     Path((_zone, id)): Path<(String, Uuid)>,
 ) -> Response {
+    if caller.user.is_none() {
+        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Not authenticated"}))).into_response();
+    }
     match state.store.delete_dns_record(id).await {
         Ok(true) => Json(json!({"success": true})).into_response(),
         Ok(false) => (
@@ -9671,8 +9732,12 @@ async fn dns_delete_record_handler(
 /// Get all DNS records for a specific machine
 async fn dns_records_by_machine_handler(
     State(state): State<crate::AppState>,
+    caller: AuthenticatedCaller,
     Path(machine_id): Path<Uuid>,
 ) -> Response {
+    if caller.user.is_none() {
+        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Not authenticated"}))).into_response();
+    }
     // Scan all zones for records matching this machine_id
     let networks = match state.store.list_networks().await {
         Ok(n) => n,

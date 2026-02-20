@@ -2,7 +2,7 @@
 //!
 //! - `POST   /api/tokens`             — Create a new token (session auth only)
 //! - `GET    /api/tokens`             — List all tokens (metadata only)
-//! - `POST   /api/tokens/{id}/rotate` — Rotate: revoke old, create new with same name
+//! - `POST   /api/tokens/{id}/rotate` — Rotate: revoke old, create new with same name (session only)
 //! - `DELETE /api/tokens/{id}`        — Revoke a token (soft-delete for audit trail)
 
 use axum::{
@@ -16,8 +16,7 @@ use serde_json::json;
 use tracing::{info, warn};
 use uuid::Uuid;
 
-use crate::api_token::{generate_raw_token, hash_token, token_prefix};
-use crate::auth::AuthSession;
+use crate::api_token::{generate_raw_token, hash_token, token_prefix, AuthenticatedCaller};
 use crate::store::v1::ApiToken;
 use crate::AppState;
 
@@ -52,11 +51,11 @@ pub struct TokenListEntry {
 /// Create a new API token. Requires session auth (no token-minting-tokens).
 pub async fn create_api_token(
     State(state): State<AppState>,
-    auth_session: AuthSession,
+    caller: AuthenticatedCaller,
     Json(body): Json<CreateTokenRequest>,
 ) -> impl IntoResponse {
-    // Must be authenticated via session (browser login)
-    let user = match auth_session.user {
+    // Must be authenticated
+    let user = match caller.user {
         Some(u) => u,
         None => {
             return (
@@ -66,6 +65,15 @@ pub async fn create_api_token(
                 .into_response();
         }
     };
+
+    // Token creation requires session auth — no token-minting-tokens
+    if caller.via_token {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({"error": "Token creation requires session auth (browser login)"})),
+        )
+            .into_response();
+    }
 
     let name = body.name.trim().to_string();
     if name.is_empty() {
@@ -127,9 +135,9 @@ pub async fn create_api_token(
 /// List all API tokens (metadata only — raw values are never exposed).
 pub async fn list_api_tokens(
     State(state): State<AppState>,
-    auth_session: AuthSession,
+    caller: AuthenticatedCaller,
 ) -> impl IntoResponse {
-    if auth_session.user.is_none() {
+    if caller.user.is_none() {
         return (
             StatusCode::UNAUTHORIZED,
             Json(json!({"error": "Authentication required"})),
@@ -164,10 +172,10 @@ pub async fn list_api_tokens(
 /// Revoke an API token (soft-delete: sets `revoked = true`).
 pub async fn revoke_api_token(
     State(state): State<AppState>,
-    auth_session: AuthSession,
+    caller: AuthenticatedCaller,
     Path(id): Path<Uuid>,
 ) -> impl IntoResponse {
-    if auth_session.user.is_none() {
+    if caller.user.is_none() {
         return (
             StatusCode::UNAUTHORIZED,
             Json(json!({"error": "Authentication required"})),
@@ -216,12 +224,13 @@ pub async fn revoke_api_token(
 }
 
 /// Rotate an API token: revoke the old one and create a new one with the same name.
+/// Requires session auth (no token-minting-tokens).
 pub async fn rotate_api_token(
     State(state): State<AppState>,
-    auth_session: AuthSession,
+    caller: AuthenticatedCaller,
     Path(id): Path<Uuid>,
 ) -> impl IntoResponse {
-    let user = match auth_session.user {
+    let user = match caller.user {
         Some(u) => u,
         None => {
             return (
@@ -231,6 +240,15 @@ pub async fn rotate_api_token(
                 .into_response();
         }
     };
+
+    // Token rotation requires session auth — no token-minting-tokens
+    if caller.via_token {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({"error": "Token rotation requires session auth (browser login)"})),
+        )
+            .into_response();
+    }
 
     // Fetch the old token
     let old_token = match state.store.get_api_token(id).await {
