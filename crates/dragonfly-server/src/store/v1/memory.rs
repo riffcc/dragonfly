@@ -3,7 +3,7 @@
 //! Simple storage for testing and development.
 //! Uses RwLock for thread-safe access with minimal contention.
 
-use super::{Result, Store, StoreError, User};
+use super::{ApiToken, Result, Store, StoreError, User};
 use async_trait::async_trait;
 use dragonfly_common::{DnsRecord, DnsRecordSource, DnsRecordType, Machine, MachineState, Network, normalize_mac};
 use dragonfly_crd::{Template, Workflow};
@@ -29,6 +29,7 @@ pub struct MemoryStore {
     users: RwLock<HashMap<Uuid, User>>,
     standalone_tags: RwLock<HashSet<String>>,
     dns_records: RwLock<HashMap<Uuid, DnsRecord>>,
+    api_tokens: RwLock<HashMap<Uuid, ApiToken>>,
 
     // Machine indices
     /// identity_hash -> machine UUID
@@ -49,6 +50,10 @@ pub struct MemoryStore {
     // User indices
     /// username -> user UUID
     users_by_username: RwLock<HashMap<String, Uuid>>,
+
+    // API token indices
+    /// token_hash -> token UUID
+    api_tokens_by_hash: RwLock<HashMap<String, Uuid>>,
 }
 
 impl MemoryStore {
@@ -63,6 +68,7 @@ impl MemoryStore {
             users: RwLock::new(HashMap::new()),
             standalone_tags: RwLock::new(HashSet::new()),
             dns_records: RwLock::new(HashMap::new()),
+            api_tokens: RwLock::new(HashMap::new()),
             identity_index: RwLock::new(HashMap::new()),
             mac_index: RwLock::new(HashMap::new()),
             ip_index: RwLock::new(HashMap::new()),
@@ -70,6 +76,7 @@ impl MemoryStore {
             state_index: RwLock::new(HashMap::new()),
             workflow_by_machine: RwLock::new(HashMap::new()),
             users_by_username: RwLock::new(HashMap::new()),
+            api_tokens_by_hash: RwLock::new(HashMap::new()),
         }
     }
 
@@ -628,6 +635,93 @@ impl Store for MemoryStore {
                 guard.remove(&id);
             }
 
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    // === API Token Operations ===
+
+    async fn get_api_token(&self, id: Uuid) -> Result<Option<ApiToken>> {
+        let guard = Self::read_lock(&self.api_tokens)?;
+        Ok(guard.get(&id).cloned())
+    }
+
+    async fn get_api_token_by_hash(&self, token_hash: &str) -> Result<Option<ApiToken>> {
+        let index = Self::read_lock(&self.api_tokens_by_hash)?;
+        if let Some(&id) = index.get(token_hash) {
+            drop(index);
+            let guard = Self::read_lock(&self.api_tokens)?;
+            if let Some(token) = guard.get(&id) {
+                // Skip revoked tokens
+                if token.revoked {
+                    return Ok(None);
+                }
+                // Skip expired tokens
+                if let Some(ref expires) = token.expires_at {
+                    if let Ok(exp) = chrono::DateTime::parse_from_rfc3339(expires) {
+                        if exp < chrono::Utc::now() {
+                            return Ok(None);
+                        }
+                    }
+                }
+                Ok(Some(token.clone()))
+            } else {
+                Ok(None)
+            }
+        } else {
+            Ok(None)
+        }
+    }
+
+    async fn put_api_token(&self, token: &ApiToken) -> Result<()> {
+        // If updating, remove old hash index entry
+        {
+            let guard = Self::read_lock(&self.api_tokens)?;
+            if let Some(existing) = guard.get(&token.id) {
+                if existing.token_hash != token.token_hash {
+                    let mut index = Self::write_lock(&self.api_tokens_by_hash)?;
+                    index.remove(&existing.token_hash);
+                }
+            }
+        }
+
+        {
+            let mut guard = Self::write_lock(&self.api_tokens)?;
+            guard.insert(token.id, token.clone());
+        }
+
+        {
+            let mut index = Self::write_lock(&self.api_tokens_by_hash)?;
+            index.insert(token.token_hash.clone(), token.id);
+        }
+
+        Ok(())
+    }
+
+    async fn list_api_tokens(&self) -> Result<Vec<ApiToken>> {
+        let guard = Self::read_lock(&self.api_tokens)?;
+        let mut tokens: Vec<ApiToken> = guard.values().cloned().collect();
+        tokens.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+        Ok(tokens)
+    }
+
+    async fn delete_api_token(&self, id: Uuid) -> Result<bool> {
+        let token = {
+            let guard = Self::read_lock(&self.api_tokens)?;
+            guard.get(&id).cloned()
+        };
+
+        if let Some(token) = token {
+            {
+                let mut index = Self::write_lock(&self.api_tokens_by_hash)?;
+                index.remove(&token.token_hash);
+            }
+            {
+                let mut guard = Self::write_lock(&self.api_tokens)?;
+                guard.remove(&id);
+            }
             Ok(true)
         } else {
             Ok(false)

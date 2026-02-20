@@ -40,6 +40,29 @@ pub struct User {
     pub updated_at: String,
 }
 
+/// API token for Bearer authentication.
+///
+/// Tokens grant full access ("godmode") for now. Scoped/ACL'd tokens
+/// will be added later — the `revoked` and `expires_at` fields already
+/// support basic lifecycle management.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ApiToken {
+    pub id: Uuid,
+    /// Human-readable label (e.g. "CI pipeline", "MCP server")
+    pub name: String,
+    /// SHA-256 hash of the raw token (hex-encoded)
+    pub token_hash: String,
+    /// Display prefix for identification (e.g. "df_a1b2c3d4...")
+    pub prefix: String,
+    /// UUID of the user who created this token
+    pub created_by: Uuid,
+    pub created_at: String,
+    /// Optional expiry (RFC 3339). None = never expires.
+    pub expires_at: Option<String>,
+    /// Soft-delete flag — revoked tokens are not returned by hash lookup
+    pub revoked: bool,
+}
+
 /// Errors from storage operations
 #[derive(Debug, Error)]
 pub enum StoreError {
@@ -189,6 +212,24 @@ pub trait Store: Send + Sync {
 
     /// Delete user
     async fn delete_user(&self, id: Uuid) -> Result<bool>;
+
+    // === API Token Operations ===
+
+    /// Get API token by ID
+    async fn get_api_token(&self, id: Uuid) -> Result<Option<ApiToken>>;
+
+    /// Get a non-revoked, non-expired API token by its SHA-256 hash.
+    /// Returns None if the token is revoked or expired.
+    async fn get_api_token_by_hash(&self, token_hash: &str) -> Result<Option<ApiToken>>;
+
+    /// Create or update an API token
+    async fn put_api_token(&self, token: &ApiToken) -> Result<()>;
+
+    /// List all API tokens (includes revoked ones for audit visibility)
+    async fn list_api_tokens(&self) -> Result<Vec<ApiToken>>;
+
+    /// Delete an API token permanently
+    async fn delete_api_token(&self, id: Uuid) -> Result<bool>;
 
     // === DNS Record Operations ===
 
@@ -449,6 +490,23 @@ impl Store for StoreProxy {
     }
     async fn delete_user(&self, id: Uuid) -> Result<bool> {
         self.current().delete_user(id).await
+    }
+
+    // === API Token Operations ===
+    async fn get_api_token(&self, id: Uuid) -> Result<Option<ApiToken>> {
+        self.current().get_api_token(id).await
+    }
+    async fn get_api_token_by_hash(&self, token_hash: &str) -> Result<Option<ApiToken>> {
+        self.current().get_api_token_by_hash(token_hash).await
+    }
+    async fn put_api_token(&self, token: &ApiToken) -> Result<()> {
+        self.current().put_api_token(token).await
+    }
+    async fn list_api_tokens(&self) -> Result<Vec<ApiToken>> {
+        self.current().list_api_tokens().await
+    }
+    async fn delete_api_token(&self, id: Uuid) -> Result<bool> {
+        self.current().delete_api_token(id).await
     }
 
     // === DNS Record Operations ===

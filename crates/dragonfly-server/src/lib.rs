@@ -39,6 +39,7 @@ use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt};
 // use tracing_subscriber::prelude::*;
 
 mod api;
+pub mod api_token;
 mod auth;
 pub mod event_manager;
 mod filters; // Uncomment unused module

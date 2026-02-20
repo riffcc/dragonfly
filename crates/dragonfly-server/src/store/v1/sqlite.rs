@@ -4,7 +4,7 @@
 //! and fast serialized writes. Entities stored as JSON blobs with
 //! indexed lookup columns.
 
-use super::{Result, Store, StoreError, User};
+use super::{ApiToken, Result, Store, StoreError, User};
 use async_trait::async_trait;
 use dragonfly_common::{DnsRecord, DnsRecordSource, DnsRecordType, Machine, MachineState, Network, normalize_mac};
 use dragonfly_crd::{Template, Workflow};
@@ -221,6 +221,24 @@ impl SqliteStore {
             .map_err(|e| StoreError::Database(e.to_string()))?;
 
         sqlx::query("CREATE UNIQUE INDEX IF NOT EXISTS idx_dns_unique ON dns_records(zone, name, rtype, rdata)")
+            .execute(&self.pool)
+            .await
+            .map_err(|e| StoreError::Database(e.to_string()))?;
+
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS api_tokens (
+                id BLOB PRIMARY KEY,
+                token_hash TEXT NOT NULL,
+                data TEXT NOT NULL
+            );
+            "#,
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StoreError::Database(e.to_string()))?;
+
+        sqlx::query("CREATE UNIQUE INDEX IF NOT EXISTS idx_api_tokens_hash ON api_tokens(token_hash)")
             .execute(&self.pool)
             .await
             .map_err(|e| StoreError::Database(e.to_string()))?;
@@ -917,6 +935,95 @@ impl Store for SqliteStore {
     async fn delete_user(&self, id: Uuid) -> Result<bool> {
         let id_bytes = id.as_bytes().to_vec();
         let result = sqlx::query("DELETE FROM users WHERE id = ?")
+            .bind(&id_bytes)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| StoreError::Database(e.to_string()))?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    // === API Token Operations ===
+
+    async fn get_api_token(&self, id: Uuid) -> Result<Option<ApiToken>> {
+        let id_bytes = id.as_bytes().to_vec();
+        let row = sqlx::query("SELECT data FROM api_tokens WHERE id = ?")
+            .bind(&id_bytes)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| StoreError::Database(e.to_string()))?;
+
+        match row {
+            Some(row) => {
+                let json: String = row.get("data");
+                Ok(Some(Self::from_json(&json)?))
+            }
+            None => Ok(None),
+        }
+    }
+
+    async fn get_api_token_by_hash(&self, token_hash: &str) -> Result<Option<ApiToken>> {
+        let row = sqlx::query("SELECT data FROM api_tokens WHERE token_hash = ?")
+            .bind(token_hash)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| StoreError::Database(e.to_string()))?;
+
+        match row {
+            Some(row) => {
+                let json: String = row.get("data");
+                let token: ApiToken = Self::from_json(&json)?;
+                // Skip revoked tokens
+                if token.revoked {
+                    return Ok(None);
+                }
+                // Skip expired tokens
+                if let Some(ref expires) = token.expires_at {
+                    if let Ok(exp) = chrono::DateTime::parse_from_rfc3339(expires) {
+                        if exp < chrono::Utc::now() {
+                            return Ok(None);
+                        }
+                    }
+                }
+                Ok(Some(token))
+            }
+            None => Ok(None),
+        }
+    }
+
+    async fn put_api_token(&self, token: &ApiToken) -> Result<()> {
+        let id_bytes = token.id.as_bytes().to_vec();
+        let json = Self::to_json(token)?;
+
+        sqlx::query(
+            "INSERT INTO api_tokens (id, token_hash, data) VALUES (?, ?, ?) \
+             ON CONFLICT(id) DO UPDATE SET token_hash = excluded.token_hash, data = excluded.data",
+        )
+        .bind(&id_bytes)
+        .bind(&token.token_hash)
+        .bind(&json)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StoreError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    async fn list_api_tokens(&self) -> Result<Vec<ApiToken>> {
+        let rows = sqlx::query("SELECT data FROM api_tokens ORDER BY json_extract(data, '$.created_at')")
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| StoreError::Database(e.to_string()))?;
+
+        let mut tokens = Vec::with_capacity(rows.len());
+        for row in rows {
+            let json: String = row.get("data");
+            tokens.push(Self::from_json(&json)?);
+        }
+        Ok(tokens)
+    }
+
+    async fn delete_api_token(&self, id: Uuid) -> Result<bool> {
+        let id_bytes = id.as_bytes().to_vec();
+        let result = sqlx::query("DELETE FROM api_tokens WHERE id = ?")
             .bind(&id_bytes)
             .execute(&self.pool)
             .await

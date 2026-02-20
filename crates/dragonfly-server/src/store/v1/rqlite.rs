@@ -4,7 +4,7 @@
 //! and cluster management. Same schema as SQLiteStore but with TEXT
 //! instead of BLOB for UUID columns (cleaner HTTP transport).
 
-use super::{Result, Store, StoreError, User};
+use super::{ApiToken, Result, Store, StoreError, User};
 use async_trait::async_trait;
 use dragonfly_common::{DnsRecord, DnsRecordSource, DnsRecordType, Machine, MachineState, Network, normalize_mac};
 use dragonfly_crd::{Template, Workflow};
@@ -119,6 +119,8 @@ impl RqliteStore {
             "CREATE INDEX IF NOT EXISTS idx_dns_zone_name ON dns_records(zone, name)",
             "CREATE INDEX IF NOT EXISTS idx_dns_machine ON dns_records(machine_id)",
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_dns_unique ON dns_records(zone, name, rtype, rdata)",
+            "CREATE TABLE IF NOT EXISTS api_tokens (id TEXT PRIMARY KEY, token_hash TEXT NOT NULL, data TEXT NOT NULL)",
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_api_tokens_hash ON api_tokens(token_hash)",
         ];
 
         // Use transaction for atomicity
@@ -688,6 +690,60 @@ impl Store for RqliteStore {
 
     async fn delete_user(&self, id: Uuid) -> Result<bool> {
         let q = rqlite_rs::query!("DELETE FROM users WHERE id = ?", id.to_string());
+        let result = self.client.exec(q).await
+            .map_err(|e| StoreError::Database(format!("rqlite exec error: {}", e)))?;
+        Ok(result.changed())
+    }
+
+    // === API Token Operations ===
+
+    async fn get_api_token(&self, id: Uuid) -> Result<Option<ApiToken>> {
+        let q = rqlite_rs::query!("SELECT data FROM api_tokens WHERE id = ?", id.to_string());
+        match self.fetch_one_data(q).await? {
+            Some(json) => Ok(Some(Self::from_json(&json)?)),
+            None => Ok(None),
+        }
+    }
+
+    async fn get_api_token_by_hash(&self, token_hash: &str) -> Result<Option<ApiToken>> {
+        let q = rqlite_rs::query!("SELECT data FROM api_tokens WHERE token_hash = ?", token_hash.to_string());
+        match self.fetch_one_data(q).await? {
+            Some(json) => {
+                let token: ApiToken = Self::from_json(&json)?;
+                if token.revoked {
+                    return Ok(None);
+                }
+                if let Some(ref expires) = token.expires_at {
+                    if let Ok(exp) = chrono::DateTime::parse_from_rfc3339(expires) {
+                        if exp < chrono::Utc::now() {
+                            return Ok(None);
+                        }
+                    }
+                }
+                Ok(Some(token))
+            }
+            None => Ok(None),
+        }
+    }
+
+    async fn put_api_token(&self, token: &ApiToken) -> Result<()> {
+        let json = Self::to_json(token)?;
+        let q = rqlite_rs::query!(
+            "INSERT INTO api_tokens (id, token_hash, data) VALUES (?, ?, ?) ON CONFLICT(id) DO UPDATE SET token_hash = excluded.token_hash, data = excluded.data",
+            token.id.to_string(), token.token_hash.clone(), json
+        );
+        self.client.exec(q).await
+            .map_err(|e| StoreError::Database(format!("rqlite exec error: {}", e)))?;
+        Ok(())
+    }
+
+    async fn list_api_tokens(&self) -> Result<Vec<ApiToken>> {
+        let jsons = self.fetch_all_data("SELECT data FROM api_tokens ORDER BY json_extract(data, '$.created_at')").await?;
+        jsons.iter().map(|j| Self::from_json(j)).collect()
+    }
+
+    async fn delete_api_token(&self, id: Uuid) -> Result<bool> {
+        let q = rqlite_rs::query!("DELETE FROM api_tokens WHERE id = ?", id.to_string());
         let result = self.client.exec(q).await
             .map_err(|e| StoreError::Database(format!("rqlite exec error: {}", e)))?;
         Ok(result.changed())

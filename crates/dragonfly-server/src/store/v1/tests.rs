@@ -1118,3 +1118,133 @@ async fn test_resolve_machine_identity_multi_anchor() {
     let found = store.resolve_machine_identity(&lookup_none).await.unwrap();
     assert!(found.is_none(), "Must NOT match unrelated identity");
 }
+
+// ============================================================================
+// API Token Tests
+// ============================================================================
+
+fn test_api_token(name: &str, token_hash: &str) -> ApiToken {
+    ApiToken {
+        id: Uuid::now_v7(),
+        name: name.to_string(),
+        token_hash: token_hash.to_string(),
+        prefix: "df_aabbccdd".to_string(),
+        created_by: Uuid::now_v7(),
+        created_at: chrono::Utc::now().to_rfc3339(),
+        expires_at: None,
+        revoked: false,
+    }
+}
+
+#[tokio::test]
+async fn test_api_token_put_and_get() {
+    let store = create_test_store();
+    let token = test_api_token("CI pipeline", "hash_abc123");
+
+    store.put_api_token(&token).await.unwrap();
+
+    let retrieved = store.get_api_token(token.id).await.unwrap();
+    assert!(retrieved.is_some());
+    let retrieved = retrieved.unwrap();
+    assert_eq!(retrieved.id, token.id);
+    assert_eq!(retrieved.name, "CI pipeline");
+    assert_eq!(retrieved.token_hash, "hash_abc123");
+    assert!(!retrieved.revoked);
+}
+
+#[tokio::test]
+async fn test_api_token_get_by_hash() {
+    let store = create_test_store();
+    let token = test_api_token("MCP server", "hash_lookup_test");
+
+    store.put_api_token(&token).await.unwrap();
+
+    let found = store.get_api_token_by_hash("hash_lookup_test").await.unwrap();
+    assert!(found.is_some());
+    assert_eq!(found.unwrap().id, token.id);
+
+    // Non-existent hash returns None
+    let missing = store.get_api_token_by_hash("nonexistent_hash").await.unwrap();
+    assert!(missing.is_none());
+}
+
+#[tokio::test]
+async fn test_api_token_revoked_not_returned_by_hash() {
+    let store = create_test_store();
+    let mut token = test_api_token("revoke test", "hash_revoke_test");
+
+    store.put_api_token(&token).await.unwrap();
+
+    // Verify it's findable before revocation
+    let found = store.get_api_token_by_hash("hash_revoke_test").await.unwrap();
+    assert!(found.is_some());
+
+    // Revoke it
+    token.revoked = true;
+    store.put_api_token(&token).await.unwrap();
+
+    // Hash lookup must return None for revoked tokens
+    let found = store.get_api_token_by_hash("hash_revoke_test").await.unwrap();
+    assert!(found.is_none(), "Revoked token must not be returned by hash lookup");
+
+    // Direct ID lookup must still work (for admin visibility)
+    let found = store.get_api_token(token.id).await.unwrap();
+    assert!(found.is_some());
+    assert!(found.unwrap().revoked);
+}
+
+#[tokio::test]
+async fn test_api_token_expired_not_returned_by_hash() {
+    let store = create_test_store();
+    let mut token = test_api_token("expire test", "hash_expire_test");
+    // Set expiry to the past
+    token.expires_at = Some("2020-01-01T00:00:00Z".to_string());
+
+    store.put_api_token(&token).await.unwrap();
+
+    // Hash lookup must return None for expired tokens
+    let found = store.get_api_token_by_hash("hash_expire_test").await.unwrap();
+    assert!(found.is_none(), "Expired token must not be returned by hash lookup");
+}
+
+#[tokio::test]
+async fn test_api_token_list() {
+    let store = create_test_store();
+
+    let t1 = test_api_token("token-one", "hash_one");
+    let t2 = test_api_token("token-two", "hash_two");
+
+    store.put_api_token(&t1).await.unwrap();
+    store.put_api_token(&t2).await.unwrap();
+
+    let all = store.list_api_tokens().await.unwrap();
+    assert!(all.len() >= 2);
+
+    let names: Vec<&str> = all.iter().map(|t| t.name.as_str()).collect();
+    assert!(names.contains(&"token-one"));
+    assert!(names.contains(&"token-two"));
+}
+
+#[tokio::test]
+async fn test_api_token_delete() {
+    let store = create_test_store();
+    let token = test_api_token("delete me", "hash_delete");
+
+    store.put_api_token(&token).await.unwrap();
+
+    // Delete it
+    let deleted = store.delete_api_token(token.id).await.unwrap();
+    assert!(deleted);
+
+    // Gone
+    let found = store.get_api_token(token.id).await.unwrap();
+    assert!(found.is_none());
+
+    // Hash lookup also gone
+    let found = store.get_api_token_by_hash("hash_delete").await.unwrap();
+    assert!(found.is_none());
+
+    // Deleting again returns false
+    let deleted_again = store.delete_api_token(token.id).await.unwrap();
+    assert!(!deleted_again);
+}

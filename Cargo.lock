@@ -1935,6 +1935,7 @@ dependencies = [
  "dragonfly-workflow",
  "flate2",
  "futures",
+ "hex",
  "hickory-resolver 0.26.0-alpha.1",
  "http 1.4.0",
  "http-body 1.0.1",

@@ -204,6 +204,16 @@ pub fn api_router() -> Router<crate::AppState> {
         .route("/cluster/status", get(cluster_status_handler))
         .route("/cluster/management-key", get(cluster_management_key_handler))
         .route("/cluster/management-key/rotate", post(cluster_rotate_key_handler))
+        // --- API Token Routes ---
+        .route(
+            "/tokens",
+            get(crate::handlers::api_tokens::list_api_tokens)
+                .post(crate::handlers::api_tokens::create_api_token),
+        )
+        .route(
+            "/tokens/{id}",
+            delete(crate::handlers::api_tokens::revoke_api_token),
+        )
         // --- Maintenance Routes ---
         .route("/maintenance/dev-mode", get(dev_mode_status_handler).post(dev_mode_toggle_handler))
         .layer(DefaultBodyLimit::max(1024 * 1024 * 50)) // 50 MB
