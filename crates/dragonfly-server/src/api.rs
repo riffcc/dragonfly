@@ -9202,6 +9202,11 @@ async fn dev_mode_toggle_handler(
             *env_lock = TemplateEnv::Reloading(std::sync::Arc::new(reloader));
         }
 
+        // Persist to store so dev mode survives restarts
+        if let Err(e) = state.store.put_setting("dev_template_path", &template_path).await {
+            tracing::warn!("Failed to persist dev_template_path to store: {}", e);
+        }
+
         // Store path so status handler can report it
         *state.dev_template_path.write().unwrap() = Some(template_path.clone());
 
@@ -9222,6 +9227,11 @@ async fn dev_mode_toggle_handler(
         {
             let mut env_lock = state.template_env.write().unwrap();
             *env_lock = TemplateEnv::Static(std::sync::Arc::new(env));
+        }
+
+        // Clear persisted path so restart doesn't re-enable dev mode
+        if let Err(e) = state.store.put_setting("dev_template_path", "").await {
+            tracing::warn!("Failed to clear dev_template_path from store: {}", e);
         }
 
         *state.dev_template_path.write().unwrap() = None;

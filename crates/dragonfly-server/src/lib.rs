@@ -965,14 +965,79 @@ pub async fn run() -> anyhow::Result<()> {
     let first_run = !settings.setup_completed || setup_mode; // Essential
 
     // --- MiniJinja Setup ---
-    let preferred_template_path = "/opt/dragonfly/templates";
-    let fallback_template_path = "crates/dragonfly-server/templates";
-    let template_path = if std::path::Path::new(preferred_template_path).exists() {
-        preferred_template_path
-    } else {
-        fallback_template_path
-    }
-    .to_string();
+    // Resolve the dev template path to use (if any).  Priority:
+    //   1. DRAGONFLY_TEMPLATE_PATH env var
+    //   2. Persisted "dev_template_path" setting in the store
+    //   3. /opt/dragonfly/templates (conventional install location)
+    //   4. crates/dragonfly-server/templates relative to CWD (dev checkout)
+    //   5. None — fall back to embedded templates
+    //
+    // In all cases the resolved path is validated: if `base.html` and
+    // `login.html` are not present we treat the path as invalid, clear it
+    // from the store (escape hatch — self-healing), and fall through to
+    // embedded templates.
+    let validate_template_path = |p: &str| -> bool {
+        let root = std::path::Path::new(p);
+        root.join("base.html").exists() && root.join("login.html").exists()
+    };
+
+    // Resolve the stored/env path, resolving git-checkout roots automatically.
+    let resolve_template_path = |raw: &str| -> Option<String> {
+        let p = std::path::Path::new(raw);
+        if p.join("base.html").exists() {
+            Some(raw.to_string())
+        } else if p.join("crates/dragonfly-server/templates/base.html").exists() {
+            Some(p.join("crates/dragonfly-server/templates").to_string_lossy().into_owned())
+        } else {
+            None
+        }
+    };
+
+    let dev_template_path: Option<String> = {
+        // 1. Env var
+        let from_env = std::env::var("DRAGONFLY_TEMPLATE_PATH").ok()
+            .and_then(|p| if p.is_empty() { None } else { Some(p) })
+            .and_then(|p| resolve_template_path(&p));
+
+        // 2. Persisted store setting
+        let from_store = if from_env.is_none() {
+            store.get_setting("dev_template_path").await
+                .ok()
+                .flatten()
+                .filter(|p| !p.is_empty())
+                .and_then(|p| {
+                    let resolved = resolve_template_path(&p);
+                    if resolved.is_none() {
+                        warn!("Stored dev_template_path '{}' has no valid templates — clearing and falling back to embedded", p);
+                        // Escape hatch: clear the bad path so the UI is reachable.
+                        // Can't await in a sync closure — schedule the clear asynchronously.
+                        tokio::spawn({
+                            let store = store.clone();
+                            async move {
+                                let _ = store.put_setting("dev_template_path", "").await;
+                            }
+                        });
+                    }
+                    resolved
+                })
+        } else {
+            None
+        };
+
+        // 3–4. Conventional disk locations
+        let from_disk = if from_env.is_none() && from_store.is_none() {
+            ["/opt/dragonfly/templates", "crates/dragonfly-server/templates"]
+                .iter()
+                .find(|p| validate_template_path(p))
+                .map(|p| p.to_string())
+        } else {
+            None
+        };
+
+        from_env.or(from_store).or(from_disk)
+    };
+
+    let dev_template_path_init = dev_template_path.clone();
 
     let template_env = {
         #[cfg(debug_assertions)]
@@ -981,13 +1046,18 @@ pub async fn run() -> anyhow::Result<()> {
             let flag_clone_for_closure = templates_reloaded_flag.clone();
             let reloader = AutoReloader::new(move |notifier| {
                 let mut env = Environment::new();
-                let path_for_closure = template_path.clone();
-                env.set_loader(path_loader(&path_for_closure));
+                if let Some(ref path) = dev_template_path_init {
+                    env.set_loader(path_loader(path));
+                    notifier.watch_path(path.as_str(), true);
+                    info!("Debug mode: loading templates from disk at {}", path);
+                } else {
+                    minijinja_embed::load_templates!(&mut env);
+                    info!("Debug mode: no disk templates found, using embedded templates");
+                }
                 if let Err(e) = ui::setup_minijinja_environment(&mut env) {
                     error!("Failed to set up MiniJinja environment: {}", e);
                 }
                 flag_clone_for_closure.store(true, Ordering::SeqCst);
-                notifier.watch_path(path_for_closure.as_str(), true);
                 Ok(env)
             });
             let reloader_arc = Arc::new(reloader);
@@ -1010,10 +1080,9 @@ pub async fn run() -> anyhow::Result<()> {
         }
         #[cfg(not(debug_assertions))]
         {
-            let dev_template_path = std::env::var("DRAGONFLY_TEMPLATE_PATH").ok();
             let mut env = Environment::new();
-            if let Some(ref path) = dev_template_path {
-                info!("Developer mode: loading templates from {}", path);
+            if let Some(ref path) = dev_template_path_init {
+                info!("Release mode: loading templates from disk at {}", path);
                 env.set_loader(path_loader(path));
             } else {
                 minijinja_embed::load_templates!(&mut env);
@@ -1086,7 +1155,7 @@ pub async fn run() -> anyhow::Result<()> {
         shutdown_tx: shutdown_tx.clone(),
         shutdown_rx: shutdown_rx.clone(),
         template_env: Arc::new(std::sync::RwLock::new(template_env)),
-        dev_template_path: Arc::new(std::sync::RwLock::new(None)),
+        dev_template_path: Arc::new(std::sync::RwLock::new(dev_template_path)),
         // Add the new flags
         is_installed,
         is_demo_mode,
