@@ -163,6 +163,7 @@ const HELP_TEXT: &str = r#"# Dragonfly MCP — Action Reference
 ## Tokens
   tokens.list                            — List API tokens (metadata only)
   tokens.create       {body}             — Create an API token
+  tokens.rotate       {id}               — Rotate: revoke old, create new with same name
   tokens.revoke       {id}               — Revoke an API token
 
 ## Parameter Notes
@@ -389,6 +390,10 @@ impl DragonflyMcp {
             "tokens.create" => {
                 let body = obj_param(params, "body")?;
                 self.api_post_json("/tokens", &body).await
+            }
+            "tokens.rotate" => {
+                let id = str_param(params, "id")?;
+                self.api_post_empty(&format!("/tokens/{id}/rotate")).await
             }
             "tokens.revoke" => {
                 let id = str_param(params, "id")?;

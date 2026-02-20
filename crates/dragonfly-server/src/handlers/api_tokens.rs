@@ -1,8 +1,9 @@
 //! CRUD handlers for API token management.
 //!
-//! - `POST /api/tokens` — Create a new token (session auth only, no token-minting-tokens)
-//! - `GET  /api/tokens` — List all tokens (metadata only, raw value never returned)
-//! - `DELETE /api/tokens/{id}` — Revoke a token (soft-delete for audit trail)
+//! - `POST   /api/tokens`             — Create a new token (session auth only)
+//! - `GET    /api/tokens`             — List all tokens (metadata only)
+//! - `POST   /api/tokens/{id}/rotate` — Rotate: revoke old, create new with same name
+//! - `DELETE /api/tokens/{id}`        — Revoke a token (soft-delete for audit trail)
 
 use axum::{
     Json,
@@ -212,4 +213,108 @@ pub async fn revoke_api_token(
         )
             .into_response(),
     }
+}
+
+/// Rotate an API token: revoke the old one and create a new one with the same name.
+pub async fn rotate_api_token(
+    State(state): State<AppState>,
+    auth_session: AuthSession,
+    Path(id): Path<Uuid>,
+) -> impl IntoResponse {
+    let user = match auth_session.user {
+        Some(u) => u,
+        None => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({"error": "Authentication required"})),
+            )
+                .into_response();
+        }
+    };
+
+    // Fetch the old token
+    let old_token = match state.store.get_api_token(id).await {
+        Ok(Some(t)) => t,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": "Token not found"})),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": format!("Failed to fetch token: {}", e)})),
+            )
+                .into_response();
+        }
+    };
+
+    if old_token.revoked {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "Cannot rotate a revoked token"})),
+        )
+            .into_response();
+    }
+
+    // Revoke the old token
+    let mut revoked = old_token.clone();
+    revoked.revoked = true;
+    if let Err(e) = state.store.put_api_token(&revoked).await {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("Failed to revoke old token: {}", e)})),
+        )
+            .into_response();
+    }
+
+    // Create the new token with the same name
+    let raw_token = generate_raw_token();
+    let new_hash = hash_token(&raw_token);
+    let prefix = token_prefix(&raw_token);
+    let now = chrono::Utc::now().to_rfc3339();
+    let created_by = Uuid::parse_str(&user.id).unwrap_or_else(|_| Uuid::now_v7());
+
+    let new_token = ApiToken {
+        id: Uuid::now_v7(),
+        name: old_token.name.clone(),
+        token_hash: new_hash,
+        prefix: prefix.clone(),
+        created_by,
+        created_at: now.clone(),
+        expires_at: None,
+        revoked: false,
+    };
+
+    if let Err(e) = state.store.put_api_token(&new_token).await {
+        warn!("Failed to store rotated token: {}", e);
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("Failed to create new token: {}", e)})),
+        )
+            .into_response();
+    }
+
+    info!(
+        old_id = %id,
+        new_id = %new_token.id,
+        name = %old_token.name,
+        prefix = %prefix,
+        rotated_by = %user.username,
+        "API token rotated"
+    );
+
+    (
+        StatusCode::OK,
+        Json(CreateTokenResponse {
+            id: new_token.id,
+            name: old_token.name,
+            token: raw_token,
+            prefix,
+            created_at: now,
+        }),
+    )
+        .into_response()
 }

@@ -214,6 +214,10 @@ pub fn api_router() -> Router<crate::AppState> {
             "/tokens/{id}",
             delete(crate::handlers::api_tokens::revoke_api_token),
         )
+        .route(
+            "/tokens/{id}/rotate",
+            post(crate::handlers::api_tokens::rotate_api_token),
+        )
         // --- Maintenance Routes ---
         .route("/maintenance/dev-mode", get(dev_mode_status_handler).post(dev_mode_toggle_handler))
         .layer(DefaultBodyLimit::max(1024 * 1024 * 50)) // 50 MB
