@@ -103,7 +103,11 @@ pub struct DragonflyParams {
 const HELP_TEXT: &str = r#"# Dragonfly MCP — Action Reference
 
 ## Machines
-  machines.list                          — List all machines
+  machines.list      {detail?, page?, per_page?}
+      detail: "simple" (id/hostname/ip/status/tags, ~50 tok/machine, default 80/page)
+              "standard" (default — + cpu/ram/os/proxmox, ~150 tok, 25/page)
+              "full" (everything incl disks/interfaces/gpus, ~400 tok, 10/page)
+      Pages calibrated to ~4k tokens. Max per_page ~20k tokens worth.
   machines.get        {id}               — Get machine details
   machines.register   {body}             — Register a new machine (POST body)
   machines.update     {id, body}         — Update machine fields (PATCH body)
@@ -205,7 +209,27 @@ impl DragonflyMcp {
             "help" => Ok(CallToolResult::success(vec![Content::text(HELP_TEXT)])),
 
             // ── Machines ────────────────────────────────────────
-            "machines.list" => self.api_get("/machines").await,
+            "machines.list" => {
+                let detail = params.get("detail").and_then(|v| v.as_str());
+                let page = params.get("page").and_then(|v| v.as_u64());
+                let per_page = params.get("per_page").and_then(|v| v.as_u64());
+                let mut qparams = Vec::new();
+                if let Some(d) = detail {
+                    qparams.push(format!("detail={d}"));
+                }
+                if let Some(p) = page {
+                    qparams.push(format!("page={p}"));
+                }
+                if let Some(pp) = per_page {
+                    qparams.push(format!("per_page={pp}"));
+                }
+                let path = if qparams.is_empty() {
+                    "/machines".to_string()
+                } else {
+                    format!("/machines?{}", qparams.join("&"))
+                };
+                self.api_get(&path).await
+            }
             "machines.get" => {
                 let id = str_param(params, "id")?;
                 self.api_get(&format!("/machines/{id}")).await

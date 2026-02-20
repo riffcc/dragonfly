@@ -49,6 +49,67 @@ use tracing::{debug, error, info, warn};
 use url::Url;
 use uuid::Uuid;
 
+/// Parse a usize query parameter from a URL query string.
+fn parse_query_param(query: &str, key: &str) -> Option<usize> {
+    query
+        .split('&')
+        .find_map(|pair| {
+            let (k, v) = pair.split_once('=')?;
+            if k == key { v.parse().ok() } else { None }
+        })
+}
+
+/// Parse a string query parameter, returning the value with the lifetime of the query string.
+fn parse_query_str_param<'a>(query: &'a str, key: &str) -> Option<&'a str> {
+    query
+        .split('&')
+        .find_map(|pair| {
+            let (k, v) = pair.split_once('=')?;
+            if k == key { Some(v) } else { None }
+        })
+}
+
+/// Project a Machine into a JSON value at the requested detail level.
+fn machine_to_detail_level(m: &dragonfly_common::models::Machine, detail: &str) -> serde_json::Value {
+    match detail {
+        "simple" => serde_json::json!({
+            "id": m.id,
+            "hostname": m.hostname,
+            "ip_address": m.ip_address,
+            "mac_address": m.mac_address,
+            "status": m.status,
+            "tags": m.tags,
+        }),
+        "full" => {
+            // Full serialization — return everything
+            serde_json::to_value(m).unwrap_or(serde_json::Value::Null)
+        }
+        _ => {
+            // standard — operational fields without verbose arrays
+            serde_json::json!({
+                "id": m.id,
+                "hostname": m.hostname,
+                "ip_address": m.ip_address,
+                "mac_address": m.mac_address,
+                "status": m.status,
+                "os_installed": m.os_installed,
+                "os_choice": m.os_choice,
+                "cpu_model": m.cpu_model,
+                "cpu_cores": m.cpu_cores,
+                "total_ram_bytes": m.total_ram_bytes,
+                "is_proxmox_host": m.is_proxmox_host,
+                "proxmox_node": m.proxmox_node,
+                "proxmox_cluster": m.proxmox_cluster,
+                "network_mode": m.network_mode,
+                "uptime_seconds": m.uptime_seconds,
+                "reimage_requested": m.reimage_requested,
+                "tags": m.tags,
+                "created_at": m.created_at,
+            })
+        }
+    }
+}
+
 pub fn api_router() -> Router<crate::AppState> {
     // Core API routes
     Router::new()
@@ -771,8 +832,49 @@ async fn get_all_machines(
             Html(html).into_response()
         }
     } else {
-        // For non-HTMX requests, return JSON
-        (StatusCode::OK, Json(machines)).into_response()
+        // For non-HTMX requests, return paginated JSON with configurable detail.
+        //
+        // Detail levels (token estimates per machine):
+        //   simple   ~50 tok  — id, hostname, ip, mac, status, tags
+        //   standard ~150 tok — + cpu, ram, os, proxmox info, uptime
+        //   full     ~400 tok — everything including disks, interfaces, gpus
+        //
+        // Pagination defaults calibrated to ~4k tokens per page:
+        //   simple:   per_page=80 (80 × 50 = 4k tok), max 400 (20k tok)
+        //   standard: per_page=25 (25 × 150 = 3.75k tok), max 130 (19.5k tok)
+        //   full:     per_page=10 (10 × 400 = 4k tok), max 50 (20k tok)
+        let query = req.uri().query().unwrap_or("");
+        let detail = parse_query_str_param(query, "detail").unwrap_or("standard");
+        let (default_per_page, max_per_page) = match detail {
+            "simple" => (80, 400),
+            "full" => (10, 50),
+            _ => (25, 130), // standard
+        };
+
+        let page = parse_query_param(query, "page").unwrap_or(1).max(1);
+        let per_page = parse_query_param(query, "per_page")
+            .unwrap_or(default_per_page)
+            .clamp(1, max_per_page);
+
+        let total = machines.len();
+        let total_pages = (total + per_page - 1) / per_page;
+        let start = (page - 1) * per_page;
+        let page_items: Vec<_> = machines.into_iter().skip(start).take(per_page).collect();
+
+        let data: Vec<serde_json::Value> = page_items
+            .iter()
+            .map(|m| machine_to_detail_level(m, detail))
+            .collect();
+
+        let response = serde_json::json!({
+            "data": data,
+            "page": page,
+            "per_page": per_page,
+            "total": total,
+            "total_pages": total_pages,
+            "detail": detail,
+        });
+        (StatusCode::OK, Json(response)).into_response()
     }
 }
 
