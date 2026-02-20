@@ -103,11 +103,12 @@ pub struct DragonflyParams {
 const HELP_TEXT: &str = r#"# Dragonfly MCP — Action Reference
 
 ## Machines
-  machines.list      {detail?, page?, per_page?}
+  machines.list      {detail?, page?, per_page?, force?}
       detail: "simple" (id/hostname/ip/status/tags, ~50 tok/machine, default 80/page)
               "standard" (default — + cpu/ram/os/proxmox, ~150 tok, 25/page)
               "full" (everything incl disks/interfaces/gpus, ~400 tok, 10/page)
-      Pages calibrated to ~4k tokens. Max per_page ~20k tokens worth.
+      Pages calibrated to ~4k tokens. per_page is capped per detail level.
+      Pass force=true to bypass the per_page cap and fetch large pages.
   machines.get        {id}               — Get machine details
   machines.register   {body}             — Register a new machine (POST body)
   machines.update     {id, body}         — Update machine fields (PATCH body)
@@ -213,6 +214,9 @@ impl DragonflyMcp {
                 let detail = params.get("detail").and_then(|v| v.as_str());
                 let page = u64_param_opt(params, "page");
                 let per_page = u64_param_opt(params, "per_page");
+                let force = params.get("force").and_then(|v| {
+                    v.as_bool().or_else(|| v.as_str().map(|s| s == "true" || s == "1"))
+                });
                 let mut qparams = Vec::new();
                 if let Some(d) = detail {
                     qparams.push(format!("detail={d}"));
@@ -222,6 +226,9 @@ impl DragonflyMcp {
                 }
                 if let Some(pp) = per_page {
                     qparams.push(format!("per_page={pp}"));
+                }
+                if force == Some(true) {
+                    qparams.push("force=true".to_string());
                 }
                 let path = if qparams.is_empty() {
                     "/machines".to_string()

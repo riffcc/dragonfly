@@ -843,18 +843,25 @@ async fn get_all_machines(
         //   simple:   per_page=80 (80 × 50 = 4k tok), max 400 (20k tok)
         //   standard: per_page=25 (25 × 150 = 3.75k tok), max 130 (19.5k tok)
         //   full:     per_page=10 (10 × 400 = 4k tok), max 50 (20k tok)
+        //
+        // Pass `force=true` to bypass the per-detail max and get up to `per_page` items.
         let query = req.uri().query().unwrap_or("");
         let detail = parse_query_str_param(query, "detail").unwrap_or("standard");
+        let force = parse_query_str_param(query, "force").map(|v| v == "true" || v == "1").unwrap_or(false);
         let (default_per_page, max_per_page) = match detail {
             "simple" => (80, 400),
             "full" => (10, 50),
             _ => (25, 130), // standard
         };
 
+        let requested_per_page: usize = parse_query_param(query, "per_page").unwrap_or(default_per_page);
         let page = parse_query_param(query, "page").unwrap_or(1).max(1);
-        let per_page = parse_query_param(query, "per_page")
-            .unwrap_or(default_per_page)
-            .clamp(1, max_per_page);
+        let per_page = if force {
+            requested_per_page.max(1)
+        } else {
+            requested_per_page.clamp(1, max_per_page)
+        };
+        let was_clamped = !force && requested_per_page > max_per_page;
 
         let total = machines.len();
         let total_pages = (total + per_page - 1) / per_page;
@@ -866,7 +873,7 @@ async fn get_all_machines(
             .map(|m| machine_to_detail_level(m, detail))
             .collect();
 
-        let response = serde_json::json!({
+        let mut response = serde_json::json!({
             "data": data,
             "page": page,
             "per_page": per_page,
@@ -874,6 +881,13 @@ async fn get_all_machines(
             "total_pages": total_pages,
             "detail": detail,
         });
+        if was_clamped {
+            response["hint"] = serde_json::json!(format!(
+                "per_page was clamped from {} to {} (max for detail=\"{}\"). \
+                 Pass force=true to bypass this limit.",
+                requested_per_page, max_per_page, detail
+            ));
+        }
         (StatusCode::OK, Json(response)).into_response()
     }
 }
