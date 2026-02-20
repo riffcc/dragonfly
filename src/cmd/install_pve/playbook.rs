@@ -85,6 +85,18 @@ pub fn build_install_playbook(config: &InstallPlaybookConfig) -> String {
         EOF
 
     - !shell
+      name: Fixing journald for LXC container
+      cmd: |
+        mkdir -p /etc/systemd/system/systemd-journald.service.d
+        cat << 'EOF' > /etc/systemd/system/systemd-journald.service.d/lxc.conf
+        [Service]
+        ImportCredential=
+        LoadCredential=
+        EOF
+        systemctl daemon-reload
+        systemctl restart systemd-journald || true
+
+    - !shell
       name: Installing and starting Dragonfly service
       cmd: |
         cat << 'EOF' > /etc/systemd/system/dragonfly.service
@@ -159,6 +171,18 @@ pub fn build_update_playbook(config: &InstallPlaybookConfig) -> String {
       attributes:
         mode: '0o755'
 {os_templates_task}
+    - !shell
+      name: Fixing journald for LXC container
+      cmd: |
+        mkdir -p /etc/systemd/system/systemd-journald.service.d
+        cat << 'EOF' > /etc/systemd/system/systemd-journald.service.d/lxc.conf
+        [Service]
+        ImportCredential=
+        LoadCredential=
+        EOF
+        systemctl daemon-reload
+        systemctl restart systemd-journald || true
+
     - !shell
       name: Installing and starting Dragonfly service
       cmd: |
@@ -309,6 +333,14 @@ mod tests {
         assert!(yaml.contains("Writing Dragonfly config"), "Must have a config-writing task");
         assert!(yaml.contains("config.toml"), "Config task must reference config.toml");
         assert!(yaml.contains("hostname -I"), "Config must detect container IP at runtime");
+    }
+
+    #[test]
+    fn test_playbook_fixes_lxc_journald() {
+        let yaml = build_install_playbook(&make_config("/usr/local/bin/dragonfly"));
+        assert!(yaml.contains("Fixing journald for LXC container"), "Must have journald LXC fix task");
+        assert!(yaml.contains("systemd-journald.service.d"), "Must write journald drop-in directory");
+        assert!(yaml.contains("ImportCredential="), "Must clear ImportCredential for LXC kernel credential incompatibility");
     }
 
     #[test]
