@@ -16,6 +16,7 @@ use tracing_subscriber::{EnvFilter, fmt, prelude::*, registry};
 mod cmd;
 use cmd::install::InstallArgs;
 use cmd::install_pve::InstallPveArgs;
+use cmd::mcp::McpArgs;
 
 use std::io::stderr;
 
@@ -104,6 +105,8 @@ enum Commands {
     InstallPve(InstallPveArgs),
     /// Show Dragonfly status
     Status,
+    /// Start the MCP (Model Context Protocol) server for Claude Code integration
+    Mcp(McpArgs),
 }
 
 // Arguments for serve command
@@ -153,6 +156,15 @@ async fn async_main(cli: Cli) -> Result<()> {
             );
             EnvFilter::new(directives)
         }
+        // MCP: quiet by default — stdout is reserved for JSON-RPC
+        Some(Commands::Mcp(_)) => {
+            let log_level = if cli.verbose { "debug" } else { "warn" };
+            let directives = format!(
+                "dragonfly={level},dragonfly_server=off,tower=warn,hyper=warn,sqlx=warn,rustls=warn,h2=warn,reqwest=warn,tokio_reactor=warn,mio=warn,want=warn,rmcp=warn",
+                level = log_level
+            );
+            EnvFilter::new(directives)
+        }
         _ => {
             let default_level = if cli.verbose { "debug" } else { "info" };
             let default_directives = format!(
@@ -172,9 +184,10 @@ async fn async_main(cli: Cli) -> Result<()> {
         info!("Global logger initialized.");
     }
 
-    // Set up Ctrl+C handler - but skip for install commands which handle their own stdin
+    // Set up Ctrl+C handler - skip for install/MCP commands which handle their own lifecycle
     let is_install_command = matches!(cli.command, Some(Commands::Install(_)) | Some(Commands::InstallPve(_)));
-    if !is_install_command {
+    let is_mcp_command = matches!(cli.command, Some(Commands::Mcp(_)));
+    if !is_install_command && !is_mcp_command {
         let shutdown_tx_clone = shutdown_tx.clone();
         tokio::spawn(async move {
             tokio::signal::ctrl_c()
@@ -266,6 +279,15 @@ async fn async_main(cli: Cli) -> Result<()> {
         // Status command
         Some(Commands::Status) => {
             print_status();
+        }
+
+        // MCP server (stdio JSON-RPC for Claude Code integration)
+        Some(Commands::Mcp(args)) => {
+            if let Err(e) = cmd::mcp::run_mcp(args).await {
+                error!("MCP server failed: {:#}", e);
+                eprintln!("Error running MCP server: {}", e);
+                std::process::exit(1);
+            }
         }
     }
 

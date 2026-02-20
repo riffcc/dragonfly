@@ -9,3 +9,6 @@ pub mod install_pve;
 
 // Dev command
 pub mod dev;
+
+// MCP server
+pub mod mcp;
