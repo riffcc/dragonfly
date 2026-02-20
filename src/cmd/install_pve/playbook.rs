@@ -98,6 +98,9 @@ pub fn build_install_playbook(config: &InstallPlaybookConfig) -> String {
         Restart=always
         RestartSec=5
         WorkingDirectory=/var/lib/dragonfly
+        SyslogIdentifier=dragonfly
+        StandardOutput=journal
+        StandardError=journal
 
         [Install]
         WantedBy=multi-user.target
@@ -170,6 +173,9 @@ pub fn build_update_playbook(config: &InstallPlaybookConfig) -> String {
         Restart=always
         RestartSec=5
         WorkingDirectory=/var/lib/dragonfly
+        SyslogIdentifier=dragonfly
+        StandardOutput=journal
+        StandardError=journal
 
         [Install]
         WantedBy=multi-user.target
@@ -312,6 +318,9 @@ mod tests {
         assert!(yaml.contains("ExecStart=/usr/local/bin/dragonfly serve"), "Service must start the serve command");
         assert!(yaml.contains("WantedBy=multi-user.target"), "Service must enable on multi-user target");
         assert!(yaml.contains("Installing and starting Dragonfly service"), "Service task must have correct name");
+        assert!(yaml.contains("SyslogIdentifier=dragonfly"), "Service must set syslog identifier for log filtering");
+        assert!(yaml.contains("StandardOutput=journal"), "Service must route stdout to journal");
+        assert!(yaml.contains("StandardError=journal"), "Service must route stderr to journal");
     }
 
     #[test]
@@ -376,6 +385,9 @@ mod tests {
         assert!(yaml.contains("ExecStart=/usr/local/bin/dragonfly serve"), "Service must start the serve command");
         assert!(yaml.contains("systemctl daemon-reload"), "Must reload systemd after writing service");
         assert!(yaml.contains("Installing and starting Dragonfly service"), "Service task must have correct name");
+        assert!(yaml.contains("SyslogIdentifier=dragonfly"), "Service must set syslog identifier for log filtering");
+        assert!(yaml.contains("StandardOutput=journal"), "Service must route stdout to journal");
+        assert!(yaml.contains("StandardError=journal"), "Service must route stderr to journal");
     }
 
     #[test]

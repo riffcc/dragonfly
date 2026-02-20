@@ -196,6 +196,9 @@ RestartSec=1
 # Make sure the service starts only when the socket is ready
 # This ensures proper socket activation
 WatchdogSec=10
+SyslogIdentifier=dragonfly
+StandardOutput=journal
+StandardError=journal
 
 # Hardening options
 ProtectSystem=full
