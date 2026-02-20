@@ -121,7 +121,12 @@ impl OutputHandler for DragonflyProgressHandler {
     fn on_handler_start(&self, _handler_name: &str) {}
     fn on_handler_end(&self, _handler_name: &str) {}
     fn on_recap(&self, _recap_data: RecapData) {}
-    fn log(&self, _level: LogLevel, _message: &str) {}
+    fn log(&self, level: LogLevel, message: &str) {
+        match level {
+            LogLevel::Error | LogLevel::Warning => eprintln!("  ❌ {}", message),
+            _ => {}
+        }
+    }
 }
 
 // ─── Entry point ─────────────────────────────────────────────────────────────

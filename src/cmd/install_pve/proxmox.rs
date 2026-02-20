@@ -76,16 +76,9 @@ struct LxcEntry {
 #[derive(Deserialize)]
 struct NetworkIface {
     name: Option<String>,
-    #[serde(rename = "ip-addresses")]
-    ip_addresses: Option<Vec<IpAddr>>,
-}
-
-#[derive(Deserialize)]
-struct IpAddr {
-    #[serde(rename = "ip-address-type")]
-    ip_address_type: Option<String>,
-    #[serde(rename = "ip-address")]
-    ip_address: Option<String>,
+    /// IPv4 address with CIDR mask as returned by Proxmox LXC `/interfaces`,
+    /// e.g. `"10.1.21.26/16"`.
+    inet: Option<String>,
 }
 
 /// Information about a network bridge on a Proxmox node.
@@ -378,14 +371,11 @@ impl ProxmoxInstallClient {
                 continue;
             }
 
-            for addr in iface.ip_addresses.unwrap_or_default() {
-                if addr.ip_address_type.as_deref() != Some("inet") {
-                    continue;
-                }
-                if let Some(ip) = addr.ip_address {
-                    if !ip.is_empty() && ip != "127.0.0.1" {
-                        return Ok(Some(ip));
-                    }
+            if let Some(ref inet) = iface.inet {
+                // Strip CIDR mask: "10.1.21.26/16" → "10.1.21.26"
+                let ip = inet.split('/').next().unwrap_or(inet.as_str());
+                if !ip.is_empty() && ip != "127.0.0.1" {
+                    return Ok(Some(ip.to_string()));
                 }
             }
         }
@@ -700,17 +690,19 @@ mod tests {
         assert_eq!(entry.name.as_deref(), Some("dragonfly"));
     }
 
-    /// Verify that loopback IPs are filtered out.
+    /// Verify that loopback IPs and CIDR notation are handled correctly.
     #[test]
-    fn test_ip_loopback_filtered() {
-        let addrs = vec![
-            IpAddr { ip_address_type: Some("inet".to_string()), ip_address: Some("127.0.0.1".to_string()) },
-            IpAddr { ip_address_type: Some("inet".to_string()), ip_address: Some("10.1.21.10".to_string()) },
+    fn test_ip_loopback_filtered_and_cidr_stripped() {
+        // Proxmox LXC /interfaces returns inet with CIDR, e.g. "10.1.21.10/16"
+        let ifaces = vec![
+            NetworkIface { name: Some("lo".to_string()), inet: Some("127.0.0.1/8".to_string()) },
+            NetworkIface { name: Some("eth0".to_string()), inet: Some("10.1.21.10/16".to_string()) },
         ];
 
-        let result = addrs.iter()
-            .filter(|a| a.ip_address_type.as_deref() == Some("inet"))
-            .filter_map(|a| a.ip_address.clone())
+        let result = ifaces.iter()
+            .filter(|iface| iface.name.as_deref() != Some("lo"))
+            .filter_map(|iface| iface.inet.as_ref())
+            .map(|inet| inet.split('/').next().unwrap_or(inet.as_str()).to_string())
             .find(|ip| !ip.is_empty() && ip != "127.0.0.1");
 
         assert_eq!(result, Some("10.1.21.10".to_string()));
