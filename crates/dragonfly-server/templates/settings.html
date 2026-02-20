@@ -1410,10 +1410,11 @@
                                 <!-- Node cards grid -->
                                 <div class="grid gap-3 mb-6 p-1" :style="'grid-template-columns: repeat(' + Math.min(haNodes.length, 4) + ', minmax(0, 1fr))'">
                                     <template x-for="(node, idx) in haNodes" :key="idx">
-                                        <div class="ha-node-card rounded-xl p-4 flex flex-col items-center justify-center text-center"
-                                             :class="'ha-state-' + (node.status || 'empty')"
+                                        <div class="ha-node-card rounded-xl p-4 flex flex-col items-center justify-center text-center transition-colors duration-300"
+                                             :class="['ha-state-' + (node.status || 'empty'), !haCreating && node.status !== 'offline' ? 'cursor-pointer' : '']"
+                                             @click="!haCreating && node.status !== 'offline' && toggleNodeRole(idx)"
                                              :style="(() => {
-                                                 const isCore = idx < 3;
+                                                 const isCore = (node.role || (idx < 3 ? 'core' : 'replica')) === 'core';
                                                  const roleColor = isCore ? '#22c55e' : '#a855f7';
                                                  const styles = {
                                                      creating:      '--node-color: #f59e0b; background: linear-gradient(to bottom, rgba(245,158,11,0.06), transparent); box-shadow: 0 0 16px -4px rgba(245,158,11,0.15);',
@@ -1437,27 +1438,27 @@
                                             <div class="ha-tooltip bg-gray-900 dark:bg-gray-100 text-white dark:text-gray-900"
                                                  x-text="node.status === 'offline'
                                                      ? 'This node is offline in Proxmox and cannot be deployed to.'
-                                                     : idx < 3
-                                                         ? 'Participates in cluster decisions. Your data is safe as long as 2 of 3 core nodes are healthy.'
-                                                         : 'Local cache for fast provisioning. Can be rebuilt automatically if lost.'"></div>
+                                                     : (node.role || (idx < 3 ? 'core' : 'replica')) === 'core'
+                                                         ? 'Core node — participates in cluster decisions. Click to demote to replica.'
+                                                         : 'Replica node — local cache for fast provisioning. Click to promote to core.'"></div>
 
                                             <!-- Node name -->
                                             <span class="text-lg font-bold uppercase tracking-wide mb-1 transition-all duration-500"
                                                   :class="node.status === 'offline'
                                                       ? 'text-gray-500 dark:text-gray-500'
                                                       : node.status === 'healthy'
-                                                          ? (idx < 3 ? 'text-emerald-600 dark:text-emerald-400' : 'text-purple-600 dark:text-purple-400')
+                                                          ? ((node.role || (idx < 3 ? 'core' : 'replica')) === 'core' ? 'text-emerald-600 dark:text-emerald-400' : 'text-purple-600 dark:text-purple-400')
                                                           : 'text-black/70 dark:text-white/70'"
                                                   x-text="node.status === 'healthy' && node.hostname ? node.hostname : (node.host || node.id || ('node-' + (idx + 1)))"></span>
 
                                             <!-- Core / Replica badge -->
-                                            <span class="text-sm font-semibold uppercase tracking-wider mb-2"
+                                            <span class="text-sm font-semibold uppercase tracking-wider mb-2 transition-colors duration-300"
                                                   :class="node.status === 'offline'
                                                       ? 'text-red-900 dark:text-red-800'
-                                                      : idx < 3
+                                                      : (node.role || (idx < 3 ? 'core' : 'replica')) === 'core'
                                                           ? 'text-emerald-600 dark:text-emerald-400'
                                                           : 'text-purple-500 dark:text-purple-400'"
-                                                  x-text="node.status === 'offline' ? 'Offline' : (idx < 3 ? 'Core' : 'Replica')"></span>
+                                                  x-text="node.status === 'offline' ? 'Offline' : ((node.role || (idx < 3 ? 'core' : 'replica')) === 'core' ? 'Core' : 'Replica')"></span>
 
                                             <!-- Deploying states: creating, installing, initialising, synchronising -->
                                             <div x-show="['creating', 'installing', 'initialising', 'synchronising'].includes(node.status)">
@@ -2407,6 +2408,7 @@
                                 host: h.hostname || h.memorable_name || h.primary_mac,
                                 addr: h.current_ip || null,
                                 is_leader: false,
+                                role: i < 3 ? 'core' : 'replica',
                             };
                         });
                     }
@@ -2424,6 +2426,7 @@
                             host: n.id || ('node-' + (i + 1)),
                             addr: n.addr,
                             is_leader: n.is_leader,
+                            role: n.role || (i < 3 ? 'core' : 'replica'),
                         }));
                     } else if (this.haEnabled && this.haStatus.rqlite_running) {
                         // Single-node bootstrap
@@ -2838,6 +2841,37 @@
                 } catch (e) {
                     console.error('Failed to abort cluster:', e);
                     showToast('Failed to abort cluster', 'error');
+                }
+            },
+
+            async toggleNodeRole(idx) {
+                if (idx < 0 || idx >= this.haNodes.length) return;
+                const node = this.haNodes[idx];
+                const currentRole = node.role || (idx < 3 ? 'core' : 'replica');
+                const newRole = currentRole === 'core' ? 'replica' : 'core';
+                // Optimistic update
+                this.haNodes[idx] = { ...node, role: newRole };
+                this.haNodes = [...this.haNodes];
+                // Persist if cluster is deployed
+                if (this.haEnabled) {
+                    try {
+                        const res = await fetch(`/api/cluster/nodes/${idx}/role`, {
+                            method: 'PATCH',
+                            credentials: 'include',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ role: newRole }),
+                        });
+                        if (!res.ok) {
+                            // Revert on failure
+                            this.haNodes[idx] = { ...this.haNodes[idx], role: currentRole };
+                            this.haNodes = [...this.haNodes];
+                            showToast('Failed to update node role', 'error');
+                        }
+                    } catch (e) {
+                        this.haNodes[idx] = { ...this.haNodes[idx], role: currentRole };
+                        this.haNodes = [...this.haNodes];
+                        showToast('Failed to update node role', 'error');
+                    }
                 }
             },
 

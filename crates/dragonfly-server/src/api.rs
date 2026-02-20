@@ -14,7 +14,7 @@ use axum::{
         Html, IntoResponse, Response,
         sse::{Event, KeepAlive, Sse},
     },
-    routing::{delete, get, post, put},
+    routing::{delete, get, patch, post, put},
 };
 use dragonfly_common::Error;
 use dragonfly_common::models::{
@@ -263,7 +263,10 @@ pub fn api_router() -> Router<crate::AppState> {
         .route("/cluster/create", post(cluster_create_handler))
         .route("/cluster/abort", post(cluster_abort_handler))
         .route("/cluster/status", get(cluster_status_handler))
+        .route("/cluster/nodes/:idx/role", patch(cluster_node_role_handler))
         .route("/cluster/management-key", get(cluster_management_key_handler))
+        // --- Kubernetes Cluster Routes ---
+        .route("/k8s/create", post(k8s_create_handler))
         .route("/cluster/management-key/rotate", post(cluster_rotate_key_handler))
         // --- API Token Routes ---
         .route(
@@ -8965,6 +8968,71 @@ async fn cluster_status_handler(
             })).into_response()
         }
     }
+}
+
+// =============================================================================
+// Cluster Node Role
+// =============================================================================
+
+#[derive(serde::Deserialize)]
+struct NodeRoleBody {
+    role: String,
+}
+
+/// PATCH /api/cluster/nodes/:idx/role — flip a node's role between core and replica.
+/// Updates the stored cluster plan. Does not restart rqlite — voting weight changes
+/// are a follow-up. Returns 200 on success, 400 on invalid role, 404 if idx out of range.
+async fn cluster_node_role_handler(
+    State(state): State<crate::AppState>,
+    caller: AuthenticatedCaller,
+    Path(idx): Path<usize>,
+    Json(body): Json<NodeRoleBody>,
+) -> Response {
+    if caller.user.is_none() {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "Unauthorized"}))).into_response();
+    }
+    if body.role != "core" && body.role != "replica" {
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "role must be 'core' or 'replica'"}))).into_response();
+    }
+    let plan_json = match state.store.get_setting("cluster_plan").await {
+        Ok(Some(p)) if !p.is_empty() => p,
+        _ => return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "No cluster plan found"}))).into_response(),
+    };
+    let mut plan: crate::cluster::ClusterPlan = match serde_json::from_str(&plan_json) {
+        Ok(p) => p,
+        Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": "Invalid cluster plan"}))).into_response(),
+    };
+    let node = match plan.nodes.get_mut(idx) {
+        Some(n) => n,
+        None => return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "Node index out of range"}))).into_response(),
+    };
+    node.role = body.role.clone();
+    let updated = match serde_json::to_string(&plan) {
+        Ok(s) => s,
+        Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": "Failed to serialize plan"}))).into_response(),
+    };
+    if let Err(e) = state.store.put_setting("cluster_plan", &updated).await {
+        return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": format!("Failed to save: {}", e)}))).into_response();
+    }
+    Json(serde_json::json!({"success": true, "idx": idx, "role": body.role})).into_response()
+}
+
+// =============================================================================
+// Kubernetes Cluster
+// =============================================================================
+
+/// POST /api/k8s/create — stub endpoint for Kubernetes cluster deployment.
+/// Full deployment logic is tracked in FLY-95.
+async fn k8s_create_handler(
+    caller: AuthenticatedCaller,
+) -> Response {
+    if caller.user.is_none() {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "Unauthorized"}))).into_response();
+    }
+    Json(serde_json::json!({
+        "success": false,
+        "message": "Kubernetes cluster deployment is not yet implemented. Stay tuned!"
+    })).into_response()
 }
 
 // =============================================================================

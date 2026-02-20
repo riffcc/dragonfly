@@ -222,6 +222,7 @@ pub fn ui_router() -> Router<crate::AppState> {
         .route("/machines", get(machine_list))
         .route("/machines/{id}", get(machine_details))
         .route("/compute", get(compute_page))
+        .route("/compute/new/kubernetes", get(k8s_wizard_page))
         .route("/networks", get(networks_page))
         .route("/tags", get(tags_page))
         .route("/theme/toggle", get(toggle_theme))
@@ -1976,6 +1977,58 @@ pub async fn compute_page(
     };
 
     render_minijinja(&app_state, "compute.html", context)
+}
+
+/// Handler for /compute/new/kubernetes — Kubernetes cluster wizard.
+pub async fn k8s_wizard_page(
+    State(app_state): State<AppState>,
+    auth_session: AuthSession,
+    headers: HeaderMap,
+    uri: OriginalUri,
+) -> Response {
+    let theme = get_theme_from_cookie(&headers);
+    let is_authenticated = auth_session.user.is_some();
+    let current_path = uri.path().to_string();
+
+    let require_login = app_state
+        .store
+        .get_setting("require_login")
+        .await
+        .ok()
+        .flatten()
+        .map(|v| v == "true")
+        .unwrap_or(true);
+
+    if require_login && !is_authenticated {
+        let mut response = Redirect::to("/login").into_response();
+        response.headers_mut().insert("HX-Redirect", "/login".parse().unwrap());
+        return response;
+    }
+
+    // Fetch Proxmox hosts to populate node selectors
+    let proxmox_hosts: Vec<serde_json::Value> = match app_state.store.list_machines().await {
+        Ok(v1_machines) => v1_machines
+            .iter()
+            .map(|m| crate::store::conversions::machine_to_common(m))
+            .filter(|m| m.is_proxmox_host)
+            .map(|m| serde_json::json!({
+                "id": m.id.to_string(),
+                "hostname": m.hostname,
+                "ip_address": m.ip_address,
+            }))
+            .collect(),
+        Err(_) => vec![],
+    };
+
+    let context = minijinja::context! {
+        theme,
+        is_authenticated,
+        is_admin => is_authenticated,
+        proxmox_hosts,
+        current_path,
+    };
+
+    render_minijinja(&app_state, "k8s_wizard.html", context)
 }
 
 // Handler for the networks page

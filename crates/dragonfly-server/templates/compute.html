@@ -8,10 +8,42 @@
     {# Page header #}
     <div class="flex justify-between items-center mb-6">
         <h1 class="text-3xl font-bold text-gray-900 dark:text-white">Compute</h1>
-        <a href="/machines"
-            class="px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white text-sm font-medium rounded-lg transition-colors">
-            All Machines
-        </a>
+        <div class="flex items-center gap-2">
+            {# + New Cluster dropdown #}
+            <div class="relative" x-data="{ open: false }" @click.outside="open = false">
+                <button type="button"
+                        @click="open = !open"
+                        class="flex items-center gap-1.5 px-4 py-2 border border-purple-500 text-purple-600 dark:text-purple-400 text-sm font-medium rounded-lg hover:bg-purple-50 dark:hover:bg-purple-900/20 transition-colors">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/></svg>
+                    New Cluster
+                    <svg class="w-3.5 h-3.5 transition-transform duration-150" :class="open ? 'rotate-180' : ''" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/></svg>
+                </button>
+                <div x-show="open"
+                     x-transition:enter="transition ease-out duration-100"
+                     x-transition:enter-start="opacity-0 scale-95"
+                     x-transition:enter-end="opacity-100 scale-100"
+                     x-transition:leave="transition ease-in duration-75"
+                     x-transition:leave-start="opacity-100 scale-100"
+                     x-transition:leave-end="opacity-0 scale-95"
+                     class="absolute right-0 mt-1 w-44 rounded-lg border border-gray-200 dark:border-[#222] bg-white dark:bg-[#111] shadow-lg z-20 overflow-hidden"
+                     x-cloak>
+                    <a href="/compute/new/kubernetes"
+                       class="flex items-center gap-2.5 px-4 py-2.5 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-white/5 transition-colors">
+                        <span class="w-2 h-2 rounded-full bg-green-500 flex-shrink-0"></span>
+                        Kubernetes
+                    </a>
+                    <a href="/settings/credentials"
+                       class="flex items-center gap-2.5 px-4 py-2.5 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-white/5 transition-colors">
+                        <span class="w-2 h-2 rounded-full bg-orange-500 flex-shrink-0"></span>
+                        Proxmox
+                    </a>
+                </div>
+            </div>
+            <a href="/machines"
+                class="px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white text-sm font-medium rounded-lg transition-colors">
+                All Machines
+            </a>
+        </div>
     </div>
 
     {% if clusters is defined and clusters|length == 0 %}

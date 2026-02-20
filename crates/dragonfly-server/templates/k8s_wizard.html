@@ -1,0 +1,382 @@
+{% extends "base.html" %}
+
+{% block title %}New Kubernetes Cluster | Dragonfly{% endblock %}
+
+{% block content %}
+<style>
+    /* Reuse HA node card system */
+    .ha-node-card {
+        transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+        position: relative;
+        overflow: visible;
+    }
+    .ha-tooltip {
+        visibility: hidden; opacity: 0;
+        position: absolute; bottom: calc(100% + 8px); left: 50%;
+        transform: translateX(-50%); z-index: 50;
+        padding: 6px 10px; border-radius: 6px;
+        font-size: 11px; line-height: 1.4; pointer-events: none;
+        transition: opacity 0.15s, visibility 0.15s;
+        max-width: 220px; white-space: normal; text-align: center;
+    }
+    .ha-node-card:hover .ha-tooltip { visibility: visible; opacity: 1; }
+    .ha-border-svg {
+        position: absolute; inset: 0; width: 100%; height: 100%;
+        pointer-events: none; z-index: 1; overflow: visible;
+    }
+    .ha-border-svg rect {
+        fill: none; x: 1.5px; y: 1.5px;
+        width: calc(100% - 3px); height: calc(100% - 3px); rx: 12px;
+    }
+    /* Empty state — solid dim border */
+    .k8s-state-empty .ha-border-svg rect {
+        stroke: var(--node-color, #22c55e50);
+        stroke-width: 1.5;
+        stroke-dasharray: none;
+    }
+    /* Combined node — orange marching ants */
+    .k8s-state-combined .ha-border-svg rect {
+        stroke: #f97316;
+        stroke-width: 2;
+        stroke-dasharray: 8 5;
+        animation: march-13 1.4s linear infinite;
+    }
+    @keyframes march-13 { to { stroke-dashoffset: -13; } }
+    /* Healthy glow — reused from HA */
+    .k8s-state-healthy::after {
+        content: '';
+        position: absolute; inset: -2px; border-radius: inherit;
+        pointer-events: none; z-index: -1;
+        box-shadow: 0 0 20px 0 var(--node-color), 0 0 40px -4px var(--node-color);
+        animation: healthy-breathe 3s ease-in-out infinite;
+    }
+    .k8s-state-healthy .ha-border-svg rect {
+        stroke: var(--node-color); stroke-width: 2; stroke-dasharray: none;
+    }
+    @keyframes healthy-breathe {
+        0%, 100% { opacity: 0.3; }
+        50% { opacity: 0.7; }
+    }
+    /* Drag handle */
+    .k8s-drag-handle {
+        cursor: ns-resize;
+        user-select: none;
+    }
+    .k8s-drag-handle:active { cursor: grabbing; }
+</style>
+
+<div class="max-w-[1200px] mx-auto" x-data="k8sWizard()" x-init="init()">
+
+    {# Page header #}
+    <div class="flex items-center gap-3 mb-8">
+        <a href="/compute" class="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors">
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7"/>
+            </svg>
+        </a>
+        <h1 class="text-3xl font-bold text-gray-900 dark:text-white">New Kubernetes Cluster</h1>
+    </div>
+
+    {# Three-column lane layout #}
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
+
+        {# ─── Control Plane Lane ─── #}
+        <div class="rounded-xl border border-gray-200 dark:border-[#1a1a1a] bg-white dark:bg-[#0d0d0d] overflow-hidden">
+            <div class="px-4 py-3 border-b border-gray-100 dark:border-[#1a1a1a] flex items-center gap-2">
+                <span class="w-2.5 h-2.5 rounded-full bg-green-500 flex-shrink-0"></span>
+                <h2 class="text-sm font-semibold text-gray-900 dark:text-white">Control Plane</h2>
+                <span class="ml-auto text-xs text-gray-400 dark:text-gray-500 tech-mono" x-text="controlPlane.length + ' node' + (controlPlane.length !== 1 ? 's' : '')"></span>
+            </div>
+            <div class="p-3 space-y-2">
+                <template x-for="(node, idx) in controlPlane" :key="node.id">
+                    <div class="ha-node-card rounded-xl p-4 flex flex-col items-center justify-center text-center min-h-[120px]"
+                         :class="'k8s-state-' + node.status"
+                         :style="'--node-color: #22c55e; background: linear-gradient(to bottom, ' + (node.status === \'empty\' ? \'rgba(34,197,94,0.04)\' : \'rgba(34,197,94,0.08)\') + ', transparent);'">
+                        <svg class="ha-border-svg"><rect/></svg>
+                        <div class="ha-tooltip bg-gray-900 dark:bg-gray-100 text-white dark:text-gray-900">Manages cluster state and API server.</div>
+                        <span class="text-[10px] font-bold uppercase tracking-widest text-emerald-600 dark:text-emerald-400 mb-2">Control Plane</span>
+                        <select x-model="node.host"
+                                @click.stop
+                                class="w-full text-xs bg-transparent border border-gray-200 dark:border-[#333] rounded-md px-2 py-1.5 text-gray-700 dark:text-gray-300 focus:outline-none focus:border-green-500 dark:focus:border-green-600">
+                            <option value="">Auto-assign</option>
+                            {% for h in proxmox_hosts %}
+                            <option value="{{ h.id }}">{{ h.hostname | default(h.ip_address, true) | default(h.id, true) }}</option>
+                            {% endfor %}
+                        </select>
+                        <button x-show="controlPlane.length > 1"
+                                type="button"
+                                @click.stop="removeNode('controlPlane', idx)"
+                                class="mt-2 text-[10px] text-gray-400 hover:text-red-500 dark:hover:text-red-400 transition-colors">
+                            Remove
+                        </button>
+                    </div>
+                </template>
+            </div>
+            <div class="px-3 pb-3">
+                <button type="button"
+                        @click="addNode('controlPlane')"
+                        class="w-full py-2 rounded-lg border border-dashed border-green-300 dark:border-green-800 text-green-600 dark:text-green-500 text-xs font-medium hover:bg-green-50 dark:hover:bg-green-900/20 transition-colors">
+                    + Add Control Plane Node
+                </button>
+            </div>
+        </div>
+
+        {# ─── Workers Lane ─── #}
+        <div class="rounded-xl border border-gray-200 dark:border-[#1a1a1a] bg-white dark:bg-[#0d0d0d] overflow-hidden">
+            <div class="px-4 py-3 border-b border-gray-100 dark:border-[#1a1a1a] flex items-center gap-2">
+                <span class="w-2.5 h-2.5 rounded-full bg-purple-500 flex-shrink-0"></span>
+                <h2 class="text-sm font-semibold text-gray-900 dark:text-white">Workers</h2>
+                <span class="ml-auto text-xs text-gray-400 dark:text-gray-500 tech-mono" x-text="workers.length + ' node' + (workers.length !== 1 ? 's' : '')"></span>
+            </div>
+            <div class="p-3 space-y-2" @mousemove.window="onDragMove($event)" @mouseup.window="onDragEnd()" @mouseleave.window="onDragEnd()">
+                <template x-for="(node, idx) in workers" :key="node.id">
+                    <div class="ha-node-card rounded-xl p-4 flex flex-col items-center justify-center text-center min-h-[120px]"
+                         :class="'k8s-state-' + node.status"
+                         :style="'--node-color: #a855f7; background: linear-gradient(to bottom, ' + (node.status === \'empty\' ? \'rgba(168,85,247,0.04)\' : \'rgba(168,85,247,0.08)\') + ', transparent);'">
+                        <svg class="ha-border-svg"><rect/></svg>
+                        <div class="ha-tooltip bg-gray-900 dark:bg-gray-100 text-white dark:text-gray-900">Runs workloads and pods.</div>
+                        <span class="text-[10px] font-bold uppercase tracking-widest text-purple-600 dark:text-purple-400 mb-2">Worker</span>
+                        <select x-model="node.host"
+                                @click.stop
+                                class="w-full text-xs bg-transparent border border-gray-200 dark:border-[#333] rounded-md px-2 py-1.5 text-gray-700 dark:text-gray-300 focus:outline-none focus:border-purple-500 dark:focus:border-purple-600">
+                            <option value="">Auto-assign</option>
+                            {% for h in proxmox_hosts %}
+                            <option value="{{ h.id }}">{{ h.hostname | default(h.ip_address, true) | default(h.id, true) }}</option>
+                            {% endfor %}
+                        </select>
+                        <button x-show="workers.length > 1"
+                                type="button"
+                                @click.stop="removeNode('workers', idx)"
+                                class="mt-2 text-[10px] text-gray-400 hover:text-red-500 dark:hover:text-red-400 transition-colors">
+                            Remove
+                        </button>
+                        {# Drag handle on last card #}
+                        <div x-show="idx === workers.length - 1"
+                             class="k8s-drag-handle mt-3 flex flex-col items-center gap-0.5 opacity-30 hover:opacity-70 transition-opacity"
+                             @mousedown.stop="onDragStart($event, 'workers')"
+                             title="Drag to add or remove workers">
+                            <div class="flex gap-1">
+                                <span class="w-1 h-1 rounded-full bg-current"></span>
+                                <span class="w-1 h-1 rounded-full bg-current"></span>
+                                <span class="w-1 h-1 rounded-full bg-current"></span>
+                            </div>
+                            <div class="flex gap-1">
+                                <span class="w-1 h-1 rounded-full bg-current"></span>
+                                <span class="w-1 h-1 rounded-full bg-current"></span>
+                                <span class="w-1 h-1 rounded-full bg-current"></span>
+                            </div>
+                        </div>
+                    </div>
+                </template>
+            </div>
+            <div class="px-3 pb-3 flex gap-2">
+                <button type="button"
+                        @click="removeNode('workers', workers.length - 1)"
+                        :disabled="workers.length <= 1"
+                        class="py-2 px-3 rounded-lg border border-dashed border-gray-300 dark:border-gray-700 text-gray-500 dark:text-gray-400 text-xs font-medium hover:bg-gray-50 dark:hover:bg-white/5 transition-colors disabled:opacity-30 disabled:cursor-not-allowed">
+                    −
+                </button>
+                <button type="button"
+                        @click="addNode('workers')"
+                        class="flex-1 py-2 rounded-lg border border-dashed border-purple-300 dark:border-purple-800 text-purple-600 dark:text-purple-500 text-xs font-medium hover:bg-purple-50 dark:hover:bg-purple-900/20 transition-colors">
+                    + Add Worker
+                </button>
+            </div>
+        </div>
+
+        {# ─── Combined Lane ─── #}
+        <div class="rounded-xl border border-gray-200 dark:border-[#1a1a1a] bg-white dark:bg-[#0d0d0d] overflow-hidden">
+            <div class="px-4 py-3 border-b border-gray-100 dark:border-[#1a1a1a] flex items-center gap-2">
+                <span class="w-2.5 h-2.5 rounded-full bg-orange-500 flex-shrink-0"></span>
+                <h2 class="text-sm font-semibold text-gray-900 dark:text-white">Combined</h2>
+                <span class="ml-1 text-[10px] text-gray-400 dark:text-gray-500">control + worker</span>
+                <span class="ml-auto text-xs text-gray-400 dark:text-gray-500 tech-mono" x-text="combined.length + ' node' + (combined.length !== 1 ? 's' : '')"></span>
+            </div>
+            <div class="p-3 space-y-2" @mousemove.window="onDragMove($event)" @mouseup.window="onDragEnd()" @mouseleave.window="onDragEnd()">
+                <template x-for="(node, idx) in combined" :key="node.id">
+                    <div class="ha-node-card rounded-xl p-4 flex flex-col items-center justify-center text-center min-h-[120px] k8s-state-combined"
+                         style="--node-color: #f97316; background: linear-gradient(to bottom, rgba(249,115,22,0.06), transparent);">
+                        <svg class="ha-border-svg"><rect/></svg>
+                        <div class="ha-tooltip bg-gray-900 dark:bg-gray-100 text-white dark:text-gray-900">Runs both control plane and workloads. Good for small clusters.</div>
+                        <span class="text-[10px] font-bold uppercase tracking-widest text-orange-500 dark:text-orange-400 mb-2">Combined</span>
+                        <select x-model="node.host"
+                                @click.stop
+                                class="w-full text-xs bg-transparent border border-gray-200 dark:border-[#333] rounded-md px-2 py-1.5 text-gray-700 dark:text-gray-300 focus:outline-none focus:border-orange-500 dark:focus:border-orange-600">
+                            <option value="">Auto-assign</option>
+                            {% for h in proxmox_hosts %}
+                            <option value="{{ h.id }}">{{ h.hostname | default(h.ip_address, true) | default(h.id, true) }}</option>
+                            {% endfor %}
+                        </select>
+                        <button type="button"
+                                @click.stop="removeNode('combined', idx)"
+                                class="mt-2 text-[10px] text-gray-400 hover:text-red-500 dark:hover:text-red-400 transition-colors">
+                            Remove
+                        </button>
+                        {# Drag handle on last card #}
+                        <div x-show="idx === combined.length - 1"
+                             class="k8s-drag-handle mt-3 flex flex-col items-center gap-0.5 opacity-30 hover:opacity-70 transition-opacity"
+                             @mousedown.stop="onDragStart($event, 'combined')"
+                             title="Drag to add or remove nodes">
+                            <div class="flex gap-1">
+                                <span class="w-1 h-1 rounded-full bg-current"></span>
+                                <span class="w-1 h-1 rounded-full bg-current"></span>
+                                <span class="w-1 h-1 rounded-full bg-current"></span>
+                            </div>
+                            <div class="flex gap-1">
+                                <span class="w-1 h-1 rounded-full bg-current"></span>
+                                <span class="w-1 h-1 rounded-full bg-current"></span>
+                                <span class="w-1 h-1 rounded-full bg-current"></span>
+                            </div>
+                        </div>
+                    </div>
+                </template>
+                <template x-if="combined.length === 0">
+                    <div class="rounded-xl border border-dashed border-gray-200 dark:border-[#222] p-6 text-center">
+                        <p class="text-xs text-gray-400 dark:text-gray-500">No combined nodes.</p>
+                        <p class="text-xs text-gray-300 dark:text-gray-600 mt-1">Add one below for small or dev clusters.</p>
+                    </div>
+                </template>
+            </div>
+            <div class="px-3 pb-3 flex gap-2">
+                <button type="button"
+                        @click="removeNode('combined', combined.length - 1)"
+                        :disabled="combined.length === 0"
+                        class="py-2 px-3 rounded-lg border border-dashed border-gray-300 dark:border-gray-700 text-gray-500 dark:text-gray-400 text-xs font-medium hover:bg-gray-50 dark:hover:bg-white/5 transition-colors disabled:opacity-30 disabled:cursor-not-allowed">
+                    −
+                </button>
+                <button type="button"
+                        @click="addNode('combined')"
+                        class="flex-1 py-2 rounded-lg border border-dashed border-orange-300 dark:border-orange-800 text-orange-600 dark:text-orange-500 text-xs font-medium hover:bg-orange-50 dark:hover:bg-orange-900/20 transition-colors">
+                    + Add Combined Node
+                </button>
+            </div>
+        </div>
+
+    </div>
+
+    {# Summary bar + deploy #}
+    <div class="rounded-xl border border-gray-200 dark:border-[#1a1a1a] bg-white dark:bg-[#0d0d0d] px-6 py-4 flex items-center justify-between gap-4">
+        <div class="flex items-center gap-6 text-sm text-gray-500 dark:text-gray-400">
+            <span>
+                <span class="font-semibold text-emerald-600 dark:text-emerald-400" x-text="controlPlane.length"></span>
+                control plane
+            </span>
+            <span>
+                <span class="font-semibold text-purple-600 dark:text-purple-400" x-text="workers.length"></span>
+                worker<span x-text="workers.length !== 1 ? 's' : ''"></span>
+            </span>
+            <template x-if="combined.length > 0">
+                <span>
+                    <span class="font-semibold text-orange-500 dark:text-orange-400" x-text="combined.length"></span>
+                    combined
+                </span>
+            </template>
+            <span class="text-gray-300 dark:text-gray-600">·</span>
+            <span>
+                <span class="font-semibold text-gray-700 dark:text-gray-300" x-text="controlPlane.length + workers.length + combined.length"></span>
+                total nodes
+            </span>
+        </div>
+        <button type="button"
+                @click="deploy()"
+                :disabled="deploying"
+                class="px-6 py-2.5 bg-green-600 hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-medium rounded-lg transition-colors flex items-center gap-2">
+            <svg x-show="deploying" class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+            </svg>
+            <span x-text="deploying ? 'Deploying...' : 'Deploy Kubernetes Cluster'"></span>
+        </button>
+    </div>
+
+</div>
+
+<script>
+function k8sWizard() {
+    let _uid = 0;
+    const uid = () => ++_uid;
+
+    return {
+        controlPlane: [],
+        workers: [],
+        combined: [],
+        deploying: false,
+        _dragging: null,   // 'workers' | 'combined' | null
+        _dragStartY: 0,
+        _dragStartCount: 0,
+
+        init() {
+            this.controlPlane = [{ id: uid(), host: '', status: 'empty' }];
+            this.workers      = [{ id: uid(), host: '', status: 'empty' },
+                                 { id: uid(), host: '', status: 'empty' }];
+            this.combined     = [];
+        },
+
+        addNode(lane) {
+            this[lane].push({ id: uid(), host: '', status: 'empty' });
+        },
+
+        removeNode(lane, idx) {
+            if (lane === 'controlPlane' && this.controlPlane.length <= 1) return;
+            if (lane === 'workers'      && this.workers.length <= 1)      return;
+            if (idx < 0 || idx >= this[lane].length)                      return;
+            this[lane].splice(idx, 1);
+        },
+
+        onDragStart(e, lane) {
+            this._dragging      = lane;
+            this._dragStartY    = e.clientY;
+            this._dragStartCount = this[lane].length;
+            e.preventDefault();
+        },
+
+        onDragMove(e) {
+            if (!this._dragging) return;
+            const lane     = this._dragging;
+            const delta    = e.clientY - this._dragStartY;
+            const cardH    = 80; // px per card step
+            const steps    = Math.round(delta / cardH);
+            const minCount = lane === 'workers' ? 1 : 0;
+            const target   = Math.max(minCount, this._dragStartCount + steps);
+            const current  = this[lane].length;
+            if (target > current) {
+                for (let i = current; i < target; i++) this[lane].push({ id: uid(), host: '', status: 'empty' });
+            } else if (target < current) {
+                this[lane].splice(target);
+            }
+        },
+
+        onDragEnd() {
+            this._dragging = null;
+        },
+
+        async deploy() {
+            this.deploying = true;
+            try {
+                const nodes = [
+                    ...this.controlPlane.map(n => ({ machine_id: n.host || null, role: 'control-plane' })),
+                    ...this.workers.map(n      => ({ machine_id: n.host || null, role: 'worker' })),
+                    ...this.combined.map(n     => ({ machine_id: n.host || null, role: 'combined' })),
+                ];
+                const res = await fetch('/api/k8s/create', {
+                    method: 'POST',
+                    credentials: 'include',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ nodes }),
+                });
+                const data = await res.json();
+                if (res.ok) {
+                    showToast(data.message || 'Deployment started', 'success');
+                } else {
+                    showToast(data.message || data.error || 'Deployment failed', 'error');
+                }
+            } catch (e) {
+                showToast('Failed to reach server', 'error');
+            } finally {
+                this.deploying = false;
+            }
+        },
+    };
+}
+</script>
+{% endblock %}
