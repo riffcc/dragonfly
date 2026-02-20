@@ -493,33 +493,7 @@
                                     </template>
                                 </div>
 
-                                <!-- Create Token Modal -->
-                                <div x-show="createTokenModal" x-cloak class="fixed inset-0 z-50 flex items-center justify-center bg-black/50" @click.self="createTokenModal = false">
-                                    <div class="bg-white dark:bg-gray-900 rounded-xl shadow-xl p-6 w-full max-w-md mx-4 border border-purple-200 dark:border-purple-800">
-                                        <h3 class="text-lg font-semibold text-black dark:text-white mb-4">Generate API Token</h3>
-                                        <div class="mb-4">
-                                            <label class="block text-xs font-medium text-black dark:text-white mb-1.5">Token Name</label>
-                                            <input type="text" x-model="newTokenName" @keydown.enter="createApiToken()" placeholder="e.g. CI pipeline, MCP server"
-                                                   class="w-full rounded-lg border border-purple-300 dark:border-purple-700 bg-transparent text-black dark:text-white text-sm px-3 py-2 focus:border-purple-500 focus:ring-1 focus:ring-purple-500 focus:outline-none placeholder:text-black/40 dark:placeholder:text-white/40">
-                                        </div>
-                                        <div class="flex justify-end gap-2">
-                                            <button @click="createTokenModal = false" class="px-3 py-2 text-sm text-black/70 dark:text-white/70 hover:text-black dark:hover:text-white transition-colors">Cancel</button>
-                                            <button @click="createApiToken()" class="px-4 py-2 text-sm font-medium text-white bg-purple-600 hover:bg-purple-700 rounded-lg transition-colors">Generate</button>
-                                        </div>
-                                    </div>
-                                </div>
-
-                                <!-- Revoke Token Modal -->
-                                <div x-show="revokeTokenModal" x-cloak class="fixed inset-0 z-50 flex items-center justify-center bg-black/50" @click.self="revokeTokenModal = false">
-                                    <div class="bg-white dark:bg-gray-900 rounded-xl shadow-xl p-6 w-full max-w-md mx-4 border border-red-200 dark:border-red-800">
-                                        <h3 class="text-lg font-semibold text-black dark:text-white mb-2">Revoke Token</h3>
-                                        <p class="text-sm text-black/70 dark:text-white/70 mb-4">Are you sure you want to revoke <strong x-text="revokingToken?.name"></strong>? Any integrations using this token will stop working immediately.</p>
-                                        <div class="flex justify-end gap-2">
-                                            <button @click="revokeTokenModal = false; revokingToken = null" class="px-3 py-2 text-sm text-black/70 dark:text-white/70 hover:text-black dark:hover:text-white transition-colors">Cancel</button>
-                                            <button @click="revokeApiToken()" class="px-4 py-2 text-sm font-medium text-white bg-red-600 hover:bg-red-700 rounded-lg transition-colors">Revoke</button>
-                                        </div>
-                                    </div>
-                                </div>
+                                <!-- Token modals are rendered outside the form to prevent form submission -->
                             </div>
                         </div>
 
@@ -1719,6 +1693,37 @@
                     </div>
 
                 </form>
+
+                <!-- Token modals (outside form to prevent form submission) -->
+
+                <!-- Create Token Modal -->
+                <div x-show="createTokenModal" x-cloak class="fixed inset-0 z-50 flex items-center justify-center bg-black/50" @click.self="createTokenModal = false" @keydown.escape.window="createTokenModal = false">
+                    <div class="bg-white dark:bg-gray-900 rounded-xl shadow-xl p-6 w-full max-w-md mx-4 border border-purple-200 dark:border-purple-800">
+                        <h3 class="text-lg font-semibold text-black dark:text-white mb-4">Generate API Token</h3>
+                        <div class="mb-4">
+                            <label class="block text-xs font-medium text-black dark:text-white mb-1.5">Token Name</label>
+                            <input type="text" x-model="newTokenName" @keydown.enter.prevent="createApiToken()" placeholder="e.g. CI pipeline, MCP server"
+                                   class="w-full rounded-lg border border-purple-300 dark:border-purple-700 bg-transparent text-black dark:text-white text-sm px-3 py-2 focus:border-purple-500 focus:ring-1 focus:ring-purple-500 focus:outline-none placeholder:text-black/40 dark:placeholder:text-white/40">
+                        </div>
+                        <div class="flex justify-end gap-2">
+                            <button type="button" @click="createTokenModal = false" class="px-3 py-2 text-sm text-black/70 dark:text-white/70 hover:text-black dark:hover:text-white transition-colors">Cancel</button>
+                            <button type="button" @click="createApiToken()" class="px-4 py-2 text-sm font-medium text-white bg-purple-600 hover:bg-purple-700 rounded-lg transition-colors">Generate</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Revoke Token Modal -->
+                <div x-show="revokeTokenModal" x-cloak class="fixed inset-0 z-50 flex items-center justify-center bg-black/50" @click.self="revokeTokenModal = false" @keydown.escape.window="revokeTokenModal = false">
+                    <div class="bg-white dark:bg-gray-900 rounded-xl shadow-xl p-6 w-full max-w-md mx-4 border border-red-200 dark:border-red-800">
+                        <h3 class="text-lg font-semibold text-black dark:text-white mb-2">Revoke Token</h3>
+                        <p class="text-sm text-black/70 dark:text-white/70 mb-4">Are you sure you want to revoke <strong x-text="revokingToken?.name"></strong>? Any integrations using this token will stop working immediately.</p>
+                        <div class="flex justify-end gap-2">
+                            <button type="button" @click="revokeTokenModal = false; revokingToken = null" class="px-3 py-2 text-sm text-black/70 dark:text-white/70 hover:text-black dark:hover:text-white transition-colors">Cancel</button>
+                            <button type="button" @click="revokeApiToken()" class="px-4 py-2 text-sm font-medium text-white bg-red-600 hover:bg-red-700 rounded-lg transition-colors">Revoke</button>
+                        </div>
+                    </div>
+                </div>
+
             </div>
         </div>
     </div>
