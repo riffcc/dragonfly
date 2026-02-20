@@ -370,6 +370,7 @@ async fn build_dhcp_config_from_store(store: &Arc<dyn store::v1::Store>) -> Dhcp
 
         return DhcpServiceConfig {
             mode: DhcpMode::Reservation,
+            interface: None,
             boot_filename_bios: "undionly.kpxe".to_string(),
             boot_filename_uefi: "ipxe.efi".to_string(),
             http_boot_url: None,
@@ -401,6 +402,7 @@ async fn build_dhcp_config_from_store(store: &Arc<dyn store::v1::Store>) -> Dhcp
 
     DhcpServiceConfig {
         mode,
+        interface: None,
         boot_filename_bios: "undionly.kpxe".to_string(),
         boot_filename_uefi: "ipxe.efi".to_string(),
         http_boot_url: None,
@@ -409,6 +411,57 @@ async fn build_dhcp_config_from_store(store: &Arc<dyn store::v1::Store>) -> Dhcp
         subnet_mask: None,
         gateway: None,
         dns_servers: Vec::new(),
+    }
+}
+
+/// Build a per-network DhcpServiceConfig using the network's own pool/gateway/DNS settings.
+///
+/// `server_ip` is the IP of the local interface that was matched to this network's subnet.
+fn build_dhcp_config_for_network(
+    network: &dragonfly_common::Network,
+    server_ip: std::net::Ipv4Addr,
+    iface: &str,
+) -> DhcpServiceConfig {
+    let mode = dhcp_mode_from_setting(&network.dhcp_mode);
+
+    let pool_start = network
+        .pool_start
+        .as_deref()
+        .and_then(|s| s.parse::<std::net::Ipv4Addr>().ok());
+    let pool_end = network
+        .pool_end
+        .as_deref()
+        .and_then(|s| s.parse::<std::net::Ipv4Addr>().ok());
+    let mask = cidr_to_subnet_mask(&network.subnet);
+    let gw = network
+        .gateway
+        .as_deref()
+        .and_then(|s| s.parse::<std::net::Ipv4Addr>().ok());
+    let mut dns: Vec<std::net::Ipv4Addr> = network
+        .dns_servers
+        .iter()
+        .filter_map(|s| s.parse().ok())
+        .collect();
+    if dns.is_empty() {
+        dns = vec![
+            std::net::Ipv4Addr::new(1, 1, 1, 1),
+            std::net::Ipv4Addr::new(8, 8, 8, 8),
+        ];
+    }
+
+    let _ = server_ip; // server_ip is used via ServicesConfig.server_ip, not here directly
+
+    DhcpServiceConfig {
+        mode,
+        interface: Some(iface.to_string()),
+        boot_filename_bios: "undionly.kpxe".to_string(),
+        boot_filename_uefi: "ipxe.efi".to_string(),
+        http_boot_url: None,
+        pool_range_start: pool_start,
+        pool_range_end: pool_end,
+        subnet_mask: mask,
+        gateway: gw,
+        dns_servers: dns,
     }
 }
 
@@ -504,8 +557,17 @@ async fn download_spark_elf() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Start network services (DHCP/TFTP)
-/// This can be called at startup or dynamically when settings change
+/// Start network services (DHCP/TFTP).
+///
+/// Runs **one DHCP + TFTP instance per DHCP-enabled network**, each bound to
+/// the specific interface that owns that network's subnet (via SO_BINDTODEVICE).
+/// This ensures that PXE clients on a provisioning VLAN receive the correct
+/// `server_ip` in their DHCP offer and can reach the TFTP/HTTP boot server.
+///
+/// This function can be called again after `restart_network_services()` stops
+/// the previous instances — it re-reads network config from the store so any
+/// changes (new network added, DHCP toggled, pool changed) are picked up
+/// without restarting Dragonfly.
 pub async fn start_network_services(app_state: &AppState, shutdown_rx: watch::Receiver<()>) {
     // Check if services are already running
     if app_state
@@ -515,32 +577,13 @@ pub async fn start_network_services(app_state: &AppState, shutdown_rx: watch::Re
         return;
     }
 
-    // Build DHCP config from settings store
-    let dhcp_config = build_dhcp_config_from_store(&app_state.store).await;
-    let mode_label = dhcp_mode_to_setting(dhcp_config.mode);
+    let http_port = read_port_from_config();
+    let tftp_dir = PathBuf::from("/var/lib/dragonfly/tftp");
 
-    // Create services configuration
-    let services_config = ServicesConfig {
-        dhcp: Some(dhcp_config),
-        tftp: Some(TftpServiceConfig {
-            boot_dir: PathBuf::from("/var/lib/dragonfly/tftp"),
-        }),
-        server_ip: std::net::Ipv4Addr::new(0, 0, 0, 0), // Bind to all interfaces
-        http_port: read_port_from_config(),               // Use same port as HTTP server
-    };
-
-    // Create service runner with native store for hardware lookup and shared lease table
-    let service_runner = ServiceRunner::with_lease_table(
-        services_config,
-        app_state.store.clone(),
-        app_state.dhcp_lease_table.clone(),
-    );
-
-    // Create a bool-based shutdown channel for the services
-    // (ServiceRunner expects watch::Receiver<bool>)
+    // Create a bool-based shutdown channel for all per-network service runners.
+    // The sender is stashed in app_state so restart_network_services() can signal stop.
     let (services_shutdown_tx, services_shutdown_rx) = watch::channel(false);
 
-    // Store the shutdown sender so we can restart services later
     {
         let mut tx_guard = app_state.services_shutdown_tx.lock().await;
         *tx_guard = Some(services_shutdown_tx.clone());
@@ -553,23 +596,101 @@ pub async fn start_network_services(app_state: &AppState, shutdown_rx: watch::Re
         let _ = services_shutdown_tx.send(true);
     });
 
-    // Start services in a background task
-    let mode_label_owned = mode_label.to_string();
-    tokio::spawn(async move {
-        match service_runner.start(services_shutdown_rx).await {
-            Ok(handles) => {
-                if handles.dhcp.is_some() {
-                    println!("  DHCP: 0.0.0.0:67 ({})", mode_label_owned);
-                }
-                if handles.tftp.is_some() {
-                    println!("  TFTP: 0.0.0.0:69");
-                }
+    // Enumerate DHCP-enabled networks and find their local interfaces
+    let networks = app_state.store.list_networks().await.unwrap_or_default();
+    let dhcp_networks: Vec<_> = networks.iter().filter(|n| n.dhcp_enabled).collect();
+
+    // Collect per-network runners (iface, server_ip, DhcpServiceConfig)
+    let mut per_network_runners: Vec<(String, std::net::Ipv4Addr, ServiceRunner)> = Vec::new();
+
+    for network in &dhcp_networks {
+        match network_detect::find_interface_for_subnet(&network.subnet) {
+            Some((iface, server_ip)) => {
+                let dhcp_cfg = build_dhcp_config_for_network(network, server_ip, &iface);
+                let svc_cfg = ServicesConfig {
+                    dhcp: Some(dhcp_cfg),
+                    tftp: Some(TftpServiceConfig { boot_dir: tftp_dir.clone() }),
+                    server_ip,
+                    http_port,
+                };
+                let runner = ServiceRunner::with_lease_table(
+                    svc_cfg,
+                    app_state.store.clone(),
+                    app_state.dhcp_lease_table.clone(),
+                );
+                info!(
+                    network = %network.name,
+                    iface = %iface,
+                    ip = %server_ip,
+                    mode = %network.dhcp_mode,
+                    "Scheduling per-network DHCP instance"
+                );
+                per_network_runners.push((iface, server_ip, runner));
             }
-            Err(e) => {
-                error!("Failed to start network services: {}", e);
+            None => {
+                warn!(
+                    network = %network.name,
+                    subnet = %network.subnet,
+                    "No local interface found for subnet — skipping DHCP for this network"
+                );
             }
         }
-    });
+    }
+
+    if !per_network_runners.is_empty() {
+        // Start one runner per network
+        for (iface, server_ip, runner) in per_network_runners {
+            let rx = services_shutdown_rx.clone();
+            tokio::spawn(async move {
+                match runner.start(rx).await {
+                    Ok(handles) => {
+                        if handles.dhcp.is_some() {
+                            println!("  DHCP: {} ({}:67)", iface, server_ip);
+                        }
+                        if handles.tftp.is_some() {
+                            println!("  TFTP: {}:69", server_ip);
+                        }
+                    }
+                    Err(e) => {
+                        error!(iface = %iface, "Failed to start per-network DHCP service: {}", e);
+                    }
+                }
+            });
+        }
+    } else {
+        // Fallback: no dhcp-enabled networks with a matched interface — start a single
+        // catch-all instance bound to 0.0.0.0 using the legacy config path. This keeps
+        // single-NIC deployments working without any network config in the UI.
+        let dhcp_config = build_dhcp_config_from_store(&app_state.store).await;
+        let mode_label = dhcp_mode_to_setting(dhcp_config.mode).to_string();
+        let services_config = ServicesConfig {
+            dhcp: Some(dhcp_config),
+            tftp: Some(TftpServiceConfig { boot_dir: tftp_dir }),
+            server_ip: std::net::Ipv4Addr::new(0, 0, 0, 0),
+            http_port,
+        };
+        let service_runner = ServiceRunner::with_lease_table(
+            services_config,
+            app_state.store.clone(),
+            app_state.dhcp_lease_table.clone(),
+        );
+        let rx = services_shutdown_rx;
+        tokio::spawn(async move {
+            match service_runner.start(rx).await {
+                Ok(handles) => {
+                    if handles.dhcp.is_some() {
+                        println!("  DHCP: 0.0.0.0:67 ({})", mode_label);
+                    }
+                    if handles.tftp.is_some() {
+                        println!("  TFTP: 0.0.0.0:69");
+                    }
+                }
+                Err(e) => {
+                    error!("Failed to start network services: {}", e);
+                }
+            }
+        });
+    }
 }
 
 /// Restart network services with updated configuration from settings store

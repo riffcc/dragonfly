@@ -287,6 +287,18 @@ impl DhcpServer {
         // Set broadcast option
         socket.set_broadcast(true).ok();
 
+        // Bind to specific network interface if configured (SO_BINDTODEVICE).
+        // This ensures DHCP traffic is only sent/received on the right interface,
+        // which is critical for multi-homed hosts serving multiple VLANs.
+        if let Some(ref iface) = self.config.interface {
+            socket
+                .bind_device(Some(iface.as_bytes()))
+                .map_err(|e| DhcpError::BindFailed {
+                    addr: bind_addr.into(),
+                    source: e,
+                })?;
+        }
+
         // Bind to address
         socket
             .bind(&bind_addr.into())

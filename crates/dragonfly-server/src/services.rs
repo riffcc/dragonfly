@@ -51,6 +51,9 @@ impl Default for ServicesConfig {
 pub struct DhcpServiceConfig {
     /// Operating mode
     pub mode: DhcpMode,
+    /// Network interface to bind to (SO_BINDTODEVICE).
+    /// None = bind to all interfaces (legacy behaviour).
+    pub interface: Option<String>,
     /// Boot filename for BIOS systems
     pub boot_filename_bios: String,
     /// Boot filename for UEFI systems
@@ -73,6 +76,7 @@ impl Default for DhcpServiceConfig {
     fn default() -> Self {
         Self {
             mode: DhcpMode::Proxy,
+            interface: None,
             boot_filename_bios: "undionly.kpxe".to_string(),
             boot_filename_uefi: "ipxe.efi".to_string(),
             http_boot_url: None,
@@ -269,6 +273,12 @@ impl ServiceRunner {
             .with_mode(config.mode.clone())
             .with_tftp_server(actual_ip)
             .with_http_port(self.config.http_port);
+
+        // Bind to a specific interface if configured (SO_BINDTODEVICE).
+        // This is required for multi-homed hosts serving multiple VLANs.
+        if let Some(ref iface) = config.interface {
+            dhcp_config = dhcp_config.with_interface(iface.clone());
+        }
 
         // Apply optional Full mode configuration
         if let (Some(start), Some(end)) = (config.pool_range_start, config.pool_range_end) {
