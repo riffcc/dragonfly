@@ -4,8 +4,8 @@
 //! and ForwardAuthority for recursive forwarding to upstreams.
 
 use crate::handler::{DnsStore, StoreAuthority, ZoneConfig};
-use hickory_server::authority::{Authority, Catalog};
 use hickory_server::ServerFuture;
+use hickory_server::authority::{Authority, Catalog};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -33,11 +33,8 @@ impl DnsServer {
 
         // Register each zone as a StoreAuthority
         for zone in &zones {
-            let authority = StoreAuthority::new(
-                zone.origin.clone(),
-                server_hostname.clone(),
-                store.clone(),
-            )?;
+            let authority =
+                StoreAuthority::new(zone.origin.clone(), server_hostname.clone(), store.clone())?;
             let origin = authority.origin().clone();
             catalog.upsert(origin, vec![Arc::new(authority)]);
             info!(zone = %zone.origin, "Registered DNS zone");

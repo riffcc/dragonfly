@@ -291,8 +291,12 @@ pub(super) async fn discover_and_register_proxmox_vms(
                                 entry.get("name").and_then(|n| n.as_str()),
                                 entry.get("ip").and_then(|i| i.as_str()),
                             ) {
-                                let online = entry.get("online").and_then(|o| o.as_u64()).unwrap_or(0) == 1;
-                                info!("Cluster status: node '{}' has IP {}, online={}", name, ip, online);
+                                let online =
+                                    entry.get("online").and_then(|o| o.as_u64()).unwrap_or(0) == 1;
+                                info!(
+                                    "Cluster status: node '{}' has IP {}, online={}",
+                                    name, ip, online
+                                );
                                 node_ip_map.insert(name.to_string(), ip.to_string());
                                 node_online_map.insert(name.to_string(), online);
                             }
@@ -323,17 +327,28 @@ pub(super) async fn discover_and_register_proxmox_vms(
             .unwrap_or_else(|| "Unknown".to_string());
 
         // Check if node is online — use cluster/status map first, fall back to nodes list
-        let node_status_str = node.get("status").and_then(|s| s.as_str()).unwrap_or("online");
-        let node_is_online = node_online_map.get(node_name).copied().unwrap_or(node_status_str == "online");
+        let node_status_str = node
+            .get("status")
+            .and_then(|s| s.as_str())
+            .unwrap_or("online");
+        let node_is_online = node_online_map
+            .get(node_name)
+            .copied()
+            .unwrap_or(node_status_str == "online");
 
         if !node_is_online {
-            info!("Node '{}' is OFFLINE (out of quorum), registering with Offline state", node_name);
+            info!(
+                "Node '{}' is OFFLINE (out of quorum), registering with Offline state",
+                node_name
+            );
 
             // Try to update an existing machine rather than creating a new one
             let existing_machines = state.store.list_machines().await.unwrap_or_default();
             if let Some(existing) = existing_machines.iter().find(|m| {
-                matches!(m.metadata.source, dragonfly_common::machine::MachineSource::ProxmoxNode { .. })
-                    && m.config.hostname.as_deref() == Some(node_name)
+                matches!(
+                    m.metadata.source,
+                    dragonfly_common::machine::MachineSource::ProxmoxNode { .. }
+                ) && m.config.hostname.as_deref() == Some(node_name)
             }) {
                 let mut updated = existing.clone();
                 updated.status.state = dragonfly_common::MachineState::Offline;
@@ -343,7 +358,10 @@ pub(super) async fn discover_and_register_proxmox_vms(
                     info!("Marked existing node '{}' as Offline", node_name);
                 }
             } else {
-                warn!("Offline node '{}' has no prior registration — skipping (no NICs available)", node_name);
+                warn!(
+                    "Offline node '{}' has no prior registration — skipping (no NICs available)",
+                    node_name
+                );
             }
             continue;
         }
@@ -772,7 +790,10 @@ pub(super) async fn discover_and_register_proxmox_vms(
 
         // --- Fetch and Register VMs for this node (only if import_guests) ---
         if !import_guests {
-            info!("Skipping VM/LXC import for node '{}' (import_guests=false)", node_name);
+            info!(
+                "Skipping VM/LXC import for node '{}' (import_guests=false)",
+                node_name
+            );
             continue;
         }
         info!("Processing VMs for node: {}", node_name);
@@ -1114,7 +1135,8 @@ pub(super) async fn discover_and_register_proxmox_vms(
                                                         continue;
                                                     }
 
-                                                    let is_preferred = iface_name.starts_with("eth")
+                                                    let is_preferred = iface_name
+                                                        .starts_with("eth")
                                                         || iface_name.starts_with("ens")
                                                         || iface_name.starts_with("eno");
                                                     if !is_preferred {
@@ -1950,8 +1972,8 @@ mod tests {
 
         let mut existing = make_vm("aa:bb:cc:dd:ee:01", "cluster1", "node1", 100);
         existing.config.netboot = NetbootConfig {
-            allow_pxe: false,        // user disabled PXE
-            allow_workflow: false,    // user disabled workflow
+            allow_pxe: false,      // user disabled PXE
+            allow_workflow: false, // user disabled workflow
             dhcp_ip: Some(DhcpReservation {
                 address: "10.0.0.42".to_string(),
                 gateway: Some("10.0.0.1".to_string()),
@@ -1966,8 +1988,14 @@ mod tests {
 
         merge_into_existing(&existing, &mut incoming);
 
-        assert!(!incoming.config.netboot.allow_pxe, "PXE setting must survive");
-        assert!(!incoming.config.netboot.allow_workflow, "Workflow setting must survive");
+        assert!(
+            !incoming.config.netboot.allow_pxe,
+            "PXE setting must survive"
+        );
+        assert!(
+            !incoming.config.netboot.allow_workflow,
+            "Workflow setting must survive"
+        );
         assert_eq!(
             incoming.config.netboot.dhcp_ip.as_ref().unwrap().address,
             "10.0.0.42",
@@ -1978,11 +2006,20 @@ mod tests {
     #[test]
     fn test_merge_preserves_labels() {
         let mut existing = make_vm("aa:bb:cc:dd:ee:01", "cluster1", "node1", 100);
-        existing.metadata.labels.insert("role".to_string(), "database".to_string());
-        existing.metadata.labels.insert("env".to_string(), "prod".to_string());
+        existing
+            .metadata
+            .labels
+            .insert("role".to_string(), "database".to_string());
+        existing
+            .metadata
+            .labels
+            .insert("env".to_string(), "prod".to_string());
 
         let mut incoming = make_vm("aa:bb:cc:dd:ee:01", "cluster1", "node1", 100);
-        incoming.metadata.labels.insert("imported".to_string(), "true".to_string());
+        incoming
+            .metadata
+            .labels
+            .insert("imported".to_string(), "true".to_string());
 
         merge_into_existing(&existing, &mut incoming);
 
@@ -1996,21 +2033,44 @@ mod tests {
         // Existing machine from agent has two MACs
         let identity = MachineIdentity::new(
             "aa:bb:cc:dd:ee:01".to_string(),
-            vec!["aa:bb:cc:dd:ee:01".to_string(), "aa:bb:cc:dd:ee:02".to_string()],
-            None, None, None,
+            vec![
+                "aa:bb:cc:dd:ee:01".to_string(),
+                "aa:bb:cc:dd:ee:02".to_string(),
+            ],
+            None,
+            None,
+            None,
         );
         let mut existing = Machine::new(identity);
         existing.metadata.source = MachineSource::Agent;
 
         // Proxmox sees it with a third MAC (e.g., bond member)
         let mut incoming = make_vm("aa:bb:cc:dd:ee:01", "cluster1", "node1", 100);
-        incoming.identity.all_macs.push("aa:bb:cc:dd:ee:03".to_string());
+        incoming
+            .identity
+            .all_macs
+            .push("aa:bb:cc:dd:ee:03".to_string());
 
         merge_into_existing(&existing, &mut incoming);
 
-        assert!(incoming.identity.all_macs.contains(&"aa:bb:cc:dd:ee:01".to_string()));
-        assert!(incoming.identity.all_macs.contains(&"aa:bb:cc:dd:ee:02".to_string()));
-        assert!(incoming.identity.all_macs.contains(&"aa:bb:cc:dd:ee:03".to_string()));
+        assert!(
+            incoming
+                .identity
+                .all_macs
+                .contains(&"aa:bb:cc:dd:ee:01".to_string())
+        );
+        assert!(
+            incoming
+                .identity
+                .all_macs
+                .contains(&"aa:bb:cc:dd:ee:02".to_string())
+        );
+        assert!(
+            incoming
+                .identity
+                .all_macs
+                .contains(&"aa:bb:cc:dd:ee:03".to_string())
+        );
     }
 
     #[test]

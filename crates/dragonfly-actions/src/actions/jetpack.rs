@@ -84,10 +84,9 @@ impl Action for JetpackAction {
             info!(url = %playbook_url, "Running Jetpack locally (no chroot)");
         }
 
-        let output = cmd
-            .output()
-            .await
-            .map_err(|e| ActionError::ExecutionFailed(format!("jetpack execution failed: {}", e)))?;
+        let output = cmd.output().await.map_err(|e| {
+            ActionError::ExecutionFailed(format!("jetpack execution failed: {}", e))
+        })?;
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -117,9 +116,11 @@ impl Action for JetpackAction {
         reporter.report(Progress::completed("jetpack"));
         info!("Jetpack pull mode completed successfully");
 
-        Ok(ActionResult::success("Jetpack playbook executed successfully")
-            .with_output("playbook_url", &playbook_url)
-            .with_output("chroot", chroot.as_deref().unwrap_or("none")))
+        Ok(
+            ActionResult::success("Jetpack playbook executed successfully")
+                .with_output("playbook_url", &playbook_url)
+                .with_output("chroot", chroot.as_deref().unwrap_or("none")),
+        )
     }
 
     fn validate(&self, ctx: &ActionContext) -> Result<()> {
@@ -136,7 +137,14 @@ impl Action for JetpackAction {
 /// then falls back to `curl` if wget is not found.
 async fn download_file(url: &str, dest: &str) -> Result<()> {
     // Try wget first (Alpine/BusyBox has it built-in)
-    match Command::new("wget").arg("-q").arg("-O").arg(dest).arg(url).status().await {
+    match Command::new("wget")
+        .arg("-q")
+        .arg("-O")
+        .arg(dest)
+        .arg(url)
+        .status()
+        .await
+    {
         Ok(status) if status.success() => return Ok(()),
         Ok(status) => {
             return Err(ActionError::ExecutionFailed(format!(

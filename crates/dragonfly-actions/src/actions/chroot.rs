@@ -85,10 +85,7 @@ impl Action for ChrootAction {
         let reporter = ctx.progress_reporter();
 
         // Check if this is a teardown request
-        let teardown = ctx
-            .env("TEARDOWN")
-            .map(|v| v == "true")
-            .unwrap_or(false);
+        let teardown = ctx.env("TEARDOWN").map(|v| v == "true").unwrap_or(false);
 
         if teardown {
             return teardown_chroot(reporter.as_ref()).await;
@@ -99,19 +96,13 @@ impl Action for ChrootAction {
             .env("DEST_DISK")
             .ok_or_else(|| ActionError::MissingEnvVar("DEST_DISK".to_string()))?
             .to_string();
-        let fs_type = ctx
-            .env("FS_TYPE")
-            .unwrap_or("ext4")
-            .to_string();
+        let fs_type = ctx.env("FS_TYPE").unwrap_or("ext4").to_string();
 
         setup_chroot(&device, &fs_type, reporter.as_ref()).await
     }
 
     fn validate(&self, ctx: &ActionContext) -> Result<()> {
-        let teardown = ctx
-            .env("TEARDOWN")
-            .map(|v| v == "true")
-            .unwrap_or(false);
+        let teardown = ctx.env("TEARDOWN").map(|v| v == "true").unwrap_or(false);
 
         if !teardown && ctx.env("DEST_DISK").is_none() {
             return Err(ActionError::MissingEnvVar("DEST_DISK".to_string()));
@@ -134,11 +125,18 @@ async fn setup_chroot(
         ));
     }
 
-    reporter.report(Progress::new("chroot", 5, &format!("Mounting {} at {}", device, CHROOT_MOUNT)));
+    reporter.report(Progress::new(
+        "chroot",
+        5,
+        &format!("Mounting {} at {}", device, CHROOT_MOUNT),
+    ));
 
     // Create mount point
     tokio::fs::create_dir_all(CHROOT_MOUNT).await.map_err(|e| {
-        ActionError::Io(std::io::Error::new(e.kind(), format!("create {}: {}", CHROOT_MOUNT, e)))
+        ActionError::Io(std::io::Error::new(
+            e.kind(),
+            format!("create {}: {}", CHROOT_MOUNT, e),
+        ))
     })?;
 
     // Mount the partition
@@ -166,11 +164,18 @@ async fn setup_chroot(
     for (i, bind) in BIND_MOUNTS.iter().enumerate() {
         let target = format!("{}{}", CHROOT_MOUNT, bind);
         let pct = 10 + (i as u8 * 15);
-        reporter.report(Progress::new("chroot", pct, &format!("Bind-mounting {}", bind)));
+        reporter.report(Progress::new(
+            "chroot",
+            pct,
+            &format!("Bind-mounting {}", bind),
+        ));
 
         // Ensure target directory exists
         tokio::fs::create_dir_all(&target).await.map_err(|e| {
-            ActionError::Io(std::io::Error::new(e.kind(), format!("create {}: {}", target, e)))
+            ActionError::Io(std::io::Error::new(
+                e.kind(),
+                format!("create {}: {}", target, e),
+            ))
         })?;
 
         let status = Command::new("mount")
@@ -226,12 +231,8 @@ async fn setup_chroot(
 }
 
 /// Tear down the active chroot environment.
-async fn teardown_chroot(
-    reporter: &dyn crate::progress::ProgressReporter,
-) -> Result<ActionResult> {
-    let state = {
-        CHROOT_STATE.lock().unwrap().take()
-    };
+async fn teardown_chroot(reporter: &dyn crate::progress::ProgressReporter) -> Result<ActionResult> {
+    let state = { CHROOT_STATE.lock().unwrap().take() };
 
     let state = match state {
         Some(s) => s,
@@ -241,14 +242,22 @@ async fn teardown_chroot(
         }
     };
 
-    reporter.report(Progress::new("chroot", 10, "Tearing down chroot environment"));
+    reporter.report(Progress::new(
+        "chroot",
+        10,
+        "Tearing down chroot environment",
+    ));
     info!(mount = %state.mount_point, "Tearing down chroot");
 
     // Unmount bind-mounts in reverse order
     for (i, bind) in BIND_MOUNTS.iter().enumerate().rev() {
         let target = format!("{}{}", state.mount_point, bind);
         let pct = 20 + ((BIND_MOUNTS.len() - 1 - i) as u8 * 15);
-        reporter.report(Progress::new("chroot", pct, &format!("Unmounting {}", bind)));
+        reporter.report(Progress::new(
+            "chroot",
+            pct,
+            &format!("Unmounting {}", bind),
+        ));
 
         let status = Command::new("umount")
             .arg("-l") // lazy unmount — handles busy mounts gracefully
@@ -287,8 +296,10 @@ async fn teardown_chroot(
     reporter.report(Progress::completed("chroot"));
     info!("Chroot environment deactivated");
 
-    Ok(ActionResult::success("Chroot environment deactivated")
-        .with_output("device", &state.device))
+    Ok(
+        ActionResult::success("Chroot environment deactivated")
+            .with_output("device", &state.device),
+    )
 }
 
 /// Clean up bind-mounts after a partial failure during setup.

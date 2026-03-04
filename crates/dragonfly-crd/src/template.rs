@@ -459,10 +459,7 @@ impl ActionStep {
                     "PARTITION_LAYOUT".to_string(),
                     cfg.layout.clone().unwrap_or_else(|| "gpt-bios".to_string()),
                 );
-                env.insert(
-                    "HOSTNAME".to_string(),
-                    friendly_name.clone(),
-                );
+                env.insert("HOSTNAME".to_string(), friendly_name.clone());
 
                 if let Some(ref mirror) = cfg.mirror {
                     env.insert("MIRROR".to_string(), mirror.clone());

@@ -362,7 +362,7 @@ impl DhcpResponseBuilder {
                     .opts_mut()
                     .insert(DhcpOption::VendorExtensions(vec![
                         0x06, 0x01, 0x08, // Sub-option 6, length 1, value 8 (skip discovery)
-                        0xFF,             // END
+                        0xFF, // END
                     ]));
             }
         }

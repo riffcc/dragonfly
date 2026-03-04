@@ -169,7 +169,11 @@ impl Machine {
             let norm = normalize_mac(mac);
             if !norm.is_empty()
                 && norm != "unknown"
-                && !self.identity.all_macs.iter().any(|m| normalize_mac(m) == norm)
+                && !self
+                    .identity
+                    .all_macs
+                    .iter()
+                    .any(|m| normalize_mac(m) == norm)
             {
                 self.identity.all_macs.push(norm);
             }
@@ -319,7 +323,8 @@ impl Machine {
             self.metadata.created_at = incoming.metadata.created_at;
         }
         // updated_at: take the latest
-        self.metadata.updated_at = std::cmp::max(self.metadata.updated_at, incoming.metadata.updated_at);
+        self.metadata.updated_at =
+            std::cmp::max(self.metadata.updated_at, incoming.metadata.updated_at);
 
         // labels: union (incoming wins on key conflict — LWW)
         for (k, v) in &incoming.metadata.labels {
@@ -816,8 +821,7 @@ mod tests {
 
     #[test]
     fn test_identity_hash_includes_smbios_uuid() {
-        let hash_without =
-            compute_identity_hash(&["00:11:22:33:44:55".to_string()], None, None);
+        let hash_without = compute_identity_hash(&["00:11:22:33:44:55".to_string()], None, None);
         let hash_with = compute_identity_hash(
             &["00:11:22:33:44:55".to_string()],
             Some("smbios-1234"),

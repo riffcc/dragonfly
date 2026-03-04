@@ -376,8 +376,7 @@ async fn handle_read_request(
                             if acked_blocks > 0 && acked_blocks < sent_count {
                                 // Partial ACK — client got some blocks, retransmit the rest
                                 let acked_usize = acked_blocks as usize;
-                                offset =
-                                    window_start_offset + (acked_usize * block_size_usize);
+                                offset = window_start_offset + (acked_usize * block_size_usize);
                                 block_num = block.wrapping_add(1);
                                 debug!(
                                     client = %client,

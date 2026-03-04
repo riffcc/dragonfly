@@ -1,5 +1,10 @@
 use anyhow::Context;
-use axum::{Json, extract::State, http::{StatusCode, Uri}, response::IntoResponse};
+use axum::{
+    Json,
+    extract::State,
+    http::{StatusCode, Uri},
+    response::IntoResponse,
+};
 use proxmox_client::{
     Client as ProxmoxApiClient, HttpApiClient, TlsOptions, Token as ProxmoxToken,
 };
@@ -10,8 +15,10 @@ use super::discovery::connect_proxmox_discover;
 use super::settings::{
     get_proxmox_settings_from_store, update_proxmox_connection_settings_in_store,
 };
-use super::tokens::{create_token_with_role, save_proxmox_tokens, DRAGONFLY_ROLES};
-use super::types::{ProxmoxConnectRequest, ProxmoxConnectionInfo, ProxmoxTokenSet, ProxmoxTokensCreateRequest};
+use super::tokens::{DRAGONFLY_ROLES, create_token_with_role, save_proxmox_tokens};
+use super::types::{
+    ProxmoxConnectRequest, ProxmoxConnectionInfo, ProxmoxTokenSet, ProxmoxTokensCreateRequest,
+};
 
 /// Create a ProxmoxApiClient with proper TLS settings.
 pub(super) fn create_proxmox_client(
@@ -565,7 +572,10 @@ pub async fn connect_proxmox_handler(
             match connect_to_proxmox(&state, "sync").await {
                 Ok(client) => match client.get("/api2/json/version").await {
                     Ok(_) => {
-                        info!("Existing Proxmox tokens for {} are still valid, reusing", host);
+                        info!(
+                            "Existing Proxmox tokens for {} are still valid, reusing",
+                            host
+                        );
                         true
                     }
                     Err(e) => {
@@ -612,26 +622,24 @@ pub async fn connect_proxmox_handler(
             let tokens_result = generate_proxmox_tokens_with_credentials(&token_request).await;
 
             match tokens_result {
-                Ok(token_set) => {
-                    match save_proxmox_tokens(&state, token_set).await {
-                        Ok(_) => {
-                            info!("Successfully created and saved specialized Proxmox API tokens");
-                            connect_proxmox_discover(&state, &host, import_guests, false).await
-                        }
-                        Err(e) => {
-                            warn!("Created tokens but failed to save them: {}", e);
-                            (
-                                StatusCode::OK,
-                                Json(json!({
-                                    "success": true,
-                                    "message": format!("Connected to Proxmox and created tokens, but failed to save: {}", e),
-                                    "tokens_created": true,
-                                    "tokens_saved": false
-                                })),
-                            )
-                        }
+                Ok(token_set) => match save_proxmox_tokens(&state, token_set).await {
+                    Ok(_) => {
+                        info!("Successfully created and saved specialized Proxmox API tokens");
+                        connect_proxmox_discover(&state, &host, import_guests, false).await
                     }
-                }
+                    Err(e) => {
+                        warn!("Created tokens but failed to save them: {}", e);
+                        (
+                            StatusCode::OK,
+                            Json(json!({
+                                "success": true,
+                                "message": format!("Connected to Proxmox and created tokens, but failed to save: {}", e),
+                                "tokens_created": true,
+                                "tokens_saved": false
+                            })),
+                        )
+                    }
+                },
                 Err(e) => {
                     warn!(
                         "Connected to Proxmox but failed to create API tokens: {}",

@@ -21,12 +21,27 @@ use dragonfly_crd::Template;
 
 /// Built-in templates compiled into the binary
 const BUILTIN_TEMPLATES: &[(&str, &str)] = &[
-    ("debian-12", include_str!("../../../os-templates/debian-12.yml")),
-    ("debian-13", include_str!("../../../os-templates/debian-13.yml")),
+    (
+        "debian-12",
+        include_str!("../../../os-templates/debian-12.yml"),
+    ),
+    (
+        "debian-13",
+        include_str!("../../../os-templates/debian-13.yml"),
+    ),
     ("proxmox", include_str!("../../../os-templates/proxmox.yml")),
-    ("rocky-10", include_str!("../../../os-templates/rocky-10.yml")),
-    ("ubuntu-2204", include_str!("../../../os-templates/ubuntu-2204.yml")),
-    ("ubuntu-2404", include_str!("../../../os-templates/ubuntu-2404.yml")),
+    (
+        "rocky-10",
+        include_str!("../../../os-templates/rocky-10.yml"),
+    ),
+    (
+        "ubuntu-2204",
+        include_str!("../../../os-templates/ubuntu-2204.yml"),
+    ),
+    (
+        "ubuntu-2404",
+        include_str!("../../../os-templates/ubuntu-2404.yml"),
+    ),
 ];
 
 /// User override directory
@@ -56,14 +71,16 @@ pub async fn init_os_templates(store: Arc<dyn Store>) -> Result<()> {
     }
 
     // Layer 2: Overlay user overrides from disk (last write wins)
-    let override_dirs = std::iter::once(USER_TEMPLATE_DIR)
-        .chain(DEV_TEMPLATE_DIRS.iter().copied());
+    let override_dirs = std::iter::once(USER_TEMPLATE_DIR).chain(DEV_TEMPLATE_DIRS.iter().copied());
 
     for dir_path in override_dirs {
         let dir = Path::new(dir_path);
         if let Ok(count) = load_overrides_from_dir(store.clone(), dir).await {
             if count > 0 {
-                info!("Loaded {} user template override(s) from {}", count, dir_path);
+                info!(
+                    "Loaded {} user template override(s) from {}",
+                    count, dir_path
+                );
             }
         }
     }
@@ -74,8 +91,8 @@ pub async fn init_os_templates(store: Arc<dyn Store>) -> Result<()> {
 
 /// Parse and validate a YAML template string
 fn parse_and_validate(yaml: &str) -> Result<Template> {
-    let template: Template = serde_yaml::from_str(yaml)
-        .map_err(|e| anyhow!("Failed to parse template YAML: {}", e))?;
+    let template: Template =
+        serde_yaml::from_str(yaml).map_err(|e| anyhow!("Failed to parse template YAML: {}", e))?;
     template
         .validate()
         .map_err(|e| anyhow!("Template validation failed: {}", e))?;
@@ -103,9 +120,16 @@ async fn load_overrides_from_dir(store: Arc<dyn Store>, dir: &Path) -> Result<us
         match parse_and_validate(&content) {
             Ok(template) => {
                 if let Err(e) = store.put_template(&template).await {
-                    warn!("Failed to store override template '{}': {}", template_name, e);
+                    warn!(
+                        "Failed to store override template '{}': {}",
+                        template_name, e
+                    );
                 } else {
-                    info!("Loaded template override '{}' from {}", template_name, path.display());
+                    info!(
+                        "Loaded template override '{}' from {}",
+                        template_name,
+                        path.display()
+                    );
                     count += 1;
                 }
             }
@@ -126,7 +150,12 @@ mod tests {
     fn test_builtin_templates_parse() {
         for (name, yaml) in BUILTIN_TEMPLATES {
             let result = parse_and_validate(yaml);
-            assert!(result.is_ok(), "Built-in template '{}' failed to parse: {:?}", name, result.err());
+            assert!(
+                result.is_ok(),
+                "Built-in template '{}' failed to parse: {:?}",
+                name,
+                result.err()
+            );
             let template = result.unwrap();
             assert_eq!(template.metadata.name, *name);
         }
@@ -134,7 +163,10 @@ mod tests {
 
     #[test]
     fn test_builtin_template_count() {
-        assert!(BUILTIN_TEMPLATES.len() >= 6, "Should have at least 6 built-in templates");
+        assert!(
+            BUILTIN_TEMPLATES.len() >= 6,
+            "Should have at least 6 built-in templates"
+        );
     }
 
     #[test]

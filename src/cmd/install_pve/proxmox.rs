@@ -101,7 +101,6 @@ struct BridgeEntry {
     address: Option<String>,
 }
 
-
 // ─── Client ──────────────────────────────────────────────────────────────────
 
 /// Minimal Proxmox API client for the `install-pve` command.
@@ -278,14 +277,12 @@ impl ProxmoxInstallClient {
 
     /// Build the auth headers required for every authenticated request.
     fn auth_headers(&self) -> Result<header::HeaderMap> {
-        let ticket = self
-            .ticket
-            .as_deref()
-            .ok_or_else(|| ProxmoxError::Api("not authenticated – call authenticate() first".to_string()))?;
-        let csrf = self
-            .csrf_token
-            .as_deref()
-            .ok_or_else(|| ProxmoxError::Api("not authenticated – call authenticate() first".to_string()))?;
+        let ticket = self.ticket.as_deref().ok_or_else(|| {
+            ProxmoxError::Api("not authenticated – call authenticate() first".to_string())
+        })?;
+        let csrf = self.csrf_token.as_deref().ok_or_else(|| {
+            ProxmoxError::Api("not authenticated – call authenticate() first".to_string())
+        })?;
 
         let mut headers = header::HeaderMap::new();
         headers.insert(
@@ -295,8 +292,7 @@ impl ProxmoxInstallClient {
         );
         headers.insert(
             "CSRFPreventionToken",
-            header::HeaderValue::from_str(csrf)
-                .map_err(|e| ProxmoxError::Api(e.to_string()))?,
+            header::HeaderValue::from_str(csrf).map_err(|e| ProxmoxError::Api(e.to_string()))?,
         );
         Ok(headers)
     }
@@ -319,10 +315,17 @@ impl ProxmoxInstallClient {
         let status = response.status();
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
-            return Err(ProxmoxError::Api(format_api_error(status, &body, self.skip_tls_verify)));
+            return Err(ProxmoxError::Api(format_api_error(
+                status,
+                &body,
+                self.skip_tls_verify,
+            )));
         }
 
-        response.json::<T>().await.map_err(|e| ProxmoxError::Api(e.to_string()))
+        response
+            .json::<T>()
+            .await
+            .map_err(|e| ProxmoxError::Api(e.to_string()))
     }
 
     /// Search a single node for a container by hostname, returning its info + IP.
@@ -346,7 +349,11 @@ impl ProxmoxInstallClient {
             };
 
             let ip = self.get_container_ip(node, vmid).await?;
-            return Ok(Some(ContainerInfo { node: node.to_string(), vmid, ip }));
+            return Ok(Some(ContainerInfo {
+                node: node.to_string(),
+                vmid,
+                ip,
+            }));
         }
 
         Ok(None)
@@ -465,7 +472,9 @@ fn tcp_port_open(host: &str, port: u16) -> bool {
     let Ok(addrs) = addr_str.to_socket_addrs() else {
         return false;
     };
-    addrs.into_iter().any(|addr| TcpStream::connect_timeout(&addr, timeout).is_ok())
+    addrs
+        .into_iter()
+        .any(|addr| TcpStream::connect_timeout(&addr, timeout).is_ok())
 }
 
 // ─── Error formatting ─────────────────────────────────────────────────────────
@@ -548,7 +557,12 @@ mod tests {
         let client = ProxmoxInstallClient::new("https://pve:8006", true).unwrap();
         let result = client.auth_headers();
         assert!(result.is_err(), "Should fail before authenticate()");
-        assert!(result.unwrap_err().to_string().contains("not authenticated"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("not authenticated")
+        );
     }
 
     #[test]
@@ -631,7 +645,10 @@ mod tests {
 
         assert_eq!(active.len(), 1);
         assert_eq!(active[0].name, "vmbr0");
-        assert!(active[0].has_ip, "vmbr0 has an address so has_ip must be true");
+        assert!(
+            active[0].has_ip,
+            "vmbr0 has an address so has_ip must be true"
+        );
     }
 
     /// A bridge without an address field gets has_ip = false.
@@ -644,7 +661,11 @@ mod tests {
         });
         let bridges: ApiList<BridgeEntry> = serde_json::from_value(raw).unwrap();
         let entry = &bridges.data[0];
-        let has_ip = entry.address.as_deref().map(|a| !a.is_empty()).unwrap_or(false);
+        let has_ip = entry
+            .address
+            .as_deref()
+            .map(|a| !a.is_empty())
+            .unwrap_or(false);
         assert!(!has_ip);
     }
 
@@ -658,13 +679,23 @@ mod tests {
             ]
         });
         let list: ApiList<BridgeEntry> = serde_json::from_value(raw).unwrap();
-        let infos: Vec<BridgeInfo> = list.data.into_iter()
+        let infos: Vec<BridgeInfo> = list
+            .data
+            .into_iter()
             .filter(|b| b.iface_type.as_deref() == Some("bridge"))
-            .filter(|b| b.active.as_ref().and_then(|v| v.as_u64()).map(|v| v == 1).unwrap_or(false))
-            .filter_map(|b| b.iface.map(|name| BridgeInfo {
-                has_ip: b.address.as_deref().map(|a| !a.is_empty()).unwrap_or(false),
-                name,
-            }))
+            .filter(|b| {
+                b.active
+                    .as_ref()
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v == 1)
+                    .unwrap_or(false)
+            })
+            .filter_map(|b| {
+                b.iface.map(|name| BridgeInfo {
+                    has_ip: b.address.as_deref().map(|a| !a.is_empty()).unwrap_or(false),
+                    name,
+                })
+            })
             .collect();
 
         assert_eq!(infos.len(), 2);
@@ -695,11 +726,18 @@ mod tests {
     fn test_ip_loopback_filtered_and_cidr_stripped() {
         // Proxmox LXC /interfaces returns inet with CIDR, e.g. "10.1.21.10/16"
         let ifaces = vec![
-            NetworkIface { name: Some("lo".to_string()), inet: Some("127.0.0.1/8".to_string()) },
-            NetworkIface { name: Some("eth0".to_string()), inet: Some("10.1.21.10/16".to_string()) },
+            NetworkIface {
+                name: Some("lo".to_string()),
+                inet: Some("127.0.0.1/8".to_string()),
+            },
+            NetworkIface {
+                name: Some("eth0".to_string()),
+                inet: Some("10.1.21.10/16".to_string()),
+            },
         ];
 
-        let result = ifaces.iter()
+        let result = ifaces
+            .iter()
             .filter(|iface| iface.name.as_deref() != Some("lo"))
             .filter_map(|iface| iface.inet.as_ref())
             .map(|inet| inet.split('/').next().unwrap_or(inet.as_str()).to_string())
@@ -715,7 +753,11 @@ mod tests {
         let status = reqwest::StatusCode::INTERNAL_SERVER_ERROR;
         let body = r#"{"message":"cluster has no quorum","data":null}"#;
         let msg = format_api_error(status, body, false);
-        assert!(msg.contains("quorum"), "Should surface quorum issue: {}", msg);
+        assert!(
+            msg.contains("quorum"),
+            "Should surface quorum issue: {}",
+            msg
+        );
     }
 
     #[test]
@@ -723,7 +765,11 @@ mod tests {
         let status = reqwest::StatusCode::FORBIDDEN;
         let body = r#"{"message":"Permission check failed","data":null}"#;
         let msg = format_api_error(status, body, false);
-        assert!(msg.contains("Permission check failed"), "Should show Proxmox message: {}", msg);
+        assert!(
+            msg.contains("Permission check failed"),
+            "Should show Proxmox message: {}",
+            msg
+        );
     }
 
     #[test]
@@ -731,28 +777,43 @@ mod tests {
         let status = reqwest::StatusCode::BAD_REQUEST;
         let body = r#"{"errors":{"vmid":"already exists"},"data":null}"#;
         let msg = format_api_error(status, body, false);
-        assert!(msg.contains("already exists"), "Should show errors field: {}", msg);
+        assert!(
+            msg.contains("already exists"),
+            "Should show errors field: {}",
+            msg
+        );
     }
 
     #[test]
     fn test_format_api_error_tls_hint_for_595_without_skip() {
         let status = reqwest::StatusCode::from_u16(595).unwrap();
         let msg = format_api_error(status, "", false);
-        assert!(msg.contains("skip-tls-verify"), "Should suggest --skip-tls-verify: {}", msg);
+        assert!(
+            msg.contains("skip-tls-verify"),
+            "Should suggest --skip-tls-verify: {}",
+            msg
+        );
     }
 
     #[test]
     fn test_format_api_error_no_tls_hint_when_skip_enabled() {
         let status = reqwest::StatusCode::from_u16(595).unwrap();
         let msg = format_api_error(status, "", true);
-        assert!(!msg.contains("skip-tls-verify"), "Should not suggest when already skipping");
+        assert!(
+            !msg.contains("skip-tls-verify"),
+            "Should not suggest when already skipping"
+        );
     }
 
     #[test]
     fn test_format_api_error_plain_status_for_normal_error() {
         let status = reqwest::StatusCode::NOT_FOUND;
         let msg = format_api_error(status, "", false);
-        assert!(msg.starts_with("HTTP 404"), "Should show status code: {}", msg);
+        assert!(
+            msg.starts_with("HTTP 404"),
+            "Should show status code: {}",
+            msg
+        );
     }
 
     // ── resolve_proxmox_url / has_explicit_port ───────────────────────────

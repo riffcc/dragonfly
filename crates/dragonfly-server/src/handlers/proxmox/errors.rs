@@ -1,4 +1,7 @@
-use axum::{Json, response::{IntoResponse, Response}};
+use axum::{
+    Json,
+    response::{IntoResponse, Response},
+};
 use proxmox_client::Error as ProxmoxClientError;
 use std::error::Error as StdError;
 use tracing::error;

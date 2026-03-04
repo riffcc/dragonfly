@@ -185,20 +185,18 @@ pub fn render_minijinja<T: Serialize>(
         crate::TemplateEnv::Static(env) => env
             .get_template(template_name)
             .and_then(|tmpl| tmpl.render(context)),
-        crate::TemplateEnv::Reloading(reloader) => {
-            match reloader.acquire_env() {
-                Ok(env) => env
-                    .get_template(template_name)
-                    .and_then(|tmpl| tmpl.render(context)),
-                Err(e) => {
-                    error!("Failed to acquire MiniJinja env from reloader: {}", e);
-                    Err(MiniJinjaError::new(
-                        MiniJinjaErrorKind::InvalidOperation,
-                        format!("Failed to acquire env from reloader: {}", e),
-                    ))
-                }
+        crate::TemplateEnv::Reloading(reloader) => match reloader.acquire_env() {
+            Ok(env) => env
+                .get_template(template_name)
+                .and_then(|tmpl| tmpl.render(context)),
+            Err(e) => {
+                error!("Failed to acquire MiniJinja env from reloader: {}", e);
+                Err(MiniJinjaError::new(
+                    MiniJinjaErrorKind::InvalidOperation,
+                    format!("Failed to acquire env from reloader: {}", e),
+                ))
             }
-        }
+        },
     };
 
     // Handle the final rendering result
@@ -1059,8 +1057,18 @@ pub async fn settings_page(
     };
 
     // Load DHCP settings
-    let dhcp_mode = store.get_setting("dhcp_mode").await.ok().flatten().unwrap_or_else(|| "flexible".to_string());
-    let dhcp_full_network_id = store.get_setting("dhcp_full_network_id").await.ok().flatten().unwrap_or_default();
+    let dhcp_mode = store
+        .get_setting("dhcp_mode")
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| "flexible".to_string());
+    let dhcp_full_network_id = store
+        .get_setting("dhcp_full_network_id")
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_default();
 
     // Replace Askama render with placeholder
     let context = SettingsTemplate {
@@ -1176,8 +1184,18 @@ pub async fn settings_page_section(
     };
 
     // Load DHCP settings
-    let dhcp_mode = store.get_setting("dhcp_mode").await.ok().flatten().unwrap_or_else(|| "flexible".to_string());
-    let dhcp_full_network_id = store.get_setting("dhcp_full_network_id").await.ok().flatten().unwrap_or_default();
+    let dhcp_mode = store
+        .get_setting("dhcp_mode")
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| "flexible".to_string());
+    let dhcp_full_network_id = store
+        .get_setting("dhcp_full_network_id")
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_default();
 
     let context = SettingsTemplate {
         theme,
@@ -2001,7 +2019,9 @@ pub async fn k8s_wizard_page(
 
     if require_login && !is_authenticated {
         let mut response = Redirect::to("/login").into_response();
-        response.headers_mut().insert("HX-Redirect", "/login".parse().unwrap());
+        response
+            .headers_mut()
+            .insert("HX-Redirect", "/login".parse().unwrap());
         return response;
     }
 
@@ -2011,11 +2031,13 @@ pub async fn k8s_wizard_page(
             .iter()
             .map(|m| crate::store::conversions::machine_to_common(m))
             .filter(|m| m.is_proxmox_host)
-            .map(|m| serde_json::json!({
-                "id": m.id.to_string(),
-                "hostname": m.hostname,
-                "ip_address": m.ip_address,
-            }))
+            .map(|m| {
+                serde_json::json!({
+                    "id": m.id.to_string(),
+                    "hostname": m.hostname,
+                    "ip_address": m.ip_address,
+                })
+            })
             .collect(),
         Err(_) => vec![],
     };
@@ -2062,8 +2084,20 @@ pub async fn networks_page(
         }
     };
 
-    let dhcp_full_network_id = app_state.store.get_setting("dhcp_full_network_id").await.ok().flatten().unwrap_or_default();
-    let dhcp_mode = app_state.store.get_setting("dhcp_mode").await.ok().flatten().unwrap_or_else(|| "flexible".to_string());
+    let dhcp_full_network_id = app_state
+        .store
+        .get_setting("dhcp_full_network_id")
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    let dhcp_mode = app_state
+        .store
+        .get_setting("dhcp_mode")
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| "flexible".to_string());
 
     let context = serde_json::json!({
         "theme": theme,

@@ -14,14 +14,21 @@ use super::types::{ProxmoxTokenSet, ProxmoxTokensCreateRequest};
 /// This is the SINGLE SOURCE OF TRUTH — all code that creates or updates
 /// Proxmox roles MUST use this constant.
 pub const DRAGONFLY_ROLES: &[(&str, &str)] = &[
-    ("DragonflyCreate", "VM.Allocate,VM.Audit,VM.Config.Options,VM.Config.Disk,VM.Config.CPU,VM.Config.Memory,VM.Config.Network,VM.Config.HWType,VM.PowerMgmt,VM.Console,Datastore.AllocateSpace,Datastore.Audit,SDN.Use,Sys.Audit"),
+    (
+        "DragonflyCreate",
+        "VM.Allocate,VM.Audit,VM.Config.Options,VM.Config.Disk,VM.Config.CPU,VM.Config.Memory,VM.Config.Network,VM.Config.HWType,VM.PowerMgmt,VM.Console,Datastore.AllocateSpace,Datastore.Audit,SDN.Use,Sys.Audit",
+    ),
     ("DragonflyVMConfig", "VM.Config.Options,VM.Config.Disk"),
-    ("DragonflySync", "VM.Audit,Sys.Audit,Sys.Modify,SDN.Audit,VM.Config.Options,Datastore.Audit"),
+    (
+        "DragonflySync",
+        "VM.Audit,Sys.Audit,Sys.Modify,SDN.Audit,VM.Config.Options,Datastore.Audit",
+    ),
 ];
 
 /// Look up the permissions for a Dragonfly Proxmox role by name.
 pub fn role_permissions(role_name: &str) -> &'static str {
-    DRAGONFLY_ROLES.iter()
+    DRAGONFLY_ROLES
+        .iter()
         .find(|(name, _)| *name == role_name)
         .map(|(_, perms)| *perms)
         .unwrap_or("")
@@ -264,9 +271,7 @@ pub(super) async fn create_token_with_role(
                                             .await
                                         }
                                     }
-                                    Err(e) => {
-                                        Err(format!("Failed to set ACL for token: {}", e))
-                                    }
+                                    Err(e) => Err(format!("Failed to set ACL for token: {}", e)),
                                 }
                             }
                             None => Err("Token value not found in response".to_string()),
@@ -324,9 +329,7 @@ async fn try_acl_with_fallback(
             }
 
             // Retry ACL
-            if let Ok(retry_response) =
-                client.put("/api2/json/access/acl", acl_params).await
-            {
+            if let Ok(retry_response) = client.put("/api2/json/access/acl", acl_params).await {
                 if retry_response.status == 200 {
                     return Ok(full_token.to_string());
                 }
@@ -350,10 +353,7 @@ async fn try_acl_with_fallback(
         "tokens": full_token_id
     });
 
-    match client
-        .put("/api2/json/access/acl", &fallback_params)
-        .await
-    {
+    match client.put("/api2/json/access/acl", &fallback_params).await {
         Ok(fallback_response) => {
             if fallback_response.status == 200 {
                 info!("Successfully set ACL with fallback role");

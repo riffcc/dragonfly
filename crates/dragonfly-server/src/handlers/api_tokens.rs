@@ -16,9 +16,9 @@ use serde_json::json;
 use tracing::{info, warn};
 use uuid::Uuid;
 
-use crate::api_token::{generate_raw_token, hash_token, token_prefix, AuthenticatedCaller};
-use crate::store::v1::ApiToken;
 use crate::AppState;
+use crate::api_token::{AuthenticatedCaller, generate_raw_token, hash_token, token_prefix};
+use crate::store::v1::ApiToken;
 
 /// Request body for creating a new API token.
 #[derive(Debug, Deserialize)]

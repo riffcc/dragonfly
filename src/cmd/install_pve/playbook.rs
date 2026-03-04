@@ -272,23 +272,41 @@ mod tests {
     #[test]
     fn test_playbook_contains_mkdir_task() {
         let yaml = build_install_playbook(&make_config("/usr/local/bin/dragonfly"));
-        assert!(yaml.contains("mkdir -p /var/lib/dragonfly"), "Must create Dragonfly directories");
-        assert!(yaml.contains("Checking Dragonfly directories"), "Directory task must have correct name");
+        assert!(
+            yaml.contains("mkdir -p /var/lib/dragonfly"),
+            "Must create Dragonfly directories"
+        );
+        assert!(
+            yaml.contains("Checking Dragonfly directories"),
+            "Directory task must have correct name"
+        );
     }
 
     #[test]
     fn test_playbook_contains_binary_copy_task() {
         let yaml = build_install_playbook(&make_config("/usr/local/bin/dragonfly"));
         assert!(yaml.contains("!copy"), "Must have a copy task");
-        assert!(yaml.contains("src: '/usr/local/bin/dragonfly'"), "Must reference the binary path");
-        assert!(yaml.contains("dest: /usr/local/bin/dragonfly"), "Binary must go to the production path");
-        assert!(yaml.contains("Uploading Dragonfly binary"), "Binary copy task must have correct name");
+        assert!(
+            yaml.contains("src: '/usr/local/bin/dragonfly'"),
+            "Must reference the binary path"
+        );
+        assert!(
+            yaml.contains("dest: /usr/local/bin/dragonfly"),
+            "Binary must go to the production path"
+        );
+        assert!(
+            yaml.contains("Uploading Dragonfly binary"),
+            "Binary copy task must have correct name"
+        );
     }
 
     #[test]
     fn test_playbook_binary_mode_is_set() {
         let yaml = build_install_playbook(&make_config("/usr/local/bin/dragonfly"));
-        assert!(yaml.contains("mode: '0o755'"), "Binary must be marked executable");
+        assert!(
+            yaml.contains("mode: '0o755'"),
+            "Binary must be marked executable"
+        );
     }
 
     #[test]
@@ -320,7 +338,10 @@ mod tests {
             "/usr/local/bin/dragonfly",
             "/tmp/os-templates",
         ));
-        assert!(yaml.contains("/tmp/os-templates"), "Must reference the OS templates path");
+        assert!(
+            yaml.contains("/tmp/os-templates"),
+            "Must reference the OS templates path"
+        );
         assert!(
             yaml.contains("Uploading OS templates"),
             "Must have an OS templates upload task"
@@ -330,36 +351,81 @@ mod tests {
     #[test]
     fn test_playbook_contains_config_write() {
         let yaml = build_install_playbook(&make_config("/usr/local/bin/dragonfly"));
-        assert!(yaml.contains("Writing Dragonfly config"), "Must have a config-writing task");
-        assert!(yaml.contains("config.toml"), "Config task must reference config.toml");
-        assert!(yaml.contains("hostname -I"), "Config must detect container IP at runtime");
+        assert!(
+            yaml.contains("Writing Dragonfly config"),
+            "Must have a config-writing task"
+        );
+        assert!(
+            yaml.contains("config.toml"),
+            "Config task must reference config.toml"
+        );
+        assert!(
+            yaml.contains("hostname -I"),
+            "Config must detect container IP at runtime"
+        );
     }
 
     #[test]
     fn test_playbook_fixes_lxc_journald() {
         let yaml = build_install_playbook(&make_config("/usr/local/bin/dragonfly"));
-        assert!(yaml.contains("Fixing journald for LXC container"), "Must have journald LXC fix task");
-        assert!(yaml.contains("systemd-journald.service.d"), "Must write journald drop-in directory");
-        assert!(yaml.contains("ImportCredential="), "Must clear ImportCredential for LXC kernel credential incompatibility");
+        assert!(
+            yaml.contains("Fixing journald for LXC container"),
+            "Must have journald LXC fix task"
+        );
+        assert!(
+            yaml.contains("systemd-journald.service.d"),
+            "Must write journald drop-in directory"
+        );
+        assert!(
+            yaml.contains("ImportCredential="),
+            "Must clear ImportCredential for LXC kernel credential incompatibility"
+        );
     }
 
     #[test]
     fn test_playbook_contains_systemd_service() {
         let yaml = build_install_playbook(&make_config("/usr/local/bin/dragonfly"));
-        assert!(yaml.contains("dragonfly.service"), "Must write the systemd service file");
-        assert!(yaml.contains("ExecStart=/usr/local/bin/dragonfly serve"), "Service must start the serve command");
-        assert!(yaml.contains("WantedBy=multi-user.target"), "Service must enable on multi-user target");
-        assert!(yaml.contains("Installing and starting Dragonfly service"), "Service task must have correct name");
-        assert!(yaml.contains("SyslogIdentifier=dragonfly"), "Service must set syslog identifier for log filtering");
-        assert!(yaml.contains("StandardOutput=journal"), "Service must route stdout to journal");
-        assert!(yaml.contains("StandardError=journal"), "Service must route stderr to journal");
+        assert!(
+            yaml.contains("dragonfly.service"),
+            "Must write the systemd service file"
+        );
+        assert!(
+            yaml.contains("ExecStart=/usr/local/bin/dragonfly serve"),
+            "Service must start the serve command"
+        );
+        assert!(
+            yaml.contains("WantedBy=multi-user.target"),
+            "Service must enable on multi-user target"
+        );
+        assert!(
+            yaml.contains("Installing and starting Dragonfly service"),
+            "Service task must have correct name"
+        );
+        assert!(
+            yaml.contains("SyslogIdentifier=dragonfly"),
+            "Service must set syslog identifier for log filtering"
+        );
+        assert!(
+            yaml.contains("StandardOutput=journal"),
+            "Service must route stdout to journal"
+        );
+        assert!(
+            yaml.contains("StandardError=journal"),
+            "Service must route stderr to journal"
+        );
     }
 
     #[test]
     fn test_playbook_enables_service() {
         let yaml = build_install_playbook(&make_config("/usr/local/bin/dragonfly"));
-        assert!(yaml.contains("systemctl enable dragonfly"), "Must enable the service");
-        assert!(yaml.contains("systemctl start dragonfly"), "Must start the service");
+        assert!(
+            yaml.contains("systemctl enable dragonfly"),
+            "Must enable the service"
+        );
+        assert!(
+            yaml.contains("systemctl start dragonfly"),
+            "Must start the service"
+        );
     }
 
     #[test]
@@ -367,7 +433,10 @@ mod tests {
         // systemctl start blocks until the unit is in a stable (active/failed) state —
         // no sleep required, and it's idempotent on an already-running service.
         let yaml = build_install_playbook(&make_config("/usr/local/bin/dragonfly"));
-        assert!(yaml.contains("systemctl start dragonfly"), "Must start (and wait for) the service");
+        assert!(
+            yaml.contains("systemctl start dragonfly"),
+            "Must start (and wait for) the service"
+        );
     }
 
     #[test]
@@ -393,10 +462,22 @@ mod tests {
     #[test]
     fn test_update_playbook_copies_binary() {
         let yaml = build_update_playbook(&make_config("/usr/local/bin/dragonfly"));
-        assert!(yaml.contains("src: '/usr/local/bin/dragonfly'"), "Must reference the binary path");
-        assert!(yaml.contains("dest: /usr/local/bin/dragonfly"), "Binary must go to the production path");
-        assert!(yaml.contains("mode: '0o755'"), "Binary must be marked executable");
-        assert!(yaml.contains("Updating Dragonfly binary"), "Binary copy task must have correct name");
+        assert!(
+            yaml.contains("src: '/usr/local/bin/dragonfly'"),
+            "Must reference the binary path"
+        );
+        assert!(
+            yaml.contains("dest: /usr/local/bin/dragonfly"),
+            "Binary must go to the production path"
+        );
+        assert!(
+            yaml.contains("mode: '0o755'"),
+            "Binary must be marked executable"
+        );
+        assert!(
+            yaml.contains("Updating Dragonfly binary"),
+            "Binary copy task must have correct name"
+        );
     }
 
     #[test]
@@ -413,34 +494,67 @@ mod tests {
     fn test_update_playbook_installs_service_file() {
         // Update must write the service file so it works on a fresh container.
         let yaml = build_update_playbook(&make_config("/usr/local/bin/dragonfly"));
-        assert!(yaml.contains("dragonfly.service"), "Must write the systemd service file");
-        assert!(yaml.contains("ExecStart=/usr/local/bin/dragonfly serve"), "Service must start the serve command");
-        assert!(yaml.contains("systemctl daemon-reload"), "Must reload systemd after writing service");
-        assert!(yaml.contains("Installing and starting Dragonfly service"), "Service task must have correct name");
-        assert!(yaml.contains("SyslogIdentifier=dragonfly"), "Service must set syslog identifier for log filtering");
-        assert!(yaml.contains("StandardOutput=journal"), "Service must route stdout to journal");
-        assert!(yaml.contains("StandardError=journal"), "Service must route stderr to journal");
+        assert!(
+            yaml.contains("dragonfly.service"),
+            "Must write the systemd service file"
+        );
+        assert!(
+            yaml.contains("ExecStart=/usr/local/bin/dragonfly serve"),
+            "Service must start the serve command"
+        );
+        assert!(
+            yaml.contains("systemctl daemon-reload"),
+            "Must reload systemd after writing service"
+        );
+        assert!(
+            yaml.contains("Installing and starting Dragonfly service"),
+            "Service task must have correct name"
+        );
+        assert!(
+            yaml.contains("SyslogIdentifier=dragonfly"),
+            "Service must set syslog identifier for log filtering"
+        );
+        assert!(
+            yaml.contains("StandardOutput=journal"),
+            "Service must route stdout to journal"
+        );
+        assert!(
+            yaml.contains("StandardError=journal"),
+            "Service must route stderr to journal"
+        );
     }
 
     #[test]
     fn test_update_playbook_restarts_service() {
         let yaml = build_update_playbook(&make_config("/usr/local/bin/dragonfly"));
-        assert!(yaml.contains("systemctl restart dragonfly"), "Must restart the service");
+        assert!(
+            yaml.contains("systemctl restart dragonfly"),
+            "Must restart the service"
+        );
     }
 
     #[test]
     fn test_update_playbook_starts_service() {
         // systemctl start blocks until the unit is stable — no sleep needed.
         let yaml = build_update_playbook(&make_config("/usr/local/bin/dragonfly"));
-        assert!(yaml.contains("systemctl start dragonfly"), "Must start (and wait for) the service");
+        assert!(
+            yaml.contains("systemctl start dragonfly"),
+            "Must start (and wait for) the service"
+        );
     }
 
     #[test]
     fn test_update_playbook_ensures_directories() {
         // Update creates directories idempotently so it works on fresh containers too.
         let yaml = build_update_playbook(&make_config("/usr/local/bin/dragonfly"));
-        assert!(yaml.contains("mkdir -p"), "Update must ensure directories exist");
-        assert!(yaml.contains("Checking Dragonfly directories"), "Directory task must have correct name");
+        assert!(
+            yaml.contains("mkdir -p"),
+            "Update must ensure directories exist"
+        );
+        assert!(
+            yaml.contains("Checking Dragonfly directories"),
+            "Directory task must have correct name"
+        );
     }
 
     #[test]
@@ -458,24 +572,43 @@ mod tests {
             "/usr/local/bin/dragonfly",
             "/tmp/os-templates",
         ));
-        assert!(yaml.contains("/tmp/os-templates"), "Must reference OS templates path");
-        assert!(yaml.contains("Uploading OS templates"), "Must have an OS templates upload task");
+        assert!(
+            yaml.contains("/tmp/os-templates"),
+            "Must reference OS templates path"
+        );
+        assert!(
+            yaml.contains("Uploading OS templates"),
+            "Must have an OS templates upload task"
+        );
     }
 
     #[test]
     fn test_update_playbook_is_valid_yaml() {
         let yaml = build_update_playbook(&make_config("/usr/local/bin/dragonfly"));
         let parsed: Result<serde_yaml::Value, _> = serde_yaml::from_str(&yaml);
-        assert!(parsed.is_ok(), "Generated update YAML must be valid: {:?}", parsed.err());
+        assert!(
+            parsed.is_ok(),
+            "Generated update YAML must be valid: {:?}",
+            parsed.err()
+        );
     }
 
     #[test]
     fn test_update_playbook_enables_restarts_and_starts_service() {
         // Update: enable (idempotent) → restart (picks up new binary) → start (blocks until stable).
         let yaml = build_update_playbook(&make_config("/usr/local/bin/dragonfly"));
-        assert!(yaml.contains("systemctl enable dragonfly"), "Update must enable the service");
-        assert!(yaml.contains("systemctl restart dragonfly"), "Update must restart the service");
-        assert!(yaml.contains("systemctl start dragonfly"), "Update must wait for stable start");
+        assert!(
+            yaml.contains("systemctl enable dragonfly"),
+            "Update must enable the service"
+        );
+        assert!(
+            yaml.contains("systemctl restart dragonfly"),
+            "Update must restart the service"
+        );
+        assert!(
+            yaml.contains("systemctl start dragonfly"),
+            "Update must wait for stable start"
+        );
     }
 
     // ── validate_local_path ────────────────────────────────────────────────
@@ -513,7 +646,11 @@ mod tests {
     fn test_playbook_is_valid_yaml() {
         let yaml = build_install_playbook(&make_config("/usr/local/bin/dragonfly"));
         let parsed: Result<serde_yaml::Value, _> = serde_yaml::from_str(&yaml);
-        assert!(parsed.is_ok(), "Generated YAML must be valid: {:?}", parsed.err());
+        assert!(
+            parsed.is_ok(),
+            "Generated YAML must be valid: {:?}",
+            parsed.err()
+        );
     }
 
     #[test]
@@ -521,6 +658,10 @@ mod tests {
         let config = make_config_with_templates("/usr/local/bin/dragonfly", "/tmp/os-templates");
         let yaml = build_install_playbook(&config);
         let parsed: Result<serde_yaml::Value, _> = serde_yaml::from_str(&yaml);
-        assert!(parsed.is_ok(), "Generated YAML with OS templates must be valid: {:?}", parsed.err());
+        assert!(
+            parsed.is_ok(),
+            "Generated YAML with OS templates must be valid: {:?}",
+            parsed.err()
+        );
     }
 }

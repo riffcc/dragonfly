@@ -49,12 +49,7 @@ impl Action for DebootstrapAction {
     }
 
     fn optional_env_vars(&self) -> Vec<&str> {
-        vec![
-            "PARTITION_LAYOUT",
-            "MIRROR",
-            "EXTRA_PACKAGES",
-            "HOSTNAME",
-        ]
+        vec!["PARTITION_LAYOUT", "MIRROR", "EXTRA_PACKAGES", "HOSTNAME"]
     }
 
     fn validate(&self, ctx: &ActionContext) -> Result<()> {
@@ -116,10 +111,7 @@ impl Action for DebootstrapAction {
         reporter.report(Progress::new(
             self.name(),
             0,
-            format!(
-                "Debootstrap {} onto {} (layout: {})",
-                suite, disk, layout
-            ),
+            format!("Debootstrap {} onto {} (layout: {})", suite, disk, layout),
         ));
 
         if ctx.is_dry_run() {
@@ -158,11 +150,7 @@ impl Action for DebootstrapAction {
                 let root_part = format_partition(disk, 2);
 
                 // Format EFI partition
-                reporter.report(Progress::new(
-                    self.name(),
-                    10,
-                    "Formatting EFI partition",
-                ));
+                reporter.report(Progress::new(self.name(), 10, "Formatting EFI partition"));
                 run_cmd("mkfs.fat", &["-F", "32", &efi_part]).await?;
 
                 root_part
@@ -219,14 +207,12 @@ impl Action for DebootstrapAction {
             format!("Mounting {} at {}", root_partition, TARGET_MOUNT),
         ));
 
-        tokio::fs::create_dir_all(TARGET_MOUNT)
-            .await
-            .map_err(|e| {
-                ActionError::ExecutionFailed(format!(
-                    "Failed to create mount point {}: {}",
-                    TARGET_MOUNT, e
-                ))
-            })?;
+        tokio::fs::create_dir_all(TARGET_MOUNT).await.map_err(|e| {
+            ActionError::ExecutionFailed(format!(
+                "Failed to create mount point {}: {}",
+                TARGET_MOUNT, e
+            ))
+        })?;
 
         run_cmd("mount", &[&root_partition, TARGET_MOUNT]).await?;
 
@@ -234,10 +220,7 @@ impl Action for DebootstrapAction {
         if layout == "gpt-efi" {
             let efi_mount = format!("{}/boot/efi", TARGET_MOUNT);
             tokio::fs::create_dir_all(&efi_mount).await.map_err(|e| {
-                ActionError::ExecutionFailed(format!(
-                    "Failed to create EFI mount point: {}",
-                    e
-                ))
+                ActionError::ExecutionFailed(format!("Failed to create EFI mount point: {}", e))
             })?;
             let efi_part = format_partition(disk, 1);
             run_cmd("mount", &[&efi_part, &efi_mount]).await?;
@@ -259,10 +242,7 @@ impl Action for DebootstrapAction {
             mirror.to_string(),
         ];
 
-        info!(
-            "Running: debootstrap {}",
-            debootstrap_args.join(" ")
-        );
+        info!("Running: debootstrap {}", debootstrap_args.join(" "));
 
         let output = Command::new("debootstrap")
             .args(&debootstrap_args)
@@ -288,23 +268,24 @@ impl Action for DebootstrapAction {
         // ====================================================================
         // Step 5: Basic system configuration
         // ====================================================================
-        reporter.report(Progress::new(
-            self.name(),
-            80,
-            "Configuring base system",
-        ));
+        reporter.report(Progress::new(self.name(), 80, "Configuring base system"));
 
         // Copy DNS configuration
-        if let Err(e) =
-            tokio::fs::copy("/etc/resolv.conf", format!("{}/etc/resolv.conf", TARGET_MOUNT)).await
+        if let Err(e) = tokio::fs::copy(
+            "/etc/resolv.conf",
+            format!("{}/etc/resolv.conf", TARGET_MOUNT),
+        )
+        .await
         {
             warn!("Failed to copy resolv.conf: {} (continuing)", e);
         }
 
         // Set hostname
-        if let Err(e) =
-            tokio::fs::write(format!("{}/etc/hostname", TARGET_MOUNT), format!("{}\n", hostname))
-                .await
+        if let Err(e) = tokio::fs::write(
+            format!("{}/etc/hostname", TARGET_MOUNT),
+            format!("{}\n", hostname),
+        )
+        .await
         {
             warn!("Failed to write hostname: {} (continuing)", e);
         }
@@ -321,9 +302,8 @@ impl Action for DebootstrapAction {
 
         // Write fstab
         let root_uuid = get_blkid_uuid(&root_partition).await;
-        let mut fstab = format!(
-            "# <file system>\t<mount point>\t<type>\t<options>\t<dump>\t<pass>\n"
-        );
+        let mut fstab =
+            format!("# <file system>\t<mount point>\t<type>\t<options>\t<dump>\t<pass>\n");
         if let Some(ref uuid) = root_uuid {
             fstab.push_str(&format!(
                 "UUID={}\t/\text4\terrors=remount-ro\t0\t1\n",
@@ -347,9 +327,7 @@ impl Action for DebootstrapAction {
             }
         }
 
-        if let Err(e) =
-            tokio::fs::write(format!("{}/etc/fstab", TARGET_MOUNT), &fstab).await
-        {
+        if let Err(e) = tokio::fs::write(format!("{}/etc/fstab", TARGET_MOUNT), &fstab).await {
             warn!("Failed to write fstab: {} (continuing)", e);
         }
 
@@ -426,9 +404,7 @@ async fn run_cmd(program: &str, args: &[&str]) -> Result<()> {
         .args(args)
         .output()
         .await
-        .map_err(|e| {
-            ActionError::ExecutionFailed(format!("Failed to run {}: {}", program, e))
-        })?;
+        .map_err(|e| ActionError::ExecutionFailed(format!("Failed to run {}: {}", program, e)))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -471,11 +447,7 @@ async fn get_blkid_uuid(device: &str) -> Option<String> {
 
     if output.status.success() {
         let uuid = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        if uuid.is_empty() {
-            None
-        } else {
-            Some(uuid)
-        }
+        if uuid.is_empty() { None } else { Some(uuid) }
     } else {
         None
     }
@@ -483,7 +455,11 @@ async fn get_blkid_uuid(device: &str) -> Option<String> {
 
 /// Mount pseudo-filesystems for chroot operations
 async fn mount_pseudo_fs(target: &str) -> Result<()> {
-    run_cmd("mount", &["-t", "proc", "proc", &format!("{}/proc", target)]).await?;
+    run_cmd(
+        "mount",
+        &["-t", "proc", "proc", &format!("{}/proc", target)],
+    )
+    .await?;
     run_cmd("mount", &["-t", "sysfs", "sys", &format!("{}/sys", target)]).await?;
     run_cmd("mount", &["--bind", "/dev", &format!("{}/dev", target)]).await?;
     run_cmd(
@@ -598,7 +574,12 @@ mod tests {
 
         let result = action.validate(&ctx);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Unknown partition layout"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Unknown partition layout")
+        );
     }
 
     #[test]

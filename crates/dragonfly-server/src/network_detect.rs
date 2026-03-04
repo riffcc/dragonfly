@@ -369,7 +369,10 @@ mod tests {
         // Using a subnet that definitely does not exist on this host
         // (unicast-reserved documentation range)
         let result = find_interface_for_subnet("192.0.2.0/24");
-        assert!(result.is_none(), "192.0.2.0/24 is documentation-only and should never match");
+        assert!(
+            result.is_none(),
+            "192.0.2.0/24 is documentation-only and should never match"
+        );
     }
 
     #[test]

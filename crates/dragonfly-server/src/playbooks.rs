@@ -16,12 +16,10 @@ use tokio::fs;
 use tracing::info;
 
 /// Built-in playbook tarballs compiled into the binary
-const BUILTIN_PLAYBOOKS: &[(&str, &[u8])] = &[
-    (
-        "debian-to-proxmox",
-        include_bytes!("../../../jetpack-playbooks/debian-to-proxmox.tar.gz"),
-    ),
-];
+const BUILTIN_PLAYBOOKS: &[(&str, &[u8])] = &[(
+    "debian-to-proxmox",
+    include_bytes!("../../../jetpack-playbooks/debian-to-proxmox.tar.gz"),
+)];
 
 /// Directory where playbook tarballs are served from
 const PLAYBOOK_DIR: &str = "/var/lib/dragonfly/playbooks";
@@ -44,11 +42,20 @@ pub async fn init_playbooks() -> Result<()> {
                 continue;
             }
             // Size differs — built-in was updated, overwrite
-            info!("Built-in playbook '{}' updated ({} -> {} bytes), overwriting", name, metadata.len(), data.len());
+            info!(
+                "Built-in playbook '{}' updated ({} -> {} bytes), overwriting",
+                name,
+                metadata.len(),
+                data.len()
+            );
         }
 
         fs::write(&dest, data).await?;
-        info!("Extracted built-in playbook '{}' ({} bytes)", name, data.len());
+        info!(
+            "Extracted built-in playbook '{}' ({} bytes)",
+            name,
+            data.len()
+        );
     }
 
     info!("Jetpack playbooks initialization complete");
@@ -70,7 +77,11 @@ mod tests {
     #[test]
     fn test_builtin_playbook_data_valid() {
         for (name, data) in BUILTIN_PLAYBOOKS {
-            assert!(!data.is_empty(), "Built-in playbook '{}' should not be empty", name);
+            assert!(
+                !data.is_empty(),
+                "Built-in playbook '{}' should not be empty",
+                name
+            );
             // Verify it starts with gzip magic bytes (0x1f 0x8b)
             assert!(
                 data.len() >= 2 && data[0] == 0x1f && data[1] == 0x8b,

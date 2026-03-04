@@ -154,10 +154,7 @@ impl StoreAuthority {
         let serial = chrono::Utc::now().timestamp() as u32;
 
         let soa = SOA::new(
-            mname,
-            rname,
-            serial,
-            86400,   // refresh
+            mname, rname, serial, 86400,   // refresh
             7200,    // retry
             3600000, // expire
             300,     // minimum TTL
@@ -199,10 +196,7 @@ impl StoreAuthority {
             let soa = self.build_soa_record();
             let mut rs = RecordSet::new(self.name_origin.clone(), RecordType::SOA, 0);
             rs.insert(soa, 0);
-            return LookupControlFlow::Break(Ok(AuthLookup::answers(
-                Self::make_lookup(rs),
-                None,
-            )));
+            return LookupControlFlow::Break(Ok(AuthLookup::answers(Self::make_lookup(rs), None)));
         }
 
         // NS queries for zone apex
@@ -210,10 +204,7 @@ impl StoreAuthority {
             let ns = self.build_ns_record();
             let mut rs = RecordSet::new(self.name_origin.clone(), RecordType::NS, 0);
             rs.insert(ns, 0);
-            return LookupControlFlow::Break(Ok(AuthLookup::answers(
-                Self::make_lookup(rs),
-                None,
-            )));
+            return LookupControlFlow::Break(Ok(AuthLookup::answers(Self::make_lookup(rs), None)));
         }
 
         // Query the store
@@ -329,10 +320,7 @@ mod tests {
         assert_eq!(authority.relative_name(&LowerName::from(&name)), "@");
 
         let name = Name::from_str("deep.sub.lon.riff.cc.").unwrap();
-        assert_eq!(
-            authority.relative_name(&LowerName::from(&name)),
-            "deep.sub"
-        );
+        assert_eq!(authority.relative_name(&LowerName::from(&name)), "deep.sub");
     }
 
     #[test]

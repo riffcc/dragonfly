@@ -9,11 +9,8 @@
 use clap::Parser;
 use reqwest::Client;
 use rmcp::{
-    ServerHandler, ServiceExt,
-    handler::server::router::tool::ToolRouter,
-    handler::server::wrapper::Parameters,
-    model::*,
-    schemars, tool, tool_handler, tool_router,
+    ServerHandler, ServiceExt, handler::server::router::tool::ToolRouter,
+    handler::server::wrapper::Parameters, model::*, schemars, tool, tool_handler, tool_router,
     transport::stdio,
 };
 use serde::Deserialize;
@@ -90,11 +87,15 @@ pub struct DragonflyMcp {
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct DragonflyParams {
     /// The action to perform. Use "help" for a full manual.
-    #[schemars(description = "Action to perform. Examples: help, machines.list, machines.get, networks.list, dhcp.leases, settings.get, tags.list. Use 'help' for the full manual.")]
+    #[schemars(
+        description = "Action to perform. Examples: help, machines.list, machines.get, networks.list, dhcp.leases, settings.get, tags.list. Use 'help' for the full manual."
+    )]
     pub action: String,
 
     /// Action-specific parameters as a JSON object. See 'help' for details.
-    #[schemars(description = "Action parameters (JSON object). Required fields depend on the action — use 'help' for details.")]
+    #[schemars(
+        description = "Action parameters (JSON object). Required fields depend on the action — use 'help' for details."
+    )]
     pub params: Option<Value>,
 }
 
@@ -193,7 +194,9 @@ impl DragonflyMcp {
         }
     }
 
-    #[tool(description = "Dragonfly bare metal management. One tool for everything: machines, networks, DHCP, DNS, templates, settings, tags, credentials, cluster, tokens. Use action='help' for the full manual.")]
+    #[tool(
+        description = "Dragonfly bare metal management. One tool for everything: machines, networks, DHCP, DNS, templates, settings, tags, credentials, cluster, tokens. Use action='help' for the full manual."
+    )]
     async fn dragonfly(
         &self,
         Parameters(p): Parameters<DragonflyParams>,
@@ -215,7 +218,8 @@ impl DragonflyMcp {
                 let page = u64_param_opt(params, "page");
                 let per_page = u64_param_opt(params, "per_page");
                 let force = params.get("force").and_then(|v| {
-                    v.as_bool().or_else(|| v.as_str().map(|s| s == "true" || s == "1"))
+                    v.as_bool()
+                        .or_else(|| v.as_str().map(|s| s == "true" || s == "1"))
                 });
                 let mut qparams = Vec::new();
                 if let Some(d) = detail {
@@ -265,7 +269,8 @@ impl DragonflyMcp {
             }
             "machines.reimage" => {
                 let id = str_param(params, "id")?;
-                self.api_post_empty(&format!("/machines/{id}/reimage")).await
+                self.api_post_empty(&format!("/machines/{id}/reimage"))
+                    .await
             }
             "machines.abort-reimage" => {
                 let id = str_param(params, "id")?;
@@ -446,11 +451,7 @@ impl DragonflyMcp {
         Ok(CallToolResult::success(vec![Content::text(body)]))
     }
 
-    async fn api_post_json(
-        &self,
-        path: &str,
-        body: &Value,
-    ) -> Result<CallToolResult, ErrorData> {
+    async fn api_post_json(&self, path: &str, body: &Value) -> Result<CallToolResult, ErrorData> {
         let resp = self
             .api
             .post(path)
@@ -468,11 +469,7 @@ impl DragonflyMcp {
         Ok(CallToolResult::success(vec![Content::text(body)]))
     }
 
-    async fn api_put_json(
-        &self,
-        path: &str,
-        body: &Value,
-    ) -> Result<CallToolResult, ErrorData> {
+    async fn api_put_json(&self, path: &str, body: &Value) -> Result<CallToolResult, ErrorData> {
         let resp = self
             .api
             .put(path)
@@ -484,11 +481,7 @@ impl DragonflyMcp {
         Ok(CallToolResult::success(vec![Content::text(text)]))
     }
 
-    async fn api_patch_json(
-        &self,
-        path: &str,
-        body: &Value,
-    ) -> Result<CallToolResult, ErrorData> {
+    async fn api_patch_json(&self, path: &str, body: &Value) -> Result<CallToolResult, ErrorData> {
         let resp = self
             .api
             .patch(path)
@@ -512,7 +505,8 @@ impl DragonflyMcp {
 /// Extract an optional u64 from a JSON value that could be a number or a string.
 fn u64_param_opt(params: &Value, key: &str) -> Option<u64> {
     params.get(key).and_then(|v| {
-        v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+        v.as_u64()
+            .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
     })
 }
 

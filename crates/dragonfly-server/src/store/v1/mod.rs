@@ -308,9 +308,11 @@ pub trait Store: Send + Sync {
                 continue;
             }
             for m in &all_machines {
-                if m.identity.all_macs.iter().any(|stored| {
-                    dragonfly_common::normalize_mac(stored) == norm
-                }) {
+                if m.identity
+                    .all_macs
+                    .iter()
+                    .any(|stored| dragonfly_common::normalize_mac(stored) == norm)
+                {
                     return Ok(Some(m.clone()));
                 }
             }
@@ -528,7 +530,9 @@ impl Store for StoreProxy {
         self.current().delete_dns_record(id).await
     }
     async fn delete_dns_records_by_machine(&self, machine_id: Uuid) -> Result<u64> {
-        self.current().delete_dns_records_by_machine(machine_id).await
+        self.current()
+            .delete_dns_records_by_machine(machine_id)
+            .await
     }
     async fn upsert_dns_record(
         &self,
@@ -540,7 +544,9 @@ impl Store for StoreProxy {
         source: DnsRecordSource,
         machine_id: Option<Uuid>,
     ) -> Result<()> {
-        self.current().upsert_dns_record(zone, name, rtype, rdata, ttl, source, machine_id).await
+        self.current()
+            .upsert_dns_record(zone, name, rtype, rdata, ttl, source, machine_id)
+            .await
     }
 }
 

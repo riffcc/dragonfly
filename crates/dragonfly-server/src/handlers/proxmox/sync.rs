@@ -112,7 +112,11 @@ async fn sync_proxmox_machines(
             .and_then(|n| n.as_str())
             .ok_or_else(|| anyhow::anyhow!("Sync: Node missing 'node' field"))?;
         existing_node_names.insert(node_name.to_string());
-        let is_online = node.get("status").and_then(|s| s.as_str()).unwrap_or("online") == "online";
+        let is_online = node
+            .get("status")
+            .and_then(|s| s.as_str())
+            .unwrap_or("online")
+            == "online";
         node_online.insert(node_name.to_string(), is_online);
         if let Some(uptime) = node.get("uptime").and_then(|u| u.as_u64()) {
             node_uptimes.insert(node_name.to_string(), uptime);
@@ -790,7 +794,10 @@ pub async fn start_proxmox_sync_task(
 }
 
 /// Push local tags to Proxmox for a VM or LXC.
-pub async fn sync_tags_to_proxmox(state: &crate::AppState, machine: &dragonfly_common::machine::Machine) {
+pub async fn sync_tags_to_proxmox(
+    state: &crate::AppState,
+    machine: &dragonfly_common::machine::Machine,
+) {
     use dragonfly_common::MachineSource;
 
     let (api_type, node, id) = match &machine.metadata.source {

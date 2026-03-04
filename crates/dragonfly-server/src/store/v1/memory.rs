@@ -5,7 +5,9 @@
 
 use super::{ApiToken, Result, Store, StoreError, User};
 use async_trait::async_trait;
-use dragonfly_common::{DnsRecord, DnsRecordSource, DnsRecordType, Machine, MachineState, Network, normalize_mac};
+use dragonfly_common::{
+    DnsRecord, DnsRecordSource, DnsRecordType, Machine, MachineState, Network, normalize_mac,
+};
 use dragonfly_crd::{Template, Workflow};
 use std::collections::{HashMap, HashSet};
 use std::sync::RwLock;
@@ -732,12 +734,13 @@ impl Store for MemoryStore {
 
     async fn list_dns_records(&self, zone: &str) -> Result<Vec<DnsRecord>> {
         let guard = Self::read_lock(&self.dns_records)?;
-        let mut records: Vec<DnsRecord> = guard
-            .values()
-            .filter(|r| r.zone == zone)
-            .cloned()
-            .collect();
-        records.sort_by(|a, b| (&a.name, &a.rtype).partial_cmp(&(&b.name, &b.rtype)).unwrap_or(std::cmp::Ordering::Equal));
+        let mut records: Vec<DnsRecord> =
+            guard.values().filter(|r| r.zone == zone).cloned().collect();
+        records.sort_by(|a, b| {
+            (&a.name, &a.rtype)
+                .partial_cmp(&(&b.name, &b.rtype))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         Ok(records)
     }
 
@@ -750,11 +753,7 @@ impl Store for MemoryStore {
         let guard = Self::read_lock(&self.dns_records)?;
         Ok(guard
             .values()
-            .filter(|r| {
-                r.zone == zone
-                    && r.name == name
-                    && rtype.map_or(true, |rt| r.rtype == rt)
-            })
+            .filter(|r| r.zone == zone && r.name == name && rtype.map_or(true, |rt| r.rtype == rt))
             .cloned()
             .collect())
     }

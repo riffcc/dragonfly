@@ -16,15 +16,15 @@
 //!    - Verifies the service is active
 //! 8. Query the new container's IP and print the access URL
 
-mod proxmox;
 mod playbook;
+mod proxmox;
 
 use clap::Args;
 use color_eyre::eyre::{Result, eyre};
 use jetpack::api::run_inline;
-use jetpack::inventory::inventory::Inventory;
 use jetpack::inventory::hosts::Host;
-use jetpack::output::{OutputHandler, LogLevel, RecapData};
+use jetpack::inventory::inventory::Inventory;
+use jetpack::output::{LogLevel, OutputHandler, RecapData};
 use jetpack::provisioners;
 use jetpack::tasks::request::TaskRequest;
 use jetpack::tasks::response::TaskResponse;
@@ -33,8 +33,11 @@ use serde_yaml::Value;
 use std::io::Write;
 use std::sync::{Arc, RwLock};
 
+use playbook::{
+    InstallPlaybookConfig, build_install_playbook, build_update_playbook, validate_binary_path,
+    validate_local_path,
+};
 use proxmox::{BridgeInfo, ProxmoxInstallClient};
-use playbook::{InstallPlaybookConfig, build_install_playbook, build_update_playbook, validate_binary_path, validate_local_path};
 
 // ─── Args ────────────────────────────────────────────────────────────────────
 
@@ -138,8 +141,7 @@ pub async fn run_install_pve(args: InstallPveArgs) -> Result<()> {
 
     // ── Step 1: Gather credentials ──────────────────────────────────────────
     let raw_url = prompt_or_arg(args.url, "Proxmox host or URL: ")?;
-    let url = proxmox::resolve_proxmox_url(&raw_url)
-        .map_err(|e| eyre!("{}", e))?;
+    let url = proxmox::resolve_proxmox_url(&raw_url).map_err(|e| eyre!("{}", e))?;
     if url != raw_url.trim().trim_end_matches('/') {
         println!("  → {}", url);
     }
@@ -210,7 +212,10 @@ pub async fn run_install_pve(args: InstallPveArgs) -> Result<()> {
 
         if should_update {
             let container_ip = existing.ip.ok_or_else(|| {
-                eyre!("Container '{}' has no IP address — is it running?", args.name)
+                eyre!(
+                    "Container '{}' has no IP address — is it running?",
+                    args.name
+                )
             })?;
             run_update(&args.name, &container_ip).await?;
         } else {
@@ -246,7 +251,9 @@ pub async fn run_install_pve(args: InstallPveArgs) -> Result<()> {
     let mut disk = args.disk;
 
     loop {
-        let vmid_display = vm_id.map(|id| id.to_string()).unwrap_or_else(|| "auto".to_string());
+        let vmid_display = vm_id
+            .map(|id| id.to_string())
+            .unwrap_or_else(|| "auto".to_string());
         let net_display = ip.as_deref().unwrap_or("DHCP");
 
         println!("\n📋 Configuration:");
@@ -255,9 +262,14 @@ pub async fn run_install_pve(args: InstallPveArgs) -> Result<()> {
         println!("  Node:        {}", selected_node);
         println!("  Container:   {} (ID: {})", container_name, vmid_display);
         println!("  Network:     {} ({})", bridge, net_display);
-        println!("  Resources:   {} vCPU, {} MB RAM, {} GB disk", cores, memory, disk);
+        println!(
+            "  Resources:   {} vCPU, {} MB RAM, {} GB disk",
+            cores, memory, disk
+        );
 
-        if args.force { break; }
+        if args.force {
+            break;
+        }
 
         print!("\nDeploy? (y)es, (c)ustomise, (n)o: ");
         std::io::stdout().flush()?;
@@ -275,9 +287,17 @@ pub async fn run_install_pve(args: InstallPveArgs) -> Result<()> {
                 println!("  1. Node:       {}", selected_node);
                 println!("  2. Bridge:     {}", bridge);
                 println!("  3. Name:       {}", container_name);
-                println!("  4. VM ID:      {}", vm_id.map(|id| id.to_string()).unwrap_or_else(|| "auto".to_string()));
+                println!(
+                    "  4. VM ID:      {}",
+                    vm_id
+                        .map(|id| id.to_string())
+                        .unwrap_or_else(|| "auto".to_string())
+                );
                 println!("  5. Network:    {}", ip.as_deref().unwrap_or("DHCP"));
-                println!("  6. Resources:  {} vCPU, {} MB RAM, {} GB disk", cores, memory, disk);
+                println!(
+                    "  6. Resources:  {} vCPU, {} MB RAM, {} GB disk",
+                    cores, memory, disk
+                );
                 print!("\nEnter number to change [Enter to go back]: ");
                 std::io::stdout().flush()?;
                 let mut choice = String::new();
@@ -306,8 +326,12 @@ pub async fn run_install_pve(args: InstallPveArgs) -> Result<()> {
                         Ok(bridges) if !bridges.is_empty() => {
                             println!();
                             for (i, b) in bridges.iter().enumerate() {
-                                println!("  {}. {} {}", i + 1, b.name,
-                                    if b.has_ip { "(has IP)" } else { "(no IP)" });
+                                println!(
+                                    "  {}. {} {}",
+                                    i + 1,
+                                    b.name,
+                                    if b.has_ip { "(has IP)" } else { "(no IP)" }
+                                );
                             }
                             print!("Select number or type name: ");
                             std::io::stdout().flush()?;
@@ -327,7 +351,9 @@ pub async fn run_install_pve(args: InstallPveArgs) -> Result<()> {
                             std::io::stdout().flush()?;
                             let mut s = String::new();
                             std::io::stdin().read_line(&mut s)?;
-                            if !s.trim().is_empty() { bridge = s.trim().to_string(); }
+                            if !s.trim().is_empty() {
+                                bridge = s.trim().to_string();
+                            }
                         }
                     },
                     "3" => {
@@ -335,7 +361,9 @@ pub async fn run_install_pve(args: InstallPveArgs) -> Result<()> {
                         std::io::stdout().flush()?;
                         let mut s = String::new();
                         std::io::stdin().read_line(&mut s)?;
-                        if !s.trim().is_empty() { container_name = s.trim().to_string(); }
+                        if !s.trim().is_empty() {
+                            container_name = s.trim().to_string();
+                        }
                     }
                     "4" => {
                         print!("  VM ID (Enter for auto): ");
@@ -358,7 +386,11 @@ pub async fn run_install_pve(args: InstallPveArgs) -> Result<()> {
                             std::io::stdout().flush()?;
                             let mut gw = String::new();
                             std::io::stdin().read_line(&mut gw)?;
-                            gateway = if gw.trim().is_empty() { None } else { Some(gw.trim().to_string()) };
+                            gateway = if gw.trim().is_empty() {
+                                None
+                            } else {
+                                Some(gw.trim().to_string())
+                            };
                         }
                     }
                     "6" => {
@@ -366,17 +398,23 @@ pub async fn run_install_pve(args: InstallPveArgs) -> Result<()> {
                         std::io::stdout().flush()?;
                         let mut s = String::new();
                         std::io::stdin().read_line(&mut s)?;
-                        if !s.trim().is_empty() { cores = s.trim().parse().unwrap_or(cores); }
+                        if !s.trim().is_empty() {
+                            cores = s.trim().parse().unwrap_or(cores);
+                        }
                         print!("  Memory MB [{}]: ", memory);
                         std::io::stdout().flush()?;
                         let mut s = String::new();
                         std::io::stdin().read_line(&mut s)?;
-                        if !s.trim().is_empty() { memory = s.trim().parse().unwrap_or(memory); }
+                        if !s.trim().is_empty() {
+                            memory = s.trim().parse().unwrap_or(memory);
+                        }
                         print!("  Disk GB [{}]: ", disk);
                         std::io::stdout().flush()?;
                         let mut s = String::new();
                         std::io::stdin().read_line(&mut s)?;
-                        if !s.trim().is_empty() { disk = s.trim().parse().unwrap_or(disk); }
+                        if !s.trim().is_empty() {
+                            disk = s.trim().parse().unwrap_or(disk);
+                        }
                     }
                     "" => {} // back to confirm loop
                     _ => println!("  Invalid choice."),
@@ -386,7 +424,9 @@ pub async fn run_install_pve(args: InstallPveArgs) -> Result<()> {
         }
     }
 
-    let vmid_display = vm_id.map(|id| id.to_string()).unwrap_or_else(|| "auto".to_string());
+    let vmid_display = vm_id
+        .map(|id| id.to_string())
+        .unwrap_or_else(|| "auto".to_string());
     println!("\n🚀 Deploying Dragonfly on {}...", selected_node);
 
     // ── Step 8: Collect SSH agent public keys ───────────────────────────────────
@@ -492,7 +532,8 @@ pub async fn run_install_pve(args: InstallPveArgs) -> Result<()> {
                 let inv = inventory_ref.read().unwrap();
                 let host = inv.get_host(&container_name);
                 let host_read = host.read().unwrap();
-                host_read.variables
+                host_read
+                    .variables
                     .get("jet_ssh_hostname")
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string())
@@ -518,17 +559,8 @@ pub async fn run_install_pve(args: InstallPveArgs) -> Result<()> {
                 None => println!("   http://<container-ip>:3000/"),
             }
 
-            // Display the initial admin password fetched from the container.
-            let password = run_result
-                .fetched_files
-                .get("/var/lib/dragonfly/initial_password.txt")
-                .and_then(|b| String::from_utf8(b.clone()).ok())
-                .map(|s| s.trim().to_string());
             println!("\n   Username: admin");
-            match password {
-                Some(ref pw) if !pw.is_empty() => println!("   Password: {}", pw),
-                _ => println!("   Password: (see /var/lib/dragonfly/initial_password.txt on the container)"),
-            }
+            println!("   Password: (see /var/lib/dragonfly/initial_password.txt on the container)");
         }
         Ok(run_result) => {
             eprintln!("\n❌ Installation failed!");
@@ -679,7 +711,12 @@ async fn detect_bridge(proxmox: &ProxmoxInstallClient, node: &str) -> Result<Str
             bridges.len(),
             names,
             chosen,
-            if bridges.iter().find(|b| b.name == chosen).map(|b| b.has_ip).unwrap_or(false) {
+            if bridges
+                .iter()
+                .find(|b| b.name == chosen)
+                .map(|b| b.has_ip)
+                .unwrap_or(false)
+            {
                 "has IP"
             } else {
                 "no IP — all bridges unaddressed"
@@ -739,7 +776,10 @@ fn build_inventory(
     // the 'all' or 'containers' groups, otherwise Jetpack would try to SSH
     // to the Proxmox server itself.  The provisioner looks hosts up by name,
     // not by group, so 'cluster' works fine here.
-    inventory.write().unwrap().store_host(&"cluster".to_string(), &"proxmox".to_string());
+    inventory
+        .write()
+        .unwrap()
+        .store_host(&"cluster".to_string(), &"proxmox".to_string());
     inventory
         .write()
         .unwrap()
@@ -885,18 +925,8 @@ async fn run_update(container_name: &str, container_ip: &str) -> Result<()> {
             println!("\n✅ Dragonfly updated successfully!");
             println!("   http://{}:3000/", container_ip_owned);
 
-            // Show the initial password if it was fetched (useful if updating a fresh container).
-            let password = r
-                .fetched_files
-                .get("/var/lib/dragonfly/initial_password.txt")
-                .and_then(|b| String::from_utf8(b.clone()).ok())
-                .map(|s| s.trim().to_string());
-            if let Some(ref pw) = password {
-                if !pw.is_empty() {
-                    println!("\n   Username: admin");
-                    println!("   Password: {}", pw);
-                }
-            }
+            println!("\n   Username: admin");
+            println!("   Password: (see /var/lib/dragonfly/initial_password.txt on the container)");
         }
         Ok(r) => {
             eprintln!("\n❌ Update failed!");
@@ -1014,7 +1044,9 @@ mod tests {
         let (ip, gateway) = (None::<&str>, None::<&str>);
         let bridge = "vmbr0";
         let net_config = match (ip, gateway) {
-            (Some(ip_addr), Some(gw)) => format!("name=eth0,bridge={},ip={},gw={}", bridge, ip_addr, gw),
+            (Some(ip_addr), Some(gw)) => {
+                format!("name=eth0,bridge={},ip={},gw={}", bridge, ip_addr, gw)
+            }
             _ => format!("name=eth0,bridge={},ip=dhcp", bridge),
         };
         assert_eq!(net_config, "name=eth0,bridge=vmbr0,ip=dhcp");
@@ -1026,10 +1058,15 @@ mod tests {
         let gateway: Option<&str> = Some("10.0.0.1");
         let bridge = "vmbr1";
         let net_config = match (ip, gateway) {
-            (Some(ip_addr), Some(gw)) => format!("name=eth0,bridge={},ip={},gw={}", bridge, ip_addr, gw),
+            (Some(ip_addr), Some(gw)) => {
+                format!("name=eth0,bridge={},ip={},gw={}", bridge, ip_addr, gw)
+            }
             _ => format!("name=eth0,bridge={},ip=dhcp", bridge),
         };
-        assert_eq!(net_config, "name=eth0,bridge=vmbr1,ip=10.0.0.10/24,gw=10.0.0.1");
+        assert_eq!(
+            net_config,
+            "name=eth0,bridge=vmbr1,ip=10.0.0.10/24,gw=10.0.0.1"
+        );
     }
 
     #[test]
@@ -1053,7 +1090,10 @@ mod tests {
     // ── bridge selection logic ─────────────────────────────────────────────
 
     fn bridge(name: &str, has_ip: bool) -> BridgeInfo {
-        BridgeInfo { name: name.to_string(), has_ip }
+        BridgeInfo {
+            name: name.to_string(),
+            has_ip,
+        }
     }
 
     fn chosen_name(bridges: &[BridgeInfo]) -> &str {
@@ -1071,7 +1111,11 @@ mod tests {
     /// Among traditional bridges all with IPs, vmbr0 is preferred.
     #[test]
     fn test_bridge_prefers_vmbr0_when_multiple_traditional_bridges_have_ip() {
-        let bridges = vec![bridge("vmbr2", true), bridge("vmbr0", true), bridge("vmbr1", true)];
+        let bridges = vec![
+            bridge("vmbr2", true),
+            bridge("vmbr0", true),
+            bridge("vmbr1", true),
+        ];
         assert_eq!(chosen_name(&bridges), "vmbr0");
     }
 
@@ -1103,14 +1147,22 @@ mod tests {
     /// VLAN 0 (untagged/native VLAN) is preferred over higher-numbered VLANs.
     #[test]
     fn test_bridge_prefers_lowest_vlan_id_among_tagged_bridges() {
-        let bridges = vec![bridge("vlan64", true), bridge("vlan20", true), bridge("vlan0", true)];
+        let bridges = vec![
+            bridge("vlan64", true),
+            bridge("vlan20", true),
+            bridge("vlan0", true),
+        ];
         assert_eq!(chosen_name(&bridges), "vlan0");
     }
 
     /// VLAN 0 with IP beats vmbr0 with IP (untagged VLAN preference).
     #[test]
     fn test_bridge_vlan0_with_ip_beats_vmbr0_with_ip() {
-        let bridges = vec![bridge("vmbr0", true), bridge("vlan64", true), bridge("vlan0", true)];
+        let bridges = vec![
+            bridge("vmbr0", true),
+            bridge("vlan64", true),
+            bridge("vlan0", true),
+        ];
         assert_eq!(chosen_name(&bridges), "vlan0");
         assert!(select_best_bridge(&bridges).unwrap().has_ip);
     }
@@ -1119,7 +1171,11 @@ mod tests {
     #[test]
     fn test_bridge_lowest_numbered_vlan_wins_when_multiple_tagged() {
         // Represents a typical setup: management on vlan2, servers on vlan20, etc.
-        let bridges = vec![bridge("vlan64", true), bridge("vlan20", true), bridge("vlan2", true)];
+        let bridges = vec![
+            bridge("vlan64", true),
+            bridge("vlan20", true),
+            bridge("vlan2", true),
+        ];
         assert_eq!(chosen_name(&bridges), "vlan2");
     }
 
@@ -1177,8 +1233,18 @@ mod tests {
     fn test_build_inventory_does_not_set_key_file() {
         // Jetpack authenticates via SSH agent — no key file must be set.
         let inv = build_inventory(
-            "dragonfly", "pve1", "root@pam", "secret", "https://pve:8006",
-            None, 2, 2048, 32, "vmbr0", None, None,
+            "dragonfly",
+            "pve1",
+            "root@pam",
+            "secret",
+            "https://pve:8006",
+            None,
+            2,
+            2048,
+            32,
+            "vmbr0",
+            None,
+            None,
             "  ssh-ed25519 AAAA test",
             "/usr/local/bin/dragonfly",
         );
@@ -1186,7 +1252,10 @@ mod tests {
         let host = inv_read.get_host(&"dragonfly".to_string());
         let host_read = host.read().unwrap();
         assert!(
-            host_read.variables.get("jet_ssh_private_key_file").is_none(),
+            host_read
+                .variables
+                .get("jet_ssh_private_key_file")
+                .is_none(),
             "build_inventory must NOT set jet_ssh_private_key_file — use SSH agent"
         );
     }

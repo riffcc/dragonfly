@@ -152,7 +152,10 @@ fn get_available_port() -> Result<u16> {
 
     let suggested = find_next_available_port(default_port + 1);
     println!("Port {} is already in use.", default_port);
-    print!("Enter a different port (or press Enter for {}): ", suggested);
+    print!(
+        "Enter a different port (or press Enter for {}): ",
+        suggested
+    );
     std::io::stdout().flush()?;
 
     let mut input = String::new();
@@ -505,7 +508,12 @@ fn install_os_templates(dev_mode: bool) -> Result<()> {
             .args(["rm", "-rf", &os_templates_dest])
             .status();
         std::process::Command::new("sudo")
-            .args(["ln", "-s", &os_templates_abs.to_string_lossy(), &os_templates_dest])
+            .args([
+                "ln",
+                "-s",
+                &os_templates_abs.to_string_lossy(),
+                &os_templates_dest,
+            ])
             .status()?;
     } else {
         let _ = std::process::Command::new("sudo")
@@ -545,8 +553,9 @@ pub fn resolve_local_static_path() -> Result<(Option<tempfile::TempDir>, std::pa
     }
 
     // Extract the embedded static assets to a temp directory.
-    let tmp = tempfile::tempdir()
-        .map_err(|e| color_eyre::eyre::eyre!("Failed to create temp dir for static assets: {}", e))?;
+    let tmp = tempfile::tempdir().map_err(|e| {
+        color_eyre::eyre::eyre!("Failed to create temp dir for static assets: {}", e)
+    })?;
     let dest = tmp.path().join("static");
     fs::create_dir_all(&dest)
         .map_err(|e| color_eyre::eyre::eyre!("mkdir {}: {}", dest.display(), e))?;
@@ -591,17 +600,37 @@ fn install_web_assets(dev_mode: bool) -> Result<()> {
         let static_abs = std::fs::canonicalize(static_src)?;
 
         std::process::Command::new("sudo")
-            .args(["ln", "-s", &templates_abs.to_string_lossy(), &format!("{}/templates", OPT_DIR)])
+            .args([
+                "ln",
+                "-s",
+                &templates_abs.to_string_lossy(),
+                &format!("{}/templates", OPT_DIR),
+            ])
             .status()?;
         std::process::Command::new("sudo")
-            .args(["ln", "-s", &static_abs.to_string_lossy(), &format!("{}/static", OPT_DIR)])
+            .args([
+                "ln",
+                "-s",
+                &static_abs.to_string_lossy(),
+                &format!("{}/static", OPT_DIR),
+            ])
             .status()?;
     } else if !dev_mode && templates_src.exists() && static_src.exists() {
         std::process::Command::new("sudo")
-            .args(["cp", "-r", &templates_src.to_string_lossy(), &format!("{}/templates", OPT_DIR)])
+            .args([
+                "cp",
+                "-r",
+                &templates_src.to_string_lossy(),
+                &format!("{}/templates", OPT_DIR),
+            ])
             .status()?;
         std::process::Command::new("sudo")
-            .args(["cp", "-r", &static_src.to_string_lossy(), &format!("{}/static", OPT_DIR)])
+            .args([
+                "cp",
+                "-r",
+                &static_src.to_string_lossy(),
+                &format!("{}/static", OPT_DIR),
+            ])
             .status()?;
     } else {
         // Standalone binary — use embedded assets
@@ -616,10 +645,20 @@ fn install_web_assets(dev_mode: bool) -> Result<()> {
         extract_embedded_dir(&EMBEDDED_TEMPLATES, &templates_tmp)?;
 
         std::process::Command::new("sudo")
-            .args(["cp", "-r", &static_tmp.to_string_lossy(), &format!("{}/static", OPT_DIR)])
+            .args([
+                "cp",
+                "-r",
+                &static_tmp.to_string_lossy(),
+                &format!("{}/static", OPT_DIR),
+            ])
             .status()?;
         std::process::Command::new("sudo")
-            .args(["cp", "-r", &templates_tmp.to_string_lossy(), &format!("{}/templates", OPT_DIR)])
+            .args([
+                "cp",
+                "-r",
+                &templates_tmp.to_string_lossy(),
+                &format!("{}/templates", OPT_DIR),
+            ])
             .status()?;
     }
 

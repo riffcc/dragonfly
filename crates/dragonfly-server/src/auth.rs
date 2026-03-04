@@ -397,20 +397,18 @@ async fn login_page(
         crate::TemplateEnv::Static(env) => env
             .get_template("login.html")
             .and_then(|tmpl| tmpl.render(&template)),
-        crate::TemplateEnv::Reloading(reloader) => {
-            match reloader.acquire_env() {
-                Ok(env) => env
-                    .get_template("login.html")
-                    .and_then(|tmpl| tmpl.render(&template)),
-                Err(e) => {
-                    error!("Failed to acquire MiniJinja env from reloader: {}", e);
-                    Err(MiniJinjaError::new(
-                        MiniJinjaErrorKind::InvalidOperation,
-                        format!("Failed to acquire env from reloader: {}", e),
-                    ))
-                }
+        crate::TemplateEnv::Reloading(reloader) => match reloader.acquire_env() {
+            Ok(env) => env
+                .get_template("login.html")
+                .and_then(|tmpl| tmpl.render(&template)),
+            Err(e) => {
+                error!("Failed to acquire MiniJinja env from reloader: {}", e);
+                Err(MiniJinjaError::new(
+                    MiniJinjaErrorKind::InvalidOperation,
+                    format!("Failed to acquire env from reloader: {}", e),
+                ))
             }
-        }
+        },
     };
 
     // Handle the final rendering result

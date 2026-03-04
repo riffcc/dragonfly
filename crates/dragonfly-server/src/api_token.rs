@@ -10,8 +10,8 @@ use rand::RngCore;
 use sha2::{Digest, Sha256};
 use tracing::debug;
 
-use crate::auth::{AdminUser, AuthSession};
 use crate::AppState;
+use crate::auth::{AdminUser, AuthSession};
 
 /// Prefix for all Dragonfly API tokens.
 const TOKEN_PREFIX: &str = "df_";

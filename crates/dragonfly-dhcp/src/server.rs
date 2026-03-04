@@ -140,7 +140,13 @@ impl LeaseTable {
     }
 
     /// Allocate an IP from the pool range for the given MAC
-    fn allocate(&mut self, mac: &str, start: Ipv4Addr, end: Ipv4Addr, lease_time: u32) -> Option<Ipv4Addr> {
+    fn allocate(
+        &mut self,
+        mac: &str,
+        start: Ipv4Addr,
+        end: Ipv4Addr,
+        lease_time: u32,
+    ) -> Option<Ipv4Addr> {
         // If this MAC already has a valid lease, return its existing IP
         if let Some(entry) = self.leases.get(mac) {
             if entry.expires_at > Instant::now() {
@@ -159,7 +165,10 @@ impl LeaseTable {
             let candidate = Ipv4Addr::from(ip_u32);
             if !self.ip_to_mac.contains_key(&candidate) {
                 let expires_at = Instant::now() + std::time::Duration::from_secs(lease_time as u64);
-                let entry = LeaseEntry { ip: candidate, expires_at };
+                let entry = LeaseEntry {
+                    ip: candidate,
+                    expires_at,
+                };
 
                 // Remove any old lease for this MAC
                 if let Some(old) = self.leases.remove(mac) {
@@ -199,7 +208,11 @@ pub struct DhcpServer {
 impl DhcpServer {
     /// Create a new DHCP server with its own internal lease table
     pub fn new(config: DhcpConfig, machine_lookup: Arc<dyn MachineLookup>) -> Self {
-        Self::with_lease_table(config, machine_lookup, Arc::new(RwLock::new(LeaseTable::new())))
+        Self::with_lease_table(
+            config,
+            machine_lookup,
+            Arc::new(RwLock::new(LeaseTable::new())),
+        )
     }
 
     /// Create a DHCP server with a shared external lease table
@@ -398,9 +411,7 @@ impl DhcpServer {
                 message_type: msg_type,
                 offered_ip,
                 machine_id: machine.as_ref().map(|m| m.id),
-                hostname: machine
-                    .as_ref()
-                    .and_then(|m| m.config.hostname.clone()),
+                hostname: machine.as_ref().and_then(|m| m.config.hostname.clone()),
             });
         }
 
@@ -417,7 +428,10 @@ impl DhcpServer {
     ) -> Result<Option<(Vec<u8>, Option<Ipv4Addr>, String)>> {
         // Try machine reservation first
         if let Some(m) = machine {
-            if let Some(reserved_ip) = m.dhcp_ip().and_then(|dhcp| dhcp.address.parse::<Ipv4Addr>().ok()) {
+            if let Some(reserved_ip) = m
+                .dhcp_ip()
+                .and_then(|dhcp| dhcp.address.parse::<Ipv4Addr>().ok())
+            {
                 return match request.message_type {
                     MessageType::Discover => {
                         let response = self.build_offer(request, reserved_ip, m)?;
@@ -439,7 +453,11 @@ impl DhcpServer {
         }
 
         // Try network-level reservation (Network.reservations)
-        if let Some(res) = self.machine_lookup.get_network_reservation(&request.mac_address).await {
+        if let Some(res) = self
+            .machine_lookup
+            .get_network_reservation(&request.mac_address)
+            .await
+        {
             info!(
                 mac = %request.mac_address,
                 ip = %res.ip,
@@ -465,7 +483,10 @@ impl DhcpServer {
         }
 
         // No machine or network reservation — try pool allocation if configured
-        let (pool_start, pool_end) = match (self.config.pool_range_start, self.config.pool_range_end) {
+        let (pool_start, pool_end) = match (
+            self.config.pool_range_start,
+            self.config.pool_range_end,
+        ) {
             (Some(s), Some(e)) => (s, e),
             _ => {
                 debug!(mac = %request.mac_address, "No reservation and no pool configured, ignoring");
@@ -477,7 +498,12 @@ impl DhcpServer {
             MessageType::Discover => {
                 let offered_ip = {
                     let mut table = self.lease_table.write().await;
-                    table.allocate(&request.mac_address, pool_start, pool_end, self.config.lease_time)
+                    table.allocate(
+                        &request.mac_address,
+                        pool_start,
+                        pool_end,
+                        self.config.lease_time,
+                    )
                 };
                 match offered_ip {
                     Some(ip) => {
@@ -491,7 +517,8 @@ impl DhcpServer {
                 // Try to renew existing lease, or allocate new one
                 let ip = {
                     let mut table = self.lease_table.write().await;
-                    table.renew(&request.mac_address, self.config.lease_time)
+                    table
+                        .renew(&request.mac_address, self.config.lease_time)
                         .or_else(|| {
                             // Blocking: we already hold the lock in the outer scope,
                             // but renew returned None so we need to allocate
@@ -504,7 +531,12 @@ impl DhcpServer {
                     None => {
                         // Try fresh allocation
                         let mut table = self.lease_table.write().await;
-                        match table.allocate(&request.mac_address, pool_start, pool_end, self.config.lease_time) {
+                        match table.allocate(
+                            &request.mac_address,
+                            pool_start,
+                            pool_end,
+                            self.config.lease_time,
+                        ) {
                             Some(ip) => ip,
                             None => return Ok(None),
                         }
@@ -1004,9 +1036,15 @@ mod tests {
     fn test_pool_config_builder() {
         let config = DhcpConfig::new(Ipv4Addr::new(192, 168, 1, 1))
             .with_mode(DhcpMode::Reservation)
-            .with_pool_range(Ipv4Addr::new(192, 168, 1, 100), Ipv4Addr::new(192, 168, 1, 200));
+            .with_pool_range(
+                Ipv4Addr::new(192, 168, 1, 100),
+                Ipv4Addr::new(192, 168, 1, 200),
+            );
 
-        assert_eq!(config.pool_range_start, Some(Ipv4Addr::new(192, 168, 1, 100)));
+        assert_eq!(
+            config.pool_range_start,
+            Some(Ipv4Addr::new(192, 168, 1, 100))
+        );
         assert_eq!(config.pool_range_end, Some(Ipv4Addr::new(192, 168, 1, 200)));
     }
 
@@ -1035,11 +1073,19 @@ mod tests {
     #[async_trait]
     impl MachineLookup for MockWithNetworkReservations {
         async fn get_machine_by_mac(&self, mac: &str) -> Option<Machine> {
-            self.machines.read().unwrap().get(&mac.to_lowercase()).cloned()
+            self.machines
+                .read()
+                .unwrap()
+                .get(&mac.to_lowercase())
+                .cloned()
         }
 
         async fn get_network_reservation(&self, mac: &str) -> Option<NetworkReservation> {
-            self.reservations.read().unwrap().get(&mac.to_lowercase()).cloned()
+            self.reservations
+                .read()
+                .unwrap()
+                .get(&mac.to_lowercase())
+                .cloned()
         }
     }
 
@@ -1063,7 +1109,12 @@ mod tests {
         assert_eq!(res.hostname.as_deref(), Some("web-01"));
 
         // Unknown MAC returns None
-        assert!(lookup.get_network_reservation("ff:ff:ff:ff:ff:ff").await.is_none());
+        assert!(
+            lookup
+                .get_network_reservation("ff:ff:ff:ff:ff:ff")
+                .await
+                .is_none()
+        );
     }
 
     #[tokio::test]

@@ -10,9 +10,11 @@
 use crate::store::v1::Store;
 use async_trait::async_trait;
 use bytes::Bytes;
-use dragonfly_common::dns::{DnsProvider, DnsRecord, DnsRecordType};
 use dragonfly_common::Machine;
-use dragonfly_dhcp::{DhcpConfig, DhcpEvent, DhcpMode, DhcpServer, LeaseTable, MachineLookup, NetworkReservation};
+use dragonfly_common::dns::{DnsProvider, DnsRecord, DnsRecordType};
+use dragonfly_dhcp::{
+    DhcpConfig, DhcpEvent, DhcpMode, DhcpServer, LeaseTable, MachineLookup, NetworkReservation,
+};
 use dragonfly_dns::{DnsServer, DnsStore, ZoneConfig};
 use dragonfly_tftp::{FileProvider, TftpEvent, TftpServer};
 use std::collections::HashMap;

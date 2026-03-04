@@ -6,7 +6,9 @@
 
 use super::{ApiToken, Result, Store, StoreError, User};
 use async_trait::async_trait;
-use dragonfly_common::{DnsRecord, DnsRecordSource, DnsRecordType, Machine, MachineState, Network, normalize_mac};
+use dragonfly_common::{
+    DnsRecord, DnsRecordSource, DnsRecordType, Machine, MachineState, Network, normalize_mac,
+};
 use dragonfly_crd::{Template, Workflow};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
 use sqlx::{Row, SqlitePool};
@@ -238,10 +240,12 @@ impl SqliteStore {
         .await
         .map_err(|e| StoreError::Database(e.to_string()))?;
 
-        sqlx::query("CREATE UNIQUE INDEX IF NOT EXISTS idx_api_tokens_hash ON api_tokens(token_hash)")
-            .execute(&self.pool)
-            .await
-            .map_err(|e| StoreError::Database(e.to_string()))?;
+        sqlx::query(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_api_tokens_hash ON api_tokens(token_hash)",
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StoreError::Database(e.to_string()))?;
 
         Ok(())
     }
@@ -260,16 +264,17 @@ impl SqliteStore {
             .map_err(|e| StoreError::Serialization(format!("Invalid UUID: {}", e)))?;
 
         let machine_id_bytes: Option<Vec<u8>> = row.get("machine_id");
-        let machine_id = machine_id_bytes
-            .and_then(|b| Uuid::from_slice(&b).ok());
+        let machine_id = machine_id_bytes.and_then(|b| Uuid::from_slice(&b).ok());
 
         let rtype_str: String = row.get("rtype");
-        let rtype = DnsRecordType::from_str_loose(&rtype_str)
-            .ok_or_else(|| StoreError::Serialization(format!("Unknown DNS record type: {}", rtype_str)))?;
+        let rtype = DnsRecordType::from_str_loose(&rtype_str).ok_or_else(|| {
+            StoreError::Serialization(format!("Unknown DNS record type: {}", rtype_str))
+        })?;
 
         let source_str: String = row.get("source");
-        let source = DnsRecordSource::from_str_loose(&source_str)
-            .ok_or_else(|| StoreError::Serialization(format!("Unknown DNS record source: {}", source_str)))?;
+        let source = DnsRecordSource::from_str_loose(&source_str).ok_or_else(|| {
+            StoreError::Serialization(format!("Unknown DNS record source: {}", source_str))
+        })?;
 
         let created_str: String = row.get("created_at");
         let created_at = chrono::DateTime::parse_from_rfc3339(&created_str)
@@ -1008,10 +1013,11 @@ impl Store for SqliteStore {
     }
 
     async fn list_api_tokens(&self) -> Result<Vec<ApiToken>> {
-        let rows = sqlx::query("SELECT data FROM api_tokens ORDER BY json_extract(data, '$.created_at')")
-            .fetch_all(&self.pool)
-            .await
-            .map_err(|e| StoreError::Database(e.to_string()))?;
+        let rows =
+            sqlx::query("SELECT data FROM api_tokens ORDER BY json_extract(data, '$.created_at')")
+                .fetch_all(&self.pool)
+                .await
+                .map_err(|e| StoreError::Database(e.to_string()))?;
 
         let mut tokens = Vec::with_capacity(rows.len());
         for row in rows {
@@ -1043,7 +1049,9 @@ impl Store for SqliteStore {
         .await
         .map_err(|e| StoreError::Database(e.to_string()))?;
 
-        rows.iter().map(|row| Self::dns_record_from_row(row)).collect()
+        rows.iter()
+            .map(|row| Self::dns_record_from_row(row))
+            .collect()
     }
 
     async fn get_dns_records(
@@ -1074,7 +1082,9 @@ impl Store for SqliteStore {
         }
         .map_err(|e| StoreError::Database(e.to_string()))?;
 
-        rows.iter().map(|row| Self::dns_record_from_row(row)).collect()
+        rows.iter()
+            .map(|row| Self::dns_record_from_row(row))
+            .collect()
     }
 
     async fn put_dns_record(&self, record: &DnsRecord) -> Result<()> {

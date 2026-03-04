@@ -41,10 +41,10 @@ use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt};
 mod api;
 pub mod api_token;
 mod auth;
-pub mod event_manager;
-mod filters; // Uncomment unused module
 pub mod cluster;
 pub mod dns_sync;
+pub mod event_manager;
+mod filters; // Uncomment unused module
 pub mod ha;
 pub mod handlers;
 pub mod image_cache;
@@ -362,7 +362,10 @@ async fn build_dhcp_config_from_store(store: &Arc<dyn store::v1::Store>) -> Dhcp
             .filter_map(|s| s.parse().ok())
             .collect();
         if dns.is_empty() {
-            info!("No DNS servers configured on network '{}', using public defaults (1.1.1.1, 8.8.8.8)", net.name);
+            info!(
+                "No DNS servers configured on network '{}', using public defaults (1.1.1.1, 8.8.8.8)",
+                net.name
+            );
             dns = vec![
                 std::net::Ipv4Addr::new(1, 1, 1, 1),
                 std::net::Ipv4Addr::new(8, 8, 8, 8),
@@ -504,7 +507,10 @@ async fn download_spark_variant(filename: &str) -> anyhow::Result<()> {
                 current_version
             );
         } else {
-            info!("Spark {} exists but no version marker, re-downloading", filename);
+            info!(
+                "Spark {} exists but no version marker, re-downloading",
+                filename
+            );
         }
     } else {
         info!("Spark {} not found, downloading", filename);
@@ -514,14 +520,25 @@ async fn download_spark_variant(filename: &str) -> anyhow::Result<()> {
         "https://github.com/riffcc/dragonfly/releases/download/v{}/{}",
         current_version, filename
     );
-    info!("Downloading Spark {} v{} from {}", filename, current_version, download_url);
+    info!(
+        "Downloading Spark {} v{} from {}",
+        filename, current_version, download_url
+    );
 
     let client = reqwest::Client::new();
-    let response = client.get(&download_url).send().await
+    let response = client
+        .get(&download_url)
+        .send()
+        .await
         .map_err(|e| anyhow!("Failed to connect to GitHub for Spark download: {}", e))?;
 
     if !response.status().is_success() {
-        warn!("Failed to download Spark {}: HTTP {} ({})", filename, response.status(), download_url);
+        warn!(
+            "Failed to download Spark {}: HTTP {} ({})",
+            filename,
+            response.status(),
+            download_url
+        );
         return Ok(());
     }
 
@@ -529,12 +546,12 @@ async fn download_spark_variant(filename: &str) -> anyhow::Result<()> {
 
     // Validate: must be non-empty and start with known magic bytes
     // ELF files start with \x7fELF, PE/COFF (EFI) files start with MZ
-    let valid_magic = bytes.len() >= 4
-        && (&bytes[..4] == b"\x7fELF" || &bytes[..2] == b"MZ");
+    let valid_magic = bytes.len() >= 4 && (&bytes[..4] == b"\x7fELF" || &bytes[..2] == b"MZ");
     if !valid_magic {
         warn!(
             "Downloaded Spark {} is invalid ({} bytes, unrecognized format). Keeping existing copy.",
-            filename, bytes.len()
+            filename,
+            bytes.len()
         );
         return Ok(());
     }
@@ -546,7 +563,12 @@ async fn download_spark_variant(filename: &str) -> anyhow::Result<()> {
     tokio::fs::set_permissions(&tmp_dest, perms).await?;
     tokio::fs::rename(&tmp_dest, &dest).await?;
     tokio::fs::write(&version_file, current_version).await?;
-    info!("Spark {} v{} downloaded ({} bytes)", filename, current_version, bytes.len());
+    info!(
+        "Spark {} v{} downloaded ({} bytes)",
+        filename,
+        current_version,
+        bytes.len()
+    );
     Ok(())
 }
 
@@ -610,7 +632,9 @@ pub async fn start_network_services(app_state: &AppState, shutdown_rx: watch::Re
                 let dhcp_cfg = build_dhcp_config_for_network(network, server_ip, &iface);
                 let svc_cfg = ServicesConfig {
                     dhcp: Some(dhcp_cfg),
-                    tftp: Some(TftpServiceConfig { boot_dir: tftp_dir.clone() }),
+                    tftp: Some(TftpServiceConfig {
+                        boot_dir: tftp_dir.clone(),
+                    }),
                     server_ip,
                     http_port,
                 };
@@ -787,12 +811,16 @@ pub async fn run() -> anyhow::Result<()> {
     // (Arc<StoreProxy>) point to the same StoreProxy allocation. The proxy delegates
     // all Store methods to its inner store, and .swap() hot-swaps the backend.
     let (store, store_proxy, db_pool): (Arc<dyn store::v1::Store>, Arc<store::v1::StoreProxy>, _) = {
-        let (inner_store, pool): (Arc<dyn store::v1::Store>, _) = if ha::HaManager::is_ha_enabled() {
+        let (inner_store, pool): (Arc<dyn store::v1::Store>, _) = if ha::HaManager::is_ha_enabled()
+        {
             if let Some(ha_config) = ha::read_ha_config() {
                 let hosts = ha_config.hosts_by_priority();
                 let core_count = ha_config.nodes.iter().filter(|n| n.role == "core").count();
-                info!("HA mode enabled — connecting to rqlite cluster ({} nodes, {} cores)",
-                    hosts.len(), core_count);
+                info!(
+                    "HA mode enabled — connecting to rqlite cluster ({} nodes, {} cores)",
+                    hosts.len(),
+                    core_count
+                );
                 match store::v1::RqliteStore::open_cluster(&hosts).await {
                     Ok(rqlite_store) => {
                         info!("Connected to rqlite cluster with failover");
@@ -804,7 +832,10 @@ pub async fn run() -> anyhow::Result<()> {
                         (Arc::new(rqlite_store), pool)
                     }
                     Err(e) => {
-                        warn!("Failed to connect to rqlite cluster: {} — falling back to SQLite", e);
+                        warn!(
+                            "Failed to connect to rqlite cluster: {} — falling back to SQLite",
+                            e
+                        );
                         let sqlite_store = store::v1::SqliteStore::open(SQLITE_PATH)
                             .await
                             .map_err(|e| anyhow!("Failed to open SQLite store: {}", e))?;
@@ -879,7 +910,10 @@ pub async fn run() -> anyhow::Result<()> {
             if let Err(_) = crate::api::verify_mage_artifacts(&["x86_64"]) {
                 info!("Downloading Mage boot artifacts...");
                 if let Err(e) = crate::api::download_mage_artifacts("3.23", "x86_64").await {
-                    warn!("Failed to download Mage boot artifacts: {} — PXE boot may not work until next restart", e);
+                    warn!(
+                        "Failed to download Mage boot artifacts: {} — PXE boot may not work until next restart",
+                        e
+                    );
                 } else if let Err(e) = crate::api::verify_mage_artifacts(&["x86_64"]) {
                     warn!("Mage boot artifact verification failed: {}", e);
                 } else {
@@ -906,10 +940,12 @@ pub async fn run() -> anyhow::Result<()> {
                                     #[cfg(unix)]
                                     {
                                         use std::os::unix::fs::PermissionsExt;
-                                        if let Ok(metadata) = tokio::fs::metadata(agent_dest).await {
+                                        if let Ok(metadata) = tokio::fs::metadata(agent_dest).await
+                                        {
                                             let mut perms = metadata.permissions();
                                             perms.set_mode(0o755);
-                                            let _ = tokio::fs::set_permissions(agent_dest, perms).await;
+                                            let _ =
+                                                tokio::fs::set_permissions(agent_dest, perms).await;
                                         }
                                     }
                                     info!("Downloaded dragonfly-agent binary");
@@ -918,7 +954,10 @@ pub async fn run() -> anyhow::Result<()> {
                             Err(e) => warn!("Failed to read agent binary response: {}", e),
                         }
                     }
-                    Ok(response) => warn!("Failed to download agent binary: HTTP {}", response.status()),
+                    Ok(response) => warn!(
+                        "Failed to download agent binary: HTTP {}",
+                        response.status()
+                    ),
                     Err(e) => warn!("Failed to download agent binary: {}", e),
                 }
             }
@@ -986,8 +1025,15 @@ pub async fn run() -> anyhow::Result<()> {
         let p = std::path::Path::new(raw);
         if p.join("base.html").exists() {
             Some(raw.to_string())
-        } else if p.join("crates/dragonfly-server/templates/base.html").exists() {
-            Some(p.join("crates/dragonfly-server/templates").to_string_lossy().into_owned())
+        } else if p
+            .join("crates/dragonfly-server/templates/base.html")
+            .exists()
+        {
+            Some(
+                p.join("crates/dragonfly-server/templates")
+                    .to_string_lossy()
+                    .into_owned(),
+            )
         } else {
             None
         }
@@ -995,7 +1041,8 @@ pub async fn run() -> anyhow::Result<()> {
 
     let dev_template_path: Option<String> = {
         // 1. Env var
-        let from_env = std::env::var("DRAGONFLY_TEMPLATE_PATH").ok()
+        let from_env = std::env::var("DRAGONFLY_TEMPLATE_PATH")
+            .ok()
             .and_then(|p| if p.is_empty() { None } else { Some(p) })
             .and_then(|p| resolve_template_path(&p));
 
@@ -1026,10 +1073,13 @@ pub async fn run() -> anyhow::Result<()> {
 
         // 3–4. Conventional disk locations
         let from_disk = if from_env.is_none() && from_store.is_none() {
-            ["/opt/dragonfly/templates", "crates/dragonfly-server/templates"]
-                .iter()
-                .find(|p| validate_template_path(p))
-                .map(|p| p.to_string())
+            [
+                "/opt/dragonfly/templates",
+                "crates/dragonfly-server/templates",
+            ]
+            .iter()
+            .find(|p| validate_template_path(p))
+            .map(|p| p.to_string())
         } else {
             None
         };
@@ -1300,10 +1350,16 @@ pub async fn run() -> anyhow::Result<()> {
         tokio::spawn(async move {
             match api::download_ipxe_binaries().await {
                 Ok(_) => info!("iPXE binaries ready"),
-                Err(e) => warn!("Failed to download iPXE binaries: {} — PXE boot may not work", e),
+                Err(e) => warn!(
+                    "Failed to download iPXE binaries: {} — PXE boot may not work",
+                    e
+                ),
             }
             if let Err(e) = download_spark_elf().await {
-                warn!("Failed to download Spark ELF: {} — bare metal discovery may not work", e);
+                warn!(
+                    "Failed to download Spark ELF: {} — bare metal discovery may not work",
+                    e
+                );
             }
         });
 

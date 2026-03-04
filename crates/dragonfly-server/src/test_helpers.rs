@@ -61,9 +61,7 @@ pub async fn create_test_app_state() -> AppState {
         network_services_started: Arc::new(AtomicBool::new(false)),
         image_cache,
         services_shutdown_tx: Arc::new(Mutex::new(None)),
-        dhcp_lease_table: Arc::new(tokio::sync::RwLock::new(
-            dragonfly_dhcp::LeaseTable::new(),
-        )),
+        dhcp_lease_table: Arc::new(tokio::sync::RwLock::new(dragonfly_dhcp::LeaseTable::new())),
         ha_manager: Arc::new(ha::HaManager::new("test-node".to_string())),
         cluster_abort: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         cluster_deploying: Arc::new(std::sync::atomic::AtomicBool::new(false)),

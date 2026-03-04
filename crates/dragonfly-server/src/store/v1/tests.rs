@@ -1057,7 +1057,10 @@ async fn test_resolve_machine_identity_multi_anchor() {
     // Create a machine with full identity (like an agent check-in)
     let identity = MachineIdentity::new(
         "aa:bb:cc:dd:ee:01".to_string(),
-        vec!["aa:bb:cc:dd:ee:01".to_string(), "aa:bb:cc:dd:ee:02".to_string()],
+        vec![
+            "aa:bb:cc:dd:ee:01".to_string(),
+            "aa:bb:cc:dd:ee:02".to_string(),
+        ],
         Some("vm-smbios-uuid-1234".to_string()),
         Some("deadbeef12345678".to_string()),
         Some("fs-uuid-abcdef".to_string()),
@@ -1075,8 +1078,13 @@ async fn test_resolve_machine_identity_multi_anchor() {
     // Anchor 2: Find by secondary MAC (different primary MAC)
     let lookup2 = MachineIdentity::new(
         "ff:ff:ff:ff:ff:ff".to_string(),
-        vec!["ff:ff:ff:ff:ff:ff".to_string(), "aa:bb:cc:dd:ee:02".to_string()],
-        None, None, None,
+        vec![
+            "ff:ff:ff:ff:ff:ff".to_string(),
+            "aa:bb:cc:dd:ee:02".to_string(),
+        ],
+        None,
+        None,
+        None,
     );
     let found = store.resolve_machine_identity(&lookup2).await.unwrap();
     assert!(found.is_some(), "Must find machine by secondary MAC");
@@ -1087,7 +1095,8 @@ async fn test_resolve_machine_identity_multi_anchor() {
         "ff:ff:ff:ff:ff:ff".to_string(),
         vec!["ff:ff:ff:ff:ff:ff".to_string()],
         Some("vm-smbios-uuid-1234".to_string()),
-        None, None,
+        None,
+        None,
     );
     let found = store.resolve_machine_identity(&lookup3).await.unwrap();
     assert!(found.is_some(), "Must find machine by SMBIOS UUID");
@@ -1159,12 +1168,18 @@ async fn test_api_token_get_by_hash() {
 
     store.put_api_token(&token).await.unwrap();
 
-    let found = store.get_api_token_by_hash("hash_lookup_test").await.unwrap();
+    let found = store
+        .get_api_token_by_hash("hash_lookup_test")
+        .await
+        .unwrap();
     assert!(found.is_some());
     assert_eq!(found.unwrap().id, token.id);
 
     // Non-existent hash returns None
-    let missing = store.get_api_token_by_hash("nonexistent_hash").await.unwrap();
+    let missing = store
+        .get_api_token_by_hash("nonexistent_hash")
+        .await
+        .unwrap();
     assert!(missing.is_none());
 }
 
@@ -1176,7 +1191,10 @@ async fn test_api_token_revoked_not_returned_by_hash() {
     store.put_api_token(&token).await.unwrap();
 
     // Verify it's findable before revocation
-    let found = store.get_api_token_by_hash("hash_revoke_test").await.unwrap();
+    let found = store
+        .get_api_token_by_hash("hash_revoke_test")
+        .await
+        .unwrap();
     assert!(found.is_some());
 
     // Revoke it
@@ -1184,8 +1202,14 @@ async fn test_api_token_revoked_not_returned_by_hash() {
     store.put_api_token(&token).await.unwrap();
 
     // Hash lookup must return None for revoked tokens
-    let found = store.get_api_token_by_hash("hash_revoke_test").await.unwrap();
-    assert!(found.is_none(), "Revoked token must not be returned by hash lookup");
+    let found = store
+        .get_api_token_by_hash("hash_revoke_test")
+        .await
+        .unwrap();
+    assert!(
+        found.is_none(),
+        "Revoked token must not be returned by hash lookup"
+    );
 
     // Direct ID lookup must still work (for admin visibility)
     let found = store.get_api_token(token.id).await.unwrap();
@@ -1203,8 +1227,14 @@ async fn test_api_token_expired_not_returned_by_hash() {
     store.put_api_token(&token).await.unwrap();
 
     // Hash lookup must return None for expired tokens
-    let found = store.get_api_token_by_hash("hash_expire_test").await.unwrap();
-    assert!(found.is_none(), "Expired token must not be returned by hash lookup");
+    let found = store
+        .get_api_token_by_hash("hash_expire_test")
+        .await
+        .unwrap();
+    assert!(
+        found.is_none(),
+        "Expired token must not be returned by hash lookup"
+    );
 }
 
 #[tokio::test]

@@ -51,7 +51,10 @@ fn ensure_config() {
 
     // Detect primary outbound IP (no external traffic actually sent).
     let local_ip = UdpSocket::bind("0.0.0.0:0")
-        .and_then(|s| { s.connect("8.8.8.8:80")?; s.local_addr() })
+        .and_then(|s| {
+            s.connect("8.8.8.8:80")?;
+            s.local_addr()
+        })
         .map(|a| a.ip().to_string())
         .unwrap_or_else(|_| "127.0.0.1".to_string());
 
@@ -112,7 +115,6 @@ enum Commands {
 // Arguments for serve command
 #[derive(Parser, Debug)]
 struct ServeArgs {}
-
 
 fn main() -> Result<()> {
     // Install the rustls CryptoProvider globally before any TLS operations.
@@ -180,12 +182,18 @@ async fn async_main(cli: Cli) -> Result<()> {
         .with(fmt::layer().with_writer(stderr))
         .init();
 
-    if !matches!(cli.command, Some(Commands::Install(_)) | Some(Commands::InstallPve(_))) {
+    if !matches!(
+        cli.command,
+        Some(Commands::Install(_)) | Some(Commands::InstallPve(_))
+    ) {
         info!("Global logger initialized.");
     }
 
     // Set up Ctrl+C handler - skip for install/MCP commands which handle their own lifecycle
-    let is_install_command = matches!(cli.command, Some(Commands::Install(_)) | Some(Commands::InstallPve(_)));
+    let is_install_command = matches!(
+        cli.command,
+        Some(Commands::Install(_)) | Some(Commands::InstallPve(_))
+    );
     let is_mcp_command = matches!(cli.command, Some(Commands::Mcp(_)));
     if !is_install_command && !is_mcp_command {
         let shutdown_tx_clone = shutdown_tx.clone();

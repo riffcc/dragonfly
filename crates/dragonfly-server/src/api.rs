@@ -51,26 +51,25 @@ use uuid::Uuid;
 
 /// Parse a usize query parameter from a URL query string.
 fn parse_query_param(query: &str, key: &str) -> Option<usize> {
-    query
-        .split('&')
-        .find_map(|pair| {
-            let (k, v) = pair.split_once('=')?;
-            if k == key { v.parse().ok() } else { None }
-        })
+    query.split('&').find_map(|pair| {
+        let (k, v) = pair.split_once('=')?;
+        if k == key { v.parse().ok() } else { None }
+    })
 }
 
 /// Parse a string query parameter, returning the value with the lifetime of the query string.
 fn parse_query_str_param<'a>(query: &'a str, key: &str) -> Option<&'a str> {
-    query
-        .split('&')
-        .find_map(|pair| {
-            let (k, v) = pair.split_once('=')?;
-            if k == key { Some(v) } else { None }
-        })
+    query.split('&').find_map(|pair| {
+        let (k, v) = pair.split_once('=')?;
+        if k == key { Some(v) } else { None }
+    })
 }
 
 /// Project a Machine into a JSON value at the requested detail level.
-fn machine_to_detail_level(m: &dragonfly_common::models::Machine, detail: &str) -> serde_json::Value {
+fn machine_to_detail_level(
+    m: &dragonfly_common::models::Machine,
+    detail: &str,
+) -> serde_json::Value {
     match detail {
         "simple" => serde_json::json!({
             "id": m.id,
@@ -225,10 +224,7 @@ pub fn api_router() -> Router<crate::AppState> {
         )
         // --- DHCP Lease Routes ---
         .route("/dhcp/leases", get(list_dhcp_leases_handler))
-        .route(
-            "/dhcp/leases/{mac}",
-            delete(terminate_dhcp_lease_handler),
-        )
+        .route("/dhcp/leases/{mac}", delete(terminate_dhcp_lease_handler))
         // --- Machine Apply Route ---
         .route("/machines/{id}/apply", post(apply_machine_config_handler))
         .route(
@@ -249,7 +245,10 @@ pub fn api_router() -> Router<crate::AppState> {
             "/dns/zones/{zone}/records/{id}",
             put(dns_update_record_handler).delete(dns_delete_record_handler),
         )
-        .route("/dns/records/by-machine/{machine_id}", get(dns_records_by_machine_handler))
+        .route(
+            "/dns/records/by-machine/{machine_id}",
+            get(dns_records_by_machine_handler),
+        )
         // --- Unified Credentials Routes ---
         .route("/credentials", get(credentials_list_handler))
         .route("/credentials/add", post(credentials_add_handler))
@@ -263,11 +262,20 @@ pub fn api_router() -> Router<crate::AppState> {
         .route("/cluster/create", post(cluster_create_handler))
         .route("/cluster/abort", post(cluster_abort_handler))
         .route("/cluster/status", get(cluster_status_handler))
-        .route("/cluster/nodes/{idx}/role", patch(cluster_node_role_handler))
-        .route("/cluster/management-key", get(cluster_management_key_handler))
+        .route(
+            "/cluster/nodes/{idx}/role",
+            patch(cluster_node_role_handler),
+        )
+        .route(
+            "/cluster/management-key",
+            get(cluster_management_key_handler),
+        )
         // --- Kubernetes Cluster Routes ---
         .route("/k8s/create", post(k8s_create_handler))
-        .route("/cluster/management-key/rotate", post(cluster_rotate_key_handler))
+        .route(
+            "/cluster/management-key/rotate",
+            post(cluster_rotate_key_handler),
+        )
         // --- API Token Routes ---
         .route(
             "/tokens",
@@ -283,7 +291,10 @@ pub fn api_router() -> Router<crate::AppState> {
             post(crate::handlers::api_tokens::rotate_api_token),
         )
         // --- Maintenance Routes ---
-        .route("/maintenance/dev-mode", get(dev_mode_status_handler).post(dev_mode_toggle_handler))
+        .route(
+            "/maintenance/dev-mode",
+            get(dev_mode_status_handler).post(dev_mode_toggle_handler),
+        )
         .layer(DefaultBodyLimit::max(1024 * 1024 * 50)) // 50 MB
 }
 
@@ -850,14 +861,17 @@ async fn get_all_machines(
         // Pass `force=true` to bypass the per-detail max and get up to `per_page` items.
         let query = req.uri().query().unwrap_or("");
         let detail = parse_query_str_param(query, "detail").unwrap_or("standard");
-        let force = parse_query_str_param(query, "force").map(|v| v == "true" || v == "1").unwrap_or(false);
+        let force = parse_query_str_param(query, "force")
+            .map(|v| v == "true" || v == "1")
+            .unwrap_or(false);
         let (default_per_page, max_per_page) = match detail {
             "simple" => (80, 400),
             "full" => (10, 50),
             _ => (25, 130), // standard
         };
 
-        let requested_per_page: usize = parse_query_param(query, "per_page").unwrap_or(default_per_page);
+        let requested_per_page: usize =
+            parse_query_param(query, "per_page").unwrap_or(default_per_page);
         let page = parse_query_param(query, "page").unwrap_or(1).max(1);
         let per_page = if force {
             requested_per_page.max(1)
@@ -2053,7 +2067,10 @@ async fn machine_events(
                 };
 
                 // Special handling for events that send raw JSON payload
-                if event_type == "ip_download_progress" || event_type == "workflow_progress" || event_type == "cluster" {
+                if event_type == "ip_download_progress"
+                    || event_type == "workflow_progress"
+                    || event_type == "cluster"
+                {
                     if let Some(payload_str) = event_payload_str {
                         // Directly use the JSON string as data for this specific event type
                         let sse_event = Event::default().event(event_type).data(payload_str); // Use the payload string directly
@@ -4539,7 +4556,10 @@ pub async fn serve_spark_efi_elf() -> Response {
     let spark_path = std::path::Path::new(SPARK_EFI_ELF_PATH);
 
     if !spark_path.exists() {
-        warn!("404 /boot/spark-efi.elf: File not found at {:?}", spark_path);
+        warn!(
+            "404 /boot/spark-efi.elf: File not found at {:?}",
+            spark_path
+        );
         return (
             StatusCode::NOT_FOUND,
             "Spark EFI ELF not found. Copy spark-efi.elf to /var/lib/dragonfly/spark-efi.elf",
@@ -4626,7 +4646,10 @@ pub async fn serve_ipxe_efi() -> Response {
 
     match tokio::fs::read(path).await {
         Ok(content) => {
-            info!("200 /boot/ipxe.efi: Serving {} bytes (HTTP Boot)", content.len());
+            info!(
+                "200 /boot/ipxe.efi: Serving {} bytes (HTTP Boot)",
+                content.len()
+            );
             (
                 StatusCode::OK,
                 [(axum::http::header::CONTENT_TYPE, "application/efi")],
@@ -5157,13 +5180,13 @@ pub async fn serve_debian_boot_asset(arch: &str, asset: &str) -> Response {
         "kernel" => "vmlinuz",
         "initramfs" => "initramfs",
         _ => {
-            warn!(
-                "404 /boot-debian/{}/{}: Unknown asset type",
-                arch, asset
-            );
+            warn!("404 /boot-debian/{}/{}: Unknown asset type", arch, asset);
             return (
                 StatusCode::NOT_FOUND,
-                format!("Unknown Debian Mage boot asset: {} (supported: kernel, initramfs)", asset),
+                format!(
+                    "Unknown Debian Mage boot asset: {} (supported: kernel, initramfs)",
+                    asset
+                ),
             )
                 .into_response();
         }
@@ -5200,10 +5223,7 @@ pub async fn serve_debian_boot_asset(arch: &str, asset: &str) -> Response {
             );
             (
                 StatusCode::OK,
-                [(
-                    axum::http::header::CONTENT_TYPE,
-                    "application/octet-stream",
-                )],
+                [(axum::http::header::CONTENT_TYPE, "application/octet-stream")],
                 content,
             )
                 .into_response()
@@ -5253,10 +5273,7 @@ pub fn verify_debian_mage_artifacts(architectures: &[&str]) -> anyhow::Result<()
             ));
         }
         if !empty.is_empty() {
-            errors.push(format!(
-                "Empty Debian Mage artifacts: {}",
-                empty.join(", ")
-            ));
+            errors.push(format!("Empty Debian Mage artifacts: {}", empty.join(", ")));
         }
         anyhow::bail!("{}", errors.join("; "));
     }
@@ -5559,7 +5576,7 @@ pub fn normalize_workflow_progress(action_name: &str, action_progress: u8) -> u8
 
 async fn update_installation_progress(
     State(state): State<AppState>, // State is used for event manager
-    _caller: AuthenticatedCaller,    // Mark as unused - updates come from agent/tinkerbell
+    _caller: AuthenticatedCaller,  // Mark as unused - updates come from agent/tinkerbell
     Path(id): Path<Uuid>,
     Json(payload): Json<InstallationProgressUpdateRequest>,
 ) -> Response {
@@ -5650,7 +5667,11 @@ async fn api_update_machine_tags(
     Json(tags): Json<Vec<String>>,
 ) -> Response {
     if caller.user.is_none() {
-        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Not authenticated"}))).into_response();
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": "Not authenticated"})),
+        )
+            .into_response();
     }
 
     // Get machine from v1 store
@@ -5874,7 +5895,11 @@ async fn get_machine_status_and_progress_partial(
 #[axum::debug_handler]
 async fn api_get_tags(State(state): State<AppState>, caller: AuthenticatedCaller) -> Response {
     if caller.user.is_none() {
-        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Not authenticated"}))).into_response();
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": "Not authenticated"})),
+        )
+            .into_response();
     }
 
     match state.store.list_all_tags().await {
@@ -5898,7 +5923,11 @@ async fn api_create_tag(
     Json(payload): Json<serde_json::Value>,
 ) -> Response {
     if caller.user.is_none() {
-        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Not authenticated"}))).into_response();
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": "Not authenticated"})),
+        )
+            .into_response();
     }
 
     // Extract tag name from JSON payload
@@ -5954,7 +5983,11 @@ async fn api_delete_tag(
     Path(tag_name): Path<String>,
 ) -> Response {
     if caller.user.is_none() {
-        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Not authenticated"}))).into_response();
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": "Not authenticated"})),
+        )
+            .into_response();
     }
 
     match state.store.delete_tag(&tag_name).await {
@@ -5990,7 +6023,11 @@ async fn api_get_machines_by_tag(
     Path(tag_name): Path<String>,
 ) -> Response {
     if caller.user.is_none() {
-        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Not authenticated"}))).into_response();
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": "Not authenticated"})),
+        )
+            .into_response();
     }
 
     match state.store.list_machines_by_tag(&tag_name).await {
@@ -8583,7 +8620,11 @@ async fn ha_status_handler(
     caller: AuthenticatedCaller,
 ) -> Response {
     if caller.user.is_none() {
-        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Not authenticated"}))).into_response();
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": "Not authenticated"})),
+        )
+            .into_response();
     }
     Json(state.ha_manager.status().await).into_response()
 }
@@ -8594,17 +8635,17 @@ async fn ha_enable_handler(
     caller: AuthenticatedCaller,
 ) -> Response {
     if caller.user.is_none() {
-        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Not authenticated"}))).into_response();
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": "Not authenticated"})),
+        )
+            .into_response();
     }
     use crate::store::v1::SqliteStore;
 
     // Check if already enabled
     if crate::ha::HaManager::is_ha_enabled() {
-        return (
-            StatusCode::CONFLICT,
-            "High Availability is already enabled",
-        )
-            .into_response();
+        return (StatusCode::CONFLICT, "High Availability is already enabled").into_response();
     }
 
     // We need access to the current SQLite store for migration
@@ -8653,9 +8694,16 @@ async fn ha_disable_handler(
     caller: AuthenticatedCaller,
 ) -> Response {
     if caller.user.is_none() {
-        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Not authenticated"}))).into_response();
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": "Not authenticated"})),
+        )
+            .into_response();
     }
-    let has_cluster_plan = state.store.get_setting("cluster_plan").await
+    let has_cluster_plan = state
+        .store
+        .get_setting("cluster_plan")
+        .await
         .ok()
         .flatten()
         .map(|p| !p.is_empty())
@@ -8664,11 +8712,7 @@ async fn ha_disable_handler(
     // Rule 425: If there's a stale cluster_plan but HA isn't enabled,
     // clean up the orphaned LXCs and clear the plan.
     if !crate::ha::HaManager::is_ha_enabled() && !has_cluster_plan {
-        return (
-            StatusCode::CONFLICT,
-            "High Availability is not enabled",
-        )
-            .into_response();
+        return (StatusCode::CONFLICT, "High Availability is not enabled").into_response();
     }
 
     if !crate::ha::HaManager::is_ha_enabled() && has_cluster_plan {
@@ -8695,7 +8739,10 @@ async fn ha_disable_handler(
 
     // Check if this is a cluster deployment (has cluster_plan)
     // (has_cluster_plan already computed above)
-    let has_cluster_plan = state.store.get_setting("cluster_plan").await
+    let has_cluster_plan = state
+        .store
+        .get_setting("cluster_plan")
+        .await
         .ok()
         .flatten()
         .map(|p| !p.is_empty())
@@ -8746,14 +8793,16 @@ async fn ha_disable_handler(
         };
 
         let sqlite_path = "/var/lib/dragonfly/dragonfly.sqlite3";
-        match state.ha_manager.disable_ha(&rqlite_store, sqlite_path).await {
-            Ok(_new_store) => {
-                Json(json!({
-                    "success": true,
-                    "message": "Converted back to standalone SQLite. rqlite stopped."
-                }))
-                .into_response()
-            }
+        match state
+            .ha_manager
+            .disable_ha(&rqlite_store, sqlite_path)
+            .await
+        {
+            Ok(_new_store) => Json(json!({
+                "success": true,
+                "message": "Converted back to standalone SQLite. rqlite stopped."
+            }))
+            .into_response(),
             Err(e) => {
                 error!("Failed to disable HA: {}", e);
                 (
@@ -8774,7 +8823,11 @@ async fn cluster_create_handler(
     caller: AuthenticatedCaller,
 ) -> Response {
     if caller.user.is_none() {
-        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Not authenticated"}))).into_response();
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": "Not authenticated"})),
+        )
+            .into_response();
     }
     // Check if already enabled
     if crate::ha::HaManager::is_ha_enabled() {
@@ -8787,13 +8840,21 @@ async fn cluster_create_handler(
 
     // If a deployment is already running, signal it to abort and wait for it to finish.
     // This enables retry: the idempotent design means the next run picks up where it left off.
-    if state.cluster_deploying.load(std::sync::atomic::Ordering::Relaxed) {
+    if state
+        .cluster_deploying
+        .load(std::sync::atomic::Ordering::Relaxed)
+    {
         info!("Retry requested — signalling current deployment to abort");
-        state.cluster_abort.store(true, std::sync::atomic::Ordering::Relaxed);
+        state
+            .cluster_abort
+            .store(true, std::sync::atomic::Ordering::Relaxed);
         // Wait for the current deployment task to finish (DeployGuard clears the flag on drop)
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
         loop {
-            if !state.cluster_deploying.load(std::sync::atomic::Ordering::Relaxed) {
+            if !state
+                .cluster_deploying
+                .load(std::sync::atomic::Ordering::Relaxed)
+            {
                 break;
             }
             if std::time::Instant::now() > deadline {
@@ -8809,14 +8870,20 @@ async fn cluster_create_handler(
     }
 
     // Mark deploying immediately so status endpoint reflects it
-    state.cluster_deploying.store(true, std::sync::atomic::Ordering::Relaxed);
+    state
+        .cluster_deploying
+        .store(true, std::sync::atomic::Ordering::Relaxed);
 
     // Auto-clear stale plans — hostname scanning detects and reuses existing containers.
     // Rule 425: NEVER block the user with stale state they can't clear from the UI.
     if let Ok(Some(existing)) = state.store.get_setting("cluster_plan").await {
         if !existing.is_empty() {
-            info!("Clearing stale cluster plan before new deployment — hostname scanning will find existing containers");
-            state.cluster_abort.store(true, std::sync::atomic::Ordering::Relaxed);
+            info!(
+                "Clearing stale cluster plan before new deployment — hostname scanning will find existing containers"
+            );
+            state
+                .cluster_abort
+                .store(true, std::sync::atomic::Ordering::Relaxed);
             let _ = state.store.put_setting("cluster_plan", "").await;
         }
     }
@@ -8841,7 +8908,9 @@ async fn cluster_create_handler(
                         "role": n.role,
                     })).collect::<Vec<serde_json::Value>>(),
                 });
-                let _ = deploy_state.event_manager.send(format!("cluster:{}", plan_event));
+                let _ = deploy_state
+                    .event_manager
+                    .send(format!("cluster:{}", plan_event));
 
                 crate::cluster::deploy_cluster(deploy_state, plan).await;
             }
@@ -8853,8 +8922,12 @@ async fn cluster_create_handler(
                     "phase": "error",
                     "msg": format!("Failed to build cluster plan: {}", e),
                 });
-                let _ = deploy_state.event_manager.send(format!("cluster:{}", payload));
-                deploy_state.cluster_deploying.store(false, std::sync::atomic::Ordering::Relaxed);
+                let _ = deploy_state
+                    .event_manager
+                    .send(format!("cluster:{}", payload));
+                deploy_state
+                    .cluster_deploying
+                    .store(false, std::sync::atomic::Ordering::Relaxed);
             }
         }
     });
@@ -8863,7 +8936,8 @@ async fn cluster_create_handler(
     Json(json!({
         "success": true,
         "message": "Cluster deployment started — planning in progress",
-    })).into_response()
+    }))
+    .into_response()
 }
 
 /// POST /api/cluster/abort — Abort an in-flight cluster deployment and clean up
@@ -8876,18 +8950,20 @@ async fn cluster_abort_handler(
     caller: AuthenticatedCaller,
 ) -> Response {
     if caller.user.is_none() {
-        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Not authenticated"}))).into_response();
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": "Not authenticated"})),
+        )
+            .into_response();
     }
     info!("Cluster abort requested");
 
     match crate::cluster::abort_cluster(&state).await {
-        Ok(()) => {
-            Json(json!({
-                "success": true,
-                "message": "Deployment aborted and cleaned up"
-            }))
-            .into_response()
-        }
+        Ok(()) => Json(json!({
+            "success": true,
+            "message": "Deployment aborted and cleaned up"
+        }))
+        .into_response(),
         Err(e) => {
             error!("Cluster abort failed: {}", e);
             (
@@ -8908,19 +8984,34 @@ async fn cluster_status_handler(
     caller: AuthenticatedCaller,
 ) -> Response {
     if caller.user.is_none() {
-        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Not authenticated"}))).into_response();
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": "Not authenticated"})),
+        )
+            .into_response();
     }
-    let plan_json = state.store.get_setting("cluster_plan").await
+    let plan_json = state
+        .store
+        .get_setting("cluster_plan")
+        .await
         .ok()
         .flatten()
         .unwrap_or_default();
-    let actively_deploying = state.cluster_deploying.load(std::sync::atomic::Ordering::Relaxed);
+    let actively_deploying = state
+        .cluster_deploying
+        .load(std::sync::atomic::Ordering::Relaxed);
 
     // Read current deployment phase info for reconnecting clients
-    let global_phase = state.cluster_phase.lock()
-        .map(|p| p.clone()).unwrap_or_default();
-    let node_phases = state.cluster_node_phases.lock()
-        .map(|m| m.clone()).unwrap_or_default();
+    let global_phase = state
+        .cluster_phase
+        .lock()
+        .map(|p| p.clone())
+        .unwrap_or_default();
+    let node_phases = state
+        .cluster_node_phases
+        .lock()
+        .map(|m| m.clone())
+        .unwrap_or_default();
 
     if plan_json.is_empty() {
         return Json(json!({
@@ -8928,7 +9019,8 @@ async fn cluster_status_handler(
             "deploying": actively_deploying,
             "phase": global_phase,
             "nodes": [],
-        })).into_response();
+        }))
+        .into_response();
     }
 
     let ha_enabled = crate::ha::HaManager::is_ha_enabled();
@@ -8955,7 +9047,8 @@ async fn cluster_status_handler(
                         "phase": node_phase,
                     })
                 }).collect::<Vec<_>>(),
-            })).into_response()
+            }))
+            .into_response()
         }
         Err(_) => {
             // Unparseable plan — stale data from old format. Clear it automatically.
@@ -8965,7 +9058,8 @@ async fn cluster_status_handler(
                 "deployed": false,
                 "deploying": false,
                 "nodes": [],
-            })).into_response()
+            }))
+            .into_response()
         }
     }
 }
@@ -8989,30 +9083,66 @@ async fn cluster_node_role_handler(
     Json(body): Json<NodeRoleBody>,
 ) -> Response {
     if caller.user.is_none() {
-        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "Unauthorized"}))).into_response();
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"error": "Unauthorized"})),
+        )
+            .into_response();
     }
     if body.role != "core" && body.role != "replica" {
-        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "role must be 'core' or 'replica'"}))).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "role must be 'core' or 'replica'"})),
+        )
+            .into_response();
     }
     let plan_json = match state.store.get_setting("cluster_plan").await {
         Ok(Some(p)) if !p.is_empty() => p,
-        _ => return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "No cluster plan found"}))).into_response(),
+        _ => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "No cluster plan found"})),
+            )
+                .into_response();
+        }
     };
     let mut plan: crate::cluster::ClusterPlan = match serde_json::from_str(&plan_json) {
         Ok(p) => p,
-        Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": "Invalid cluster plan"}))).into_response(),
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "Invalid cluster plan"})),
+            )
+                .into_response();
+        }
     };
     let node = match plan.nodes.get_mut(idx) {
         Some(n) => n,
-        None => return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "Node index out of range"}))).into_response(),
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "Node index out of range"})),
+            )
+                .into_response();
+        }
     };
     node.role = body.role.clone();
     let updated = match serde_json::to_string(&plan) {
         Ok(s) => s,
-        Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": "Failed to serialize plan"}))).into_response(),
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "Failed to serialize plan"})),
+            )
+                .into_response();
+        }
     };
     if let Err(e) = state.store.put_setting("cluster_plan", &updated).await {
-        return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": format!("Failed to save: {}", e)}))).into_response();
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": format!("Failed to save: {}", e)})),
+        )
+            .into_response();
     }
     Json(serde_json::json!({"success": true, "idx": idx, "role": body.role})).into_response()
 }
@@ -9023,16 +9153,19 @@ async fn cluster_node_role_handler(
 
 /// POST /api/k8s/create — stub endpoint for Kubernetes cluster deployment.
 /// Full deployment logic is tracked in FLY-95.
-async fn k8s_create_handler(
-    caller: AuthenticatedCaller,
-) -> Response {
+async fn k8s_create_handler(caller: AuthenticatedCaller) -> Response {
     if caller.user.is_none() {
-        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "Unauthorized"}))).into_response();
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"error": "Unauthorized"})),
+        )
+            .into_response();
     }
     Json(serde_json::json!({
         "success": false,
         "message": "Kubernetes cluster deployment is not yet implemented. Stay tuned!"
-    })).into_response()
+    }))
+    .into_response()
 }
 
 // =============================================================================
@@ -9046,15 +9179,25 @@ async fn cluster_management_key_handler(
     caller: AuthenticatedCaller,
 ) -> Response {
     if caller.user.is_none() {
-        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Not authenticated"}))).into_response();
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": "Not authenticated"})),
+        )
+            .into_response();
     }
-    let pubkey = state.store.get_setting("cluster_management_pubkey").await
-        .ok().flatten().unwrap_or_default();
+    let pubkey = state
+        .store
+        .get_setting("cluster_management_pubkey")
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_default();
 
     if pubkey.is_empty() {
         return Json(json!({
             "exists": false,
-        })).into_response();
+        }))
+        .into_response();
     }
 
     // Parse the public key to get the fingerprint
@@ -9066,7 +9209,8 @@ async fn cluster_management_key_handler(
         "exists": true,
         "public_key": pubkey,
         "fingerprint": fingerprint,
-    })).into_response()
+    }))
+    .into_response()
 }
 
 /// Rotate the management key: generates a new keypair, stores it, and returns the new fingerprint.
@@ -9076,11 +9220,21 @@ async fn cluster_rotate_key_handler(
     caller: AuthenticatedCaller,
 ) -> Response {
     if caller.user.is_none() {
-        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Not authenticated"}))).into_response();
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": "Not authenticated"})),
+        )
+            .into_response();
     }
     // Clear existing key so ensure_management_key() generates fresh
-    let _ = state.store.put_setting("cluster_management_pubkey", "").await;
-    let _ = state.store.put_setting("cluster_management_privkey", "").await;
+    let _ = state
+        .store
+        .put_setting("cluster_management_pubkey", "")
+        .await;
+    let _ = state
+        .store
+        .put_setting("cluster_management_privkey", "")
+        .await;
 
     match crate::cluster::ensure_management_key_public(&state).await {
         Ok((pubkey, _)) => {
@@ -9092,14 +9246,14 @@ async fn cluster_rotate_key_handler(
                 "success": true,
                 "public_key": pubkey,
                 "fingerprint": fingerprint,
-            })).into_response()
+            }))
+            .into_response()
         }
-        Err(e) => {
-            Json(json!({
-                "success": false,
-                "error": format!("{}", e),
-            })).into_response()
-        }
+        Err(e) => Json(json!({
+            "success": false,
+            "error": format!("{}", e),
+        }))
+        .into_response(),
     }
 }
 
@@ -9108,9 +9262,7 @@ async fn cluster_rotate_key_handler(
 // =============================================================================
 
 /// GET /api/maintenance/dev-mode — check if developer mode is active
-async fn dev_mode_status_handler(
-    State(state): State<crate::AppState>,
-) -> impl IntoResponse {
+async fn dev_mode_status_handler(State(state): State<crate::AppState>) -> impl IntoResponse {
     let dev_path = state.dev_template_path.read().unwrap();
     let enabled = dev_path.is_some();
     let template_path = dev_path.clone().unwrap_or_default();
@@ -9133,16 +9285,18 @@ async fn dev_mode_toggle_handler(
     State(state): State<crate::AppState>,
     Json(request): Json<DevModeRequest>,
 ) -> impl IntoResponse {
-    use minijinja::path_loader;
     use crate::TemplateEnv;
+    use minijinja::path_loader;
 
     if request.enabled {
         let raw_path = match request.template_path {
             Some(ref p) if !p.is_empty() => p.clone(),
-            _ => return Json(json!({
-                "success": false,
-                "message": "Template path is required when enabling developer mode",
-            })),
+            _ => {
+                return Json(json!({
+                    "success": false,
+                    "message": "Template path is required when enabling developer mode",
+                }));
+            }
         };
 
         // Validate path exists
@@ -9160,8 +9314,13 @@ async fn dev_mode_toggle_handler(
         // 3. Otherwise, fail with a helpful message
         let template_path = if raw.join("base.html").exists() {
             raw_path.clone()
-        } else if raw.join("crates/dragonfly-server/templates/base.html").exists() {
-            raw.join("crates/dragonfly-server/templates").to_string_lossy().to_string()
+        } else if raw
+            .join("crates/dragonfly-server/templates/base.html")
+            .exists()
+        {
+            raw.join("crates/dragonfly-server/templates")
+                .to_string_lossy()
+                .to_string()
         } else {
             return Json(json!({
                 "success": false,
@@ -9203,7 +9362,11 @@ async fn dev_mode_toggle_handler(
         }
 
         // Persist to store so dev mode survives restarts
-        if let Err(e) = state.store.put_setting("dev_template_path", &template_path).await {
+        if let Err(e) = state
+            .store
+            .put_setting("dev_template_path", &template_path)
+            .await
+        {
             tracing::warn!("Failed to persist dev_template_path to store: {}", e);
         }
 
@@ -9273,23 +9436,36 @@ async fn credentials_list_handler(
     caller: AuthenticatedCaller,
 ) -> Response {
     if caller.user.is_none() {
-        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Not authenticated"}))).into_response();
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": "Not authenticated"})),
+        )
+            .into_response();
     }
     let mut credentials: Vec<CredentialInfo> = Vec::new();
 
     // 1. Proxmox credentials
-    if let Ok(Some(settings)) = crate::handlers::proxmox::get_proxmox_settings_from_store_pub(
-        state.store.as_ref()
-    ).await {
+    if let Ok(Some(settings)) =
+        crate::handlers::proxmox::get_proxmox_settings_from_store_pub(state.store.as_ref()).await
+    {
         let token_count = [
             &settings.vm_create_token,
             &settings.vm_power_token,
             &settings.vm_config_token,
             &settings.vm_sync_token,
-        ].iter().filter(|t| t.is_some()).count();
+        ]
+        .iter()
+        .filter(|t| t.is_some())
+        .count();
 
         if token_count > 0 || !settings.host.is_empty() {
-            let status = if token_count == 4 { "active" } else if token_count > 0 { "partial" } else { "missing" };
+            let status = if token_count == 4 {
+                "active"
+            } else if token_count > 0 {
+                "partial"
+            } else {
+                "missing"
+            };
             credentials.push(CredentialInfo {
                 id: "proxmox".to_string(),
                 credential_type: "proxmox".to_string(),
@@ -9303,8 +9479,13 @@ async fn credentials_list_handler(
     }
 
     // 2. SSH Cluster Key
-    let cluster_pub = state.store.get_setting("cluster_management_pubkey").await
-        .ok().flatten().unwrap_or_default();
+    let cluster_pub = state
+        .store
+        .get_setting("cluster_management_pubkey")
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_default();
     if !cluster_pub.is_empty() {
         credentials.push(CredentialInfo {
             id: "ssh-cluster".to_string(),
@@ -9318,8 +9499,13 @@ async fn credentials_list_handler(
     }
 
     // 3. SSH Machine Key
-    let machine_pub = state.store.get_setting("machine_management_pubkey").await
-        .ok().flatten().unwrap_or_default();
+    let machine_pub = state
+        .store
+        .get_setting("machine_management_pubkey")
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_default();
     if !machine_pub.is_empty() {
         credentials.push(CredentialInfo {
             id: "ssh-machine".to_string(),
@@ -9355,7 +9541,11 @@ async fn credentials_add_handler(
     Json(request): Json<AddCredentialRequest>,
 ) -> Response {
     if caller.user.is_none() {
-        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Not authenticated"}))).into_response();
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": "Not authenticated"})),
+        )
+            .into_response();
     }
     let cmd = request.command.trim();
 
@@ -9364,10 +9554,13 @@ async fn credentials_add_handler(
         let rest = &cmd["proxmox:".len()..];
         let colon_pos = match rest.find(':') {
             Some(pos) => pos,
-            None => return Json(json!({
-                "success": false,
-                "message": "Invalid format. Use proxmox:username:password"
-            })).into_response(),
+            None => {
+                return Json(json!({
+                    "success": false,
+                    "message": "Invalid format. Use proxmox:username:password"
+                }))
+                .into_response();
+            }
         };
         let username = &rest[..colon_pos];
         let password = &rest[colon_pos + 1..];
@@ -9376,18 +9569,26 @@ async fn credentials_add_handler(
             return Json(json!({
                 "success": false,
                 "message": "Username and password cannot be empty"
-            })).into_response();
+            }))
+            .into_response();
         }
 
         // Get host/port from request or existing settings
         let (host, port, skip_tls) = {
             let settings = state.settings.lock().await;
             (
-                request.host.clone().or_else(|| settings.proxmox_host.clone())
+                request
+                    .host
+                    .clone()
+                    .or_else(|| settings.proxmox_host.clone())
                     .unwrap_or_default(),
-                request.port.or_else(|| settings.proxmox_port.map(|p| p as i32))
+                request
+                    .port
+                    .or_else(|| settings.proxmox_port.map(|p| p as i32))
                     .unwrap_or(8006),
-                request.skip_tls_verify.or_else(|| settings.proxmox_skip_tls_verify)
+                request
+                    .skip_tls_verify
+                    .or_else(|| settings.proxmox_skip_tls_verify)
                     .unwrap_or(false),
             )
         };
@@ -9396,7 +9597,8 @@ async fn credentials_add_handler(
             return Json(json!({
                 "success": false,
                 "message": "No Proxmox host configured. Provide host in the form."
-            })).into_response();
+            }))
+            .into_response();
         }
 
         let token_request = crate::handlers::proxmox::ProxmoxTokensCreateRequest {
@@ -9409,16 +9611,24 @@ async fn credentials_add_handler(
 
         let import_guests = request.import_guests.unwrap_or(false);
 
-        match crate::handlers::proxmox::generate_proxmox_tokens_with_credentials(&token_request).await {
+        match crate::handlers::proxmox::generate_proxmox_tokens_with_credentials(&token_request)
+            .await
+        {
             Ok(token_set) => {
                 match crate::handlers::proxmox::save_proxmox_tokens(&state, token_set).await {
                     Ok(_) => {
                         // Run discovery to import nodes (and guests if requested)
-                        let (_, discover_json) = crate::handlers::proxmox::connect_proxmox_discover(
-                            &state, &host, import_guests, false,
-                        ).await;
+                        let (_, discover_json) =
+                            crate::handlers::proxmox::connect_proxmox_discover(
+                                &state,
+                                &host,
+                                import_guests,
+                                false,
+                            )
+                            .await;
                         let discover_data = discover_json.0;
-                        let import_info = discover_data.get("import_result")
+                        let import_info = discover_data
+                            .get("import_result")
                             .and_then(|r| r.as_object());
                         let nodes = import_info
                             .and_then(|r| r.get("imported_nodes"))
@@ -9428,25 +9638,31 @@ async fn credentials_add_handler(
                             .and_then(|r| r.get("imported_guests"))
                             .and_then(|n| n.as_u64())
                             .unwrap_or(0);
-                        let mut msg = format!("Connected to Proxmox as {}. Discovered {} nodes", username, nodes);
+                        let mut msg = format!(
+                            "Connected to Proxmox as {}. Discovered {} nodes",
+                            username, nodes
+                        );
                         if import_guests && guests > 0 {
                             msg.push_str(&format!(", {} guests imported", guests));
                         }
                         Json(json!({
                             "success": true,
                             "message": msg,
-                        })).into_response()
+                        }))
+                        .into_response()
                     }
                     Err(e) => Json(json!({
                         "success": false,
                         "message": format!("Tokens created but failed to save: {}", e),
-                    })).into_response(),
+                    }))
+                    .into_response(),
                 }
             }
             Err(e) => Json(json!({
                 "success": false,
                 "message": format!("Failed to create Proxmox tokens: {}", e),
-            })).into_response(),
+            }))
+            .into_response(),
         }
     } else if cmd == "ssh-keygen cluster" {
         match crate::cluster::ensure_management_key_public(&state).await {
@@ -9455,12 +9671,14 @@ async fn credentials_add_handler(
                 Json(json!({
                     "success": true,
                     "message": format!("Cluster key generated ({})", fp),
-                })).into_response()
+                }))
+                .into_response()
             }
             Err(e) => Json(json!({
                 "success": false,
                 "message": format!("Failed to generate cluster key: {}", e),
-            })).into_response(),
+            }))
+            .into_response(),
         }
     } else if cmd == "ssh-keygen machine" {
         match crate::cluster::ensure_machine_key_public(&state).await {
@@ -9469,12 +9687,14 @@ async fn credentials_add_handler(
                 Json(json!({
                     "success": true,
                     "message": format!("Machine key generated ({})", fp),
-                })).into_response()
+                }))
+                .into_response()
             }
             Err(e) => Json(json!({
                 "success": false,
                 "message": format!("Failed to generate machine key: {}", e),
-            })).into_response(),
+            }))
+            .into_response(),
         }
     } else {
         Json(json!({
@@ -9491,51 +9711,73 @@ async fn credentials_rotate_handler(
     Path(id): Path<String>,
 ) -> Response {
     if caller.user.is_none() {
-        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Not authenticated"}))).into_response();
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": "Not authenticated"})),
+        )
+            .into_response();
     }
     match id.as_str() {
         "proxmox" => Json(json!({
             "success": false,
             "message": "Use 'Add' to re-connect with Proxmox credentials",
-        })).into_response(),
+        }))
+        .into_response(),
         "ssh-cluster" => {
-            let _ = state.store.put_setting("cluster_management_pubkey", "").await;
-            let _ = state.store.put_setting("cluster_management_privkey", "").await;
+            let _ = state
+                .store
+                .put_setting("cluster_management_pubkey", "")
+                .await;
+            let _ = state
+                .store
+                .put_setting("cluster_management_privkey", "")
+                .await;
             match crate::cluster::ensure_management_key_public(&state).await {
                 Ok((pubkey, _)) => {
                     let fp = ssh_fingerprint(&pubkey);
                     Json(json!({
                         "success": true,
                         "message": format!("Cluster key rotated ({})", fp),
-                    })).into_response()
+                    }))
+                    .into_response()
                 }
                 Err(e) => Json(json!({
                     "success": false,
                     "message": format!("Failed to rotate cluster key: {}", e),
-                })).into_response(),
+                }))
+                .into_response(),
             }
         }
         "ssh-machine" => {
-            let _ = state.store.put_setting("machine_management_pubkey", "").await;
-            let _ = state.store.put_setting("machine_management_privkey", "").await;
+            let _ = state
+                .store
+                .put_setting("machine_management_pubkey", "")
+                .await;
+            let _ = state
+                .store
+                .put_setting("machine_management_privkey", "")
+                .await;
             match crate::cluster::ensure_machine_key_public(&state).await {
                 Ok((pubkey, _)) => {
                     let fp = ssh_fingerprint(&pubkey);
                     Json(json!({
                         "success": true,
                         "message": format!("Machine key rotated ({})", fp),
-                    })).into_response()
+                    }))
+                    .into_response()
                 }
                 Err(e) => Json(json!({
                     "success": false,
                     "message": format!("Failed to rotate machine key: {}", e),
-                })).into_response(),
+                }))
+                .into_response(),
             }
         }
         _ => Json(json!({
             "success": false,
             "message": format!("Unknown credential: {}", id),
-        })).into_response(),
+        }))
+        .into_response(),
     }
 }
 
@@ -9547,16 +9789,21 @@ async fn credentials_delete_handler(
     Query(params): Query<HashMap<String, String>>,
 ) -> Response {
     if caller.user.is_none() {
-        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Not authenticated"}))).into_response();
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": "Not authenticated"})),
+        )
+            .into_response();
     }
     let _cleanup = params.get("cleanup").map(|v| v == "true").unwrap_or(false);
 
     match id.as_str() {
         "proxmox" => {
             // Clear tokens from store by setting them all to None
-            if let Ok(Some(mut settings)) = crate::handlers::proxmox::get_proxmox_settings_from_store_pub(
-                state.store.as_ref()
-            ).await {
+            if let Ok(Some(mut settings)) =
+                crate::handlers::proxmox::get_proxmox_settings_from_store_pub(state.store.as_ref())
+                    .await
+            {
                 settings.vm_create_token = None;
                 settings.vm_power_token = None;
                 settings.vm_config_token = None;
@@ -9564,8 +9811,10 @@ async fn credentials_delete_handler(
                 settings.host = String::new();
                 settings.username = String::new();
                 let _ = crate::handlers::proxmox::put_proxmox_settings_to_store_pub(
-                    state.store.as_ref(), &settings
-                ).await;
+                    state.store.as_ref(),
+                    &settings,
+                )
+                .await;
             }
             // Clear in-memory tokens
             {
@@ -9586,30 +9835,46 @@ async fn credentials_delete_handler(
             Json(json!({
                 "success": true,
                 "message": "Proxmox credentials removed",
-            })).into_response()
+            }))
+            .into_response()
         }
         "ssh-cluster" => {
-            let _ = state.store.put_setting("cluster_management_pubkey", "").await;
-            let _ = state.store.put_setting("cluster_management_privkey", "").await;
+            let _ = state
+                .store
+                .put_setting("cluster_management_pubkey", "")
+                .await;
+            let _ = state
+                .store
+                .put_setting("cluster_management_privkey", "")
+                .await;
             let _ = std::fs::remove_file("/var/lib/dragonfly/cluster-deploy/management_key");
             Json(json!({
                 "success": true,
                 "message": "Cluster key removed",
-            })).into_response()
+            }))
+            .into_response()
         }
         "ssh-machine" => {
-            let _ = state.store.put_setting("machine_management_pubkey", "").await;
-            let _ = state.store.put_setting("machine_management_privkey", "").await;
+            let _ = state
+                .store
+                .put_setting("machine_management_pubkey", "")
+                .await;
+            let _ = state
+                .store
+                .put_setting("machine_management_privkey", "")
+                .await;
             let _ = std::fs::remove_file("/var/lib/dragonfly/machine_key");
             Json(json!({
                 "success": true,
                 "message": "Machine key removed",
-            })).into_response()
+            }))
+            .into_response()
         }
         _ => Json(json!({
             "success": false,
             "message": format!("Unknown credential: {}", id),
-        })).into_response(),
+        }))
+        .into_response(),
     }
 }
 
@@ -9618,9 +9883,16 @@ async fn credentials_delete_handler(
 // =============================================================================
 
 /// List DNS zones (derived from networks with Internal DNS provider + domain)
-async fn dns_list_zones_handler(State(state): State<crate::AppState>, caller: AuthenticatedCaller) -> Response {
+async fn dns_list_zones_handler(
+    State(state): State<crate::AppState>,
+    caller: AuthenticatedCaller,
+) -> Response {
     if caller.user.is_none() {
-        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Not authenticated"}))).into_response();
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": "Not authenticated"})),
+        )
+            .into_response();
     }
     let networks = match state.store.list_networks().await {
         Ok(n) => n,
@@ -9629,7 +9901,7 @@ async fn dns_list_zones_handler(State(state): State<crate::AppState>, caller: Au
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(json!({"error": format!("{}", e)})),
             )
-                .into_response()
+                .into_response();
         }
     };
 
@@ -9658,7 +9930,11 @@ async fn dns_list_records_handler(
     Path(zone): Path<String>,
 ) -> Response {
     if caller.user.is_none() {
-        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Not authenticated"}))).into_response();
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": "Not authenticated"})),
+        )
+            .into_response();
     }
     match state.store.list_dns_records(&zone).await {
         Ok(records) => Json(json!({ "records": records })).into_response(),
@@ -9693,7 +9969,11 @@ async fn dns_create_record_handler(
     Json(req): Json<CreateDnsRecordRequest>,
 ) -> Response {
     if caller.user.is_none() {
-        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Not authenticated"}))).into_response();
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": "Not authenticated"})),
+        )
+            .into_response();
     }
     match state
         .store
@@ -9744,7 +10024,11 @@ async fn dns_update_record_handler(
     Json(req): Json<UpdateDnsRecordRequest>,
 ) -> Response {
     if caller.user.is_none() {
-        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Not authenticated"}))).into_response();
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": "Not authenticated"})),
+        )
+            .into_response();
     }
     // Get current records to find the one to update
     let records = match state.store.list_dns_records(&zone).await {
@@ -9754,7 +10038,7 @@ async fn dns_update_record_handler(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(json!({"error": format!("{}", e)})),
             )
-                .into_response()
+                .into_response();
         }
     };
 
@@ -9765,7 +10049,7 @@ async fn dns_update_record_handler(
                 StatusCode::NOT_FOUND,
                 Json(json!({"error": "Record not found"})),
             )
-                .into_response()
+                .into_response();
         }
     };
 
@@ -9804,7 +10088,11 @@ async fn dns_delete_record_handler(
     Path((_zone, id)): Path<(String, Uuid)>,
 ) -> Response {
     if caller.user.is_none() {
-        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Not authenticated"}))).into_response();
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": "Not authenticated"})),
+        )
+            .into_response();
     }
     match state.store.delete_dns_record(id).await {
         Ok(true) => Json(json!({"success": true})).into_response(),
@@ -9828,7 +10116,11 @@ async fn dns_records_by_machine_handler(
     Path(machine_id): Path<Uuid>,
 ) -> Response {
     if caller.user.is_none() {
-        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Not authenticated"}))).into_response();
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": "Not authenticated"})),
+        )
+            .into_response();
     }
     // Scan all zones for records matching this machine_id
     let networks = match state.store.list_networks().await {
@@ -9838,7 +10130,7 @@ async fn dns_records_by_machine_handler(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(json!({"error": format!("{}", e)})),
             )
-                .into_response()
+                .into_response();
         }
     };
 

@@ -218,15 +218,9 @@ pub fn spawn_dhcp_dns_sync(store: Arc<dyn Store>, mut events: broadcast::Receive
                     // Determine hostname for the DHCP path
                     let host = hostname.as_deref().unwrap_or("");
 
-                    if let Err(e) = write_dns_records(
-                        &store,
-                        ip,
-                        host,
-                        &mac,
-                        machine_id,
-                        DnsRecordSource::Dhcp,
-                    )
-                    .await
+                    if let Err(e) =
+                        write_dns_records(&store, ip, host, &mac, machine_id, DnsRecordSource::Dhcp)
+                            .await
                     {
                         error!(
                             mac = %mac,
@@ -289,42 +283,21 @@ mod tests {
 
     #[test]
     fn test_ip_in_subnet() {
-        assert!(ip_in_subnet(
-            "10.7.2.50".parse().unwrap(),
-            "10.7.2.0/24"
-        ));
-        assert!(ip_in_subnet(
-            "10.7.2.1".parse().unwrap(),
-            "10.7.2.0/24"
-        ));
-        assert!(ip_in_subnet(
-            "10.7.2.254".parse().unwrap(),
-            "10.7.2.0/24"
-        ));
-        assert!(!ip_in_subnet(
-            "10.7.3.1".parse().unwrap(),
-            "10.7.2.0/24"
-        ));
-        assert!(!ip_in_subnet(
-            "192.168.1.1".parse().unwrap(),
-            "10.7.2.0/24"
-        ));
+        assert!(ip_in_subnet("10.7.2.50".parse().unwrap(), "10.7.2.0/24"));
+        assert!(ip_in_subnet("10.7.2.1".parse().unwrap(), "10.7.2.0/24"));
+        assert!(ip_in_subnet("10.7.2.254".parse().unwrap(), "10.7.2.0/24"));
+        assert!(!ip_in_subnet("10.7.3.1".parse().unwrap(), "10.7.2.0/24"));
+        assert!(!ip_in_subnet("192.168.1.1".parse().unwrap(), "10.7.2.0/24"));
     }
 
     #[test]
     fn test_ip_in_subnet_various_masks() {
-        assert!(ip_in_subnet(
-            "10.0.0.1".parse().unwrap(),
-            "10.0.0.0/8"
-        ));
+        assert!(ip_in_subnet("10.0.0.1".parse().unwrap(), "10.0.0.0/8"));
         assert!(ip_in_subnet(
             "10.255.255.255".parse().unwrap(),
             "10.0.0.0/8"
         ));
-        assert!(!ip_in_subnet(
-            "11.0.0.1".parse().unwrap(),
-            "10.0.0.0/8"
-        ));
+        assert!(!ip_in_subnet("11.0.0.1".parse().unwrap(), "10.0.0.0/8"));
 
         assert!(ip_in_subnet(
             "192.168.1.100".parse().unwrap(),
@@ -339,20 +312,11 @@ mod tests {
     #[test]
     fn test_ip_in_subnet_edge_cases() {
         // /32 — single host
-        assert!(ip_in_subnet(
-            "10.0.0.1".parse().unwrap(),
-            "10.0.0.1/32"
-        ));
-        assert!(!ip_in_subnet(
-            "10.0.0.2".parse().unwrap(),
-            "10.0.0.1/32"
-        ));
+        assert!(ip_in_subnet("10.0.0.1".parse().unwrap(), "10.0.0.1/32"));
+        assert!(!ip_in_subnet("10.0.0.2".parse().unwrap(), "10.0.0.1/32"));
 
         // /0 — everything matches
-        assert!(ip_in_subnet(
-            "1.2.3.4".parse().unwrap(),
-            "0.0.0.0/0"
-        ));
+        assert!(ip_in_subnet("1.2.3.4".parse().unwrap(), "0.0.0.0/0"));
 
         // Bad CIDR
         assert!(!ip_in_subnet("10.0.0.1".parse().unwrap(), "garbage"));

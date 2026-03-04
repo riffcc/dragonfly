@@ -316,13 +316,11 @@ impl ProvisioningService {
     /// it should use Debian Mage instead of Alpine Mage for provisioning.
     async fn should_use_debian_mage(&self, template_name: &str) -> bool {
         match self.store.get_template(template_name).await {
-            Ok(Some(template)) => {
-                template
-                    .spec
-                    .boot_env
-                    .as_deref()
-                    .is_some_and(|env| env == "debian")
-            }
+            Ok(Some(template)) => template
+                .spec
+                .boot_env
+                .as_deref()
+                .is_some_and(|env| env == "debian"),
             _ => false,
         }
     }

@@ -162,7 +162,10 @@ impl HaManager {
             bail!("rqlite download failed: HTTP {}", resp.status());
         }
 
-        let bytes = resp.bytes().await.context("Failed to read rqlite tarball")?;
+        let bytes = resp
+            .bytes()
+            .await
+            .context("Failed to read rqlite tarball")?;
 
         // Extract rqlited from tarball
         let decoder = flate2::read::GzDecoder::new(&bytes[..]);
@@ -171,10 +174,7 @@ impl HaManager {
         let bin_dir = PathBuf::from(DATA_DIR).join("bin");
         fs::create_dir_all(&bin_dir).await?;
 
-        let expected_entry = format!(
-            "rqlite-v{}-linux-{}/rqlited",
-            RQLITE_VERSION, arch
-        );
+        let expected_entry = format!("rqlite-v{}-linux-{}/rqlited", RQLITE_VERSION, arch);
 
         let mut found = false;
         for entry in archive.entries()? {
@@ -196,7 +196,10 @@ impl HaManager {
         }
 
         if !found {
-            bail!("rqlited binary not found in tarball (looked for {})", expected_entry);
+            bail!(
+                "rqlited binary not found in tarball (looked for {})",
+                expected_entry
+            );
         }
 
         info!("rqlite v{} installed at {}", RQLITE_VERSION, RQLITE_BIN);
@@ -218,9 +221,12 @@ impl HaManager {
         let raft_addr = format!("0.0.0.0:{}", self.raft_port);
 
         let mut cmd = Command::new(RQLITE_BIN);
-        cmd.arg("-node-id").arg(&self.node_id)
-            .arg("-http-addr").arg(&http_addr)
-            .arg("-raft-addr").arg(&raft_addr)
+        cmd.arg("-node-id")
+            .arg(&self.node_id)
+            .arg("-http-addr")
+            .arg(&http_addr)
+            .arg("-raft-addr")
+            .arg(&raft_addr)
             .arg(RQLITE_DATA_DIR);
 
         if let Some(join) = join_addr {
@@ -330,10 +336,7 @@ impl HaManager {
     }
 
     /// Enable HA mode: download rqlite, start it, migrate data from SQLite
-    pub async fn enable_ha(
-        &self,
-        sqlite_store: &SqliteStore,
-    ) -> Result<Arc<dyn Store>> {
+    pub async fn enable_ha(&self, sqlite_store: &SqliteStore) -> Result<Arc<dyn Store>> {
         info!("Enabling High Availability mode...");
 
         // Step 1: Download rqlite binary
@@ -343,7 +346,8 @@ impl HaManager {
         self.start(None).await?;
 
         // Step 3: Connect to rqlite
-        let rqlite_store = RqliteStore::open(&self.rqlite_url()).await
+        let rqlite_store = RqliteStore::open(&self.rqlite_url())
+            .await
             .context("Failed to connect to rqlite store")?;
 
         // Step 4: Migrate data from SQLite
@@ -365,7 +369,8 @@ impl HaManager {
         info!("Disabling High Availability mode...");
 
         // Step 1: Open/create SQLite store
-        let sqlite_store = SqliteStore::open(sqlite_path).await
+        let sqlite_store = SqliteStore::open(sqlite_path)
+            .await
             .map_err(|e| anyhow::anyhow!("Failed to open SQLite: {}", e))?;
 
         // Step 2: Migrate data from rqlite → SQLite
@@ -386,59 +391,73 @@ impl HaManager {
 ///
 /// Accepts `&dyn Store` so the caller can pass the live store (StoreProxy)
 /// instead of a fresh SqliteStore — avoids WAL visibility issues.
-pub async fn migrate_to_rqlite(
-    src: &dyn Store,
-    dst: &RqliteStore,
-) -> Result<()> {
+pub async fn migrate_to_rqlite(src: &dyn Store, dst: &RqliteStore) -> Result<()> {
     info!("Migrating data to rqlite...");
 
     // Migrate settings
-    let settings = src.list_settings("").await
+    let settings = src
+        .list_settings("")
+        .await
         .map_err(|e| anyhow::anyhow!("Failed to list settings: {}", e))?;
     for (key, value) in &settings {
-        dst.put_setting(key, value).await
+        dst.put_setting(key, value)
+            .await
             .map_err(|e| anyhow::anyhow!("Failed to put setting: {}", e))?;
     }
     info!("Migrated {} settings", settings.len());
 
     // Migrate templates
-    let templates = src.list_templates().await
+    let templates = src
+        .list_templates()
+        .await
         .map_err(|e| anyhow::anyhow!("Failed to list templates: {}", e))?;
     for template in &templates {
-        dst.put_template(template).await
+        dst.put_template(template)
+            .await
             .map_err(|e| anyhow::anyhow!("Failed to put template: {}", e))?;
     }
     info!("Migrated {} templates", templates.len());
 
     // Migrate networks
-    let networks = src.list_networks().await
+    let networks = src
+        .list_networks()
+        .await
         .map_err(|e| anyhow::anyhow!("Failed to list networks: {}", e))?;
     for network in &networks {
-        dst.put_network(network).await
+        dst.put_network(network)
+            .await
             .map_err(|e| anyhow::anyhow!("Failed to put network: {}", e))?;
     }
     info!("Migrated {} networks", networks.len());
 
     // Migrate users
-    let users = src.list_users().await
+    let users = src
+        .list_users()
+        .await
         .map_err(|e| anyhow::anyhow!("Failed to list users: {}", e))?;
     for user in &users {
-        dst.put_user(user).await
+        dst.put_user(user)
+            .await
             .map_err(|e| anyhow::anyhow!("Failed to put user: {}", e))?;
     }
     info!("Migrated {} users", users.len());
 
     // Migrate machines (includes tags)
-    let machines = src.list_machines().await
+    let machines = src
+        .list_machines()
+        .await
         .map_err(|e| anyhow::anyhow!("Failed to list machines: {}", e))?;
     for machine in &machines {
-        dst.put_machine(machine).await
+        dst.put_machine(machine)
+            .await
             .map_err(|e| anyhow::anyhow!("Failed to put machine: {}", e))?;
     }
     info!("Migrated {} machines", machines.len());
 
     // Migrate standalone tags (not attached to any machine)
-    let tags = src.list_all_tags().await
+    let tags = src
+        .list_all_tags()
+        .await
         .map_err(|e| anyhow::anyhow!("Failed to list tags: {}", e))?;
     for tag in &tags {
         let _ = dst.create_tag(tag).await;
@@ -446,10 +465,13 @@ pub async fn migrate_to_rqlite(
     info!("Migrated {} tags", tags.len());
 
     // Migrate workflows
-    let workflows = src.list_workflows().await
+    let workflows = src
+        .list_workflows()
+        .await
         .map_err(|e| anyhow::anyhow!("Failed to list workflows: {}", e))?;
     for workflow in &workflows {
-        dst.put_workflow(workflow).await
+        dst.put_workflow(workflow)
+            .await
             .map_err(|e| anyhow::anyhow!("Failed to put workflow: {}", e))?;
     }
     info!("Migrated {} workflows", workflows.len());
@@ -502,18 +524,20 @@ pub fn read_ha_config() -> Option<HaConfig> {
 /// Uses the live store (state.store) for migration, NOT a fresh SqliteStore.
 /// A fresh SqliteStore::open() may miss recent WAL writes (like cluster_plan),
 /// but the live store sees everything.
-pub async fn enable_ha_remote(
-    state: &crate::AppState,
-    ha_nodes: &[HaNode],
-) -> anyhow::Result<()> {
-    let config = HaConfig { nodes: ha_nodes.to_vec() };
+pub async fn enable_ha_remote(state: &crate::AppState, ha_nodes: &[HaNode]) -> anyhow::Result<()> {
+    let config = HaConfig {
+        nodes: ha_nodes.to_vec(),
+    };
     let hosts = config.hosts_by_priority();
-    info!("Enabling HA with remote rqlite cluster ({} nodes, {} cores)",
+    info!(
+        "Enabling HA with remote rqlite cluster ({} nodes, {} cores)",
         ha_nodes.len(),
-        ha_nodes.iter().filter(|n| n.role == "core").count());
+        ha_nodes.iter().filter(|n| n.role == "core").count()
+    );
 
     // Connect to the remote rqlite cluster with full topology failover
-    let rqlite_store = RqliteStore::open_cluster(&hosts).await
+    let rqlite_store = RqliteStore::open_cluster(&hosts)
+        .await
         .map_err(|e| anyhow::anyhow!("Failed to connect to rqlite: {}", e))?;
 
     // Migrate from the LIVE store directly to rqlite.
@@ -537,64 +561,81 @@ pub async fn enable_ha_remote(
 }
 
 /// Migrate all data from rqlite store back to SQLite store
-pub async fn migrate_rqlite_to_sqlite(
-    src: &RqliteStore,
-    dst: &SqliteStore,
-) -> Result<()> {
+pub async fn migrate_rqlite_to_sqlite(src: &RqliteStore, dst: &SqliteStore) -> Result<()> {
     info!("Migrating data from rqlite to SQLite...");
 
     // Settings
-    let settings = src.list_settings("").await
+    let settings = src
+        .list_settings("")
+        .await
         .map_err(|e| anyhow::anyhow!("Failed to list settings: {}", e))?;
     for (key, value) in &settings {
-        dst.put_setting(key, value).await
+        dst.put_setting(key, value)
+            .await
             .map_err(|e| anyhow::anyhow!("Failed to put setting: {}", e))?;
     }
 
     // Templates
-    let templates = src.list_templates().await
+    let templates = src
+        .list_templates()
+        .await
         .map_err(|e| anyhow::anyhow!("Failed to list templates: {}", e))?;
     for template in &templates {
-        dst.put_template(template).await
+        dst.put_template(template)
+            .await
             .map_err(|e| anyhow::anyhow!("Failed to put template: {}", e))?;
     }
 
     // Networks
-    let networks = src.list_networks().await
+    let networks = src
+        .list_networks()
+        .await
         .map_err(|e| anyhow::anyhow!("Failed to list networks: {}", e))?;
     for network in &networks {
-        dst.put_network(network).await
+        dst.put_network(network)
+            .await
             .map_err(|e| anyhow::anyhow!("Failed to put network: {}", e))?;
     }
 
     // Users
-    let users = src.list_users().await
+    let users = src
+        .list_users()
+        .await
         .map_err(|e| anyhow::anyhow!("Failed to list users: {}", e))?;
     for user in &users {
-        dst.put_user(user).await
+        dst.put_user(user)
+            .await
             .map_err(|e| anyhow::anyhow!("Failed to put user: {}", e))?;
     }
 
     // Machines
-    let machines = src.list_machines().await
+    let machines = src
+        .list_machines()
+        .await
         .map_err(|e| anyhow::anyhow!("Failed to list machines: {}", e))?;
     for machine in &machines {
-        dst.put_machine(machine).await
+        dst.put_machine(machine)
+            .await
             .map_err(|e| anyhow::anyhow!("Failed to put machine: {}", e))?;
     }
 
     // Tags
-    let tags = src.list_all_tags().await
+    let tags = src
+        .list_all_tags()
+        .await
         .map_err(|e| anyhow::anyhow!("Failed to list tags: {}", e))?;
     for tag in &tags {
         let _ = dst.create_tag(tag).await;
     }
 
     // Workflows
-    let workflows = src.list_workflows().await
+    let workflows = src
+        .list_workflows()
+        .await
         .map_err(|e| anyhow::anyhow!("Failed to list workflows: {}", e))?;
     for workflow in &workflows {
-        dst.put_workflow(workflow).await
+        dst.put_workflow(workflow)
+            .await
             .map_err(|e| anyhow::anyhow!("Failed to put workflow: {}", e))?;
     }
 
