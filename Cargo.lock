@@ -3545,6 +3545,7 @@ checksum = "92ecc6618181def0457392ccd0ee51198e065e016d1d527a7ac1b6dc7c1f09d2"
 [[package]]
 name = "jetpack"
 version = "0.4.4"
+source = "git+https://github.com/riffcc/jetpack?branch=main#29b67a04d9ba74e2128c69d08a1d2def4c46939c"
 dependencies = [
  "chrono",
  "expanduser",
@@ -3554,7 +3555,6 @@ dependencies = [
  "inline_colorization",
  "once_cell",
  "rayon",
- "regex",
  "reqwest 0.12.28",
  "russh",
  "russh-sftp",
