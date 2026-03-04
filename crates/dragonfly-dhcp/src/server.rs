@@ -304,12 +304,22 @@ impl DhcpServer {
         // This ensures DHCP traffic is only sent/received on the right interface,
         // which is critical for multi-homed hosts serving multiple VLANs.
         if let Some(ref iface) = self.config.interface {
-            socket
-                .bind_device(Some(iface.as_bytes()))
-                .map_err(|e| DhcpError::BindFailed {
-                    addr: bind_addr.into(),
-                    source: e,
-                })?;
+            #[cfg(any(target_os = "linux", target_os = "android"))]
+            {
+                socket
+                    .bind_device(Some(iface.as_bytes()))
+                    .map_err(|e| DhcpError::BindFailed {
+                        addr: bind_addr.into(),
+                        source: e,
+                    })?;
+            }
+            #[cfg(not(any(target_os = "linux", target_os = "android")))]
+            {
+                warn!(
+                    interface = %iface,
+                    "DHCP interface binding requested, but SO_BINDTODEVICE is unsupported on this platform"
+                );
+            }
         }
 
         // Bind to address
