@@ -32,7 +32,7 @@ thiserror = "1.0"
 tracing = "0.1"
 tracing-subscriber = "0.3"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "blocking"] }
-jetpack = { git = "https://github.com/riffcc/jetpack", branch = "main" }
+jetpack = { git = "https://github.com/riffcc/jetpack", rev = "a212fd92049243c157ebc853eade28db593ef9b5" }
 ssh-key = { version = "0.6", features = ["ed25519", "rand_core", "std"] }
 
 [package]

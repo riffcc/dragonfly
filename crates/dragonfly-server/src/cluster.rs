@@ -1524,6 +1524,7 @@ fn build_jetpack_inventory(
                 memory: Some("1536".to_string()),
                 cores: Some("1".to_string()),
                 ostemplate: Some(node.ostemplate.clone()),
+                fetch: None,
                 storage: Some(node.storage.clone()),
                 rootfs_size: Some("4G".to_string()),
                 net0: Some(net_config),
