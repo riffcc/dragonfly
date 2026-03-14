@@ -768,9 +768,6 @@
   .w-32 {
     width: calc(var(--spacing) * 32);
   }
-  .w-44 {
-    width: calc(var(--spacing) * 44);
-  }
   .w-48 {
     width: calc(var(--spacing) * 48);
   }
@@ -1752,6 +1749,18 @@
   }
   .bg-zinc-800 {
     background-color: var(--color-zinc-800);
+  }
+  .fill-\[\#326CE5\] {
+    fill: #326CE5;
+  }
+  .fill-\[\#E57000\] {
+    fill: #E57000;
+  }
+  .fill-black {
+    fill: var(--color-black);
+  }
+  .fill-transparent {
+    fill: transparent;
   }
   .p-0 {
     padding: calc(var(--spacing) * 0);
@@ -4707,6 +4716,11 @@
       @supports (color: color-mix(in lab, red, red)) {
         background-color: color-mix(in oklab, var(--color-yellow-950) 20%, transparent);
       }
+    }
+  }
+  .dark\:fill-white {
+    &:where(.dark, .dark *) {
+      fill: var(--color-white);
     }
   }
   .dark\:text-amber-300 {
