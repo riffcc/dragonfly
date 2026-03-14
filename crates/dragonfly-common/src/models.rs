@@ -198,6 +198,41 @@ pub struct RegisterRequest {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct AdminCreateMachineRequest {
+    pub mac_address: String,
+    pub ip_address: String,
+    #[serde(default)]
+    pub hostname: Option<String>,
+    #[serde(default)]
+    pub network_id: Option<Uuid>,
+    #[serde(default)]
+    pub prefix_len: Option<u8>,
+    #[serde(default)]
+    pub gateway: Option<String>,
+    #[serde(default)]
+    pub nameservers: Vec<String>,
+    #[serde(default)]
+    pub domain: Option<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub proxmox_vmid: Option<u32>,
+    #[serde(default)]
+    pub proxmox_node: Option<String>,
+    #[serde(default)]
+    pub proxmox_cluster: Option<String>,
+    /// "vm", "lxc", or "node" — determines which MachineSource variant is used.
+    #[serde(default)]
+    pub proxmox_type: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct AdminCreateMachineResponse {
+    pub machine_id: Uuid,
+    pub created: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct DiskInfo {
     pub device: String,
     pub size_bytes: u64,

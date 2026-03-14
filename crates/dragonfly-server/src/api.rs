@@ -18,11 +18,13 @@ use axum::{
 };
 use dragonfly_common::Error;
 use dragonfly_common::models::{
-    BmcCredentialsUpdateRequest, HostnameUpdateRequest, HostnameUpdateResponse,
-    InstallationProgressUpdateRequest, Machine, MachineStatus, OsInstalledUpdateRequest,
-    OsInstalledUpdateResponse, RegisterRequest, StatusUpdateRequest,
+    AdminCreateMachineRequest, AdminCreateMachineResponse, BmcCredentialsUpdateRequest,
+    HostnameUpdateRequest, HostnameUpdateResponse, InstallationProgressUpdateRequest, Machine,
+    MachineStatus, OsInstalledUpdateRequest, OsInstalledUpdateResponse, RegisterRequest,
+    StatusUpdateRequest,
 };
 use dragonfly_common::models::{ErrorResponse, OsAssignmentRequest};
+use dragonfly_common::{MachineIdentity, MachineSource, MachineState, NetworkMode, StaticIpConfig};
 use futures::StreamExt; // For .next() on stream
 use futures::stream;
 use http_body::Frame;
@@ -109,10 +111,96 @@ fn machine_to_detail_level(
     }
 }
 
+fn build_machine_source(req: &AdminCreateMachineRequest) -> MachineSource {
+    match req.proxmox_type.as_deref() {
+        Some("lxc") => {
+            if let (Some(cluster), Some(node), Some(ctid)) = (
+                req.proxmox_cluster.clone(),
+                req.proxmox_node.clone(),
+                req.proxmox_vmid,
+            ) {
+                MachineSource::ProxmoxLxc { cluster, node, ctid }
+            } else {
+                MachineSource::Manual
+            }
+        }
+        Some("node") => {
+            if let (Some(cluster), Some(node)) =
+                (req.proxmox_cluster.clone(), req.proxmox_node.clone())
+            {
+                MachineSource::ProxmoxNode { cluster, node }
+            } else {
+                MachineSource::Manual
+            }
+        }
+        Some("vm") | None => {
+            if let (Some(cluster), Some(node), Some(vmid)) = (
+                req.proxmox_cluster.clone(),
+                req.proxmox_node.clone(),
+                req.proxmox_vmid,
+            ) {
+                MachineSource::Proxmox {
+                    cluster,
+                    node,
+                    vmid,
+                }
+            } else {
+                MachineSource::Manual
+            }
+        }
+        Some(_) => MachineSource::Manual,
+    }
+}
+
+async fn upsert_network_reservation_for_machine(
+    state: &AppState,
+    req: &AdminCreateMachineRequest,
+    hostname: Option<String>,
+) -> Result<(), String> {
+    let Some(network_id) = req.network_id else {
+        return Ok(());
+    };
+
+    let mut network = state
+        .store
+        .get_network(network_id)
+        .await
+        .map_err(|e| format!("failed to fetch network {}: {}", network_id, e))?
+        .ok_or_else(|| format!("network {} not found", network_id))?;
+
+    let normalized_mac = dragonfly_common::normalize_mac(&req.mac_address);
+    if let Some(existing) = network
+        .reservations
+        .iter_mut()
+        .find(|res| dragonfly_common::normalize_mac(&res.mac) == normalized_mac)
+    {
+        existing.ip = req.ip_address.clone();
+        existing.hostname = hostname;
+    } else {
+        network.reservations.push(dragonfly_common::StaticLease {
+            mac: normalized_mac,
+            ip: req.ip_address.clone(),
+            hostname,
+        });
+    }
+    network.updated_at = chrono::Utc::now();
+
+    state
+        .store
+        .put_network(&network)
+        .await
+        .map_err(|e| format!("failed to save network {}: {}", network_id, e))?;
+
+    // DHCP reservations are read from the store on demand, so they take effect
+    // immediately without bouncing the DHCP socket.
+    Ok(())
+}
+
 pub fn api_router() -> Router<crate::AppState> {
     // Core API routes
     Router::new()
         .route("/machines", get(get_all_machines).post(register_machine))
+        .route("/machines/admin/create", post(admin_create_machine))
         .route("/machines/install-status", get(get_install_status))
         .route("/machines/{id}/os", get(get_machine_os).post(assign_os))
         .route("/machines/{id}/reimage", post(reimage_machine)) // Add new reimage endpoint
@@ -583,6 +671,132 @@ async fn download_file(url: &str, target_path: &StdPath) -> Result<(), dragonfly
 
     info!("Successfully downloaded {} to {:?}", url, target_path);
     Ok(())
+}
+
+#[axum::debug_handler]
+async fn admin_create_machine(
+    State(state): State<AppState>,
+    caller: AuthenticatedCaller,
+    Json(payload): Json<AdminCreateMachineRequest>,
+) -> Response {
+    if !caller.is_authenticated() {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({
+                "error": "Not authenticated",
+                "message": "Admin authentication required"
+            })),
+        )
+            .into_response();
+    }
+
+    let normalized_mac = dragonfly_common::normalize_mac(&payload.mac_address);
+    if normalized_mac.is_empty() || normalized_mac == "unknown" {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": "Invalid MAC address",
+                "message": "A valid primary MAC address is required"
+            })),
+        )
+            .into_response();
+    }
+
+    let (mut machine, created) = match state.store.get_machine_by_mac(&normalized_mac).await {
+        Ok(Some(existing)) => (existing, false),
+        Ok(None) => {
+            let identity = MachineIdentity::new(
+                normalized_mac.clone(),
+                vec![normalized_mac.clone()],
+                None,
+                None,
+                None,
+            );
+            let mut machine = dragonfly_common::Machine::new(identity);
+            machine.metadata.source = build_machine_source(&payload);
+            machine.status.state = MachineState::Offline;
+            (machine, true)
+        }
+        Err(e) => {
+            error!("Failed to lookup existing machine by MAC {}: {}", normalized_mac, e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "error": "Database Error",
+                    "message": e.to_string()
+                })),
+            )
+                .into_response();
+        }
+    };
+
+    machine.metadata.source = build_machine_source(&payload);
+    machine.metadata.updated_at = chrono::Utc::now();
+    machine.status.current_ip = Some(payload.ip_address.clone());
+    if machine.status.last_seen.is_none() {
+        machine.status.state = MachineState::Offline;
+    }
+    machine.config.hostname = payload.hostname.clone();
+    machine.config.network_mode = NetworkMode::StaticIpv4;
+    machine.config.static_ipv4 = Some(StaticIpConfig {
+        address: payload.ip_address.clone(),
+        prefix_len: payload.prefix_len.unwrap_or(24),
+        gateway: payload.gateway.clone(),
+    });
+    machine.config.nameservers = payload.nameservers.clone();
+    machine.config.domain = payload.domain.clone();
+    machine.config.network_id = payload.network_id;
+    machine.config.tags = payload.tags.clone();
+    machine.config.pending_apply = false;
+    machine.config.pending_fields.clear();
+
+    match upsert_network_reservation_for_machine(&state, &payload, payload.hostname.clone()).await {
+        Ok(()) => {}
+        Err(message) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": "Reservation update failed",
+                    "message": message
+                })),
+            )
+                .into_response();
+        }
+    }
+
+    match state.store.put_machine(&machine).await {
+        Ok(()) => {
+            let event = if created {
+                format!("machine_discovered:{}", machine.id)
+            } else {
+                format!("machine_updated:{}", machine.id)
+            };
+            let _ = state.event_manager.send(event);
+            (
+                if created {
+                    StatusCode::CREATED
+                } else {
+                    StatusCode::OK
+                },
+                Json(AdminCreateMachineResponse {
+                    machine_id: machine.id,
+                    created,
+                }),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            error!("Failed to save precreated machine {}: {}", normalized_mac, e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "error": "Database Error",
+                    "message": e.to_string()
+                })),
+            )
+                .into_response()
+        }
+    }
 }
 
 #[axum::debug_handler]

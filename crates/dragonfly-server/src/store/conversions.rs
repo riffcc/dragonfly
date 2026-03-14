@@ -605,14 +605,31 @@ pub fn machine_to_common(m: &Machine) -> CommonMachine {
             .and_then(|pi| m.hardware.network_interfaces.iter().find(|i| &i.name == pi))
             .map(|i| i.mac.clone())
             .unwrap_or_else(|| m.identity.primary_mac.clone()),
-        ip_address: m
-            .config
-            .primary_interface
-            .as_ref()
-            .and_then(|pi| m.hardware.network_interfaces.iter().find(|i| &i.name == pi))
-            .and_then(|i| i.ip_address.clone())
-            .or_else(|| m.status.current_ip.clone())
-            .unwrap_or_default(),
+        ip_address: match &m.config.network_mode {
+            dragonfly_common::NetworkMode::StaticIpv4
+            | dragonfly_common::NetworkMode::StaticDualStack => m
+                .config
+                .static_ipv4
+                .as_ref()
+                .map(|cfg| cfg.address.clone())
+                .or_else(|| {
+                    m.config
+                        .primary_interface
+                        .as_ref()
+                        .and_then(|pi| m.hardware.network_interfaces.iter().find(|i| &i.name == pi))
+                        .and_then(|i| i.ip_address.clone())
+                })
+                .or_else(|| m.status.current_ip.clone())
+                .unwrap_or_default(),
+            _ => m
+                .config
+                .primary_interface
+                .as_ref()
+                .and_then(|pi| m.hardware.network_interfaces.iter().find(|i| &i.name == pi))
+                .and_then(|i| i.ip_address.clone())
+                .or_else(|| m.status.current_ip.clone())
+                .unwrap_or_default(),
+        },
         hostname: m.config.hostname.clone(),
         reported_hostname: m.config.reported_hostname.clone(),
         os_choice: m.config.os_choice.clone(),
