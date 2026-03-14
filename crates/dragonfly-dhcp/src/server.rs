@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::sync::Arc;
 use tokio::net::UdpSocket;
-use tokio::sync::{RwLock, broadcast};
+use tokio::sync::{RwLock, broadcast, watch};
 use tokio::time::Instant;
 use tracing::{debug, error, info, warn};
 
@@ -241,11 +241,24 @@ impl DhcpServer {
     }
 
     /// Run the DHCP server
-    pub async fn run(&self, shutdown: tokio::sync::watch::Receiver<bool>) -> Result<()> {
-        let bind_addr = SocketAddrV4::new(self.config.bind_ip, 67);
+    pub async fn run(&self, shutdown: watch::Receiver<bool>) -> Result<()> {
+        let socket = self.bind_socket().await?;
+        self.run_with_socket(socket, shutdown).await
+    }
 
-        // Create and bind socket
-        let socket = self.create_socket(bind_addr).await?;
+    /// Bind the UDP socket used by the DHCP server.
+    pub async fn bind_socket(&self) -> Result<UdpSocket> {
+        let bind_addr = SocketAddrV4::new(self.config.bind_ip, 67);
+        self.create_socket(bind_addr).await
+    }
+
+    /// Run the DHCP packet loop using a socket that has already been bound.
+    pub async fn run_with_socket(
+        &self,
+        socket: UdpSocket,
+        shutdown: watch::Receiver<bool>,
+    ) -> Result<()> {
+        let bind_addr = SocketAddrV4::new(self.config.bind_ip, 67);
 
         info!(addr = %bind_addr, mode = ?self.config.mode, "DHCP server started");
         let _ = self.event_sender.send(DhcpEvent::Started {

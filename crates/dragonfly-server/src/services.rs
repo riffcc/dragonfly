@@ -18,10 +18,12 @@ use dragonfly_dhcp::{
 use dragonfly_dns::{DnsServer, DnsStore, ZoneConfig};
 use dragonfly_tftp::{FileProvider, TftpEvent, TftpServer};
 use std::collections::HashMap;
+use std::io::ErrorKind;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::watch;
+use tokio::time::{Duration, sleep};
 use tracing::{debug, error, info, warn};
 
 /// Configuration for network services
@@ -116,6 +118,9 @@ pub struct ServiceRunner {
 }
 
 impl ServiceRunner {
+    const DHCP_BIND_RETRY_ATTEMPTS: usize = 10;
+    const DHCP_BIND_RETRY_DELAY: Duration = Duration::from_millis(200);
+
     /// Create a new service runner
     pub fn new(config: ServicesConfig, store: Arc<dyn Store>) -> Self {
         Self {
@@ -312,8 +317,26 @@ impl ServiceRunner {
             "Starting DHCP server"
         );
 
+        let mut attempt = 0usize;
+        let socket = loop {
+            match server.bind_socket().await {
+                Ok(socket) => break socket,
+                Err(err) if should_retry_dhcp_bind(&err) && attempt < Self::DHCP_BIND_RETRY_ATTEMPTS => {
+                    attempt += 1;
+                    warn!(
+                        attempt,
+                        delay_ms = Self::DHCP_BIND_RETRY_DELAY.as_millis(),
+                        error = %err,
+                        "DHCP socket still busy during restart, retrying bind"
+                    );
+                    sleep(Self::DHCP_BIND_RETRY_DELAY).await;
+                }
+                Err(err) => return Err(ServiceError::Dhcp(err.to_string())),
+            }
+        };
+
         let handle = tokio::spawn(async move {
-            if let Err(e) = server_clone.run(shutdown).await {
+            if let Err(e) = server_clone.run_with_socket(socket, shutdown).await {
                 error!(error = %e, "DHCP server error");
             }
         });
@@ -552,6 +575,14 @@ pub enum ServiceError {
     Io(#[from] std::io::Error),
 }
 
+fn should_retry_dhcp_bind(err: &dragonfly_dhcp::DhcpError) -> bool {
+    matches!(
+        err,
+        dragonfly_dhcp::DhcpError::BindFailed { source, .. }
+            if source.kind() == ErrorKind::AddrInUse
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -629,5 +660,25 @@ mod tests {
         assert!(matches!(config.mode, DhcpMode::Proxy));
         assert_eq!(config.boot_filename_uefi, "ipxe.efi");
         assert_eq!(config.boot_filename_bios, "undionly.kpxe");
+    }
+
+    #[test]
+    fn test_should_retry_dhcp_bind_for_addr_in_use() {
+        let err = dragonfly_dhcp::DhcpError::BindFailed {
+            addr: "0.0.0.0:67".parse().unwrap(),
+            source: std::io::Error::new(ErrorKind::AddrInUse, "already bound"),
+        };
+
+        assert!(should_retry_dhcp_bind(&err));
+    }
+
+    #[test]
+    fn test_should_not_retry_dhcp_bind_for_other_errors() {
+        let err = dragonfly_dhcp::DhcpError::BindFailed {
+            addr: "0.0.0.0:67".parse().unwrap(),
+            source: std::io::Error::new(ErrorKind::PermissionDenied, "no access"),
+        };
+
+        assert!(!should_retry_dhcp_bind(&err));
     }
 }
