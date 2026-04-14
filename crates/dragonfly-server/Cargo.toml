@@ -31,7 +31,7 @@ minijinja-embed = "2.3.0"
 # Databases
 sqlx = { version = "0.8.3", features = ["runtime-tokio-rustls", "postgres", "sqlite", "uuid", "chrono", "json", "migrate"] }
 # Utilities
-rand = "0.8.5"
+rand = "0.9.2"
 time = "0.3"
 uuid = { version = "1.8.0", features = ["v4", "v5", "v7", "serde"] }
 tower = { version = "0.4", features = ["util"] }
@@ -70,7 +70,7 @@ dragonfly-dns = { path = "../dragonfly-dns" }
 
 # Async compression and tar for image cache
 async-compression = { version = "0.4", features = ["tokio", "gzip", "zstd"] }
-astral-tokio-tar = "0.5"
+astral-tokio-tar = "0.6"
 tokio-util = { version = "0.7", features = ["io"] }
 
 # Storage — SQLite via sqlx (already in deps above)
