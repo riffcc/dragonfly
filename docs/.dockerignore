@@ -1,0 +1,10 @@
+.git
+.github
+node_modules
+public
+resources
+.hugo_build.lock
+.DS_Store
+*.swp
+*.swo
+.vscode

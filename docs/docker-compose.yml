@@ -1,0 +1,8 @@
+version: '3.8'
+
+services:
+  dragonfly-site:
+    build: .
+    ports:
+      - "8080:80"
+    restart: unless-stopped
