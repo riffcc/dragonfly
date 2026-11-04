@@ -1,0 +1,67 @@
+/* Navbar title */
+.hextra-max-navbar-width .hx\:font-extrabold {
+  color: #c27aff !important;
+}
+
+html.dark .hextra-max-navbar-width .hx\:font-extrabold {
+  color: #c27aff !important;
+}
+
+html.dark {
+  background-color: #0A0A0A !important;
+}
+
+html.dark body {
+  background-color: #0A0A0A !important;
+}
+
+/* Dragonfly buttons */
+.dragonfly-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.75rem 2rem;
+  border-radius: 0.5rem;
+  font-weight: 600;
+  font-size: 1rem;
+  text-decoration: none;
+  transition: all 0.2s ease;
+  cursor: pointer;
+}
+
+.dragonfly-btn-primary {
+  background: linear-gradient(135deg, #7c3aed, #a855f7);
+  color: #fff;
+  box-shadow: 0 4px 14px rgba(124, 58, 237, 0.4);
+}
+
+.dragonfly-btn-primary:hover {
+  background: linear-gradient(135deg, #6d28d9, #9333ea);
+  box-shadow: 0 6px 20px rgba(124, 58, 237, 0.5);
+  transform: translateY(-1px);
+  color: #fff;
+}
+
+.dragonfly-btn-secondary {
+  background: transparent;
+  color: #7c3aed;
+  border: 2px solid #7c3aed;
+}
+
+.dragonfly-btn-secondary:hover {
+  background: rgba(124, 58, 237, 0.08);
+  color: #6d28d9;
+  border-color: #6d28d9;
+  transform: translateY(-1px);
+}
+
+html.dark .dragonfly-btn-secondary {
+  color: #c4b5fd;
+  border-color: #c4b5fd;
+}
+
+html.dark .dragonfly-btn-secondary:hover {
+  background: rgba(196, 181, 253, 0.1);
+  color: #ddd6fe;
+  border-color: #ddd6fe;
+}

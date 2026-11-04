@@ -1,0 +1,21 @@
+# Hugo
+public/
+resources/_gen/
+hugo_stats.json
+.hugo_build.lock
+
+# Go
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# AI cruft
+.claude
+.playwright-mcp
