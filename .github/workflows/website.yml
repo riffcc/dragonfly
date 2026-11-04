@@ -1,0 +1,35 @@
+name: Website
+
+on:
+  pull_request:
+    paths: ["docs/**", ".github/workflows/website.yml"]
+  push:
+    branches: [main]
+    paths: ["docs/**", ".github/workflows/website.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+      - uses: peaceiris/actions-hugo@v3
+        with:
+          hugo-version: "0.147.7"
+          extended: true
+      - name: Build website
+        working-directory: docs
+        run: hugo --gc --minify
+      - uses: actions/upload-artifact@v4
+        with:
+          name: website
+          path: docs/public
+          if-no-files-found: error
